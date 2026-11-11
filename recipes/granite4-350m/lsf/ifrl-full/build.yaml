@@ -1,7 +1,6 @@
 ######
 # IFRL full recipe — the complete ~1-day Instruction-Following RL run.
-# Reproduces gbansible run_rl_bluevela_if.sh end-to-end. Structurally identical
-# to ifrl-smoke (same four targets, same 8-GPU topology); the only difference is
+# Structurally identical to ifrl-smoke (same four targets, same 8-GPU topology); the only difference is
 # full-run training-length parameters instead of the smoke overrides.
 # Four targets on space://environments/skypilot/lsf:
 #   rm-server   — reward-model FastAPI service; emits rm_server_url binding

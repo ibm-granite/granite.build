@@ -21,7 +21,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from gbserver.types.environmentconfig import EnvironmentConfig
+from gbserver.types.environmentconfig import ClusterSshConfigs, EnvironmentConfig
 
 
 def _sf():
@@ -440,3 +440,29 @@ def test_access_point_env_rejected_with_tls_false():
                 }
             )
         )
+
+
+def test_cluster_ssh_identity_step_cert_rejects_non_bool():
+    # A quoted "no" is a truthy non-empty string: it would ENABLE the
+    # step-cert check instead of disabling it. Same for "0"/1-style values —
+    # only a real YAML boolean (or unset) is meaningful.
+    for bad in ("no", "false", "0", "yes", 1):
+        with pytest.raises(ValidationError, match="IdentityStepCert"):
+            ClusterSshConfigs.model_validate(
+                {"slurm": [{"Host": "bv", "IdentityStepCert": bad}]}
+            )
+
+
+def test_cluster_ssh_identity_step_cert_rejects_non_bool_on_lsf():
+    with pytest.raises(ValidationError, match="IdentityStepCert"):
+        ClusterSshConfigs.model_validate(
+            {"lsf": [{"Host": "bv", "IdentityStepCert": "no"}]}
+        )
+
+
+def test_cluster_ssh_identity_step_cert_accepts_bool_or_unset():
+    for good in (True, False, None):
+        ClusterSshConfigs.model_validate(
+            {"slurm": [{"Host": "bv", "IdentityStepCert": good}]}
+        )
+    ClusterSshConfigs.model_validate({"slurm": [{"Host": "bv"}]})

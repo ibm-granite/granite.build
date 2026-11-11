@@ -13,7 +13,7 @@ granite.build:
 
     train:
       # BlueVela SLURM, gpu-mid partition, as the shared granitebuild functional ID.
-      environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+      environment_uri: space://environments/skypilot/slurm/bluevela
       inputs:
         base_model:
           # Public, tiny model so the hfpull runs anonymously. Overriding
@@ -33,7 +33,7 @@ granite.build:
               algorithm: sft
               config_name: sft.yaml
               output: model
-              # No image_id: the step's pinned NGC digest is used, and ibm-bluevela's
+              # No image_id: the step's pinned NGC digest is used, and bluevela's
               # slurm_image_cache launches it from a shared .sqsh
               # (<share_path>/enroot/nvcr.io-nvidia-nemo-rl@sha256-<digest>.sqsh).
               # On a miss gbserver imports it first in a cpu-partition job (about
@@ -50,7 +50,7 @@ granite.build:
               num_nodes: 1
             launcher_config:
               resources:
-                # SLURM-SPECIFIC: H200, not H100. The ibm-bluevela environment pins
+                # SLURM-SPECIFIC: H200, not H100. The bluevela environment pins
                 # every job to H200 nodes (sbatch constraint h200), so an H100
                 # request would never schedule. gpu-mid also rejects a job that
                 # requests no GPUs. -> #SBATCH --gres=gpu:H200:1.

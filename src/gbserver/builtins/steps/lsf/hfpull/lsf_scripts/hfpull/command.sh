@@ -16,6 +16,9 @@ export HF_ENDPOINT='{{ hfp.endpoint }}'
 HF_REPO='{{ hfp.owner }}/{{ hfp.repo }}'
 HF_REVISION='{{ hfp.revision }}'
 HF_TYPE='{{ hfp.hf.type }}'
+# Sub-path in the repo ("" = whole repo): only it is downloaded, kept at
+# ${HF_DEST}/${HF_PATH_IN_REPO} (HfURI.local_path), as HfURI.pull does.
+HF_PATH_IN_REPO='{{ hfp.path_in_repo | default("") }}'
 
 # Mocked when GBTEST_MOCK_HF is "true" (case-insensitive), matching
 # gbcommon.types.testing.is_hf_mocked. Forwarded as a worker env var.
@@ -396,6 +399,10 @@ echo "Pulling HF URI: ${HF_URI} to path ${HF_DEST}"
 HF_ARGS=("${HF_REPO}" --local-dir "${HF_DEST}")
 if [[ -n "${HF_REVISION}" ]]; then HF_ARGS+=(--revision "${HF_REVISION}"); fi
 if [[ -n "${HF_TYPE}" ]]; then HF_ARGS+=(--repo-type "${HF_TYPE}"); fi
+HF_PATH_IN_REPO="${HF_PATH_IN_REPO#/}"; HF_PATH_IN_REPO="${HF_PATH_IN_REPO%/}"
+if [[ -n "${HF_PATH_IN_REPO}" ]]; then
+    HF_ARGS+=(--include "${HF_PATH_IN_REPO}" --include "${HF_PATH_IN_REPO}/*")
+fi
 
 # Acquire, download, and fence: if the lock was reclaimed while we downloaded
 # (a long stall made us look dead), discard and re-wait rather than treat our
@@ -417,6 +424,11 @@ while :; do
     fi
     exit "${rc}"
 done
+
+if [[ -n "${HF_PATH_IN_REPO}" && ! -e "${HF_DEST}/${HF_PATH_IN_REPO}" ]]; then
+    echo "hfpull: '${HF_PATH_IN_REPO}' matched nothing in ${HF_REPO} (type=${HF_TYPE}, rev=${HF_REVISION})" >&2
+    exit 1
+fi
 
 echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
 

@@ -22,17 +22,19 @@ configurations/
 │   │   ├── bash/environment.yaml
 │   │   ├── docker/environment.yaml
 │   │   ├── skypilot/
-│   │   │   ├── steps/                   # shared by ALL skypilot envs below
-│   │   │   │   └── <name>/step.yaml     # (via the ancestor-walk, nearest-wins)
+│   │   │   ├── steps/                   # shared: skypilot/ has no environment.yaml
+│   │   │   │   └── <name>/step.yaml     # serves every env its environment_configs admit
 │   │   │   ├── kubernetes/
-│   │   │   │   ├── environment.yaml     # inherits ../steps; may add its own
-│   │   │   │   └── steps/               # optional: env-co-located override
-│   │   │   │       └── <name>/step.yaml # wins over the shared ../steps copy
-│   │   │   └── slurm/environment.yaml   # inherits ../steps
+│   │   │   │   ├── environment.yaml     # gets the shared ../steps copies
+│   │   │   │   └── steps/               # optional: this env only
+│   │   │   │       └── <name>/step.yaml # wins over the shared ../steps copy for this env
+│   │   │   └── slurm/
+│   │   │       ├── local/environment.yaml         # gets the shared ../../steps copies
+│   │   │       └── bluevela/environment.yaml      # gets the shared ../../steps copies
 │   │   └── skypilot-managed/
 │   │       └── kubernetes/environment.yaml
 │   ├── steps/
-│   │   ├── <name>/step.yaml             # env-agnostic step (matches any env)
+│   │   ├── <name>/step.yaml             # shared step (matches any env it admits)
 │   │   └── <env-class>/<name>/step.yaml # env-class-keyed split (matches envs whose
 │   │                                    # class is `<env-class>`, e.g. `bash/`,
 │   │                                    # `docker/`, `skypilot/`, `k8s/`)
@@ -49,12 +51,14 @@ configurations/
 
 - **`assets/`** is the leaf primitives directory. It holds no `space.yaml`; it's a target for `base_uris`, not a space in its own right.
 - **`configurations/spaces/local/space.yaml`** is the canonical user-facing space. Its `base_uris` chains into `configurations/assets/` so `space://environments/...`, `space://assetstores/...`, and `space://steps/...` resolve through to the assets tree.
-- **Step resolution tiers**: when a target runs, `space://steps/<name>` is resolved in order:
-  1. Walk up from `<env-dir>` to the enclosing base_uri, checking `<dir>/steps/<name>/` at each level — nearest-wins, so an env's own dir overrides a shared ancestor (e.g. `skypilot/steps/<name>` is shared by `skypilot/kubernetes` and `skypilot/slurm`).
-  2. Recursive glob `<base>/**/<name>/step.yaml` — first candidate whose `environment_configs` keys contain the active env's class name (e.g. `Bash`, `Docker`, `K8s`, `Skypilot`).
-  3. `<base>/steps/<name>/` — env-agnostic fallback.
+- **Environment-owned `steps/` are not inherited.** A `steps/` next to an `environment.yaml` serves that environment only, not environments nested below it. For example, `kubernetes/local` (which sits under `kubernetes/`, itself an environment) gets nothing from a `kubernetes/steps/`. To share steps with nested environments, put them in a folder with no `environment.yaml`, such as `skypilot/steps/`.
+- **Step resolution**: when a target runs, `space://steps/<name>` resolves to one copy of the step:
+  1. **Candidates.** A copy counts only if its `environment_configs` list the active environment's class (e.g. `Bash`, `Docker`, `K8s`, `Skypilot`), and its optional `subtypes` admit the environment. A `steps/` folder next to an `environment.yaml` holds that environment's own steps and serves only that environment, so `skypilot/aws/steps/<name>` serves only `skypilot/aws`. Every other `steps/` folder is shared, so `skypilot/steps/<name>` (in a folder with no `environment.yaml`) serves every environment it admits. A step with no `environment_configs` is never a candidate.
+  2. **Base order.** The space's own root `steps/<name>` wins outright. Otherwise bases are searched in order: the space's own directory, the environment's own folder if no base contains it, the space's `base_uris` as listed, then the builtins. The first base holding a candidate wins.
+  3. **Within one base.** The environment's own `steps/` first, then shared copies; among shared copies, the one with the fewest `environment_configs` keys. Two equally specific copies are an error (`Ambiguous space uri`), as is selecting a step in the environment's own `steps/` that doesn't admit it.
+  4. **Fallback.** If no base has a candidate, `<base>/steps/<name>/` is tried in base order, still subject to the environment check.
 
-  Both step-scoped tiers honour an optional per-step `environment_configs.<Class>.subtypes` list, which restricts a shared step to environments declaring one of those `subtype` values (e.g. `digit`/`sage` are shared by `skypilot/steps/` but limited to `subtypes: [kubernetes, slurm]`). See [docs/environments/step-resolution.md](../docs/environments/step-resolution.md) for the full reference.
+  `subtypes` restricts a shared step to environments declaring one of those `subtype` values; for example, `digit`/`sage` are shared by `skypilot/steps/` but limited to `subtypes: [kubernetes, slurm]`. See [docs/environments/step-resolution.md](../docs/environments/step-resolution.md) for the full reference.
 
 ## Consumers
 
@@ -65,6 +69,6 @@ configurations/
 ## See also
 
 - [docs/environments/README.md](../docs/environments/README.md) — environment.yaml and step.yaml reference.
-- [docs/environments/step-resolution.md](../docs/environments/step-resolution.md) — full step resolution rules (ancestor-walk, shared-steps pool, env-class match, env-agnostic).
-- [src/gbcommon/uri/space.py](../src/gbcommon/uri/space.py) — `SpaceURI` resolver implementing the tiered lookup.
+- [docs/environments/step-resolution.md](../docs/environments/step-resolution.md) — full step resolution rules (base order, env-folder ownership, env-class match, env-agnostic fallback).
+- [src/gbcommon/uri/space.py](../src/gbcommon/uri/space.py) — `SpaceURI` resolver implementing the lookup.
 - [src/gbserver/build/targetstep.py](../src/gbserver/build/targetstep.py) — scopes the active env on the resolver thread-local during step assimilation.

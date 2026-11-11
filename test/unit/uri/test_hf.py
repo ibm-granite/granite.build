@@ -86,6 +86,7 @@ class TestHfURIPullUnit:
             token=None,
             force_download=False,
             endpoint=None,
+            allow_patterns=None,
         )
 
     def test_dataset_sets_repo_type(self, tmp_path):

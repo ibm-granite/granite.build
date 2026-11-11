@@ -54,12 +54,14 @@ custom-image step like `eval-example`.
 **The two tiers today.** The repo currently contains both:
 
 * **Sourced steps** — authored under `steps/`, with a *generated* `configurations/`
-  counterpart (today: `byoc`, `dpk`, and the `distill/*` steps). The `eval-example`
+  counterpart (today: `byoc`, `dpk`, the `distill/*` steps, and the nine `eval/*`
+  granite-evals family steps). The `eval-example`
   exemplar is sourced too but deliberately unpublished (`STEP_PUBLISHABLE := false`),
   so it has no `configurations/` counterpart.
 * **Hand-authored asset steps** — ~30+ step definitions that exist **only** under
   `configurations/assets/.../steps/*` with no `steps/` source (e.g. `digit`, `sage`,
-  the `sage-eval-*` / `openinstruct-*` / `bfcl-*` families, `hello`). These predate
+  the `sage-eval-*` / `openinstruct-*` families, the aws-env-only `bfcl-eval` asset,
+  `hello`). These predate
   the framework — effectively a release with no corresponding source in the tree.
 
 This split is **transitional, not a design goal.** The target end-state is that every
@@ -172,9 +174,10 @@ finishes with your next steps, in order:
 The build tests can't pass until `run.sh` prints the artifact marker (see
 [Emitting data from a step](#emitting-data-from-a-step-stdout-markers)).
 
-**Existing steps.** Every step sits under a category (`steps/data/dpk`,
-`steps/eval/bfcl`, `steps/eval/eval-example`, `steps/misc/byoc`, the `steps/distill/*`
-steps). A single-level `steps/<name>/<env>/` step is still supported, but none ship today.
+**Existing steps.** Every step sits under a category (`steps/data/dpk`, the
+`steps/eval/<family>` granite-evals steps, `steps/eval/eval-example`, `steps/misc/byoc`,
+the `steps/distill/*` steps). A single-level `steps/<name>/<env>/` step is still supported,
+but none ship today.
 
 ## Layout of a step/environment directory
 
@@ -417,7 +420,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
 | `IMAGE_NAME`      | `steps/<STEP_PATH>/<STEP_ENV>`            | image repository, one per step, mirroring the step's directory (e.g. `steps/train/openinstruct-sft/skypilot`) |
 | `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
-| `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-6` |
+| `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-9` |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `PUBLISH_OVERWRITE` | `false`                                 | set exactly `true` to let `publish-image` replace an existing tag (or push without checking) |
 | `TEST_PUBLISHED`  | `false`                                   | set exactly `true` to skip `make test`'s comparison of the local build with the published `IMAGE_REF`, and its registry query (see [Two test modes](#two-test-modes)) |

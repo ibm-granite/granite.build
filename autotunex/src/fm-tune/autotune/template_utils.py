@@ -16,51 +16,35 @@
 import os
 import re
 
-_HF_CACHE_RE = re.compile(r"^/gb-read-write/hfcache/([^/]+)/([^/]+)/[^/]+/[^/]+$")
-# Local gb server cache, e.g. ~/.cache/gbserver/hf/{org}/{dataset}_{hash}/{revision}/{filename} —
-# the dataset segment bakes a hex hash suffix into the name.
-_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^.*/\.cache/gbserver/hf/([^/]+)/([^/]+)_[0-9a-f]{6,}/[^/]+/[^/]+$")
+# The cluster cache: /gb-read-write/hfcache/{org}/{dataset}/{hash}/{file}, the file
+# possibly in a subdirectory (gbserver pulls the whole repo, e.g. data/train-*.parquet).
+_HF_CACHE_RE = re.compile(r"^/gb-read-write/hfcache/([^/]+)/([^/]+)/[^/]+/.+$")
+# gbserver's pull cache, <cache_dir>/{org}/{dataset}/{revision}/{file}, with cache_dir
+# ~/.cache/gbserver/hf on bash and <shared_workdir>/hf_cache by default on SkyPilot.
+# gbserver names the dir after the repo verbatim (a trailing _<hex>, as on the app's own
+# <name>_<id8> repos, is part of the repo name, so it is kept), and the file may sit in a
+# subdirectory of the revision. A cache_path set in the environment is not recognised.
+# The match is only trusted when the <revision> dir (group 1) is a real HF download.
+_LOCAL_GBSERVER_HF_CACHE_RE = re.compile(r"^(.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+)/.+$")
 
 
-def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
-    """Convert a local lakehouse mount path or HF cache path to an lh:// / hf:// URI.
+def hf_cache_path_to_uri(path: str) -> tuple[str, str]:
+    """Convert an HF datasets cache path to an hf:// URI.
 
     Args:
-        path: Absolute path like
-            /gb-lakehouse-prod-read-only/filesets/granite_dot_build/public/shared/climate/20250906T064534/climate_train.jsonl
-            or an HF datasets cache path like
-            /gb-read-write/hfcache/ibm-research/finance-test/<hash>/finance_train.jsonl
+        path: An HF datasets cache path like
+            /gb-read-write/hfcache/example-org/example-dataset/<hash>/example_train.jsonl
             or a local gb server HF cache path (e.g. when running gbserver on a laptop) like
-            ~/.cache/gbserver/hf/ibm-research/finance-classification_9bb5cc58/main/finance-classification_validation.jsonl
-        strip_last_n: Number of trailing path segments to remove (default 1 removes the filename).
-            Only applies to the lakehouse path format; ignored for HF cache paths (prod or local
-            gbserver), which have a fixed depth.
+            ~/.cache/gbserver/hf/example-org/example-dataset_9bb5cc58/main/example_validation.jsonl
 
     Returns:
-        Tuple of (uri, name).
-        Lakehouse example:
-            ("lh://prod/granite_dot_build.public/filesets/fileset_shared/climate/20250906T064534", "climate")
-        HF cache example:
-            ("hf:///datasets/ibm-research/finance-test", "finance-test")
+        Tuple of (uri, name), e.g.
+            ("hf:///datasets/example-org/example-dataset", "example-dataset").
+            A local cache dir's name is kept verbatim, so the second example
+            gives ("hf:///datasets/example-org/example-dataset_9bb5cc58",
+            "example-dataset_9bb5cc58").
     """
     path = path.strip().rstrip("/")
-
-    match = re.match(
-        r"^/gb-lakehouse-(\w+)-read-only/filesets/([^/]+)/([^/]+)/shared/(.+)$",
-        path,
-    )
-    if match:
-        env, namespace, scope, rest = match.groups()
-
-        parts = rest.split("/")
-        if strip_last_n > 0:
-            parts = parts[:-strip_last_n] if strip_last_n < len(parts) else []
-        if not parts:
-            raise ValueError(f"Nothing left after stripping {strip_last_n} segment(s) from: {rest}")
-
-        name = parts[0]
-        remaining = "/".join(parts)
-        return f"lh://{env}/{namespace}.{scope}/filesets/fileset_shared/{remaining}", name
 
     hf_match = _HF_CACHE_RE.match(path)
     if hf_match:
@@ -68,11 +52,58 @@ def lakehouse_path_to_uri(path: str, strip_last_n: int = 1) -> tuple[str, str]:
         return f"hf:///datasets/{org}/{dataset}", dataset
 
     local_hf_match = _LOCAL_GBSERVER_HF_CACHE_RE.match(path)
-    if local_hf_match:
-        org, dataset = local_hf_match.groups()
+    if local_hf_match and _is_hf_download(local_hf_match.group(1)):
+        _, org, dataset = local_hf_match.groups()
         return f"hf:///datasets/{org}/{dataset}", dataset
 
-    raise ValueError(f"Path does not match expected lakehouse or HF cache format: {path}")
+    raise ValueError(f"Path does not match expected HF cache format: {path}")
+
+
+# A model snapshot gbserver pulled from HF: <cache_dir>/{owner}/{repo}/{revision}, with
+# cache_dir ~/.cache/gbserver/hf on bash and <shared_workdir>/hf_cache by default on SkyPilot.
+_GBSERVER_HF_MODEL_RE = re.compile(r"^.*/(?:\.cache/gbserver/hf|hf_cache)/([^/]+)/([^/]+)/[^/]+$")
+
+
+def model_display_name(model_name_or_path: str) -> str:
+    """Return ``owner/repo`` for a gbserver HF model cache path, else the input unchanged.
+
+    The step binds ``base_model`` as its local snapshot dir, so ``--model_name_or_path``
+    is a path; this keeps the path out of the AutoTuneX job's ``model`` field. The
+    revision is dropped: ``owner/repo@revision`` is not a valid HF repo id, and a job
+    has no separate revision field yet. A path is only taken for a snapshot when the
+    dir holds the ``.cache/huggingface`` folder an HF download writes, so a local
+    checkpoint that happens to sit under an ``hf_cache`` dir stays a path.
+    """
+    path = model_name_or_path.strip().rstrip("/")
+    match = _GBSERVER_HF_MODEL_RE.match(path)
+    if not match or not _is_hf_download(path):
+        return model_name_or_path
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def _is_hf_download(snapshot_dir: str) -> bool:
+    """Whether ``snapshot_dir`` holds the ``.cache/huggingface`` folder an HF download writes.
+
+    ``snapshot_download``/``hf download`` with ``--local-dir`` (what gbserver's pull uses)
+    always create it, so it tells a real snapshot apart from a lookalike path.
+    """
+    return os.path.isdir(os.path.join(snapshot_dir, ".cache", "huggingface"))
+
+
+# Mirrors AutoTuneX's datasets_io._EXTENSION_TO_FORMAT, so a bridge-registered
+# dataset records the same format the main service's upload path would.
+_EXTENSION_TO_FORMAT = {
+    ".jsonl": "jsonl",
+    ".json": "jsonl",
+    ".csv": "csv",
+    ".parquet": "parquet",
+    ".pq": "parquet",
+}
+
+
+def data_format_from_path(path: str) -> str | None:
+    """Return the AutoTuneX data format (``jsonl``/``csv``/``parquet``) for a file, or None if unknown."""
+    return _EXTENSION_TO_FORMAT.get(os.path.splitext(path)[1].lower())
 
 
 def stem_from_path(path: str) -> str:
@@ -83,14 +114,14 @@ def stem_from_path(path: str) -> str:
 def resolve_dataset_uri(path: str) -> tuple[str | None, str]:
     """Best-effort ``(uri, name)`` for a train/eval file path.
 
-    Lakehouse mount paths and HF-cache paths convert to ``lh://`` / ``hf://``
-    URIs via :func:`lakehouse_path_to_uri`. Any other path (a plain local file
-    such as ``datasets/finance_train.jsonl``, common for local/MPS runs) has no
-    such URI, so return ``(None, <filename stem>)`` instead of raising. These
-    values feed only the optional AutoTuneX bridge (off by default) and info
-    logs, so a plain local path must never crash the run.
+    HF-cache paths convert to ``hf://`` URIs via :func:`hf_cache_path_to_uri`.
+    Any other path (a plain local file such as ``data/train.jsonl``, common
+    for local/MPS runs) has no such URI, so return ``(None, <filename stem>)``
+    instead of raising. These values feed only the optional AutoTuneX bridge
+    (off by default) and info logs, so a plain local path must never crash the
+    run.
     """
     try:
-        return lakehouse_path_to_uri(path)
+        return hf_cache_path_to_uri(path)
     except ValueError:
         return None, stem_from_path(path)

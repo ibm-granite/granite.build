@@ -330,7 +330,7 @@ It also records three values as step metadata, visible in build lineage:
 ```yaml
 targets:
   generate:
-    environment_uri: space://environments/skypilot/slurm
+    environment_uri: space://environments/skypilot/slurm/local
     outputs:
       questions:
         uri: env:///shared/dd/questions

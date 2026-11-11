@@ -5,18 +5,12 @@
 > page covers only what is LSF-specific. For the *native* LSF backend (gbserver submits `bsub`
 > itself), see [lsf.md](lsf.md) instead.
 
-## SkyPilot fork
+## SkyPilot build
 
-gbserver installs SkyPilot from the granite-build fork
-([cmadam/skypilot](https://github.com/cmadam/skypilot)), pinned in `pyproject.toml` to the tag
-`gb-sky-v1-stable`. Upstream SkyPilot has no LSF cloud. The fork adds the LSF cloud driver and
-LSF multi-node support, which includes the `sky.skylet.executor.lsf` task executor. gbserver
-refuses a multi-node LSF launch when that executor is missing. The fork's own history lists
-everything else it carries.
-
-`gb-sky-v1-stable` is a moving tag: it is re-pointed to the recommended v1-line commit as the
-fork advances, and a breaking change gets a new tag. Fresh installs pick up the current target.
-An existing clone keeps the old one until you run `git fetch --tags --force`.
+The SkyPilot release `pyproject.toml` pins has no LSF cloud (this repo's clusters moved to
+SLURM; see [skypilot-slurm.md](skypilot-slurm.md#skypilot-patches)). Running on LSF needs a
+SkyPilot build that adds the LSF cloud driver and the `sky.skylet.executor.lsf` task
+executor; gbserver refuses a multi-node LSF launch when that executor is missing.
 
 ## Compute environment
 
@@ -37,7 +31,12 @@ for the shared merge/secret/collision rules.
 ### `cluster_ssh_configs.lsf` — reachability
 
 SkyPilot's LSF provisioner reads `~/.lsf/config` (OpenSSH format) and derives the available cluster
-names from its `Host` entries. Inline the host entries; gbserver materializes the file at launch:
+names from its `Host` entries. Inline the host entries; gbserver materializes the file at launch.
+Authenticate a host with **either** a static key **or** an already-issued rotating SSH cert (e.g.
+Smallstep `step`) — pick one per host; specifying more than one identity mode on the same host is an
+error.
+
+**Static key** (default — works everywhere, no extra setup):
 
 ```yaml
 config:
@@ -52,6 +51,30 @@ config:
         IdentitiesOnly: "yes"       # points IdentityFile at it. Use IdentityFile instead for an
                                     # on-host key path. Specifying both is an error.
 ```
+
+**Rotating SSH cert** (e.g. Smallstep `step`) — for clusters where users authenticate via a
+short-lived, browser/OIDC-issued cert instead of a static key:
+
+```yaml
+config:
+  default_cloud: lsf
+  cluster_ssh_configs:
+    lsf:
+      - Host: lsf-cluster
+        HostName: LSF_HOSTNAME
+        User: LSF_USER               # The *login account*, not the cert's identity-provider principal —
+        IdentityStepCert: true        # the two need not match; the remote host reconciles them, not gbserver.
+```
+
+With `IdentityStepCert: true`, gbserver checks at launch that **some** currently loaded cert (e.g. from
+`step ssh list`) is still within its validity window, then drops the directive — it never adds an
+`IdentityFile`/`CertificateFile` line, since the cert is already in the local ssh-agent and its bytes
+rotate independently of this config. gbserver **never runs `step ssh login` itself** (that needs
+interactive browser/OIDC auth it can't perform from a build codepath); if no valid cert is loaded, the
+build fails fast with an actionable error telling you to run `step ssh login` yourself and retry.
+Do **not** set `IdentitiesOnly` on an `IdentityStepCert` host: since no `IdentityFile` is ever added,
+`IdentitiesOnly: "yes"` would tell `ssh` to offer no identities at all, so it would never offer the
+agent-loaded certificate either — gbserver rejects this combination at materialize time.
 
 gbserver merges this block into `~/.lsf/config` with last-writer-wins semantics: a differing
 gbserver-managed block for the same alias is **overwritten** (a stale or re-keyed entry self-heals —
@@ -137,7 +160,7 @@ config:
 
 > **`sbatch_options` is a no-op on LSF.** The per-step `sbatch_options` field
 > ([skypilot.md](skypilot.md#config-overrides-docker-sbatch_options)) is a
-> **SLURM-only** knob; SkyPilot's fork exposes no per-task override for LSF, so a
+> **SLURM-only** knob; SkyPilot exposes no per-task override for LSF, so a
 > value set on a step/launcher/env is ignored (gbserver logs a WARNING). Set a
 > job wall-clock runlimit at the **environment level** via
 > `cloud_config.lsf...bsub_options.W` (minutes, `bsub -W`) as shown above, or
@@ -211,8 +234,8 @@ launching, since those launchers set their own per-process values.
 **Version requirement.** LSF multi-node needs a SkyPilot build with the driver-side LSF task executor
 (`sky.skylet.executor.lsf`). An older build accepts `num_nodes`, allocates every node, and then runs
 the task once with `SKYPILOT_NUM_NODES=1` — reporting success. gbserver checks for the executor and
-fails at launch rather than letting that happen, so a `num_nodes > 1` LSF build requires the pinned
-SkyPilot to be at least `gb-sky-v2-multinode`.
+fails at launch rather than letting that happen, so a `num_nodes > 1` LSF build requires a SkyPilot
+build with that executor.
 
 ## Example `environment.yaml` (LSF)
 
@@ -319,7 +342,7 @@ gives per-target isolation, with the payload written onto the shared workdir for
 
 > **Implementation note.** SkyPilot's backend normally sudo-symlink-wraps every absolute,
 > non-`~/`/non-`/tmp/` destination, which fails on the sudo-less login node and would redirect the
-> payload away from the identity-mounted path. The team SkyPilot fork exempts the shared-FS roots from
+> payload away from the identity-mounted path. The LSF SkyPilot build exempts the shared-FS roots from
 > that wrap: `LsfContainerCommandRunner` (`sky/provision/lsf/command_runner.py`) exposes them via
 > `get_unwrapped_mount_prefixes()` (wired with `shared_fs_roots` in `instance.py`), and
 > `_execute_file_mounts` in `cloud_vm_ray_backend.py` skips the wrap for destinations under those roots.

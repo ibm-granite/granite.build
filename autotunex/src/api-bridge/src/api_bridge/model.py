@@ -112,6 +112,7 @@ class BootstrapConfig(BaseModel):
 class BootstrapDataset(BaseModel):
     name: str
     artifact_uri: str
+    data_format: str | None = None
 
 
 class BootstrapJob(BaseModel):

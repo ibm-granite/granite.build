@@ -131,7 +131,7 @@ rewritten. On a login node:
 
 ```bash
 SRC=<the granite-4.1-3b directory>          # see "finding the teacher" below
-DST=/proj/granite-build/g4os/models/granite-4.1-3b-pinned
+DST=<shared-fs>/models/granite-4.1-3b-pinned
 mkdir -p "$DST"
 # Hardlink the weights (same filesystem), copy everything small.
 for f in "$SRC"/*.safetensors "$SRC"/*.safetensors.index.json; do
@@ -155,8 +155,8 @@ PY
 Finding the teacher — it may already be on the shared filesystem:
 
 ```bash
-ls -d /proj/granite-build/g4os/models/granite-4.1-3b* 2>/dev/null
-ls -d /proj/data-eng/hew/.cache/hf/hub/models--ibm-granite--granite-4.1-3b/snapshots/* 2>/dev/null
+ls -d <shared-fs>/models/granite-4.1-3b* 2>/dev/null
+ls -d <shared-fs>/.cache/hf/hub/models--ibm-granite--granite-4.1-3b/snapshots/* 2>/dev/null
 ```
 
 Take the **instruct** model, `ibm-granite/granite-4.1-3b`, not
@@ -187,25 +187,25 @@ and documents — and diffs them.
 Copy it into place:
 
 ```bash
-mkdir -p /proj/granite-build/g4os/chat_templates
+mkdir -p <shared-fs>/chat_templates
 cp steps/distill/tokenizer-align/skypilot/test-data/granite_4_role_generation.jinja \
-   /proj/granite-build/g4os/chat_templates/
+   <shared-fs>/chat_templates/
 ```
 
 **Then check the assumption underneath it.** The vendored base is the Hub's copy of
 granite-4.0-350m's template. The template your SFT mixture was actually tokenized with
-is `/proj/granite-build/g4os/chat_template.jinja` (`sft-eval-full-dataset`'s
+is `<shared-fs>/chat_template.jinja` (`sft-eval-full-dataset`'s
 `CHAT_TEMPLATE_PATH`). Those *should* be the same file — but a difference moves every
 prompt:
 
 ```bash
-diff /proj/granite-build/g4os/chat_template.jinja \
+diff <shared-fs>/chat_template.jinja \
      steps/distill/tokenizer-align/skypilot/test-data/granite_4_role_base.jinja \
   && echo "SAME — the vendored base is the SFT template"
-grep -c 'generation' /proj/granite-build/g4os/chat_template.jinja
+grep -c 'generation' <shared-fs>/chat_template.jinja
 ```
 
-If they differ, re-derive: add the two marker lines to `/proj`'s template instead, and
+If they differ, re-derive: add the two marker lines to the shared-filesystem template instead, and
 update the vendored base so the render-identity test keeps guarding the right file.
 
 ### Corpus discovery, for stage 1 rather than for this recipe
@@ -216,14 +216,14 @@ the SFT mixture**, which nothing in this repo records, so run this while the smo
 build is queued:
 
 ```bash
-ls -la /proj/granite-build/g4os/datasets/ \
-       /proj/granite-build/g4os/datasets/tokenized/all_combined/
-find /proj/granite-build/g4os/datasets -maxdepth 3 -name '*.jsonl' | head -50
+ls -la <shared-fs>/datasets/ \
+       <shared-fs>/datasets/tokenized/all_combined/
+find <shared-fs>/datasets -maxdepth 3 -name '*.jsonl' | head -50
 
 python3 -c "
 import json
-for p in ('/proj/granite-build/g4os/RLHF/data/long_context/rlnothink_300m/mix16_if/train.jsonl',
-          '/proj/granite-build/g4os/RLHF/data/long_context/general_data/general_identity/train.jsonl'):
+for p in ('<shared-fs>/RLHF/data/long_context/rlnothink_300m/mix16_if/train.jsonl',
+          '<shared-fs>/RLHF/data/long_context/general_data/general_identity/train.jsonl'):
     r = json.loads(open(p).readline()); print(p); print('  keys:', sorted(r))
     m = r.get('messages'); print('  roles:', [x.get('role') for x in m] if m else None)"
 ```
@@ -240,8 +240,8 @@ why the split between the stages falls where it does. But under
 prompt-only file would drop 100% and raise `PrepError: 0 of N records survived`.
 
 Fallback if no raw ancestor exists: re-prep
-`/proj/data-eng/hew/gb-steps-collection-post-training/data/distillation/prepped/en-sft-4.1-0.2-16K-v2/merged/train.jsonl`
-(802k rows, `{messages, row_id}`, readable from the granitebuild account) from its
+`<shared-fs>/gb-steps-collection-post-training/data/distillation/prepped/en-sft-4.1-0.2-16K-v2/merged/train.jsonl`
+(802k rows, `{messages, row_id}`, readable from the service account) from its
 `messages` against our tokenizer and template. It is **not** the corpus your SFT stage
 used, so that becomes a named divergence rather than a silent one.
 
@@ -286,12 +286,12 @@ done
 
 ## Known cluster fault
 
-`p2-r03-n1` cannot initialise CUDA — three runs, three `CUDA unknown error` at
+One specific host (`<bad-host>`) cannot initialise CUDA — three runs, three `CUDA unknown error` at
 `cuda_init` (commit `7bf2051`). Exclude it in `~/.sky/config.yaml`; no surrounding
 quotes, no spaces:
 
     bsub_options:
-      R: "select[hname!='p2-r03-n1']"
+      R: "select[hname!='<bad-host>']"
 
 `MAX_RETRIES: 1` with `target_reuse_enabled: true` covers a single draw of a bad host
 without re-running the targets that already succeeded.

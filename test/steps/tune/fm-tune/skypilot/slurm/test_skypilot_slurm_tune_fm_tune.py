@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""fm-tune on skypilot/slurm: one tiny CPU LoRA run end to end.
+"""fm-tune on skypilot/slurm/local: one tiny CPU LoRA run end to end.
 
 The fixture clones fm-tune from the public upstream (source.repo), so this tests
 the step against published fm-tune, not local edits to autotunex/src/fm-tune.

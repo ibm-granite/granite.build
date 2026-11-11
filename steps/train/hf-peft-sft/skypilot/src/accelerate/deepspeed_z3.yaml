@@ -1,0 +1,22 @@
+# Adapted from huggingface/peft examples/sft/configs/deepspeed_config_z3_qlora.yaml (Apache-2.0).
+# num_processes is overridden on the accelerate command line.
+# mixed_precision is not set here: it comes from the step's mixed_precision, as
+# --mixed_precision on the accelerate command line (hf_peft_sft_run.sh).
+compute_environment: LOCAL_MACHINE
+debug: false
+deepspeed_config:
+  deepspeed_multinode_launcher: standard
+  offload_optimizer_device: none
+  offload_param_device: none
+  zero3_init_flag: true
+  zero3_save_16bit_model: true
+  zero_stage: 3
+distributed_type: DEEPSPEED
+downcast_bf16: 'no'
+machine_rank: 0
+main_training_function: main
+num_machines: 1
+num_processes: 1
+rdzv_backend: static
+same_network: true
+use_cpu: false

@@ -1,9 +1,9 @@
 # GOLD distillation smoke recipe
 
-A minutes-long 2-node GOLD run on BlueVela (LSF via SkyPilot), before committing
+A minutes-long 2-node GOLD run on SkyPilot/LSF, before committing
 to the full multi-hour run. It exercises the `distill-gold` step's plumbing — the
 2-node allocation, per-node rank assignment, config rendering inside the container
-against the `/proj` checkout, and checkpoint publication — not the science.
+against the shared-filesystem checkout, and checkpoint publication — not the science.
 
 Everything expensive is scaled down: one epoch over a 2000-row slice, a 4096-token
 context, `save_steps: 10`. The model pair is not — see below.
@@ -25,9 +25,9 @@ Override any value with `--param KEY=VALUE`. The three headline parameters:
 
     gb build start -f recipes/granite4-gold-distillation/lsf/gold-smoke/build.yaml \
       --space <your-space> \
-      --param STUDENT_MODEL=/proj/granite-build/g4os/kd-sandbox/student_overlays/<student> \
-      --param TEACHER_MODEL=/proj/granite-build/g4os/kd-sandbox/teacher_overlays/<teacher> \
-      --param TRAINING_DATASET=/proj/granite-build/g4os/gbtest/gold-distill-smoke/<data>_nothink.jsonl
+      --param STUDENT_MODEL=<shared-fs>/kd-sandbox/student_overlays/<student> \
+      --param TEACHER_MODEL=<shared-fs>/kd-sandbox/teacher_overlays/<teacher> \
+      --param TRAINING_DATASET=<shared-fs>/gbtest/gold-distill-smoke/<data>_nothink.jsonl
 
 ## Changing the pair
 

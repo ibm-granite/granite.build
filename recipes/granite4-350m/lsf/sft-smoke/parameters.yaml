@@ -1,4 +1,4 @@
-# sft-smoke — smoke-test distill-sft in isolation, for BlueVela (SkyPilot / LSF).
+# sft-smoke — smoke-test distill-sft in isolation, for SkyPilot/LSF.
 #
 # Same pair, corpus fixture and chat template as distill-smoke (granite-4.0-350m
 # student, granite-4.1-3b teacher) — see that recipe's parameters.yaml for the
@@ -25,10 +25,10 @@ IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 # Each *_URI carries a FULL uri, not a bare path — the scheme picks how
 # granite.build fetches it (see ibm-bluevela's environment.yaml
 # assetstores block for what's wired in):
-#   env://<absolute path>   already on the shared filesystem (BlueVela's /proj)
+#   env://<absolute path>   already on the cluster's shared filesystem
 #   hf:///<org>/<repo>      pulled fresh from the Hugging Face Hub
 #   s3://<bucket>/<key>     pulled from S3-compatible object storage
-# The defaults below use env:// against the same /proj assets distill-smoke
+# The defaults below use env:// against the same shared-filesystem assets distill-smoke
 # uses, since that pinned-tokenizer teacher copy and this SFT checkpoint
 # don't exist anywhere public today. Override with --param to point at a
 # Hub model or your own bucket instead, e.g.:

@@ -1,6 +1,6 @@
 # EXAMPLE custom build-test environment: IBM BlueVela over SLURM. Not used by
 # default: the build.yaml beside this file runs on the shared
-# space://environments/skypilot/slurm/ibm-bluevela. To test local environment
+# space://environments/skypilot/slurm/bluevela. To test local environment
 # changes, edit this copy and switch build.yaml to `environment_uri: file:.`
 # (the build's own directory; see "Custom test environments" in
 # steps/README.md).
@@ -13,7 +13,7 @@ subtype: slurm
 # run SLURM, login3-5 run LSF). Settings mirror the SLURM environment that the
 # BlueVela integration fixtures under
 # test-data/integration/ibm/buildrunner/skypilot/slurm_bluevela/ run against.
-# Reference with: environment_uri: space://environments/skypilot/slurm/ibm-bluevela
+# Reference with: environment_uri: space://environments/skypilot/slurm/bluevela
 config:
   default_cloud: slurm
   # SLURM does not support cluster autostop (gbserver forces autostop=None); a

@@ -16,6 +16,7 @@
 import logging
 import math
 import os
+import re
 import socket
 import subprocess
 from typing import Dict, List, Optional, Tuple
@@ -24,6 +25,7 @@ import ray
 
 from autotune.device import detect_accelerator, object_store_bytes
 from autotune.logging_setup import bridge_runtime_env
+from autotune.tmpdir import resolve_job_id, resolve_ray_temp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -78,42 +80,45 @@ def configure_ray_data_context() -> None:
 
 
 def compute_ray_data_sizing(
-    num_workers: int,
     concurrency_override: Optional[int],
     num_cpus_override: Optional[float],
 ) -> Tuple[int, float]:
-    """Compute the (concurrency, num_cpus_per_task) budget for Ray Data tokenization.
+    """Compute the (concurrency, num_cpus_per_actor) budget for Ray Data tokenization.
 
-    Ray Data's ``map_batches`` fans tokenization out across the cluster, but it
-    competes with the GPU training workers (each reserves ``{"CPU": 1}`` via
-    ScalingConfig) for CPU slots. By default we let tokenization use every CPU
-    not reserved by this trial's workers: ``floor(total_cluster_cpus) - num_workers``.
+    Tokenization is materialized before the trial's ``TorchTrainer`` exists, so
+    it competes with nothing of its own: the actor pool is torn down before the
+    GPU workers are scheduled. By default it therefore takes every CPU free *at
+    call time*, ``floor(available_cpus / num_cpus)``. Sizing from available
+    rather than total CPUs is what accounts for sibling HPO trials — CPUs held
+    by another trial's workers or tokenizer pool are not counted. Trials that
+    start tokenizing at the same moment can still both claim the same free CPUs
+    (not a deadlock: the pools fill as CPUs free up), so for wide sweeps set
+    ``ray_data_concurrency`` explicitly, e.g. ``total_cpus /
+    max_concurrent_trials``; see ``docs/RESOURCES.md``.
 
     ``concurrency_override`` / ``num_cpus_override`` (from config or CLI) take
     precedence when set. The result is always clamped to at least 1.
 
-    Note for concurrent HPO: each trial computes this independently from the
-    full cluster CPU count, unaware of sibling trials. ``max_concurrent_trials``
-    bounds the trial count; for large sweeps prefer an explicit override.
+    ``num_cpus_override=0`` asks Ray to reserve no CPU per actor; Ray accepts
+    that, but there is no per-actor share to divide the free CPUs by, so the
+    pool falls back to one actor per free CPU.
     """
-    try:
-        total_cpus = int(math.floor(ray.cluster_resources().get("CPU", 0)))
-    except Exception:
-        total_cpus = 0
+    num_cpus = float(num_cpus_override) if num_cpus_override is not None else 1.0
 
     if concurrency_override is not None:
-        concurrency = max(1, int(concurrency_override))
-    else:
-        concurrency = max(1, total_cpus - int(num_workers))
+        return max(1, int(concurrency_override)), num_cpus
 
-    num_cpus = float(num_cpus_override) if num_cpus_override is not None else 1.0
-    return concurrency, num_cpus
+    try:
+        available_cpus = ray.available_resources().get("CPU", 0)
+    except Exception:
+        available_cpus = 0
+    return max(1, int(math.floor(available_cpus / (num_cpus or 1.0)))), num_cpus
 
 
 def ray_data_block_target(concurrency: int, row_count: int) -> int:
     """Block count for repartition: one block per concurrent task, clamped to rows.
 
-    Ray Data launches at most one stateless map task per input block, so the
+    Ray Data hands each input block to one map task or pool actor, so the
     dataset must be split into >= ``concurrency`` blocks to use that many CPUs.
     Clamped to ``row_count`` so tiny datasets (e.g. small eval splits) are not
     over-partitioned into mostly-empty blocks. Never returns less than 1.
@@ -181,13 +186,17 @@ def stop_ray_cluster(temp_dir: str) -> None:
         )
         return
 
+    # Match the temp dir as a whole path component. A bare substring test lets
+    # job_4521 match job_45210, so one run's teardown would kill a sibling's Ray.
+    temp_dir_re = re.compile(re.escape(temp_dir.rstrip(os.sep)) + r"(?=$|[\s/=,'\"])")
+
     matched = []
     for proc in psutil.process_iter(["pid", "cmdline"]):
         try:
             cmdline = proc.info.get("cmdline") or []
             cmdline_str = " ".join(cmdline)
             # Match any Ray process that was started with our temp dir.
-            if temp_dir in cmdline_str and (
+            if temp_dir_re.search(cmdline_str) and (
                 "ray" in cmdline_str or "raylet" in cmdline_str or "gcs_server" in cmdline_str
             ):
                 matched.append(proc)
@@ -221,18 +230,20 @@ def stop_ray_cluster(temp_dir: str) -> None:
 def start_local_ray_cluster() -> Dict:
     """Start a job-isolated local Ray cluster.
 
-    Uses LSB_JOBID to create a unique temp directory under /tmp/ray/ so that
-    multiple LSF jobs on the same node do not collide.  Reserves two ports
-    atomically for Ray's node-manager and object-manager via ``reserve_ports``.
+    Creates a unique per-job temp directory via ``autotune.tmpdir`` so that
+    multiple jobs on the same node do not collide, on any scheduler (see
+    :func:`autotune.tmpdir.resolve_ray_temp_dir`).  Reserves two ports atomically
+    for Ray's node-manager and object-manager via ``reserve_ports``.
 
     Returns a dict with ``temp_dir`` (needed by ``stop_local_ray_cluster``)
     and ``num_gpus``.
     """
     # -- Job-specific temp directory ------------------------------------------
-    job_id = os.environ.get("LSB_JOBID", "0")
-    temp_dir = f"/tmp/_ray/job_{job_id}"
-    os.makedirs(temp_dir, exist_ok=True)
-    logger.info(f"Ray temp dir: {temp_dir}")
+    # Routed through autotune.tmpdir: honours the scheduler's TMPDIR, keeps the
+    # parent per-uid, and falls back when a node's shared /tmp parent is owned by
+    # another user (see that module for the failure this avoids).
+    job_id = resolve_job_id()
+    temp_dir = resolve_ray_temp_dir(f"job_{job_id}")
 
     # -- Accelerator + GPU detection ------------------------------------------
     accel = detect_accelerator()
