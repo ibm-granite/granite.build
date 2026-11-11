@@ -15,8 +15,10 @@ shared Makefile conventions; see [steps/README.md](../../../README.md).
 
 ## Layout
 
-- `step-template.yaml`: the step. `run` `exec`s `src/lcb_score.py` under `env -i`
-  with an allowlist of variables and an empty `HOME`, through the Landlock sandbox
+- `step-template.yaml`: the step. `run` starts `src/lcb_score.py` under `env -i`
+  with an allowlist of variables, an empty `HOME` and a private `TMPDIR` (short,
+  under `${TMPDIR:-/tmp}`: LiveCodeBench's multiprocessing puts unix sockets there,
+  and Linux caps their paths at 107 bytes), through the Landlock sandbox
   `src/lcb_sandbox.py` (unless `sandbox: false`), from inside the LiveCodeBench
   checkout, offline. The script registers `output_path` as the `results` artifact.
 - `src/lcb_sandbox.py`: applies a Landlock ruleset to itself, then `exec`s the

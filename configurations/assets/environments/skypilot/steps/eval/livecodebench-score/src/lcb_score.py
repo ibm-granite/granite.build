@@ -15,16 +15,16 @@ path). It:
 4. runs LiveCodeBench's own scorer, ``lcb_runner.runner.custom_evaluator``,
    unmodified, with the dataset read from the local copy (``lcb_dataset``);
 5. writes ``summary.json`` (pass@1 overall and by difficulty) and prints it;
-6. prints the step's ``results`` artifact marker. The step ``exec``s this script, so
-   no shell is left after it to print the marker.
+6. prints the step's ``results`` artifact marker, so the step's shell has nothing
+   left to print after it.
 
 Generated code is executed by LiveCodeBench's checker in subprocesses with
 timeouts and resource limits. That guard is NOT a security sandbox. The step adds
-isolation around this script: it ``exec``s it under ``env -i`` with an allowlist of
-variables and an empty ``HOME``, and (with ``sandbox`` on, the default) under the
-Landlock sandbox in ``lcb_sandbox.py``, so no other process's ``/proc/<pid>/environ``
-is readable, only the step's own files can be opened, and TCP is denied. See
-USAGE.md.
+isolation around this script: it starts it under ``env -i`` with an allowlist of
+variables, an empty ``HOME`` and a private ``TMPDIR``, and (with ``sandbox`` on, the
+default) under the Landlock sandbox in ``lcb_sandbox.py``, so no other process's
+``/proc/<pid>/environ`` is readable, only the step's own files can be opened, and TCP
+is denied. See USAGE.md.
 
 Memory: the benchmark's problems are decoded once, by LiveCodeBench's scorer. The
 match check reads only their ids (:func:`lcb_dataset.question_ids`).

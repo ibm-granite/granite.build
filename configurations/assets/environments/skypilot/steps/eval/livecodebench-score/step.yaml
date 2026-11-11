@@ -225,9 +225,20 @@ environment_configs:
             # job user's real home by absolute path (see USAGE.md).
             SCORE_HOME="$PWD/.score-home"
             rm -rf "$SCORE_HOME" && mkdir -p "$SCORE_HOME"
-            # Its own TMPDIR too, so the sandbox needn't allow writing the shared /tmp.
-            SCORE_TMP="$PWD/.score-tmp"
-            rm -rf "$SCORE_TMP" && mkdir -p "$SCORE_TMP" "$HF_HOME_DIR"
+            # Its own TMPDIR too, so the sandbox needn't allow writing the rest of the
+            # shared /tmp. Short, so not in the working directory: LiveCodeBench starts
+            # a multiprocessing Manager for every test case, whose unix socket lives
+            # under TMPDIR, and Linux caps a socket path at 107 bytes. Under a long
+            # working directory (a cluster's shared filesystem) every test case failed
+            # with "AF_UNIX path too long" and the step scored 0.
+            # The job's own TMPDIR if it's short, else /tmp: at most 40 + 17 bytes here,
+            # plus 32 for multiprocessing's pymp-XXXXXXXX/listener-XXXXXXXX.
+            # (wc, not bash's length expansion: its brace-hash opens a Jinja comment.)
+            TMP_BASE="${TMPDIR:-/tmp}"
+            [ "$(printf '%s' "$TMP_BASE" | wc -c)" -le 40 ] || TMP_BASE=/tmp
+            SCORE_TMP="$(mktemp -d "$TMP_BASE/lcb-score.XXXXXX")"
+            trap 'rm -rf "$SCORE_TMP"' EXIT
+            mkdir -p "$HF_HOME_DIR"
             if ! PYTHON_BIN="$(command -v python)"; then
               echo "eval/livecodebench-score: ERROR no python on PATH (with install: false, the image must provide one)." >&2; exit 1
             fi
@@ -270,10 +281,11 @@ environment_configs:
             {%- else %}
             echo "eval/livecodebench-score: WARNING sandbox is off: generated code can read the credentials of every process in this job, the job user's files, and reach the network." >&2
             {%- endif %}
-            # lcb_score.py prints the results artifact marker itself, since nothing
-            # here runs after the exec. (The `+` form: bash before 4.4 calls an empty
+            # Not exec'd, so the EXIT trap can remove $SCORE_TMP; with set -e the step
+            # still exits with the scorer's status. lcb_score.py prints the results
+            # artifact marker itself. (The `+` form: bash before 4.4 calls an empty
             # array unbound under set -u.)
-            exec env -i "${SCORE_ENV[@]}" ${SANDBOX[@]+"${SANDBOX[@]}"} "$PYTHON_BIN" "$SRC_DIR/lcb_score.py" \
+            env -i "${SCORE_ENV[@]}" ${SANDBOX[@]+"${SANDBOX[@]}"} "$PYTHON_BIN" "$SRC_DIR/lcb_score.py" \
               --completions-dir "$COMPLETIONS_DIR" \
               --dataset-dir "$DATASET_DIR" \
               --output-dir "$OUTPUT_DIR" \

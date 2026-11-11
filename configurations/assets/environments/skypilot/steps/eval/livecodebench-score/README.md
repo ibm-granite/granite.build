@@ -33,10 +33,10 @@ This step adds the following:
     file counts as tracing, so none of them can be read, whatever wraps the step.
   - **Only the step's own files.** The scorer can read the system directories
     (`/usr`, `/lib`, `/etc` and the like), its Python, the LiveCodeBench checkout,
-    `src/` and the two inputs, and write only the output directory and its own
-    `HOME`, `TMPDIR` and HF cache under the working directory. The job user's real
-    home (keys, `~/.netrc`, tokens), the shared `/tmp` and other builds' files can't
-    be opened.
+    `src/` and the two inputs, and write only the output directory, its own `HOME`
+    and HF cache under the working directory, and its own `TMPDIR`. The job user's
+    real home (keys, `~/.netrc`, tokens), the rest of the shared `/tmp` and other
+    builds' files can't be opened.
   - **No TCP.** Binding and connecting TCP sockets are denied.
   - **No signals to, or abstract unix sockets of, processes outside the sandbox**
     (Landlock ABI 6 or later).
@@ -47,8 +47,8 @@ This step adds the following:
   rather than run the code without it. `sandbox: false` runs without it, with a
   warning in the log; use it only for completions you trust.
 - **Its environment is an allowlist.** It declares no secrets and sets no `envs`, and
-  `run` replaces itself (`exec`) with the scorer under `env -i` and an allowlist:
-  `PATH`, an empty `HOME`, `TMPDIR`, the locale if the job set one, `PYTHONPATH`,
+  `run` starts the scorer under `env -i` and an allowlist: `PATH`, an empty `HOME`,
+  a private `TMPDIR`, the locale if the job set one, `PYTHONPATH`,
   `HF_HOME`, the two offline switches, the venv's `VIRTUAL_ENV`, the dynamic loader's
   and module system's variables (`LD_LIBRARY_PATH` and similar), and the thread-count
   variables (`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `SLURM_CPUS_PER_TASK`,

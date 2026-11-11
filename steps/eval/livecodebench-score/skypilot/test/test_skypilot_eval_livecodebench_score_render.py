@@ -17,6 +17,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 import yaml
@@ -89,6 +90,7 @@ _TOOLS = (
     "cat",
     "id",
     "wc",
+    "mktemp",
 )
 
 _SANDBOX_PY = str(_STEP_DIR / "src" / "lcb_sandbox.py")
@@ -378,11 +380,11 @@ class TestRun:
     def test_the_scorer_prints_the_marker_with_the_logical_path(
         self, defaults, launcher
     ):
-        """Nothing runs after the exec, so the scorer prints the artifact marker. It
-        keeps symlinks in the path (absolute(), not resolve()), as `pwd` and every
-        other step do, so a symlinked mount reports the same path."""
+        """The scorer, not the step's shell, prints the artifact marker. It keeps
+        symlinks in the path (absolute(), not resolve()), as `pwd` and every other
+        step do, so a symlinked mount reports the same path."""
         run = _render(launcher["run"], _cfg(defaults))
-        assert 'exec env -i "${SCORE_ENV[@]}"' in run
+        assert 'env -i "${SCORE_ENV[@]}"' in run
         assert "GB_ARTIFACT_ID" not in run
         src = (_STEP_DIR / "src" / "lcb_score.py").read_text()
         assert "GB_ARTIFACT_ID:{ARTIFACT_ID} GB_ARTIFACT_PATH:{out.absolute()}" in src
@@ -538,6 +540,7 @@ class TestSandbox:
         self, defaults, launcher, tmp_path
     ):
         proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
+        env = dict(l.split("=", 1) for l in _lines(proc, "FULLENV:") if "=" in l)
         (wrapper_args,) = _lines(proc, "SANDBOX:")
         words = wrapper_args.split()
         reads = {words[i + 1] for i, w in enumerate(words) if w == "--read"}
@@ -554,17 +557,43 @@ class TestSandbox:
             str(tmp_path / "output"),
             str(tmp_path / ".hf-cache"),
             str(tmp_path / ".score-home"),
-            str(tmp_path / ".score-tmp"),
+            env["TMPDIR"],
         }
         # The wrapper starts the scorer itself, inside env -i's clean environment.
         argv = _lines(proc, "ARG:")
         assert argv[0] == str(tmp_path / "src" / "lcb_score.py")
 
-    def test_scorer_tmpdir_is_its_own(self, defaults, launcher, tmp_path):
-        proc = _run(_render(launcher["run"], _cfg(defaults)), tmp_path)
+    def test_scorer_tmpdir_is_its_own_and_short(self, defaults, launcher, tmp_path):
+        """LiveCodeBench's multiprocessing Manager puts a unix socket under TMPDIR, and
+        Linux caps socket paths at 107 bytes: under a long working directory every
+        test case failed with "AF_UNIX path too long" and the step scored 0. So
+        TMPDIR is a fresh directory under /tmp (the job's TMPDIR here is long), not
+        under the working directory, however deep that is, and it's removed after."""
+        deep = tmp_path / ("d" * 60) / ("e" * 60)
+        deep.mkdir(parents=True)
+        proc = _run(
+            _render(launcher["run"], _cfg(defaults)), deep, {"TMPDIR": str(deep)}
+        )
         env = dict(l.split("=", 1) for l in _lines(proc, "FULLENV:") if "=" in l)
-        assert env["TMPDIR"] == str(tmp_path / ".score-tmp")
-        assert (tmp_path / ".score-tmp").is_dir()
+        tmp = pathlib.Path(env["TMPDIR"])
+        assert tmp.parent == pathlib.Path("/tmp") and tmp.name.startswith("lcb-score.")
+        # Room for multiprocessing's pymp-XXXXXXXX/listener-XXXXXXXX under it.
+        assert len(str(tmp)) + 32 <= 107
+        assert not tmp.exists()
+
+    def test_scorer_tmpdir_uses_a_short_job_tmpdir(self, defaults, launcher, tmp_path):
+        """A short TMPDIR the job was given (a node-local scratch) is used as the base."""
+        base = pathlib.Path(tempfile.mkdtemp(prefix="j", dir="/tmp"))
+        try:
+            proc = _run(
+                _render(launcher["run"], _cfg(defaults)),
+                tmp_path,
+                {"TMPDIR": str(base)},
+            )
+            env = dict(l.split("=", 1) for l in _lines(proc, "FULLENV:") if "=" in l)
+            assert pathlib.Path(env["TMPDIR"]).parent == base
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
 
     def test_fails_where_the_kernel_cant_apply_it(self, defaults, launcher, tmp_path):
         proc = _run(
