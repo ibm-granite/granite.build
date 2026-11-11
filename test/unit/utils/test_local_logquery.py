@@ -15,7 +15,7 @@
 # limitations under the License.
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,10 +27,19 @@ from gbserver.types.buildevent import (
     BuildEventType,
     EntityRunMetadata,
 )
-from gbserver.types.logs import Item, LogqueryResponse, QueryDef, QueryParams
+from gbserver.types.logs import (
+    Item,
+    LogqueryResponse,
+    QueryDef,
+    QueryParams,
+    SortModel,
+)
 from gbserver.utils.local_logquery import LocalLogQueryAPI
 
-_DEFAULT_TS = datetime(2026, 3, 26, 12, 0, 0)
+# Timezone-aware, like the timestamps of real events (get_time()).
+_DEFAULT_TS = datetime(2026, 3, 26, 12, 0, 0, tzinfo=timezone.utc)
+# _DEFAULT_TS as epoch milliseconds, the unit gbcli expects from /logquery.
+_DEFAULT_TS_MS = 1774526400000
 
 
 def _make_stored_event(
@@ -61,6 +70,7 @@ def _make_query(
     build_id: str = "build-1",
     step_id: str | None = None,
     step_name: str | None = None,
+    sort: str | None = None,
 ) -> Item:
     """Helper to create an Item query like gbcli sends."""
     json_object = {
@@ -78,6 +88,11 @@ def _make_query(
             queryParams=QueryParams(
                 metadata={"applicationName": ["granite-build"]},
                 jsonObject=json_object,
+            ),
+            sortModel=(
+                [SortModel(field="timestamp", ordering=sort, missing="_last")]
+                if sort is not None
+                else None
             ),
         )
     )
@@ -110,8 +125,60 @@ class TestLocalLogQueryAPI:
             parsed = json.loads(log_entry.text)
             assert parsed["log"] == f"line {i + 1}"
             assert log_entry.logId is not None
-            # gbcli expects milliseconds since epoch (like IBM Cloud Logs)
-            assert log_entry.timestamp == _DEFAULT_TS.timestamp() * 1000
+            # gbcli expects milliseconds since epoch
+            assert log_entry.timestamp == _DEFAULT_TS_MS
+
+    @staticmethod
+    def _events_out_of_order():
+        """Three events whose storage (insertion) order is not timestamp order."""
+        return [
+            _make_stored_event(
+                msg="second", timestamp=_DEFAULT_TS + timedelta(seconds=1)
+            ),
+            _make_stored_event(
+                msg="third", timestamp=_DEFAULT_TS + timedelta(seconds=2)
+            ),
+            _make_stored_event(msg="first", timestamp=_DEFAULT_TS),
+        ]
+
+    @pytest.mark.parametrize(
+        "sort, expected",
+        [
+            ("asc", ["first", "second", "third"]),
+            ("desc", ["third", "second", "first"]),
+            # no timestamp sort requested: storage order is kept
+            (None, ["second", "third", "first"]),
+        ],
+    )
+    @patch("gbserver.utils.local_logquery.get_admin_storage")
+    def test_results_follow_requested_timestamp_sort(
+        self, mock_get_storage, sort, expected
+    ):
+        """gbcli requests 'desc' and reverses the result, so the order must be honored."""
+        mock_storage = MagicMock()
+        mock_storage.event_storage.get_by_where.return_value = (
+            self._events_out_of_order()
+        )
+        mock_get_storage.return_value = mock_storage
+
+        resp = LocalLogQueryAPI().query_cloud_logquery(_make_query(sort=sort))
+
+        assert [json.loads(log.text)["log"] for log in resp.logs] == expected
+
+    @patch("gbserver.utils.local_logquery.get_admin_storage")
+    def test_desc_sort_reverses_events_with_equal_timestamps(self, mock_get_storage):
+        """'desc' is the exact reverse of 'asc', including ties, so gbcli's reverse is chronological."""
+        mock_storage = MagicMock()
+        mock_storage.event_storage.get_by_where.return_value = [
+            _make_stored_event(msg="a"),
+            _make_stored_event(msg="b"),
+            _make_stored_event(msg="c"),
+        ]
+        mock_get_storage.return_value = mock_storage
+
+        resp = LocalLogQueryAPI().query_cloud_logquery(_make_query(sort="desc"))
+
+        assert [json.loads(log.text)["log"] for log in resp.logs] == ["c", "b", "a"]
 
     @patch("gbserver.utils.local_logquery.get_admin_storage")
     def test_step_id_filter(self, mock_get_storage):
@@ -169,8 +236,8 @@ class TestLocalLogQueryAPI:
         api = LocalLogQueryAPI()
         logs_str = api.get_build_logs(build_id="build-1")
 
-        assert "step started" in logs_str
-        assert "step completed" in logs_str
+        # chronological: the query asks for 'desc' and get_build_logs() reverses it
+        assert logs_str == "step started\nstep completed"
 
     @patch("gbserver.utils.local_logquery.sleep")
     @patch("gbserver.utils.local_logquery.get_admin_storage")
