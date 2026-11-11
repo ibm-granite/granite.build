@@ -91,9 +91,8 @@ from gbserver.types.context import CliEnvironment, pass_environment
     help=(
         "Remove the mem:// endpoints that rows indexed before mem:// filtering "
         "still carry, and exit. Each affected job keeps its real artifacts (as a "
-        "no-output or no-input row when mem:// was its only other side). Does not "
-        "touch the "
-        "checkpoint. Must be passed alone."
+        "no-output or no-input row when mem:// was its only other side). "
+        "Does not touch the checkpoint. Must be passed alone."
     ),
 )
 @click.option(
