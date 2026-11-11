@@ -23,6 +23,7 @@ ${IMAGE_REF} is substituted exactly as the sed it replaced did.
 import importlib.util
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -199,3 +200,57 @@ class TestCli:
         assert proc.stderr.startswith("render_step_template: ")
         assert "resolves outside" in proc.stderr
         assert not out.exists()
+
+
+COMMON_MK = REPO_ROOT / "steps" / "common.mk"
+_MAKE_VARS = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
+
+
+def _make_tree(tmp_path, template):
+    """A throwaway repo: steps/common.mk + the script + one step using ``template``."""
+    if shutil.which("make") is None:
+        pytest.skip("make not installed")
+    steps = tmp_path / "steps"
+    (steps / "scripts").mkdir(parents=True)
+    shutil.copy(COMMON_MK, steps / "common.mk")
+    shutil.copy(SCRIPT, steps / "scripts" / SCRIPT.name)
+    _write(steps / "train" / "shared" / "m.j2", "{%- macro hi() -%}hi{%- endmacro %}\n")
+    step = steps / "train" / "foo" / "skypilot"
+    _write(step / "Makefile", "STEP_NAME := foo\ninclude ../../../common.mk\n")
+    _write(step / ".gbignore", "**/*.md\nsrc/**\n")
+    _write(step / "step-template.yaml", template)
+    return step
+
+
+def _make_space(step):
+    env = {k: v for k, v in os.environ.items() if k not in _MAKE_VARS}
+    return subprocess.run(
+        ["make", "-s", "space", f"PYTHON={sys.executable}"],
+        cwd=step,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_make_space_expands_markers(tmp_path):
+    step = _make_tree(
+        tmp_path,
+        "name: foo\nrun: |\n  {#- gb-include ../../shared/m.j2 -#}\n  {{ hi() }}\n",
+    )
+    proc = _make_space(step)
+    assert proc.returncode == 0, proc.stderr
+    rendered = step / "space" / "steps" / "train" / "foo" / "step.yaml"
+    assert rendered.read_text() == (
+        "name: foo\nrun: |\n  {%- macro hi() -%}hi{%- endmacro %}\n  {{ hi() }}\n"
+    )
+
+
+def test_make_space_fails_on_a_bad_include(tmp_path):
+    step = _make_tree(tmp_path, "run: |\n  {#- gb-include ../../shared/nope.j2 -#}\n")
+    proc = _make_space(step)
+    assert proc.returncode != 0
+    assert "render_step_template: " in proc.stderr and "no such file" in proc.stderr
+    assert not (step / "space" / "steps" / "train" / "foo" / "step.yaml").exists()

@@ -41,6 +41,7 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 COMMON_MK = REPO_ROOT / "steps" / "common.mk"
+RENDER_SCRIPT = REPO_ROOT / "steps" / "scripts" / "render_step_template.py"
 _MAKE_VARS = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
 _LOGIN_VARS = (
     "REGISTRY_USER",
@@ -93,6 +94,7 @@ def step(tmp_path: pathlib.Path) -> pathlib.Path:
     steps.mkdir()
     shutil.copy(COMMON_MK, steps / "common.mk")
     (steps / "scripts").mkdir()
+    shutil.copy(RENDER_SCRIPT, steps / "scripts" / RENDER_SCRIPT.name)
     status = steps / "scripts" / "registry-tag-status.sh"
     status.write_text(_FAKE_STATUS)
     status.chmod(0o755)

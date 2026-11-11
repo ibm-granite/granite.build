@@ -82,9 +82,11 @@ editing the released asset in place. To start a new step, see
 Promotion is deliberately narrow. `make publish-step` (and the `make space` render it
 builds on) does five things and no more:
 
-1. **Renders one token.** `step-template.yaml` → `step.yaml` substituting only the
-   literal `${IMAGE_REF}` (empty for public-image steps); all runtime Jinja `{{ … }}`
-   and shell `${VAR}` pass through verbatim.
+1. **Renders the template.** `step-template.yaml` → `step.yaml`: each
+   `{#- gb-include <path> -#}` line is replaced by the file it names (see
+   [Sharing Jinja between templates](#sharing-jinja-between-templates-gb-include)),
+   then the literal `${IMAGE_REF}` is substituted (empty for public-image steps); all
+   runtime Jinja `{{ … }}` and shell `${VAR}` pass through verbatim.
 2. **Copies `src/` and the step's `.gbignore`** into the released step.
 3. **Publishes `USAGE.md` as `README.md`** beside the released `step.yaml`, so the
    step ships user docs (the authoring `README.md` is dev-oriented and is *not*
@@ -493,21 +495,22 @@ acting as a user who may create repositories in the namespace. It is passed to
 
 ## Rendering: how the image reference is inserted
 
-`make space` (and `make publish-step`) render the template by substituting **only** the
-literal `${IMAGE_REF}` token, with a single `sed` replacement — no `envsubst`/gettext
-dependency, just the POSIX `sed` every system already has:
+`make space` (and `make publish-step`) render the template with
+[`scripts/render_step_template.py`](scripts/render_step_template.py) (standard-library
+Python, no install). It expands `gb-include` lines (next section), then substitutes
+**only** the literal `${IMAGE_REF}` token:
 
 ```sh
-ref=$(printf '%s' '<full image ref>' | sed 's/[#&\]/\\&/g')   # escape sed's replacement metachars
-sed "s#\${IMAGE_REF}#$ref#g" step-template.yaml > $(SPACE_DIR)/steps/<path>/step.yaml
+python3 steps/scripts/render_step_template.py step-template.yaml \
+  $(SPACE_DIR)/steps/<path>/step.yaml --image-ref '<full image ref>'
 ```
 
 Because only the literal `${IMAGE_REF}` is replaced, everything else passes through
 untouched — importantly, the **runtime Jinja** `{{ ... }}` (resolved later by the
 build, e.g. `{{ config.eval_config.model_path }}`) and shell expansions like
-`${HOME}` / `$(hostname)` inside `run:`/`setup:` blocks. (The image ref
-is escaped first so a value containing `#`, `&`, or `\` can't corrupt the
-substitution.) This is factored into the `render-step-template` helper in
+`${HOME}` / `$(hostname)` inside `run:`/`setup:` blocks. The image ref is inserted as
+is (a `#`, `&` or `\` in it is not special), and `step.yaml` is written only when the
+render succeeds. This is factored into the `render-step-template` helper in
 [`common.mk`](common.mk), shared by both targets.
 
 * Image steps put `image_id: "docker:${IMAGE_REF}"` in the template; `${IMAGE_REF}`
@@ -515,6 +518,37 @@ substitution.) This is factored into the `render-step-template` helper in
   at render time.
 * Public-image steps carry no `${IMAGE_REF}` token — they select their image via
   runtime Jinja from `config.*`, so rendering is effectively a copy plus bundling.
+
+### Sharing Jinja between templates (`gb-include`)
+
+gbserver fills each launcher string (`setup:`, `run:`, …) as its own template, with
+no `{% import %}` or `{% include %}`, so a macro defined in `setup:` is not visible in
+`run:`. To write a macro once, put it in a file and pull it into each block with a
+marker line:
+
+```yaml
+          run: |
+            set -euo pipefail
+            {#- gb-include ../../shared/trainer_args.j2 -#}
+            {#- gb-include macros/validate.j2 -#}
+```
+
+The render replaces each marker line with the file's lines, indented like the marker,
+so the published `step.yaml` is self-contained and gbserver sees ordinary inline
+macros. The rules:
+
+* The marker is a whole line, `{#- gb-include <path> -#}`, indented with spaces. A
+  line that starts with `{#` and `gb-include` in any other form fails the render, so a
+  typo can't pass as a plain Jinja comment. (An unexpanded marker is just a comment,
+  and the strict fill would then fail on the undefined macro.)
+* `<path>` is relative to the file holding the marker and must resolve, after
+  symlinks, to a file under `steps/`.
+* Included files hold Jinja only (macros and comments) and can't include other files.
+  Keep them out of `src/`, so they are never shipped or Jinja-rendered by gbserver:
+  a step's own go in `macros/`, files shared by several steps in
+  `steps/<category>/shared/`.
+* Editing a shared file changes every step that includes it: re-run
+  `make publish-step` in each and commit the regenerated `step.yaml`s.
 
 ## Referencing a generated step from a build.yaml
 
