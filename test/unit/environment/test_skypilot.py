@@ -876,8 +876,10 @@ class TestLaunchSkypilot:
         [
             # An explicit size wins over the floor, so probing would be wasted.
             ("8", "8"),
-            # `memory: 0` omits --mem (SkyPilot allows 0 on Slurm).
+            # `memory: 0` omits --mem (SkyPilot allows 0 on Slurm). YAML parses a
+            # bare `memory: 0` to an int, so cover both forms.
             ("0", "0"),
+            (0, 0),
             # `memory: null` drops the step memory; SkyPilot applies its own
             # default.
             (None, None),
@@ -886,8 +888,8 @@ class TestLaunchSkypilot:
     async def test_slurm_explicit_memory_override_skips_probe(
         self, skypilot_env, memory, expected
     ):
-        """Any `resources.memory` key (a size or null) overrides the floor, so
-        the cluster isn't probed and sky.Resources gets the override as-is."""
+        """Any `resources.memory` key (a size, 0, or null) overrides the floor,
+        so the cluster isn't probed and sky.Resources gets the override as-is."""
         with patch("gbserver.environment.skypilot._slurm_tracks_memory") as probe:
             kwargs = await self._launch_and_capture_resources(
                 skypilot_env,

@@ -180,7 +180,7 @@ the LoRA adapters in `answerability-lora/`.
 | `LORA_R` / `LORA_ALPHA` / `LEARNING_RATE` | `16` / `32` / `5e-5` | Adapter rank, scale and learning rate. |
 | `ADAPTER_ROOT` | `/proj/data-eng/llmb-read-write/touma/adapters` | Shared, so the adapter survives teardown. Each method gets its own subdirectory, `answerability-lora/` or `answerability-alora/`, so a LoRA and an aLoRA run with the same `RUN_ID` don't collide. |
 | `ACCELERATORS` | `H200:4` | DDP over 4 GPUs. Effective batch 4 × 1 × 8 = 32. |
-| `MEMORY` | `512` | Host GiB for `train`. On SLURM, gbserver drops `compute_config` memory. |
+| `MEMORY` | `512` | Host GiB for `train`, set as `resources.memory` so it wins on every cluster. |
 | `NUM_TRAIN_EPOCHS` / `MAX_STEPS` | `3` / `-1` | A positive `MAX_STEPS` caps the run. |
 | `CLEARML` | `false` | `true` turns tracking on and declares space secrets `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY`, which must exist. |
 

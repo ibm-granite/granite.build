@@ -253,7 +253,8 @@ granite.build:
               resources:
                 # H200 is the only GPU bluevela schedules (its constraint).
                 accelerators: "$${ACCELERATORS}"
-                # gbserver drops compute_config memory on slurm; bare GiB string.
+                # Explicit memory wins over compute_config on every cluster; bare
+                # GiB string.
                 memory: "$${MEMORY}"
               envs:
                 PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"

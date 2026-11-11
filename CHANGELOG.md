@@ -284,8 +284,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CR_CPU`/`CR_Core` clusters and LSF are unchanged. **Behavior change:** on a memory-tracking
   cluster a step now requests its declared memory, so one that declares more than the partition
   allows sits PENDING instead of running. Set `resources.memory` to override it per step
-  (`memory: 0` omits `--mem`). The BlueVela environment's `resources: { memory: 8 }` stopgap for hfpull/hfpush is
-  removed. See
+  (`memory: 0` omits `--mem`). The BlueVela environment's `resources: { memory: 8 }` stopgap
+  for hfpull/hfpush is removed. See
   [skypilot-slurm.md](docs/environments/skypilot-slurm.md#step-memory-total_memory_per_node).
 - **K8s steps no longer fail for email usernames (ibmid auth) (#630).** The gbstep chart rendered
   `run_metadata.username` verbatim as a label, so the API server rejected the AppWrapper.

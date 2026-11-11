@@ -3483,10 +3483,11 @@ class Skypilot(Environment):
         the merge, so it skips the probe too: a size is sent as-is, ``0``
         omits ``--mem`` (SkyPilot allows 0 on Slurm), and ``memory: null``
         drops the step memory so SkyPilot applies its own default (1 GB per
-        CPU, or 4 GB per CPU with GPUs, on a memory-tracking cluster). Every other launch skips the SSH round-trip.
-        Must run after the cluster's SSH config is materialized. The probe runs
-        on the dedicated SkyPilot pool (``_sky_submit_to_thread``), so a stuck
-        one can't hold a slot in the loop's shared pool, and is bounded by
+        CPU, or 4 GB per CPU with GPUs, on a memory-tracking cluster). Every
+        other launch skips the SSH round-trip. Must run after the cluster's
+        SSH config is materialized. The probe runs on the dedicated SkyPilot
+        pool (``_sky_submit_to_thread``), so a stuck one can't hold a slot in
+        the loop's shared pool, and is bounded by
         ``_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS`` (SkyPilot runs it with no SSH
         timeout). A timeout fails safe to ``False``. SkyPilot's catalog may
         then run the same ``scontrol`` check itself, uncapped, inside
