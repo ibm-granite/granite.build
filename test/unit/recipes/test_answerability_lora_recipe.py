@@ -17,12 +17,13 @@
 """Unit tests for the granite-switch answerability-lora recipe.
 
 The recipe is rendered with its parameters and then through hf-peft-sft's own
-step-template blocks with the strict renderer, so a config error that would fail
-the build at step creation fails here instead. The prepare target's command is
+expanded step-template blocks with the strict renderer, so a config error that
+would fail the build at step creation fails here instead. The prepare target's command is
 rendered the way the command step renders it and run on a small parquet with
 the schema of the HF source (pre-tokenized columns next to prompt/completion).
 """
 
+import importlib.util
 import pathlib
 import subprocess
 
@@ -45,7 +46,18 @@ _RECIPE = (
     / "answerability-lora"
 )
 _STEP = _REPO / "steps" / "train" / "hf-peft-sft" / "skypilot"
-_TEMPLATE = yaml.safe_load((_STEP / "step-template.yaml").read_text())
+
+
+def _expanded_template() -> dict:
+    """The template as `make space` renders it: gb-include lines expanded."""
+    script = _REPO / "steps" / "scripts" / "render_step_template.py"
+    spec = importlib.util.spec_from_file_location("render_step_template", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return yaml.safe_load(module.expand(_STEP / "step-template.yaml"))
+
+
+_TEMPLATE = _expanded_template()
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
     "config"
 ]
