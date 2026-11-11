@@ -277,10 +277,13 @@ _TRANSIENT_ERROR_NAMES = frozenset(
         "DisconnectionError",
         "TimeoutError",
         "ConnectionError",
-        # requests' base class, for its connection errors and timeouts (not the
-        # builtins'). An HTTPError is one too, but carries a status, which
-        # decides first.
-        "RequestException",
+        # requests' timeouts (ReadTimeout, ConnectTimeout) and a body cut off
+        # mid-stream. requests.ConnectionError already matches "ConnectionError"
+        # by its class hierarchy; an HTTPError carries a status, which decides
+        # first. Not "RequestException": that base class would also make a
+        # malformed body, an invalid URL or a redirect loop transient forever.
+        "Timeout",
+        "ChunkedEncodingError",
     }
 )
 # Not "CommError": W&B wraps every failure in one, a GraphQL error returned with

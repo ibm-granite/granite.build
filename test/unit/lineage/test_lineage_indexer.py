@@ -1343,6 +1343,13 @@ def _http_error(status):
         (CommError("Read timed out", requests.exceptions.ReadTimeout()), True),
         (CommError("x", requests.exceptions.ConnectionError("refused")), True),
         (CommError("x", requests.exceptions.ChunkedEncodingError()), True),
+        (CommError("x", requests.exceptions.ConnectTimeout()), True),
+        # Any other requests error without a status is the job's, raw or wrapped.
+        (CommError("x", requests.exceptions.JSONDecodeError("bad", "", 0)), False),
+        (requests.exceptions.JSONDecodeError("bad", "", 0), False),
+        (requests.exceptions.InvalidURL("bad"), False),
+        (CommError("x", requests.exceptions.TooManyRedirects()), False),
+        (requests.exceptions.ReadTimeout(), True),
         # A GraphQL error W&B returns with a 200 is the run's own failure.
         (CommError("permission denied", Exception("permission denied")), False),
         (CommError("project not found", Exception("project not found")), False),
