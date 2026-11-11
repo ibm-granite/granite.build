@@ -10,7 +10,7 @@ requires-python = ">=3.10,<4.0"
 license = "Apache-2.0"
 authors = [{ name = "IBM Research" }]
 dependencies = [
-  "fastapi==0.141.1",
+  "fastapi==0.144.0",
   "pydantic==2.11.10",
   "uvicorn==0.52.2",
   "SQLAlchemy>=2.0",
