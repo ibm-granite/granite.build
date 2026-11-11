@@ -999,7 +999,7 @@ def test_wandb_api_is_fresh_per_scan(monkeypatch):
     fake.login.assert_called_once()
 
 
-def test_row_storage_error_propagates_instead_of_advancing():
+def test_index_storage_error_propagates_instead_of_advancing():
     from gbserver.lineage.index_writer import LineageIndexWriter
 
     rows = MagicMock()
