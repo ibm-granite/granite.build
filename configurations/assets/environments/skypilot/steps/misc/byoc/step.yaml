@@ -82,14 +82,19 @@ environment_configs:
             # run puts $GIT_PREFIX/bin on PATH again.
             GIT_PREFIX="$(pwd)/.byoc-git"
             PATH="$GIT_PREFIX/bin:$PATH"
+            # Called only as an `if` condition, where bash ignores set -e: every
+            # step in here must check its own result.
             byoc_install_git() {
+              # A git left here by an earlier attempt comes first on PATH and
+              # would hide whatever this attempt installs.
+              rm -rf "$GIT_PREFIX"
               if command -v conda >/dev/null 2>&1; then
                 # conda's package cache and cache dir go to a scratch dir (the
                 # image's may be root-owned, and HOME is / under enroot), which
                 # is removed whatever the result. HOME itself is kept, so
                 # ~/.condarc and ~/.netrc (proxies, mirrors) still apply.
                 CONDA_SCRATCH="$(pwd)/.byoc-git-scratch"
-                rm -rf "$GIT_PREFIX" "$CONDA_SCRATCH"
+                rm -rf "$CONDA_SCRATCH"
                 if CONDA_PKGS_DIRS="$CONDA_SCRATCH/pkgs" XDG_CACHE_HOME="$CONDA_SCRATCH/cache" \
                     conda create -y -q -p "$GIT_PREFIX/env" -c conda-forge --override-channels git; then
                   rm -rf "$CONDA_SCRATCH"
@@ -114,7 +119,7 @@ environment_configs:
                 echo "byoc: there is no apt-get, dnf or microdnf to install git with" >&2
                 return 1
               fi || {
-                echo "byoc: the package manager could not install git; a container that is root in name only (e.g. enroot --container-remap-root) cannot run it" >&2
+                echo "byoc: the package manager could not install git (no access to the distro mirrors, or root in name only such as enroot --container-remap-root)" >&2
                 return 1
               }
             }

@@ -121,6 +121,13 @@ class _Node:
     """A workdir plus a PATH holding only the given tools."""
 
     def __init__(self, tmp_path: pathlib.Path, tools=(), uid: int = 1000):
+        """Lay out the workdir, the PATH dir and the call trace under *tmp_path*.
+
+        :param tools: tool stubs to put on PATH: ``git`` and ``conda`` get their
+            own stubs, any other name (``apt-get``, ``dnf``, ``microdnf``) a
+            package manager that installs git. A tool not listed is absent.
+        :param uid: what ``id -u`` reports; 0 makes the container root.
+        """
         self.work = tmp_path / "work"
         self.work.mkdir()
         self.bin = tmp_path / "bin"
@@ -304,6 +311,19 @@ def test_a_broken_git_left_by_an_earlier_attempt_is_reinstalled(tmp_path):
     assert len(node.calls("conda")) == 1
     assert node.clone_git() == node.installed_git
     assert leftover.read_text() == node.git_stub.read_text()
+
+
+def test_a_broken_leftover_git_does_not_hide_a_package_manager_git(tmp_path):
+    """The leftover .byoc-git/bin comes first on PATH; when the package manager
+    installs git instead of conda, the leftover must not shadow it."""
+    node = _Node(tmp_path, tools=("apt-get",), uid=0)
+    leftover = node.work / ".byoc-git" / "bin" / "git"
+    leftover.parent.mkdir(parents=True)
+    node.write(leftover, _BROKEN_GIT)
+    proc = node.run(_render("setup", **_SETUP))
+    assert proc.returncode == 0, proc.stderr
+    assert node.clone_git() == str(node.bin / "git")
+    assert not (node.work / ".byoc-git").exists()
 
 
 @pytest.mark.parametrize("manager", ["apt-get", "dnf", "microdnf"])
