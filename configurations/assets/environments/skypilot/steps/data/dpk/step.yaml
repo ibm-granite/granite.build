@@ -11,7 +11,8 @@ config:
     # Every DPK transform exposes dpk_<name>.runtime (a PythonTransformLauncher),
     # and data-prep-toolkit-transforms declares one pip extra per transform, so
     # both rules hold for any transform — including ones added upstream later,
-    # with no change to this step.
+    # with no change to this step. (`pip_constraints` below bounds dependency
+    # versions for every transform alike; it holds no per-transform list.)
     # REQUIRED: the step runs exactly one DPK transform.
     transform: ""
     # DPK release installed for `transform`. Ignored when `dpk_image` is set (the
@@ -130,6 +131,27 @@ config:
     # this is an escape hatch for an upstream change rather than a routine setting.
     module: ""
     pip_index_url: "https://pypi.org/simple"
+    # Version constraints for the bare-node install, one specifier per entry,
+    # written to a constraints file and passed to `uv pip install --constraint`.
+    # A constraint only bounds a package the transform's extra already pulls in;
+    # it never adds one. Ignored when `dpk_image` is set (nothing is installed).
+    #
+    # Setting this REPLACES the default rather than adding to it (step config
+    # lists are replaced wholesale on merge), so a build that adds its own entry
+    # must keep "pyarrow<26" itself if it still needs it. [] or null means no
+    # constraints.
+    #
+    # Default "pyarrow<26" (#653): pyarrow 26 (2026-10-09) refuses to import
+    # under NumPy 1.x but declares no numpy requirement, so the resolver can pair
+    # it with the numpy<2 that several DPK extras pin (pii-redactor, fdedup,
+    # docling2parquet and others), and the transform then dies on
+    # `import pyarrow`. It applies to every transform, which is safe: with it,
+    # every extra of DPK 1.1.7 and 1.1.8 still resolves (to pyarrow 25.x), and
+    # pyarrow 25 works under both NumPy 1.26 and 2.x. Drop it once the DPK
+    # release in use allows NumPy 2 for every extra, or override it if a future
+    # release needs pyarrow>=26.
+    pip_constraints:
+      - "pyarrow<26"
     # Container image to run the transform in, from ANY registry (quay.io,
     # us.icr.io, a private one). Give the plain reference — the step adds
     # SkyPilot's `docker:` scheme marker, which tells SkyPilot this is a container
@@ -256,23 +278,15 @@ environment_configs:
             {#- The transform's own pip extra, derived from its name. That extra is
                 the WHOLE dependency set: DPK declares one per transform precisely so
                 a build never lists dependencies itself. The pure-python runtime needs
-                nothing beyond it — no `ray` extra, because this step has no Ray mode. #}
-            {%- set extra = t | replace("_", "-") %}
-            {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ extra ~ "]==" ~ config.dpk_config.dpk_version)
+                nothing beyond it — no `ray` extra, because this step has no Ray mode.
+                pip_constraints may bound the versions it resolves, never add to it. #}
+            {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ (t | replace("_", "-")) ~ "]==" ~ config.dpk_config.dpk_version)
                               if t
                               else "" %}
-            {#- pyarrow 26 (2026-10-09) refuses to import under NumPy 1.x, but declares
-                no numpy requirement, so nothing stops the resolver pairing it with one
-                (#653). These are the transform extras whose DPK 1.1.8 deps cap numpy
-                below 2 — found by resolving all 50 extras with
-                `uv pip compile --python-version 3.12 --python-platform x86_64-unknown-linux-gnu`;
-                the group extras all/code/language/images are capped too, but no transform
-                name maps to them. Every other extra resolves numpy 2 and is left alone.
-                Scoped rather than global by choice. Remove an entry once that extra
-                allows numpy 2 in the dpk_version this step defaults to. #}
-            {%- set numpy1_extras = ["code-profiler", "doc-chunk", "docling2parquet", "faces",
-                                     "fdedup", "nsfw", "people", "pii-redactor"] %}
-            {%- set pins = ["pyarrow<26"] if (t and extra in numpy1_extras) else [] %}
+            {#- pip_constraints (see its comment in `config`). null means none, like
+                []; a bare string is one constraint, not a list of characters. #}
+            {%- set pc = config.dpk_config.pip_constraints %}
+            {%- set constraints = [] if pc is none else ([pc] if pc is string else pc) %}
             # The dependency install is delegated to the bundled src/dpk_setup.sh
             # (file-mounted at ./src). Safe from `setup` because SkyPilot syncs
             # file mounts first: its stage order is PROVISION -> SYNC_WORKDIR ->
@@ -280,11 +294,12 @@ environment_configs:
             # header for the uv/UV_CACHE_DIR rationale, and dpk_run.sh's for why
             # the shell lives in scripts rather than inline.
             #
-            # Jinja computes only the VALUES: the venv path, the index, and the
-            # pip requirements, passed as real argv after `--` so a specifier
-            # containing "[extra]" needs no shell re-quoting.
+            # Jinja computes only the VALUES: the venv path, the index, one
+            # --constraint per pip_constraints entry, and the pip requirements,
+            # passed as real argv after `--` so a specifier containing "[extra]"
+            # needs no shell re-quoting.
             #
-            # Both values are escaped for the single quotes they sit inside, the same
+            # Every value is escaped for the single quotes it sits inside, the same
             # way and for the same reason as everything in the `run` block: a quote in
             # author-supplied config closes its quoting early and a backtick after it
             # then runs as a command on the node. Every config value is escaped, with
@@ -294,7 +309,10 @@ environment_configs:
             bash ./src/dpk_setup.sh \
               --venv ./venv \
               --index-url '{{ q(config.dpk_config.pip_index_url) }}' \
-              --{% if dpk_req %} '{{ q(dpk_req) }}'{% endif %}{% for p in pins %} '{{ q(p) }}'{% endfor %}
+              {%- for c in constraints %}
+              --constraint '{{ q(c) }}' \
+              {%- endfor %}
+              --{% if dpk_req %} '{{ q(dpk_req) }}'{% endif %}
             {%- endif %}
           # run starts in the same working directory as setup, so ./venv and
           # ./src are both relative.
