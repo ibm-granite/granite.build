@@ -2,7 +2,7 @@
 
 Requires XlsxWriter (BSD-2-Clause): `pip install -r requirements.txt` next to this file.
 A cell holding exactly one link becomes a clickable hyperlink; a cell with several links
-(e.g. tune/fm-tune's bash + skypilot READMEs) shows their labels and lists the URLs in a
+(e.g. train/fm-tune's bash + skypilot READMEs) shows their labels and lists the URLs in a
 cell comment, since Excel allows only one hyperlink per cell.
 """
 
