@@ -194,6 +194,7 @@ def _flow_cookie(
     omit_verifier: bool = False,
     omit_exp: bool = False,
     exp: int | None = None,
+    return_to: str | None = None,
 ) -> str:
     """Build an ``oauth_flow`` JWT directly, bypassing ``/login``.
 
@@ -213,6 +214,8 @@ def _flow_cookie(
         claims["exp"] = exp if exp is not None else int((now + timedelta(minutes=5)).timestamp())
     if not omit_verifier:
         claims["verifier"] = "expected-verifier"
+    if return_to is not None:
+        claims["return_to"] = return_to
     return jwt.encode(claims, secret, algorithm="HS256")
 
 
@@ -933,3 +936,211 @@ async def test_a_login_by_a_caller_with_no_users_row_still_completes(
 
     assert response.status_code == HTTPStatus.FOUND
     assert "session" in response.cookies
+
+
+# --- /auth/login?return_to= -------------------------------------------------
+
+GB_UI_ORIGIN = "https://dashboard.invalid"
+
+
+async def _login_and_callback(client: AsyncClient, **params: str) -> httpx.Response:
+    """Run ``/auth/login`` with ``params``, then ``/auth/callback``; return the callback."""
+    login = await client.get("/auth/login", params=params, follow_redirects=False)
+    state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+    return await client.get(
+        "/auth/callback", params={"code": "auth-code", "state": state}, follow_redirects=False
+    )
+
+
+async def test_callback_redirects_to_public_base_url_when_no_return_to_was_given(
+    bff_client: AsyncClient,
+) -> None:
+    response = await _login_and_callback(bff_client)
+
+    assert response.status_code == HTTPStatus.FOUND
+    assert response.headers["location"] == PUBLIC_BASE_URL
+
+
+@pytest.mark.parametrize("return_to", [f"{GB_UI_ORIGIN}/dashboard", "https://["])
+async def test_return_to_is_ignored_when_no_origin_is_allowlisted(
+    bff_client: AsyncClient, return_to: str
+) -> None:
+    """The allowlist is ``cors_allow_origins``; empty (the default) allows nothing."""
+    response = await _login_and_callback(bff_client, return_to=return_to)
+
+    assert response.status_code == HTTPStatus.FOUND
+    assert response.headers["location"] == PUBLIC_BASE_URL
+
+
+async def test_return_to_with_no_allowlist_logs_below_warning(
+    bff_client: AsyncClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The empty default is routine; a UI that always sends return_to must not spam WARNING."""
+    with caplog.at_level(logging.DEBUG, logger="autotunex"):
+        await bff_client.get(
+            "/auth/login", params={"return_to": f"{GB_UI_ORIGIN}/x"}, follow_redirects=False
+        )
+
+    records = [r for r in caplog.records if "return_to" in r.getMessage()]
+    assert records
+    assert all(r.levelno < logging.WARNING for r in records)
+
+
+def _allowlisted_settings(*origins: str) -> Settings:
+    return make_settings(
+        auth_providers=["session"],
+        oidc_issuer=ISSUER,
+        oidc_jwks_uri="https://unused.invalid/jwks",
+        oidc_audience=AUDIENCE,
+        oidc_client_id=AUDIENCE,
+        oidc_client_secret=CLIENT_SECRET,
+        oidc_authorization_endpoint=AUTHORIZATION_ENDPOINT,
+        oidc_token_endpoint=TOKEN_ENDPOINT,
+        public_base_url=PUBLIC_BASE_URL,
+        session_secret=SESSION_SECRET,
+        cors_allow_origins=list(origins),
+    )
+
+
+class TestReturnToWithAnAllowlistedOrigin:
+    @pytest.fixture
+    def settings(self) -> Settings:
+        return make_settings(
+            auth_providers=["session"],
+            oidc_issuer=ISSUER,
+            oidc_jwks_uri="https://unused.invalid/jwks",
+            oidc_audience=AUDIENCE,
+            oidc_client_id=AUDIENCE,
+            oidc_client_secret=CLIENT_SECRET,
+            oidc_authorization_endpoint=AUTHORIZATION_ENDPOINT,
+            oidc_token_endpoint=TOKEN_ENDPOINT,
+            public_base_url=PUBLIC_BASE_URL,
+            session_secret=SESSION_SECRET,
+            cors_allow_origins=[GB_UI_ORIGIN],
+        )
+
+    @pytest.mark.parametrize(
+        "return_to",
+        [
+            GB_UI_ORIGIN,
+            f"{GB_UI_ORIGIN}/dashboard/autotunex?tab=jobs#top",
+        ],
+    )
+    async def test_callback_redirects_to_an_allowlisted_return_to(
+        self, bff_client: AsyncClient, return_to: str
+    ) -> None:
+        response = await _login_and_callback(bff_client, return_to=return_to)
+
+        assert response.status_code == HTTPStatus.FOUND
+        assert response.headers["location"] == return_to
+        assert "session" in response.cookies
+
+    @pytest.mark.parametrize(
+        "return_to",
+        [
+            "https://DASHBOARD.invalid/x",
+            "https://dashboard.invalid:443/x",
+        ],
+    )
+    async def test_callback_accepts_another_spelling_of_the_allowlisted_origin(
+        self, bff_client: AsyncClient, return_to: str
+    ) -> None:
+        """A browser treats these as the allowlisted origin, so this must too."""
+        response = await _login_and_callback(bff_client, return_to=return_to)
+
+        assert response.headers["location"] == return_to
+
+    async def test_callback_redirects_to_the_url_it_validated_not_the_raw_string(
+        self, bff_client: AsyncClient
+    ) -> None:
+        """``urlsplit`` drops tabs and newlines, so the raw string is not what was checked."""
+        response = await _login_and_callback(
+            bff_client, return_to=f"{GB_UI_ORIGIN}/a\r\nSet-Cookie: x=1"
+        )
+
+        assert response.headers["location"] == f"{GB_UI_ORIGIN}/aSet-Cookie:%20x=1"
+        assert [v.split("=", 1)[0] for v in response.headers.get_list("set-cookie")] == [
+            "oauth_flow",
+            "session",
+        ]
+
+    @pytest.mark.parametrize(
+        "return_to",
+        [
+            "https://evil.invalid/dashboard",
+            # Allowlisted origin as a prefix of a different host.
+            "https://dashboard.invalid.evil.invalid/",
+            # Allowlisted host as userinfo; the real host is evil.invalid.
+            "https://dashboard.invalid@evil.invalid/",
+            "http://dashboard.invalid/",
+            "https://dashboard.invalid:8443/",
+            "//evil.invalid/",
+            "/dashboard",
+            "javascript:alert(1)",
+            "",
+            # Userinfo on the allowlisted host itself.
+            "https://user@dashboard.invalid/",
+            # `urlsplit` (or its port parsing) raises on these; they must
+            # fall back, not 500.
+            "https://[",
+            "https://dashboard.invalid]/",
+            "https://dashboard.invalid:99999/",
+            # Non-ASCII (rejected before parsing) or over the length cap.
+            "https://dashboard\uff0finvalid/",
+            f"{GB_UI_ORIGIN}/caf\u00e9",
+            f"{GB_UI_ORIGIN}/" + "a" * 1024,
+        ],
+    )
+    async def test_callback_ignores_a_return_to_outside_the_allowlist(
+        self, bff_client: AsyncClient, return_to: str
+    ) -> None:
+        response = await _login_and_callback(bff_client, return_to=return_to)
+
+        assert response.status_code == HTTPStatus.FOUND
+        assert response.headers["location"] == PUBLIC_BASE_URL
+
+    async def test_a_rejected_return_to_is_logged_without_its_value(
+        self, bff_client: AsyncClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            await bff_client.get(
+                "/auth/login",
+                params={"return_to": "https://evil.invalid/x"},
+                follow_redirects=False,
+            )
+
+        assert "return_to" in caplog.text
+        assert "evil.invalid" not in caplog.text
+
+    async def test_callback_rechecks_return_to_against_the_current_allowlist(
+        self, app: FastAPI, bff_client: AsyncClient
+    ) -> None:
+        """An origin removed from the allowlist stops receiving logins already in flight."""
+        login = await bff_client.get(
+            "/auth/login", params={"return_to": f"{GB_UI_ORIGIN}/x"}, follow_redirects=False
+        )
+        state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+        app.dependency_overrides[get_settings] = lambda: _allowlisted_settings()
+
+        response = await bff_client.get(
+            "/auth/callback", params={"code": "auth-code", "state": state}, follow_redirects=False
+        )
+
+        assert response.status_code == HTTPStatus.FOUND
+        assert response.headers["location"] == PUBLIC_BASE_URL
+
+    async def test_callback_ignores_a_signed_return_to_outside_the_allowlist(
+        self, bff_client: AsyncClient
+    ) -> None:
+        bff_client.cookies.set(
+            "oauth_flow", _flow_cookie(state="expected-state", return_to="https://evil.invalid/")
+        )
+
+        response = await bff_client.get(
+            "/auth/callback",
+            params={"code": "auth-code", "state": "expected-state"},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == HTTPStatus.FOUND
+        assert response.headers["location"] == PUBLIC_BASE_URL
