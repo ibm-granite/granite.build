@@ -247,3 +247,35 @@ describe('mergeElkGraphs across grouped and ungrouped responses', () => {
     assert.deepEqual(runIds(out).sort(), ['run:J9', 'runs:a → b'])
   })
 })
+
+describe('expansionErrorMessage', () => {
+  let expansionErrorMessage
+  before(async () => {
+    ;({ expansionErrorMessage } = await import(
+      path.join(ROOT, '../../packages/ui-core/components/LineageGraph/indexGraph.ts')
+    ))
+  })
+  const httpError = (status, detail, headers = {}) =>
+    Object.assign(new Error(`Request failed with status code ${status}`), { response: { status, data: { detail }, headers } })
+  const depthCap = { 'x-lineage-error-code': 'depth_limit' }
+
+  it('names the depth cap by its error code, keeping the server detail', () => {
+    assert.equal(expansionErrorMessage(httpError(422, 'depth must be at most 20', depthCap)), 'Expansion depth limit reached (depth must be at most 20)')
+    assert.equal(expansionErrorMessage(httpError(422, 'the cap is 20', depthCap)), 'Expansion depth limit reached (the cap is 20)')
+    // Without the code, wording alone no longer names the cap.
+    assert.equal(expansionErrorMessage(httpError(422, 'depth must be at most 20')), 'depth must be at most 20')
+    assert.equal(expansionErrorMessage(httpError(422, [{ msg: 'x' }])), 'Invalid lineage request')
+  })
+
+  it('prefers another 422 string detail as is', () => {
+    assert.equal(expansionErrorMessage(httpError(422, 'One of uri, job_id or job_ids must be provided')), 'One of uri, job_id or job_ids must be provided')
+  })
+
+  it('asks to retry on a 503', () => {
+    assert.equal(expansionErrorMessage(httpError(503, 'The lineage index could not be read')), 'Lineage index temporarily unavailable, try again')
+  })
+
+  it('falls back to the error message', () => {
+    assert.equal(expansionErrorMessage(new Error('Network Error')), 'Network Error')
+  })
+})

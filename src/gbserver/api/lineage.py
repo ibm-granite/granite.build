@@ -50,6 +50,10 @@ _SEARCH_SCAN_BACKEND_PAGE_SIZE = 100
 _SEARCH_SCAN_MAX_BACKEND_ITEMS = 2000
 # The deepest walk a caller who is not a super admin may ask for on /graph.
 _USER_MAX_DEPTH = 20
+# Response header naming why a lineage request was refused, so a client can tell
+# the depth cap apart without parsing the human-readable ``detail``.
+LINEAGE_ERROR_CODE_HEADER = "X-Lineage-Error-Code"
+DEPTH_LIMIT_ERROR_CODE = "depth_limit"
 # The same cap LineageQueryRequest.job_ids applies to the graph.
 _MAX_JOB_IDS = 1000
 
@@ -431,6 +435,7 @@ def query_lineage_graph(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"depth must be at most {_USER_MAX_DEPTH}",
+                headers={LINEAGE_ERROR_CODE_HEADER: DEPTH_LIMIT_ERROR_CODE},
             )
         if (body.max_nodes_per_level or 0) > DEFAULT_MAX_NODES_PER_LEVEL:
             raise HTTPException(
