@@ -211,7 +211,8 @@ def _run_standalone(
     #    issues on macOS: uvloop's SIGCHLD handling doesn't work in non-main threads,
     #    causing BuildRunner's process.communicate() to hang indefinitely.
     config = uvicorn.Config(
-        "gbserver.api.root_api:root_api",
+        "gbserver.api.app_factory:create_app",
+        factory=True,
         port=port,
         host=host,
         workers=1,

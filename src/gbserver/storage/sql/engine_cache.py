@@ -1,5 +1,6 @@
 import atexit
 import threading
+from typing import Callable
 
 from sqlalchemy import Engine, create_engine
 
@@ -39,15 +40,21 @@ class EngineCache(object):
 
     def dispose_all(self):
         """Registered atexit handler to dispose all engines on exit."""
+        self.dispose_matching(lambda engine: True)
+
+    def dispose_matching(self, predicate: Callable[[Engine], bool]):
+        """Dispose and drop the cached engines for which predicate(engine) is true."""
         with self.lock:
-            for engine in self.engines.values():
+            for key, engine in list(self.engines.items()):
+                if not predicate(engine):
+                    continue
                 try:
                     logger.info(f"Begin disposing of engine: {engine}")
                     engine.dispose()
                     logger.info(f"Done disposing of engine: {engine}")
                 except Exception as e:
                     logger.error(f"Error disposing engine: {engine} - {e}")
-            self.engines = {}
+                del self.engines[key]
 
 
 __Singleton_EngineCache = EngineCache()

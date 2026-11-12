@@ -145,7 +145,8 @@ def cli(
         # inherit the logging configuration
         # "host" is needed to make the server listen outside localhost
         uvicorn.run(
-            "gbserver.api.root_api:root_api",
+            "gbserver.api.app_factory:create_app",
+            factory=True,
             port=port,
             host="0.0.0.0",
             workers=GBSERVER_REST_SERVER_WORKERS,

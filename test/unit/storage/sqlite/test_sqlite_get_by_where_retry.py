@@ -38,6 +38,7 @@ import logging
 from unittest.mock import patch
 
 import pytest
+from libgbtest.utils import drop_test_table
 from sqlalchemy.exc import OperationalError
 
 from gbserver.storage.artifact_registration import ArtifactRegistration
@@ -52,16 +53,6 @@ _TENACITY_TIME = "tenacity.nap.time"
 logger = logging.getLogger(__name__)
 
 
-def _drop(storage):
-    # Each test has its own temp db (see _isolate_gb_home_dir), so a failed drop is harmless.
-    try:
-        storage.delete_table()
-    except Exception as e:
-        logger.warning(
-            f"Ignoring failed table deletion on {storage.get_table_name()}: {e}"
-        )
-
-
 @pytest.fixture
 def space_storage():
     storage = SqliteStorageFactory().create_space_storage(
@@ -69,7 +60,7 @@ def space_storage():
     )
     storage.add(StoredSpace(name="s1", git_repo_uri="file:///s1"))
     yield storage
-    _drop(storage)
+    drop_test_table(storage)
 
 
 @pytest.fixture
@@ -89,7 +80,7 @@ def artifact_registry():
             )
         )
     yield registry
-    _drop(registry)
+    drop_test_table(registry)
 
 
 def _fail_then_succeed(storage, failures):

@@ -53,17 +53,7 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def get_app() -> FastAPI:
-    app = FastAPI()
-    if True:
-        # perform an empty CLI call here just to let the work process go through the same init code in cli.py
-        from gbserver.cli import gbserver
-
-        gbserver(["rest-server-worker"], standalone_mode=False)
-    return app
-
-
-root_api = get_app()
+root_api = FastAPI()
 
 root_api.add_middleware(AuthMiddleware)  # type: ignore[arg-type]
 
@@ -230,6 +220,15 @@ async def _spa_fallback(
 @root_api.on_event("startup")
 async def _start_background_tasks():
     """Launch background tasks that run for the lifetime of the server."""
+    # Served directly (e.g. `uvicorn gbserver.api.root_api:root_api`) rather than
+    # through gbserver.api.app_factory:create_app or the CLI: run the process init
+    # here, before the first request, so standalone storage/auth, retries and
+    # logging are set up. A no-op when the process is already initialized (the
+    # usual paths, and unit tests, whose conftest marks the process initialized so
+    # their chosen storage factory is kept).
+    from gbserver.cli import ensure_process_initialized
+
+    ensure_process_initialized()
     if _ANALYTICS_ENABLED:
         from gb_ui_backend.main import init_analytics
 
