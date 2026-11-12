@@ -32,6 +32,8 @@ hf://[<host>/][<type>/]<owner>/<repo>[/<revision>[/<path_in_repo>]]
 | `revision` | `main` | Branch, tag, or commit SHA. |
 | `path_in_repo` | `""` (repo root) | Subpath within the repo. If present, `revision` must be explicit (otherwise the parser cannot tell revision from path). |
 
+No segment may be `.` or `..`. Such a URI is rejected as malformed, since the segments become local paths under the HF cache.
+
 ### Examples
 
 ```yaml

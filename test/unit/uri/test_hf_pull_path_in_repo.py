@@ -82,6 +82,38 @@ def test_local_path():
     assert bucket.local_path(dest) == dest
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "hf:///datasets/o/r/main/..",
+        "hf:///datasets/o/r/main/../../..",
+        "hf:///datasets/o/r/main/.",
+        "hf:///datasets/o/r/main/a/../../b",
+        "hf:///datasets/o/r/main/./x",
+        # owner/repo/revision are cache path segments too (Hfstore.get_relpath)
+        "hf:///datasets/../../main",
+        "hf:///o/r/..",
+        "hf:///buckets/o/b/../x",
+    ],
+)
+def test_dot_segments_are_rejected(uri):
+    # Each would bind a path outside (or the root of) the pull destination.
+    with pytest.raises(ValueError):
+        HfURI.parse(uri)
+
+
+def test_dot_segments_appended_after_parsing_are_rejected():
+    uri = HfURI.parse("hf:///datasets/o/r/main")
+    uri.append_path("./x")
+    with pytest.raises(ValueError):
+        uri.local_path(Path("/cache/o/r/main"))
+
+
+def test_dots_inside_segment_names_are_allowed():
+    uri = HfURI.parse("hf:///datasets/o.x/r..y/v1.0/a.b/..c/x..")
+    assert uri.local_path(Path("/d")) == Path("/d/a.b/..c/x..")
+
+
 def test_pull_filters_to_the_path_and_keeps_the_layout(tmp_path, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
 

@@ -686,6 +686,24 @@ class HfURI(URI):
         self.config = config or {}
         self.parts: Optional[_HfParts] = None
         super().__init__(uri, context, secrets, **kwargs)
+        # Fail at construction so build validation reports the URI as invalid.
+        if self.uri is not None:
+            self._reject_dot_segments()
+
+    def _reject_dot_segments(self) -> None:
+        """Refuse a URI with a ``.`` or ``..`` path segment.
+
+        Owner, repo, revision and path in the repo all become local path
+        segments (the pull destination and ``local_path``), so a ``..`` would
+        bind a directory outside the HF cache and a ``.`` the bare destination.
+        No valid HF repo, revision or repo file has such a segment.
+        """
+        assert self.uri is not None, "self.uri is None"
+        if {".", ".."} & set(self.uri.path.split("/")):
+            raise ValueError(
+                f"Malformed HF URI path {self.uri.path!r}: "
+                "'.' and '..' segments are not allowed"
+            )
 
     @staticmethod
     def get_supported_schemes() -> List[str]:
@@ -712,6 +730,8 @@ class HfURI(URI):
     def _parts(self) -> _HfParts:
         if self.parts:
             return self.parts
+        # Re-checked here: append_path can change the path after construction.
+        self._reject_dot_segments()
         assert self.uri is not None, "self.uri is None"
         parts = self.uri.path.strip("/").split("/")
         host = self.uri.netloc or HF_HOST  # default to huggingface.co if not provided
