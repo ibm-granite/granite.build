@@ -380,7 +380,8 @@ class TestADeadServerFailsItsTarget:
         assert rc == 1
 
     @pytest.mark.parametrize(
-        "sig, name, code", [(signal.SIGTERM, "SIGTERM", 143), (signal.SIGINT, "SIGINT", 130)]
+        "sig, name, code",
+        [(signal.SIGTERM, "SIGTERM", 143), (signal.SIGINT, "SIGINT", 130)],
     )
     @pytest.mark.parametrize("cap", [0, 60])
     def test_a_signal_while_serving_is_trapped(
@@ -423,7 +424,8 @@ class TestTrainerStopFile:
     teardown target, gated on the trainer's checkpoint, can never run."""
 
     @pytest.mark.parametrize(
-        "golden,values", [("defaults", {}), ("lifetime_cap", {"max_lifetime_seconds": 7200})]
+        "golden,values",
+        [("defaults", {}), ("lifetime_cap", {"max_lifetime_seconds": 7200})],
     )
     def test_empty_renders_byte_identical(self, run_script, golden, values):
         """The goldens were rendered from the template before stop_file existed, so a
@@ -493,8 +495,7 @@ class TestTrainerStopFile:
         )
         assert rc == 1
         assert (
-            _STOP_FATAL.format("tr-7; logit-distill rank 0 exited with status 1")
-            in err
+            _STOP_FATAL.format("tr-7; logit-distill rank 0 exited with status 1") in err
         )
         # Not the cap's message, nor the early-death one: the server was stopped.
         assert "lifetime cap of" not in err

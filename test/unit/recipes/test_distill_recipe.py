@@ -44,7 +44,9 @@ _PARAMS = _RECIPE / "parameters.yaml"
 _SMOKE = _RECIPE / "smoke.yaml"
 _SITE = _DISTILL / "site.example.yaml"
 _STEPS = _REPO / "steps"
-_SKYPILOT_STEPS = _REPO / "configurations" / "assets" / "environments" / "skypilot" / "steps"
+_SKYPILOT_STEPS = (
+    _REPO / "configurations" / "assets" / "environments" / "skypilot" / "steps"
+)
 
 _MODES = ("off-policy", "ramp", "on-policy")
 

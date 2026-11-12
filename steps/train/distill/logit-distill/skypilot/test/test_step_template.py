@@ -693,10 +693,16 @@ class TestPerCheckpointArtifacts:
         rendered = TestTrainDir._render(emit_checkpoint_artifacts=True)
         sentinels = re.search(r'RESUME_SENTINELS="([^"]+)"', rendered)
         assert sentinels
-        assert set(sentinels.group(1).split()) == {"tokenizer.json", "trainer_state.json"}
+        assert set(sentinels.group(1).split()) == {
+            "tokenizer.json",
+            "trainer_state.json",
+        }
         rule = rendered[rendered.index("resume_complete() {") :]
         rule = rule[: rule.index("\n}\n")]
-        assert '[ -f "$1/model.safetensors" ] || [ -f "$1/model.safetensors.index.json" ]' in rule
+        assert (
+            '[ -f "$1/model.safetensors" ] || [ -f "$1/model.safetensors.index.json" ]'
+            in rule
+        )
 
     def test_each_checkpoint_is_emitted_exactly_once(self, run_script):
         """Markers on disk, not a shell counter: emit_new_checkpoints also runs inside
@@ -1025,9 +1031,7 @@ class TestResumeFromCheckpointDir:
         assert "moved incomplete checkpoint-2500 aside" in result.stdout
         assert "resumes from checkpoint-2250" in result.stdout
 
-    def test_a_seeded_checkpoint_is_not_moved_aside_for_its_shard_count(
-        self, tmp_path
-    ):
+    def test_a_seeded_checkpoint_is_not_moved_aside_for_its_shard_count(self, tmp_path):
         """On a later attempt the move-aside meets the seeded checkpoints again.
         One whose name is complete in the source carries the source's shard count,
         not this run's, and is kept rather than logged as incomplete."""
@@ -1899,7 +1903,11 @@ class TestOneCompletenessRule:
         ]
 
     def test_the_watcher_calls_the_shared_rule(self):
-        for overrides in ({}, {"resume_from_checkpoint_dir": "/src"}, {"train_dir": "/t"}):
+        for overrides in (
+            {},
+            {"resume_from_checkpoint_dir": "/src"},
+            {"train_dir": "/t"},
+        ):
             rendered = TestTrainDir._render(emit_checkpoint_artifacts=True, **overrides)
             assert rendered.count("resume_complete() {") == 1, overrides
             body = rendered[rendered.index("emit_new_checkpoints() {") :]
@@ -1927,9 +1935,9 @@ class TestTrainingAlreadyDone:
         return (
             "set -eu\n"
             # The stub trainer records that it ran and saves one more checkpoint.
-            + "accelerate() {\n  touch \"$LAUNCHED\"\n"
+            + 'accelerate() {\n  touch "$LAUNCHED"\n'
             + '  c="$CKPT_DIR/checkpoint-99"; mkdir -p "$c"\n'
-            + '  for f in model.safetensors tokenizer.json trainer_state.json; do'
+            + "  for f in model.safetensors tokenizer.json trainer_state.json; do"
             + ' touch "$c/$f"; done\n}\n'
             + rendered[start:end]
             + "WATCH_PID=''\n"
@@ -1943,7 +1951,9 @@ class TestTrainingAlreadyDone:
             (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
         script = self._fragment(train_dir, **overrides)
         if rank != "0":
-            script = script.replace("-ge 900 ]", "-ge 1 ]").replace("sleep 5", "sleep 1")
+            script = script.replace("-ge 900 ]", "-ge 1 ]").replace(
+                "sleep 5", "sleep 1"
+            )
         return subprocess.run(
             ["bash", "-c", script],
             env={
@@ -1981,7 +1991,11 @@ class TestTrainingAlreadyDone:
 
     @pytest.mark.parametrize(
         "gold,top",
-        [({"stop_at_step": 10}, 10), ({"stop_at_step": 10}, 15), ({"max_steps": 15}, 15)],
+        [
+            ({"stop_at_step": 10}, 10),
+            ({"stop_at_step": 10}, 15),
+            ({"max_steps": 15}, 15),
+        ],
     )
     def test_rank_zero_skips_the_trainer_and_still_emits(self, tmp_path, gold, top):
         train = self._train(tmp_path, 5, top)
@@ -2027,7 +2041,11 @@ class TestTrainingAlreadyDone:
         [
             {"train_dir": "/t"},
             {"resume_from_checkpoint_dir": "/src"},
-            {"train_dir": "/t", "rollout_stop_file": "/s", "emit_checkpoint_artifacts": True},
+            {
+                "train_dir": "/t",
+                "rollout_stop_file": "/s",
+                "emit_checkpoint_artifacts": True,
+            },
         ],
     )
     def test_the_rendered_script_is_valid_shell(self, overrides):

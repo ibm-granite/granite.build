@@ -43,6 +43,7 @@ def _step_yaml(step: str) -> pathlib.Path:
     shared = SHARED / step / "step.yaml"
     return shared if shared.is_file() else LSF / step / "step.yaml"
 
+
 # (step, config section, config key, input, binding field, shell variable)
 CASES = [
     ("sage-eval", "sage_eval_config", "model_path", "model", "path", "MODEL_PATH"),

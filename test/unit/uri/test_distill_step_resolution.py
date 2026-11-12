@@ -143,7 +143,9 @@ def _resolve(env_dir: Path, name: str) -> Optional[str]:
     """The resolved step dir relative to configurations/assets, or None."""
     with SpaceURI.with_current_env(_env(env_dir)):
         try:
-            uri = URI.get_uri(f"space://steps/{name}", default_scheme="file", secrets={})
+            uri = URI.get_uri(
+                f"space://steps/{name}", default_scheme="file", secrets={}
+            )
         except ValueError:
             return None
     path = Path(uri.uri.path)  # type: ignore[union-attr]
