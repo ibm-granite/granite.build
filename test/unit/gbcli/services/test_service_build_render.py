@@ -39,7 +39,7 @@ def _write(dir_path: Path, text: str = "", name: str = "build.yaml") -> Path:
     return p
 
 
-# --- gb build describe --raw --param / --parameters-path ---
+# --- gb build describe --raw --param / --param-file ---
 
 
 def test_describe_raw_param_resolves(tmp_path):
@@ -180,7 +180,7 @@ def test_start_dry_run_writes_save_build_file(tmp_path, monkeypatch):
     assert "space://environments/k8s" in out
 
 
-# --- layered --parameters-path (issue #663) ---
+# --- layered --param-file ---
 
 
 def _layers(tmp_path: Path):
@@ -259,7 +259,7 @@ def test_describe_raw_missing_layer_reports_error(tmp_path):
     assert any("nope.yaml" in r for r in reasons)
 
 
-def test_cli_describe_accepts_repeated_parameters_path(tmp_path, monkeypatch):
+def test_cli_describe_accepts_repeated_param_file(tmp_path, monkeypatch):
     monkeypatch.setenv("GB_CONFIG", str(tmp_path / "gbcli"))
     bp = _write(tmp_path)
     site, smoke = _layers(tmp_path)
@@ -271,9 +271,9 @@ def test_cli_describe_accepts_repeated_parameters_path(tmp_path, monkeypatch):
             "-f",
             str(bp),
             "--raw",
-            "--parameters-path",
+            "--param-file",
             site,
-            "--parameters-path",
+            "--param-file",
             smoke,
             "--skip-version-check",
         ],
@@ -281,6 +281,47 @@ def test_cli_describe_accepts_repeated_parameters_path(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "name: demo-smoke" in result.output
     assert "space://environments/site" in result.output
+
+
+def test_cli_deprecated_parameters_path_still_works(tmp_path, monkeypatch):
+    # --parameters-path is a deprecated alias of --param-file; mixing the two
+    # keeps command-line order (smoke after site wins either way round).
+    monkeypatch.setenv("GB_CONFIG", str(tmp_path / "gbcli"))
+    bp = _write(tmp_path)
+    site, smoke = _layers(tmp_path)
+    runner = CliRunner()
+    for args in (
+        ["--parameters-path", site, "--parameters-path", smoke],
+        ["--parameters-path", site, "--param-file", smoke],
+        ["--param-file", site, "--parameters-path", smoke],
+    ):
+        result = runner.invoke(
+            build_cli,
+            ["describe", "-f", str(bp), "--raw", *args, "--skip-version-check"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "name: demo-smoke" in result.output
+        assert "space://environments/site" in result.output
+
+
+def test_describe_raw_bad_layer_blames_parameters_not_build_yaml(tmp_path):
+    bp = _write(tmp_path)
+    bad = _write(tmp_path, "- not\n- a mapping\n", name="bad.yaml")
+    events, cb = _recorder()
+    result = build_describe(
+        github_token="",
+        filename=str(bp),
+        format="yaml",
+        raw=True,
+        parameters_path=(str(bad),),
+        callback=cb,
+    )
+    assert result is None
+    errors = _errors(events)
+    assert len(errors) == 1, errors
+    assert errors[0].startswith("Error applying build parameters:")
+    assert "bad.yaml: parameters must be a mapping" in errors[0]
+    assert "is invalid" not in errors[0]
 
 
 def test_start_dry_run_layered_files(tmp_path, monkeypatch):
@@ -316,7 +357,7 @@ def test_start_dry_run_param_beats_every_file(tmp_path, monkeypatch):
     assert doc["granite.build"]["targets"]["t1"]["environment_uri"].endswith("/site")
 
 
-def test_cli_start_dry_run_accepts_repeated_parameters_path(tmp_path, monkeypatch):
+def test_cli_start_dry_run_accepts_repeated_param_file(tmp_path, monkeypatch):
     monkeypatch.setenv("GB_CONFIG", str(tmp_path / "gbcli"))
     monkeypatch.setenv("GB_CACHE", str(tmp_path / "cache"))
     bp = _write(tmp_path)
@@ -329,9 +370,9 @@ def test_cli_start_dry_run_accepts_repeated_parameters_path(tmp_path, monkeypatc
             "-f",
             str(bp),
             "--dry-run",
-            "--parameters-path",
+            "--param-file",
             site,
-            "--parameters-path",
+            "--param-file",
             smoke,
             "--skip-version-check",
         ],

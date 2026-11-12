@@ -49,7 +49,7 @@ Most-used group. Submit, monitor, and inspect builds.
 | `gb build update <build-id>` | Update description or tags. |
 | `gb build notification [on\|off]` | Toggle build notifications for the active space. |
 
-Common flags: `--param key=value` (repeatable), `--parameters-path <file>`
+Common flags: `--param key=value` (repeatable), `--param-file <file>`
 (repeatable; layered over the recipe's `parameters.yaml`, later files win; see
 [Layering parameter files](../builds/build-yaml-reference.md#layering-parameter-files)),
 `--tag <name>`, `--skip-validation`, `--format json`.

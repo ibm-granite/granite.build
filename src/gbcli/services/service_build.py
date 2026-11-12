@@ -1552,10 +1552,22 @@ def build_describe(
             # so re-applying params there is meaningless and, under
             # StrictUndefined, could spuriously fail on `$${...}`-looking text.
             if (params or parameters_path) and not build_id:
-                params_from_file = load_layered_params(
-                    str(build_yaml_path), parameters_path
-                )
-                params_dict = parse_params(list(params or []), params_from_file)
+                # A broken parameter file is not a broken build.yaml: report it
+                # the way `gb build start` does.
+                try:
+                    params_from_file = load_layered_params(
+                        str(build_yaml_path), parameters_path
+                    )
+                    params_dict = parse_params(list(params or []), params_from_file)
+                except Exception as e:
+                    if callback is not None:
+                        callback(
+                            callback_event="error",
+                            callback_args={
+                                "reason": f"Error applying build parameters: {e}."
+                            },
+                        )
+                    return None
                 with tempfile.TemporaryDirectory() as scratch:
                     try:
                         file_str = apply_parameters(file_str, [], params_dict, scratch)
@@ -2711,7 +2723,7 @@ def parameters_helper(
     callback=None,
     callback_event=None,
 ) -> Tuple[str, str]:
-    # Recipe parameters.yaml, then each --parameters-path in order (#663). A
+    # Recipe parameters.yaml, then each --param-file in order. A
     # loader error propagates: every caller wraps this call and reports the
     # exception through the error callback once. Reporting it here and then
     # returning None made callers fail again on the tuple unpack.

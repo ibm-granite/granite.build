@@ -6,10 +6,10 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Layered parameter files for `--parameters-path` (issue #663).
+"""Layered parameter files for `--param-file` (issue #663).
 
 The recipe's parameters.yaml next to build.yaml is the base layer; each
-`--parameters-path` file, in the order given, overrides it. Top-level keys
+`--param-file` file, in the order given, overrides it. Top-level keys
 only: a later layer replaces a key's value whole, never deep-merges it.
 """
 
