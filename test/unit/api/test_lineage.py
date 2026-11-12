@@ -222,7 +222,7 @@ def test_search_lineage_events_redacts_step_config_and_metadata():
     my_run["run"]["facets"]["job_input_params"] = {
         "steps": [
             {
-                "uri": "space://steps/misc/byoc",
+                "uri": "space://steps/aux/byoc",
                 "config": {
                     "byoc_config": {"repo": "https://example/r.git", "token": "sekret"}
                 },
@@ -245,7 +245,7 @@ def test_search_lineage_events_redacts_step_config_and_metadata():
             _fake_request("member", "member@example.com"), TagSearchRequest(tags=[])
         )
     step = resp.runs[0]["run"]["facets"]["job_input_params"]["steps"][0]
-    assert step["uri"] == "space://steps/misc/byoc"
+    assert step["uri"] == "space://steps/aux/byoc"
     # config surfaces (redacted), consistent with the by-id jobstats endpoints.
     assert step["config"]["byoc_config"]["repo"] == "https://example/r.git"
     assert step["config"]["byoc_config"]["token"] == "<redacted>"

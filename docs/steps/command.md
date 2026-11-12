@@ -61,7 +61,7 @@ steps:
 ```
 
 > If instead you want to **clone code from a git repo into a public image at run
-> time**, use the [`byoc` step](../../configurations/assets/environments/skypilot/steps/misc/byoc/README.md),
+> time**, use the [`byoc` step](../../configurations/assets/environments/skypilot/steps/aux/byoc/README.md),
 > which is the maintained exemplar for that workflow on Skypilot.
 
 ## Reporting outputs
