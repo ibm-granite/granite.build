@@ -13,7 +13,7 @@ from base64 import b64decode, b64encode
 from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
@@ -274,7 +274,7 @@ def build_start(
     space: Optional[str] = None,
     params: Optional[List[str]] = [],
     skip_validation=False,
-    parameters_path: Optional[str] = None,
+    parameters_path: Optional[Sequence[str]] = None,
     targets: Optional[tuple[str, ...]] = (),
     description: str = "",
     tags: list[str] = [],
@@ -567,7 +567,7 @@ def build_validate(
     filename: Optional[str] = "",
     space: Optional[str] = None,
     params: Optional[List[str]] = [],
-    parameters_path: Optional[str] = None,
+    parameters_path: Optional[Sequence[str]] = None,
     targets: Optional[tuple[str, ...]] = (),
     callback=None,
     validation_type: str = "static",
@@ -1466,7 +1466,7 @@ def build_describe(
     id_format: Optional[str] = None,
     space: Optional[str] = None,
     params: Optional[List[str]] = None,
-    parameters_path: Optional[str] = None,
+    parameters_path: Optional[Sequence[str]] = None,
     callback=None,
 ) -> str:
     downloaded_build_file_path = False
@@ -1552,17 +1552,22 @@ def build_describe(
             # so re-applying params there is meaningless and, under
             # StrictUndefined, could spuriously fail on `$${...}`-looking text.
             if (params or parameters_path) and not build_id:
-                params_file = (
-                    Path(parameters_path)
-                    if parameters_path
-                    else build_yaml_path.parent / BUILD_PARAMETERS_FILE
-                )
-                params_from_file = (
-                    get_params_from_file(str(params_file))
-                    if params_file.is_file()
-                    else {}
-                )
-                params_dict = parse_params(list(params or []), params_from_file)
+                # A broken parameter file is not a broken build.yaml: report it
+                # the way `gb build start` does.
+                try:
+                    params_from_file = load_layered_params(
+                        str(build_yaml_path), parameters_path
+                    )
+                    params_dict = parse_params(list(params or []), params_from_file)
+                except Exception as e:
+                    if callback is not None:
+                        callback(
+                            callback_event="error",
+                            callback_args={
+                                "reason": f"Error applying build parameters: {e}."
+                            },
+                        )
+                    return None
                 with tempfile.TemporaryDirectory() as scratch:
                     try:
                         file_str = apply_parameters(file_str, [], params_dict, scratch)
@@ -2225,13 +2230,53 @@ def get_params_from_file(file_path: str) -> dict:
     if os.path.exists(file_path) and os.stat(file_path).st_size > 0:
         with open(file_path, "r", encoding="utf-8") as f:
             params_from_file = yaml.safe_load(f)
+        if params_from_file is None:
+            # Comments only (or whitespace): no parameters, like an empty file.
+            return {}
         if not isinstance(params_from_file, dict):
             raise Exception(
-                "parameters defined in parameters.yaml must be written in key-value pairs."
+                f"{file_path}: parameters must be a mapping of key-value pairs"
             )
         return params_from_file
     else:
         return {}
+
+
+def load_layered_params(
+    build_file_path: str, parameters_paths: Optional[Union[str, Sequence[str]]]
+) -> dict:
+    """Merge parameter files: the recipe's parameters.yaml, then each path in order.
+    Top-level keys only; a later layer replaces a key whole. The recipe file next to
+    build.yaml is the implicit base layer unless it is also passed explicitly, in which
+    case it applies at that position (never twice)."""
+    if not parameters_paths:
+        layers: List[str] = []
+    elif isinstance(parameters_paths, str):
+        layers = [parameters_paths]
+    else:
+        layers = list(parameters_paths)
+
+    for layer in layers:
+        if not os.path.isfile(layer):
+            raise FileNotFoundError(f"parameters file not found: {layer}")
+
+    recipe_file = os.path.join(
+        os.path.dirname(build_file_path or ""), BUILD_PARAMETERS_FILE
+    )
+    recipe_real = os.path.realpath(recipe_file)
+    if os.path.isfile(recipe_file) and not any(
+        os.path.realpath(layer) == recipe_real for layer in layers
+    ):
+        layers.insert(0, recipe_file)
+
+    merged: dict = {}
+    for layer in layers:
+        logger.debug(f"Loading parameters file {layer}...")
+        for key, value in get_params_from_file(layer).items():
+            if key in merged:
+                logger.debug(f"Parameter '{key}' overridden by {layer}")
+            merged[key] = value
+    return merged
 
 
 def apply_build_parameters(
@@ -2671,26 +2716,18 @@ def prepare_build_local_contents(
 
 def parameters_helper(
     quiet: bool,
-    parameters_path: str,
+    parameters_path: Optional[Sequence[str]],
     build_file_path: str,
     experiment_folder: str,
     params: Optional[List[str]] = [],
     callback=None,
     callback_event=None,
 ) -> Tuple[str, str]:
-    if not parameters_path:
-        build_path = "/".join(build_file_path.split("/")[:-1])
-        parameters_path = os.path.join(build_path, BUILD_PARAMETERS_FILE)
-    logger.debug(f"Searching for parameters file {parameters_path}...")
-    try:
-        params_from_file = get_params_from_file(parameters_path)
-    except Exception as e:
-        if callback is not None:
-            callback(
-                callback_event="error",
-                callback_args={"reason": f"Error parsing file contents: {e}"},
-            )
-        return
+    # Recipe parameters.yaml, then each --param-file in order. A
+    # loader error propagates: every caller wraps this call and reports the
+    # exception through the error callback once. Reporting it here and then
+    # returning None made callers fail again on the tuple unpack.
+    params_from_file = load_layered_params(build_file_path, parameters_path)
 
     if callback and callback_event and not quiet:
         callback(callback_event=callback_event, callback_args={"steps": 20})
@@ -2713,7 +2750,7 @@ def validate_helper(
     build_file_path: str,
     space: Optional[str] = None,
     params: Optional[List[str]] = [],
-    parameters_path: Optional[str] = None,
+    parameters_path: Optional[Sequence[str]] = None,
     targets: Optional[tuple[str, ...]] = (),
     callback=None,
     validation_type: str = "static",
