@@ -256,7 +256,7 @@ capability evaluation — it is what makes the checkpoint loadable by anything b
 ### Runtime
 
 - **Type** `data_processing`; **environment** SkyPilot, SLURM and LSF (`subtypes: [lsf, slurm]`).
-- **Image** `us.icr.io/cil15-shared-registry/gb-step-hf-export`, this step's own CPU image
+- **Image** `quay.io/granitebuild/steps/aux/hf-export`, this step's own CPU image
   (the version is pinned in `step.yaml`), built from the Dockerfile next to the step: Python 3.12 with `transformers`, `tokenizers`,
   `safetensors` and `huggingface-hub`, hash-locked in `requirements.lock`. No torch.
 - **No GPU**, by design — if this step appears to need one, something has been misdiagnosed.

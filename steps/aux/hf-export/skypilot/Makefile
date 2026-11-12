@@ -13,8 +13,8 @@
 #   make help                  # list targets; see the shared steps/README.md
 
 STEP_NAME := hf-export
-REGISTRY ?= us.icr.io/cil15-shared-registry
-IMAGE_NAME ?= gb-step-hf-export
+REGISTRY ?= quay.io/granitebuild
+IMAGE_NAME ?= steps/aux/hf-export
 IMAGE_VERSION ?= fd7abbfc
 UV_LOCK ?= uvx --from uv==0.13.6 uv
 

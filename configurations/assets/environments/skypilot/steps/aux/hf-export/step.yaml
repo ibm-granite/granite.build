@@ -126,7 +126,7 @@ environment_configs:
         config:
           # This step's own image (Dockerfile next to this file), filled in by
           # `make space` / `make publish-step`.
-          image_id: "docker:us.icr.io/cil15-shared-registry/gb-step-hf-export:fd7abbfc"
+          image_id: "docker:quay.io/granitebuild/steps/aux/hf-export:fd7abbfc"
           # CPU-only BY DESIGN. If this step ever appears to need a GPU, something has
           # been misdiagnosed. cpus/memory come from the build.yaml like every other
           # ported step, rather than being pinned here.
