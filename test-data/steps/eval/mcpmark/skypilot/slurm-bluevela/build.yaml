@@ -27,16 +27,19 @@ granite.build:
             model_path: "{{ bindings.model.binding.path }}"
             served_model_name: "granite-4.2-3b"
             options: "task_suite=easy"
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/mcpmark"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "mcpmark"
             run_name: "buildtest"
             # Smoke knob: first N examples, so the run stays minutes-scale.
             limit: "2"
             workers: "1"
             phase: "all"
-            # One shared HF cache across the eval build tests: the model is
-            # pulled once and reused by every family's run.
-            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
-            sandbox_cache: "/proj/data-eng/llmb-read-write/eval-build-tests/enroot-cache"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
+            # Unused by this benchmark (MCP servers run in-container).
+            sandbox_cache: ""
             launcher_config:
               resources:
                 cluster: "bluevela"

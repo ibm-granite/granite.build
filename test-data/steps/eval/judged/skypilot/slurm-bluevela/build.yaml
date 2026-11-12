@@ -33,17 +33,23 @@ granite.build:
             # shape a public fixture cannot name, which is also why this test
             # covers only the GPU image).
             options: "judge_model=self"
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/judged"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "judged"
             run_name: "buildtest"
             # Smoke knob: first N tasks.
             limit: "2"
             workers: "4"
             phase: "all"
-            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
             # gdpval runs its stirrup agents in enroot sandboxes: the shared
             # cache (tau-proven) also gets ENROOT_TEMP_PATH mkdir'd by the
             # step script, which the empty default skips entirely.
-            sandbox_cache: "/proj/data-eng/llmb-read-write/eval-build-tests/enroot-cache"
+            # gdpval runs its stirrup agents in enroot sandboxes: the cache is
+            # workdir-relative (per-build); empty would skip the sandbox setup.
+            sandbox_cache: "enroot-cache"
             launcher_config:
               resources:
                 cluster: "bluevela"
