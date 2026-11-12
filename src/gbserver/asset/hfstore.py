@@ -222,7 +222,8 @@ class Hfstore(Assetstore):
             # scripts download only it (``--include``), into ``path`` with the
             # repo layout kept; the k8s template re-parses it from ``uri``.
             # A bucket is bound at ``path`` itself (HfURI.local_path), so it
-            # gets no filter.
+            # gets no filter. (The scripts' ``hf download`` has no bucket repo
+            # type, so they cannot pull a bucket either way.)
             "path_in_repo": (
                 "" if hfuri.get_hf_type() == HfType.BUCKET else hfuri.get_path_in_repo()
             ),
