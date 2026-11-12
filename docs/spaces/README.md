@@ -166,6 +166,49 @@ Once registered, builds and the CLI reference a space **by name** rather than by
 The name is also what the IBM Cloud secret manager matches against and what appears in lineage
 (`{space_name}/{build_name}`).
 
+## Storing a space in the database (no git access)
+
+A registered space can carry a snapshot of its space repo and of the assets repo its `base_uris`
+names, so builds and the REST server never fetch either from git. Take or refresh the snapshot with
+[`gbserver space-snapshot`](../cli/gbserver-cli-reference.md#administration):
+
+```shell
+# From the remote branch (any of https://, git+ssh://, ssh://, git@host:org/repo):
+gbserver space-snapshot --space-name public --space-repo https://github.example.com/org/gbspace-public
+# From local checkouts (e.g. while the remote is unreachable):
+gbserver space-snapshot --space-name public --space-repo ../gbspace-public --assets-repo ../assets
+```
+
+The command stores only the files at the head of the space config branch (default: the
+deployment's config branch, e.g. `gbspace-config`) and of the assets branch named in `space.yaml`
+(its `@<ref>`). No git history, `.git` directory, or untracked files are kept. It then:
+
+- sets the row's `git_repo_uri` to `db://spaces/<name>` (pass `--no-switch` to store the snapshot
+  but keep using git);
+- rewrites the stored `space.yaml` so that the `base_uris` entry for the assets repo becomes
+  `db://spaces/<name>/assets` (a `#subdirectory=` suffix is kept);
+- records each snapshot's source repo (normalized to `https://host/org/repo`), branch, and commit.
+
+The snapshots are kept in the row's `json` column as `space` and `assets`, each holding `archive` (a
+base64-encoded zip, like a build's `build_archive`), `source_uri`, `source_ref`, `source_commit`,
+and `snapshot_time`. At use, gbserver unpacks each snapshot into a local cache directory named by
+its content hash, and serves it from there.
+
+The space is still identified by its source repo, not by the `db://` URI. Secret groups and
+build/space consistency checks match on the snapshot's `source_uri`, so moving a space to the
+database does not change which secrets it resolves. When the space uses the IBM Cloud secret
+manager, `space-snapshot` compares the secret groups matched before and after the switch, and
+refuses the switch if they differ (`--skip-secret-group-check` overrides this).
+
+Re-running `gbserver create-spaces` (including `--replace`/`--clear`) for a db-backed space keeps
+its snapshot when the spec names the same repo (e.g. the predefined public space), so the space is
+not moved back to git. Likewise, the environment-files API reads the public space's environments
+from its snapshot.
+
+`db://spaces/<other>` makes a row an alias that is served from another row's snapshot. `GET
+/api/v1/spaces/` omits the archives (but keeps the source metadata); `GET
+/api/v1/spaces/<name>` returns them.
+
 ## See also
 
 - [Secrets](../secrets/README.md) — the `secret_manager` backends and how secrets are resolved
