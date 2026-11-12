@@ -59,8 +59,9 @@ HF_URI_SCHEME = "hf"
 
 # What an hf:// URI path segment and host may hold (see
 # HfURI._reject_unsafe_characters): nothing bash, a Python string literal or a
-# download-filter glob treats specially.
-_HF_SAFE_SEGMENT = re.compile(r"[\w.\-+=@,~]+")
+# download-filter glob treats specially. Every step script double-quotes the
+# values it uses, so a space, ":" and "(" ")" (common in real HF paths) are inert.
+_HF_SAFE_SEGMENT = re.compile(r"[\w.\-+=@,~ :()]+")
 _HF_SAFE_HOST = re.compile(r"[A-Za-z0-9.\-]+(:[0-9]+)?")
 
 URLSEGMENT_MODELS = "models"
@@ -718,10 +719,11 @@ class HfURI(URI):
         The steps put the URI, host, owner, repo, revision and path in the repo
         into bash (single- and double-quoted) and Python string literals, and
         the path in the repo is a download filter (``allow_patterns`` /
-        ``--include``). So each path segment may hold only letters, digits and
-        ``. _ - + = @ , ~``; the host only letters, digits, ``.`` and ``-``,
-        with an optional ``:<port>``; and there may be no query (``?``) or
-        fragment (``#``), which would silently cut the path short.
+        ``--include``). So each path segment may hold only letters, digits,
+        spaces and ``. _ - + = @ , ~ : ( )``; the host only letters, digits,
+        ``.`` and ``-``, with an optional ``:<port>``; and there may be no
+        query (``?``) or fragment (``#``), which would silently cut the path
+        short.
         """
         assert self.uri is not None, "self.uri is None"
         path, query, fragment = self.uri.path, self.uri.query, self.uri.fragment
@@ -738,7 +740,7 @@ class HfURI(URI):
             if segment and not _HF_SAFE_SEGMENT.fullmatch(segment):
                 raise ValueError(
                     f"Malformed HF URI path {path!r}: segment {segment!r} may only"
-                    " contain letters, digits and . _ - + = @ , ~"
+                    " contain letters, digits, spaces and . _ - + = @ , ~ : ( )"
                 )
         host = self.uri.netloc
         if host and not _HF_SAFE_HOST.fullmatch(host):

@@ -186,6 +186,19 @@ _REALISTIC = [
     ),
     ("hf:///datasets/o/r/main/données/été_2024.csv", "données/été_2024.csv"),
     ("hf:///datasets/o/r/main/数据/训练.jsonl", "数据/训练.jsonl"),
+    # Spaces, ":" and "(" ")" are the commonest characters in real HF paths.
+    (
+        "hf:///datasets/roneneldan/TinyStories/main/Evaluation prompts.yaml",
+        "Evaluation prompts.yaml",
+    ),
+    (
+        "hf:///datasets/o/r/main/Yi-1.5-9B-Chat/results_2024-09-19 01:30:30.json",
+        "Yi-1.5-9B-Chat/results_2024-09-19 01:30:30.json",
+    ),
+    (
+        "hf:///datasets/bigcode/the-stack-v2/main/data/Graphviz_(DOT)",
+        "data/Graphviz_(DOT)",
+    ),
     (
         "hf://hub.example.com:8443/models/o/r/v2/a/b/c/d.safetensors",
         "a/b/c/d.safetensors",
