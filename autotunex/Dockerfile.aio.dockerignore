@@ -1,0 +1,43 @@
+# Build context for autotunex/Dockerfile.aio, which builds from the REPOSITORY
+# ROOT. BuildKit reads this file in place of the root .dockerignore (which serves
+# the gbserver image and excludes autotunex/ and frontend/). It is an allowlist:
+# everything is out unless re-included below.
+*
+
+# AutoTuneX itself, and the supervisor/Caddy/entrypoint files of this image.
+!autotunex/pyproject.toml
+!autotunex/README.md
+!autotunex/src
+!autotunex/docker/aio
+
+# granite.build: what gbserver, its dashboard build (make build-frontend) and its
+# editable installs read. .git carries the version tags setuptools_scm stamps
+# the version from.
+!pyproject.toml
+!README.md
+!Makefile
+!.git
+!src
+!test
+!configurations
+!steps
+!frontend
+
+# Never: caches, local env files, build outputs, local dev certificates.
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/.DS_Store
+**/node_modules
+**/.env
+**/.env.*
+**/*.tsbuildinfo
+autotunex/src/ux/build
+autotunex/src/ux/.svelte-kit
+frontend/**/.next
+frontend/**/out
+frontend/**/certificates
+src/gbserver/static/ui
