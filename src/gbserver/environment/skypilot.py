@@ -2147,10 +2147,18 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     if pull_info.get("type"):
         cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
     path_in_repo = str(pull_info.get("path_in_repo") or "").strip("/")
-    if path_in_repo:
-        for pattern in (path_in_repo, f"{path_in_repo}/*"):
-            cmd += f" --include {shlex.quote(pattern)}"
-    return cmd
+    if not path_in_repo:
+        return cmd
+    file_pat, dir_pat = shlex.quote(path_in_repo), shlex.quote(f"{path_in_repo}/*")
+    # huggingface_hub < 1.0 parses --include as nargs="*" without append, so a
+    # repeated --include keeps only the LAST one and a file-scoped path matched
+    # nothing; 1.x appends repeats and takes one value per flag. The step's image
+    # decides which CLI runs, so pick the form at run time.
+    return (
+        "if hf version 2>/dev/null | grep -q '^huggingface_hub version: 0\\.'; then "
+        f"{cmd} --include {file_pat} {dir_pat}; "
+        f"else {cmd} --include {file_pat} --include {dir_pat}; fi"
+    )
 
 
 def aws_credentials_present() -> bool:
