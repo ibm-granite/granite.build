@@ -18,12 +18,16 @@
 Retry logic for Git and GitHub API operations with transient error detection.
 """
 
+import contextvars
 import logging
 import random
 import shutil
+import threading
 import time
+from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Iterator, Optional, Tuple, TypeVar
 
 import requests
 from git.exc import GitCommandError, GitError
@@ -35,8 +39,11 @@ from tenacity import (
     stop_after_attempt,
     wait_random_exponential,
 )
+from tenacity.stop import stop_base
 
 from gbserver.types.constants import (
+    BUILD_GIT_MAX_CONSECUTIVE_FAILURES,
+    BUILD_GIT_OPERATION_DEADLINE,
     GIT_CLONE_MAX_RETRIES,
     GIT_CLONE_RETRY_MAX_WAIT,
     GIT_CLONE_RETRY_MIN_WAIT,
@@ -171,14 +178,44 @@ def cleanup_failed_clone(retry_state):
             shutil.rmtree(path_obj, ignore_errors=True)
 
 
+# Optional monotonic deadline for the retries below, set by
+# GitAccessBreaker.attempt(). Unset (the default) leaves them unchanged.
+_retry_deadline: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "gb_git_retry_deadline", default=None
+)
+
+
+class _stop_at_deadline(stop_base):  # pylint: disable=invalid-name
+    """Stop once the deadline set by GitAccessBreaker (if any) has passed."""
+
+    def __call__(self, retry_state: RetryCallState) -> bool:
+        deadline = _retry_deadline.get()
+        return deadline is not None and time.monotonic() >= deadline
+
+
+def _capped_wait(wait: Callable[[RetryCallState], float]):
+    """Never sleep past the deadline (if one is set)."""
+
+    def _wait(retry_state: RetryCallState) -> float:
+        delay = wait(retry_state)
+        deadline = _retry_deadline.get()
+        if deadline is None:
+            return delay
+        return max(0.0, min(delay, deadline - time.monotonic()))
+
+    return _wait
+
+
 git_clone_retry = retry(
     retry=retry_if_exception(is_transient_git_error),
-    wait=wait_random_exponential(
-        multiplier=1,
-        min=GIT_CLONE_RETRY_MIN_WAIT,
-        max=GIT_CLONE_RETRY_MAX_WAIT,
+    wait=_capped_wait(
+        wait_random_exponential(
+            multiplier=1,
+            min=GIT_CLONE_RETRY_MIN_WAIT,
+            max=GIT_CLONE_RETRY_MAX_WAIT,
+        )
     ),
-    stop=stop_after_attempt(GIT_CLONE_MAX_RETRIES),
+    stop=stop_after_attempt(GIT_CLONE_MAX_RETRIES) | _stop_at_deadline(),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     before=cleanup_failed_clone,
     reraise=True,
@@ -285,8 +322,8 @@ def _wait_for_github_rate_limit(retry_state: RetryCallState) -> float:
 
 github_api_retry = retry(
     retry=retry_if_exception(is_retryable_github_error),
-    wait=_wait_for_github_rate_limit,
-    stop=stop_after_attempt(GITHUB_API_MAX_RETRIES),
+    wait=_capped_wait(_wait_for_github_rate_limit),
+    stop=stop_after_attempt(GITHUB_API_MAX_RETRIES) | _stop_at_deadline(),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
@@ -313,3 +350,109 @@ Environment Variables:
     GBSERVER_GITHUB_API_RETRY_BASE_DELAY: Base delay in seconds for exponential backoff (default: 1.0)
     GBSERVER_GITHUB_API_RETRY_MAX_DELAY: Maximum delay in seconds (default: 60.0)
 """
+
+
+# -----------------------------------------------------------------------------
+# Per-build-run give-up for optional git/GitHub interactions
+# -----------------------------------------------------------------------------
+
+_T = TypeVar("_T")
+
+
+class GitAccessBreaker:
+    """Lets a build run stop trying git/GitHub after repeated failures.
+
+    The build's PR and the messages posted to it are optional: a build runs
+    without them. Each interaction goes through ``call``. It runs with the
+    usual retries above, bounded by a deadline, and never raises. After
+    ``max_failures`` consecutive failures the breaker opens and later calls in
+    the same run are skipped, so an unreachable GitHub costs a run at most
+    about ``max_failures * deadline`` seconds instead of stalling every message.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        max_failures: int = BUILD_GIT_MAX_CONSECUTIVE_FAILURES,
+        deadline: float = BUILD_GIT_OPERATION_DEADLINE,
+    ) -> None:
+        self.name = name
+        self.max_failures = max(1, max_failures)
+        self.deadline = deadline
+        self.consecutive_failures = 0
+        self._lock = threading.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        """True once this run has given up on git/GitHub."""
+        return self.consecutive_failures >= self.max_failures
+
+    @contextmanager
+    def _deadline(self) -> Iterator[None]:
+        token = _retry_deadline.set(time.monotonic() + self.deadline)
+        try:
+            yield
+        finally:
+            _retry_deadline.reset(token)
+
+    def call(
+        self, what: str, fn: Callable[[], _T], default: Optional[_T] = None
+    ) -> Optional[_T]:
+        """Run ``fn`` unless the breaker is open; return ``default`` on failure."""
+        if self.is_open:
+            logger.debug("%s: git access given up, skipping %s", self.name, what)
+            return default
+        try:
+            with self._deadline():
+                result = fn()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            with self._lock:
+                self.consecutive_failures += 1
+                failures = self.consecutive_failures
+            if failures >= self.max_failures:
+                logger.error(
+                    "%s: failed to %s (%s); giving up on git/GitHub for the rest"
+                    " of this run after %d consecutive failures",
+                    self.name,
+                    what,
+                    e,
+                    failures,
+                )
+            else:
+                logger.warning(
+                    "%s: failed to %s (%d/%d): %s",
+                    self.name,
+                    what,
+                    failures,
+                    self.max_failures,
+                    e,
+                )
+            return default
+        with self._lock:
+            self.consecutive_failures = 0
+        return result
+
+
+# Bounded: a message logged after a run ended re-creates an entry that no
+# end_build_git_run() removes; evicting the oldest keeps a long-lived watcher
+# (thread runners) from accumulating them.
+_MAX_BREAKERS = 256
+_breakers: "OrderedDict[str, GitAccessBreaker]" = OrderedDict()
+_breakers_lock = threading.Lock()
+
+
+def get_build_git_breaker(build_id: str) -> GitAccessBreaker:
+    """The breaker for the current run of ``build_id`` (created on first use)."""
+    with _breakers_lock:
+        breaker = _breakers.get(build_id)
+        if breaker is None:
+            breaker = _breakers[build_id] = GitAccessBreaker(f"build {build_id}")
+            while len(_breakers) > _MAX_BREAKERS:
+                _breakers.popitem(last=False)
+        return breaker
+
+
+def end_build_git_run(build_id: str) -> None:
+    """Forget ``build_id``'s breaker, so its next run tries git afresh."""
+    with _breakers_lock:
+        _breakers.pop(build_id, None)

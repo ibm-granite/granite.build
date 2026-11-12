@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Optional, cast
 
 from gbcommon.uri.git import GitURI
-from gbserver.spaces.repo_identity import to_config_uri
+from gbserver.spaces.repo_identity import normalize_repo_uri, to_config_uri
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 from gbserver.types.constants import DEFAULT_DIR_PERMS
 from gbserver.utils.archive import extract_archive
@@ -223,6 +223,20 @@ def get_identity_uri(stored_space: StoredSpace) -> str:
     row = _source_row(stored_space)
     snapshot = _get_snapshot(row, SPACE_SLOT)
     return snapshot.source_uri or stored_space.git_repo_uri
+
+
+def get_pr_repo_uri(stored_space: StoredSpace) -> Optional[str]:
+    """The ``https://host/owner/repo`` holding a space's build PRs, or None.
+
+    The source repo for a db-backed space, so builds keep their PRs and
+    messages there. None for a local space, or when the repo can't be told.
+    """
+    try:
+        uri = normalize_repo_uri(get_identity_uri(stored_space))
+    except ValueError as e:
+        logger.warning("space %r has no PR repo: %s", stored_space.name, e)
+        return None
+    return None if uri.startswith("file://") else uri
 
 
 def get_space_config_uri(stored_space: StoredSpace, token: Optional[str] = None) -> str:

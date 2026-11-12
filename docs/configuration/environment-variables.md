@@ -91,6 +91,8 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | `GBSERVER_GITHUB_TOKEN` (aka `GBSERVER_DEFAULT_GITHUB_TOKEN`) | `` | GHE token (falls back to `GITHUB_TOKEN`). |
 | `GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT` | `60` | GitHub request timeout (seconds). |
 | `GITHUB_API_MAX_RETRIES` / `_RETRY_BASE_DELAY` / `_RETRY_MAX_DELAY` | `10` / `1.0` / `60.0` | GitHub API retry policy. |
+| `BUILD_GIT_MAX_CONSECUTIVE_FAILURES` / `BUILD_GIT_OPERATION_DEADLINE` | `3` / `120` | A build's PR and PR messages are optional: each such GitHub interaction (its retries included) is capped at the deadline in seconds, and after this many consecutive failures the rest of that build run skips them. |
+| `MAX_PR_CREATION_TRIES` / `PR_CREATION_RETRY_INTERVAL` | `100` / `5` | Upper bound on PR-creation attempts per build run, and the pause (seconds) between them. |
 | `GIT_CLONE_MAX_RETRIES` / `_RETRY_MIN_WAIT` / `_RETRY_MAX_WAIT` | `5` / `1.0` / `30.0` | git clone retry policy. |
 
 ## Monitoring & metrics

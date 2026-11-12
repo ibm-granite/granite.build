@@ -726,6 +726,9 @@ DEFAULT_BUILDWATCHER_COMMITTER_EMAIL = os.getenv(
 MAX_PR_CREATION_TRIES = int(
     os.getenv(ENV_VAR_PREFIX + "_MAX_PR_CREATION_TRIES", "100"), base=10
 )
+PR_CREATION_RETRY_INTERVAL = float(
+    os.getenv(ENV_VAR_PREFIX + "_PR_CREATION_RETRY_INTERVAL", "5")
+)
 FETCH_CLOUD_LOGS_MAX_RETRIES = int(
     os.getenv(ENV_VAR_PREFIX + "_FETCH_CLOUD_LOGS_MAX_RETRIES", "10"), base=10
 )
@@ -758,6 +761,16 @@ GITHUB_API_MAX_RETRIES = int(
 )
 GITHUB_API_RETRY_BASE_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_GITHUB_API_RETRY_BASE_DELAY", "1.0")
+)
+# Per build run, git/GitHub interactions that are not needed to run the build
+# (the build's PR and the messages posted to it) give up after this many
+# consecutive failures; the rest of the run skips them. Each such interaction,
+# its own retries included, is bounded by the deadline (seconds).
+BUILD_GIT_MAX_CONSECUTIVE_FAILURES = int(
+    os.getenv(ENV_VAR_PREFIX + "_BUILD_GIT_MAX_CONSECUTIVE_FAILURES", "3"), base=10
+)
+BUILD_GIT_OPERATION_DEADLINE = float(
+    os.getenv(ENV_VAR_PREFIX + "_BUILD_GIT_OPERATION_DEADLINE", "120")
 )
 GITHUB_API_RETRY_MAX_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_GITHUB_API_RETRY_MAX_DELAY", "60.0")

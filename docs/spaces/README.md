@@ -200,6 +200,12 @@ database does not change which secrets it resolves. When the space uses the IBM 
 manager, `space-snapshot` compares the secret groups matched before and after the switch, and
 refuses the switch if they differ (`--skip-secret-group-check` overrides this).
 
+Build PRs and their messages still go to the space's repo: for a db-backed space, the snapshot's
+`source_uri`. They are optional for every space. If GitHub is unreachable, the build runs without a
+PR, its messages are kept in the build's events, and after a few consecutive failures the build run
+stops trying (see `GBSERVER_BUILD_GIT_*` in
+[environment variables](../configuration/environment-variables.md)).
+
 Re-running `gbserver create-spaces` (including `--replace`/`--clear`) for a db-backed space keeps
 its snapshot when the spec names the same repo (e.g. the predefined public space), so the space is
 not moved back to git. Likewise, the environment-files API reads the public space's environments
