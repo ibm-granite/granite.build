@@ -21,8 +21,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
+from gbcommon.uri.hf import HfURI
 from gbserver.environment.bash import Bash
 from gbserver.environment.environment import BINDING_KEY
+from gbserver.types.environmentconfig import StoreLoad
 
 # Bash refuses to run outside STANDALONE; these tests construct it directly.
 pytestmark = pytest.mark.usefixtures("allow_bash_environment")
@@ -33,6 +36,64 @@ def bash_env():
     """Create a Bash environment instance with a dummy event queue."""
     event_q = asyncio.Queue()
     return Bash(event_q=event_q)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("uri", "sub", "is_file"),
+    [
+        ("hf:///datasets/org/repo/main/data/train", "data/train", False),
+        ("hf:///org/repo/main/config.json", "config.json", True),
+    ],
+    ids=["directory", "file"],
+)
+async def test_pullasset_hfstore_binds_the_path_in_the_repo(
+    bash_env, tmp_path, monkeypatch, uri, sub, is_file
+):
+    """Only the path is downloaded, and the step is bound at it.
+
+    A directory binds the directory; a single file binds the file itself.
+    """
+    # The suite mocks HF; clear it so the real pull reaches snapshot_download.
+    monkeypatch.delenv(ENV_VAR_GBTEST_MOCK_HF, raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+
+    def fake_download(**kw):
+        target = Path(kw["local_dir"]) / sub
+        if is_file:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("{}")
+        else:
+            target.mkdir(parents=True)
+
+    with patch(
+        "gbcommon.uri.hf.snapshot_download", side_effect=fake_download
+    ) as mock_dl:
+        binding_config, extra_config = await bash_env.pullasset_hfstore(
+            uri=HfURI.parse(uri),
+            storeload_config=StoreLoad(config={"cache_path": str(tmp_path)}),
+        )
+
+    bound = Path(binding_config[BINDING_KEY]["path"])
+    assert bound == tmp_path / "org" / "repo" / "main" / sub
+    assert bound.is_file() if is_file else bound.is_dir()
+    assert mock_dl.call_args.kwargs["allow_patterns"] == [sub, f"{sub}/*"]
+    assert extra_config is None
+
+
+@pytest.mark.asyncio
+async def test_mocked_pullasset_hfstore_binds_a_path_that_exists(
+    bash_env, tmp_path, monkeypatch
+):
+    """With HF mocked nothing is downloaded, but the bound path still exists."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    binding_config, _ = await bash_env.pullasset_hfstore(
+        uri=HfURI.parse("hf:///datasets/org/repo/main/data/train"),
+        storeload_config=StoreLoad(config={"cache_path": str(tmp_path)}),
+    )
+    bound = Path(binding_config[BINDING_KEY]["path"])
+    assert bound == tmp_path / "org" / "repo" / "main" / "data" / "train"
+    assert bound.is_dir()
 
 
 @pytest.mark.asyncio

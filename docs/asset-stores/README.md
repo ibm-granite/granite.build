@@ -55,8 +55,9 @@ Notes:
 - **HuggingFace (`hf://`)** pulls the whole repo unless the URI names a path in it after an explicit
   revision: `hf:///datasets/org/repo/main/data/train` downloads only `data/train` (a file or a
   directory). The repo layout is kept under the download dir, and the input is bound at the path
-  itself, so a step sees the named directory, not the repo root. A path that matches nothing in the
-  repo fails the pull. A dataset repo needs the `datasets/` type segment
+  itself, so a step sees the named directory, not the repo root. A path that names a single file
+  (`hf:///org/model/main/config.json`) is bound at that file, so `binding.path` is a file, not a
+  directory. A path that matches nothing in the repo fails the pull. A dataset repo needs the `datasets/` type segment
   (`hf:///datasets/org/repo/...`); without it the URI names a model repo.
 - **Env-local (`env://`)** models an artifact that already lives on a filesystem the worker can see, so
   the store resolves the path directly and transfers nothing. Common on bare-metal HPC backends (e.g.
