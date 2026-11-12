@@ -22,7 +22,9 @@ import click
 import yaml
 from pydantic import BaseModel
 
+from gbserver.spaces.db_space import get_identity_uri, is_db_uri
 from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
+from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import (
@@ -72,6 +74,54 @@ def _check_local_secrets_collisions(storage, spaces: List[StoredSpace]) -> None:
     for space in spaces:
         check_local_secrets_collision(space, accepted)
         accepted.append(space)
+
+
+def _keep_db_snapshots(storage, spaces: List[StoredSpace]) -> List[StoredSpace]:
+    """Carry registered db-backed rows' snapshots over to the specs re-creating them.
+
+    A spec whose git URI names the repo a db-backed row was snapshotted from
+    (e.g. the predefined public space, PUBLIC_SPACE_GIT_URI) or which is itself
+    a db:// URI, keeps that row's db:// URI and snapshots. Re-running
+    create-spaces then neither moves the space back to git nor reaches git.
+    Read before --clear/--replace drop the rows.
+
+    Args:
+        storage: The admin space storage.
+        spaces: The spaces about to be added.
+
+    Returns:
+        The specs, with snapshots carried over where they apply.
+    """
+    result = []
+    for space in spaces:
+        existing = storage.get_by_name(space.name)
+        if existing is not None and is_db_uri(existing.git_repo_uri):
+            try:
+                same = is_db_uri(space.git_repo_uri) or same_repo(
+                    get_identity_uri(existing), space.git_repo_uri
+                )
+            except ValueError as e:  # e.g. an alias of a missing row
+                logger.warning("space %s: not keeping its snapshot: %s", space.name, e)
+                same = False
+            if same:
+                logger.info(
+                    "space %s is served from the database (%s); keeping its snapshot",
+                    space.name,
+                    existing.git_repo_uri,
+                )
+                space = space.model_copy(
+                    update={
+                        "git_repo_uri": (
+                            space.git_repo_uri
+                            if is_db_uri(space.git_repo_uri)
+                            else existing.git_repo_uri
+                        ),
+                        "space": space.space or existing.space,
+                        "assets": space.assets or existing.assets,
+                    }
+                )
+        result.append(space)
+    return result
 
 
 class CLICreateSpacesConfig(BaseModel):
@@ -135,6 +185,7 @@ def cli(
 
     logger.info("Working on spaces in Lakehouse %s environment", LAKEHOUSE_ENVIRONMENT)
     storage = singleton_storage.get_admin_storage().space_storage
+    spaces_to_create = _keep_db_snapshots(storage, spaces_to_create)
     if clear:
         if force or LAKEHOUSE_ENVIRONMENT.lower() != "prod":
             logger.info("Deleting the space table")

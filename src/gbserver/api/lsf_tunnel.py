@@ -163,6 +163,7 @@ async def _fetch_ssh_key_for_space(space_name: str, secret_name: str) -> str:
             "IBM Cloud secret manager support is not installed",
         ) from e
 
+    from gbserver.spaces.db_space import get_identity_uri
     from gbserver.storage.singleton_storage import get_admin_storage
 
     # Local DB lookup — runs inline (matches codebase convention, see builds.py).
@@ -175,7 +176,8 @@ async def _fetch_ssh_key_for_space(space_name: str, secret_name: str) -> str:
     # Offloaded: IbmcloudSpaceSecretManager construction enumerates groups and
     # get_space_secrets() makes blocking HTTPS calls to IBM Cloud Secret Manager.
     def _fetch() -> tuple[List[str], Optional[str]]:
-        manager = IbmcloudSpaceSecretManager(uri=stored_space.git_repo_uri)
+        # Secret groups match on the repo, so a db-backed space uses its source.
+        manager = IbmcloudSpaceSecretManager(uri=get_identity_uri(stored_space))
         groups = list(manager.secret_groups or [])
         if not groups:
             return groups, None

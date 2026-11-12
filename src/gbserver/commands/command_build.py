@@ -27,6 +27,7 @@ from gbcommon.uri.git import GitURI
 from gbserver.build import Build
 from gbserver.build.buildrun import BuildRun
 from gbserver.build.space import Space
+from gbserver.spaces.db_space import is_db_uri
 from gbserver.storage import singleton_storage
 from gbserver.types.buildevent import BuildEvent
 from gbserver.types.constants import truncate
@@ -51,6 +52,8 @@ def get_space_uri_from_space_name(space_name: str) -> Optional[str]:
         return None
     uri = space.git_repo_uri
     logger.info("Found space %s with uri %s", space_name, uri)
+    if is_db_uri(uri):
+        return uri  # Space unpacks the stored snapshot itself
     return GitURI.get_gb_space_config_uri(uri=uri)
 
 

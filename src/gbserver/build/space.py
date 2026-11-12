@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
+from gbserver.spaces.db_space import is_db_uri, resolve_db_uri
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 from gbserver.types.constants import GBSERVER_PROCEED_WITHOUT_SECRETS, is_debug_mode
 from gbserver.types.spaceconfig import SpaceConfig
@@ -88,7 +89,8 @@ def _resolve_one_base_uri(
 ) -> str:
     """Resolve a single base_uri entry.
 
-    Absolute URIs are returned unchanged.  Relative file:// URIs and bare
+    ``db://`` URIs are unpacked and returned as ``file://``.  Other absolute
+    URIs are returned unchanged.  Relative file:// URIs and bare
     relative paths are resolved against ``space_dir``.  When ``space_dir``
     is None (i.e. the space URI is non-local, such as ``git://...``), a
     relative entry has no anchor to resolve against and a ``ValueError``
@@ -105,6 +107,9 @@ def _resolve_one_base_uri(
         ValueError: ``base_uri`` is a relative ``file://`` URI or bare
             relative path while ``space_dir`` is None.
     """
+    if is_db_uri(base_uri):
+        # A db-backed space's assets snapshot (db://spaces/<name>/assets).
+        return resolve_db_uri(base_uri).file_uri
     parsed = urlparse(base_uri)
     if parsed.scheme and parsed.scheme != "file":
         return base_uri
@@ -136,9 +141,26 @@ class Space:
         uri: Union[URI, str],
         username: Optional[str] = None,
         force_fetch: bool = False,
+        identity_uri: Optional[str] = None,
     ):
-        """Create the instance."""
+        """Create the instance.
+
+        Args:
+            uri: Where to pull the space definitions from. A ``db://spaces/...``
+                URI is served from the snapshot stored in gb_spaces.
+            username: The user whose secrets are merged in.
+            force_fetch: Re-pull even if cached.
+            identity_uri: The space's repo identity, used for secret lookup and
+                space-match checks. Defaults to ``uri``, or for a db:// URI to
+                the snapshot's source repo.
+        """
         self.uristr = URI.get_uristr(uri)
+        if is_db_uri(self.uristr):
+            resolved = resolve_db_uri(self.uristr)
+            logger.info("db space %s unpacked at %s", self.uristr, resolved.file_uri)
+            self.uristr = uri = resolved.file_uri
+            identity_uri = identity_uri or resolved.identity_uri
+        self.identity_uri = identity_uri or self.uristr
         self.secrets = {}
         uriobj = URI.get_uri(uri=uri, default_scheme="file")
         # A fresh, private checkout dir we own. pull() copies the space into it
@@ -309,7 +331,7 @@ class Space:
             remote_secrets_manager: SpaceSecretManager = (
                 SpaceSecretManager.get_spacesecretmanager(
                     secret_manager_type=remote_type,
-                    uri=self.uristr,
+                    uri=self.identity_uri,
                     **remote_config,
                 )
             )
@@ -332,7 +354,7 @@ class Space:
             self.secret_manager: SpaceSecretManager = (
                 SpaceSecretManager.get_spacesecretmanager(
                     secret_manager_type=self.space_config.secret_manager.type,
-                    uri=self.uristr,
+                    uri=self.identity_uri,
                     space_name=self.space_config.name,
                     **self.space_config.secret_manager.config,
                 )

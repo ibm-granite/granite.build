@@ -32,7 +32,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Self, Union
 
-from gbcommon.uri.git import GitURI
 from gbcommon.uri.uri import URI
 from gbcommon.uri.utils import get_artifact_type
 from gbserver.build.build import Build
@@ -51,6 +50,7 @@ from gbserver.buildrunner.buildlogger import (
 )
 from gbserver.github.myghapi import MyGHApi
 from gbserver.metrics.metrics_client import push_metrics
+from gbserver.spaces.db_space import create_space
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -603,11 +603,7 @@ class BuildRunner(AbstractBuildRunner):
             stored_space = self.storage.space_storage.get_by_name(space_name)
             if stored_space is None:
                 raise ValueError(f"Space {space_name} not found in space storage")
-            s_uri = GitURI.get_gb_space_config_uri(
-                uri=stored_space.git_repo_uri, token=self.gh_token
-            )
-            logger.info("for the space name %s using the URI: %s", space_name, s_uri)
-            space = Space(uri=s_uri, username=username)
+            space = create_space(stored_space, username=username, token=self.gh_token)
         return space
 
     def __is_build_cancelled(self) -> bool:

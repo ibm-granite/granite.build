@@ -30,8 +30,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from gbcommon.uri.git import GitURI
 from gbcommon.uri.uri import URI
+from gbserver.spaces.db_space import get_space_config_uri, is_db_uri, resolve_db_uri
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.spaceconfig import SpaceConfig
 from gbserver.utils.logger import get_logger
@@ -51,7 +51,8 @@ def load_space_config(space_uri: str) -> SpaceConfig:
     The temporary copy is removed before returning.
 
     Args:
-        space_uri: The space's URI (a bare path is treated as ``file:``).
+        space_uri: The space's URI (a bare path is treated as ``file:``; a
+            ``db://`` URI is served from its stored snapshot).
 
     Returns:
         SpaceConfig: The parsed space.yaml.
@@ -59,6 +60,8 @@ def load_space_config(space_uri: str) -> SpaceConfig:
     Raises:
         ValueError: If the space has no space.yaml.
     """
+    if is_db_uri(space_uri):
+        space_uri = resolve_db_uri(space_uri).file_uri
     uriobj = URI.get_uri(uri=space_uri, default_scheme="file")
     with tempfile.TemporaryDirectory() as tmpdir:
         uriobj.pull(dest=Path(tmpdir))
@@ -107,7 +110,7 @@ def _registered_key(space: StoredSpace) -> Optional[str]:
         Optional[str]: See default_local_secrets_key().
     """
     try:
-        config_uri = GitURI.get_gb_space_config_uri(uri=space.git_repo_uri)
+        config_uri = get_space_config_uri(space)
         return default_local_secrets_key(load_space_config(config_uri))
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.warning(
@@ -139,9 +142,7 @@ def check_local_secrets_collision(
             different registered space uses it under the same space.yaml name.
         ValueError: If the candidate's own space.yaml cannot be loaded.
     """
-    key = default_local_secrets_key(
-        load_space_config(GitURI.get_gb_space_config_uri(uri=candidate.git_repo_uri))
-    )
+    key = default_local_secrets_key(load_space_config(get_space_config_uri(candidate)))
     if key is None:
         return
     if not key:

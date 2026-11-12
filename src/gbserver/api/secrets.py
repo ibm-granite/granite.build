@@ -120,12 +120,27 @@ class _IbmSpaceSecretAdmin:
 _space_secret_manager_cache: dict = {}
 
 
-def _build_space_secret_manager(space_uri: str):
+def _get_identity_uri(space: dict) -> str:
+    """The repo a space dict is identified by (its snapshot source if db-backed)."""
+    from gbserver.spaces.db_space import get_identity_uri, is_db_uri
+
+    if not is_db_uri(space["git_repo_uri"]):
+        return space["git_repo_uri"]
+    from gbserver.storage.singleton_storage import get_admin_storage
+
+    stored = get_admin_storage().space_storage.get_by_name(space["name"])
+    if stored is None:
+        raise Exception("Space lookup failed")
+    return get_identity_uri(stored)
+
+
+def _build_space_secret_manager(space_uri: str, identity_uri: Optional[str] = None):
     """Build a SpaceSecretManager from a space's space.yaml.
 
     Pulls the space into a temporary directory (cleaned up on return) only to read
     space.yaml; the resulting manager reads from its own configured location
     (env vars / a configured secrets dir), not from the pulled copy.
+    ``identity_uri`` (default ``space_uri``) is what the manager matches on.
     """
     from gbserver.spaces.local_secrets_isolation import load_space_config
     from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
@@ -138,7 +153,7 @@ def _build_space_secret_manager(space_uri: str):
     # local manager keys its per-space directory on this.
     return SpaceSecretManager.get_spacesecretmanager(
         secret_manager_type=space_config.secret_manager.type,
-        uri=space_uri,
+        uri=identity_uri or space_uri,
         space_name=space_config.name,
         **space_config.secret_manager.config,
     )
@@ -153,18 +168,22 @@ def _get_space_secret_admin(space: dict):
     """
     from gbcommon.types.gbenvconfig import is_standalone
 
+    space_uri = space["git_repo_uri"]
+    identity_uri = _get_identity_uri(space)
     if not is_standalone():
         admin = _get_ibm_secret_manager_admin()
-        group = admin.get_secret_group_for_space(space)
+        # The group is named after the repo, so key on the identity, not db://.
+        group = admin.get_secret_group_for_space(
+            {**space, "git_repo_uri": identity_uri}
+        )
         if group is None:
             raise Exception("Secret group is unavailable")
         return _IbmSpaceSecretAdmin(admin, group)
 
-    space_uri = space["git_repo_uri"]
     cache_key = (space.get("name", ""), space_uri)
     manager = _space_secret_manager_cache.get(cache_key)
     if manager is None:
-        manager = _build_space_secret_manager(space_uri)
+        manager = _build_space_secret_manager(space_uri, identity_uri)
         _space_secret_manager_cache[cache_key] = manager
     return _SpaceSecretAdmin(manager, space.get("name", ""))
 

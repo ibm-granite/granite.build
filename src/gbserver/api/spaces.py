@@ -87,7 +87,8 @@ def list_spaces(
     storage = get_admin_storage()
     row_filter = get_row_filter(name=scoped_name)
     items = cast(List[StoredSpace], storage.space_storage.get_by_where(row_filter))
-    resp = ListSpacesResponse(spaces=items)
+    # Snapshot archives can be MBs per space; GET /{space_name} returns them.
+    resp = ListSpacesResponse(spaces=[item.without_archives() for item in items])
     return resp
 
 
@@ -103,6 +104,25 @@ def spaces_for_user(request: Request):
     """
     username = request.state.data["user"].email
     return {"spaces": user_spaces_list(username)}
+
+
+@spaces_api.get("/{space_name}")
+def get_space(request: Request, space_name: str) -> StoredSpace:
+    """Get one space, including its stored snapshot archives (if db-backed).
+
+    Visible to the same callers as GET / lists it to; anyone else gets the
+    same 404 as a missing space.
+    """
+    not_found = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Space '{space_name}' not found",
+    )
+    if scope_space_name_filter(request, space_name) is NO_ACCESSIBLE_SPACE:
+        raise not_found
+    space = get_admin_storage().space_storage.get_by_name(space_name)
+    if space is None:
+        raise not_found
+    return space
 
 
 @spaces_api.get("/{space_name}/members")
