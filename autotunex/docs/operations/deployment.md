@@ -185,8 +185,8 @@ training stack (`torch` + `ray[tune,default]`) and serves the SPA in-process
 alongside the API. With `AUTOTUNEX_JOB_BACKEND=local` baked in (see the table
 below), tuning runs in-container; only the GPU / online-RL extras (`[full]`:
 verl/vLLM, flash-attn, deepspeed) and the macOS-arm64-only `[mlx]` extra are left
-out. That describes the default `DEVICE=cpu` build: `docker build --build-arg
-DEVICE=cuda .` selects a CUDA stage in the same `Dockerfile` that starts from the
+out. That describes the default `DEVICE=cpu` build: `--build-arg DEVICE=cuda`
+selects a CUDA stage in the same `Dockerfile` that starts from the
 published kernel base (`docker/cuda-base/Dockerfile`, overridable with
 `--build-arg CUDA_KERNEL_BASE=...`) and installs `[full]` instead, so the `local`
 backend can train on an NVIDIA GPU.
@@ -198,8 +198,19 @@ The image runs as a non-root user, exposes port 8000, keeps all writable state �
 the SQLite DB and artifacts — under a `/data` volume so it survives restarts, and
 defines a `HEALTHCHECK` that probes `/health`.
 
+The image builds from the **repository root**, not `autotunex/` — the `llmb`
+variant below installs granite.build from the same checkout — so always name the
+Dockerfile: without `-f`, the root `Dockerfile` (the gbserver image) is built
+instead. What enters the context is set by the allowlist
+`autotunex/Dockerfile.dockerignore`, which BuildKit reads in place of the root
+`.dockerignore`:
+
 ```bash
-podman compose up --build      # or: docker compose up --build
+docker build -f autotunex/Dockerfile -t autotunex:local .   # from the repo root
+```
+
+```bash
+docker compose up --build      # Docker only; with Podman see the README (--ignorefile)
 ```
 
 The image bakes in **standalone** defaults, every one overridable at run time
@@ -261,7 +272,7 @@ and a real token, so its compose service sits behind a **profile** — a bare
 
 ```bash
 cp .env.aio.example .env.aio                 # fill in real values first
-docker compose --profile aio up --build      # or: podman compose --profile aio ...
+docker compose --profile aio up --build      # Docker only
 ```
 
 `.env.aio` is git-ignored and carries only what cannot be baked in: the external
@@ -274,26 +285,25 @@ the container and point `AUTOTUNEX_DATABASE_SSL_CA` and
 `AUTOTUNEX_DATABASE_SSL_MODE` at it — both services read the same two settings
 (`compose.yaml` carries the mount, commented out).
 
-At build time, `GB_REPO` and `GB_REF` pick the granite.build source the
-in-container gbserver is cloned and built from: they default to
-`https://github.com/ibm-granite/granite.build.git` and the branch `main`
-respectively — the same repository the `granite-build` pip extra fetches (see
-below), but tracking `main` rather than the extra's pinned `stable` tag, so a
-rebuild picks up whatever `main` holds at the time. Override both to build gbserver
-from somewhere else. `PUBLIC_AUTOTUNEX_API_URL` (empty by default, meaning
-same-origin) matters only if the API is fronted elsewhere.
-`INSTALL_AUTOTUNE_CORE=1` additionally installs
-the `autotune` training core that the `local` backend needs, from the vendored
-`src/fm-tune[core,mlx]` already in the build context, and switches the AutoTuneX
-install from `[mysql,postgres]` to `[mysql,postgres,granite-build]`. That extra is a VCS
-dependency, so the build makes one more `git` fetch, separate from the gbserver
-clone above — the `granite.build` **pip package** from the public
-`github.com/ibm-granite/granite.build` at its `stable` tag — though still no
-credentials, just a much larger image (torch/Ray). `GB_TOKEN` and
-`GITHUB_HOST` play no part in the build: they are run-time settings (the token the
-`llmb` backend requires, plus the entrypoint's git credentials, which matter only
-if you point `AUTOTUNEX_BASH_FM_TUNE_ROOT` at a repo URL instead of the vendored
-trainer at `/opt/fm-tune`).
+It builds from the repository root like the image above (`docker build -f
+autotunex/Dockerfile.aio .`, context set by `autotunex/Dockerfile.aio.dockerignore`),
+and its gbserver, dashboard and `llmb` CLI come from **that same checkout**: the
+dashboard is built with the repo's own `make build-frontend`, and granite.build is
+installed from the copied tree, so an image built from a commit runs the gbserver
+in that commit. The checkout must carry granite.build's `v*` version tags:
+setuptools_scm stamps the version from them, and without one the build stops rather
+than ship an `llmb` CLI whose version check fails every job launch. The same check
+fails a build from a git worktree, whose `.git` is a file.
+`PUBLIC_AUTOTUNEX_API_URL` (empty by default, meaning same-origin) matters only if
+the API is fronted elsewhere. `INSTALL_AUTOTUNE_CORE=1` additionally installs the
+`autotune` training core that the `local` backend needs, from the vendored
+`src/fm-tune[core,mlx]`, and installs granite.build from the same tree into the
+AutoTuneX virtualenv, so the image still carries one granite.build — just a much
+larger image (torch/Ray). `GB_TOKEN` and `GITHUB_HOST` play no part in the build:
+they are run-time settings (the token the `llmb` backend requires, plus the
+entrypoint's git credentials, which matter only if you point
+`AUTOTUNEX_BASH_FM_TUNE_ROOT` at a repo URL instead of the vendored trainer at
+`/opt/fm-tune`).
 
 On Kubernetes/OpenShift, mount a PVC at `/data`: it is both the volume and `HOME`,
 so artifacts, datasets and gbserver's own SQLite state all land there. The image
@@ -307,15 +317,23 @@ run under a different one (`runAsUser: 0`) — which git would otherwise reject 
 table, the plain `docker run` invocation, the optional training-core build, why
 the baked gbserver URL is plain HTTP, and a runtime smoke test.
 
-### `llmb`-ready image (`Dockerfile.gb`)
+### `llmb` image (`JOB_BACKEND=llmb`)
 
-`Dockerfile.gb` is a third top-level image with the same single-container shape as
-the root `Dockerfile` — API plus the built SPA, non-root, port 8000, a `/data`
-volume, a `/health` `HEALTHCHECK` — but built for the **`llmb`** backend instead
-of `local`. It installs AutoTuneX as `".[granite-build, mysql, mcp]"`, so the
-`llmb` CLI and the MySQL driver are in the image, plus the vendored `src/fm-tune`
-at its torch-free base (the catalog imports; no Ray/torch, so no in-process
-training). Its baked defaults differ from the table above in three places:
+`--build-arg JOB_BACKEND=llmb` builds the same `Dockerfile` for the **`llmb`**
+backend instead of `local`, with the same single-container shape — API plus the
+built SPA, non-root, port 8000, a `/data` volume, a `/health` `HEALTHCHECK`. It
+installs granite.build from the checkout being built (the `llmb` CLI, and the
+`gbcli` package live build logs read), AutoTuneX's `mysql` and `mcp` extras, and
+the vendored `src/fm-tune` at its torch-free base (the catalog imports; no
+Ray/torch, so no in-process training). It is CPU-only — `DEVICE=cuda` with
+`JOB_BACKEND=llmb` stops the build, since training happens on the granite.build
+side — and like the AIO image it needs granite.build's `v*` tags in the checkout.
+
+```bash
+docker build -f autotunex/Dockerfile --build-arg JOB_BACKEND=llmb -t autotunex:gb .
+```
+
+Its baked defaults differ from the table above in three places:
 `AUTOTUNEX_JOB_BACKEND=llmb`, `AUTOTUNEX_AUTO_CREATE_SCHEMA=false`, and
 `AUTOTUNEX_JOB_TRAINER_REF=oss-main`. It bundles neither gbserver nor the
 api-bridge, so unlike the AIO image it needs an **external** granite.build
@@ -328,8 +346,24 @@ run time, plus the token environment variable `AUTOTUNEX_GB_TOKEN_ENV` names
 `GB_ENVIRONMENT=standalone` (unprefixed — granite.build's own variable) instead
 selects the local-`bash` spec, which drops the three custom_code-only inputs and
 leaves `AUTOTUNEX_GB_SERVER_URL` plus the token variable as the only run-time
-requirements. It has no `compose.yaml` service and no `make` target; build and run
-it directly.
+requirements. It has no `make` target; `compose.yaml` shows the build arg, commented out, on the
+`autotunex` service.
+
+### Building in a CI toolchain
+
+An IBM Cloud Classic pipeline image job that runs `buildctl` from the `autotunex`
+working directory needs these edits, because the context is now the repository
+root:
+
+- every job: `--local context=.` becomes `--local context=..`. Keep
+  `--local dockerfile=.`, so BuildKit still finds the Dockerfile and its
+  `.dockerignore` in `autotunex/`;
+- the `llmb` job: build `Dockerfile` (`Dockerfile.gb` is gone) and add
+  `--opt build-arg:JOB_BACKEND=llmb`;
+- the AIO job keeps `--opt filename=Dockerfile.aio`.
+
+The pipeline's checkout must include tags: a tag-less or shallow clone fails the
+first build at the version check, by design.
 
 ## Security
 
