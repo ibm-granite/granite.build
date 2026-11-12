@@ -14,7 +14,7 @@ images; nothing is cloned or mounted at job launch.
   2 data       data-prep  |  data-validate        (validate = reuse a corpus)
   3 train      student-sft (optional)  ->  logit-distill
                └ with student-rollout-generator (on-policy) or teacher-logits (offline)
-  4 export     misc/hf-export
+  4 export     aux/hf-export
   5 measure    teacher-divergence  +  repetition-check
 ```
 
@@ -26,7 +26,7 @@ images; nothing is cloned or mounted at job launch.
 3. **Train** — optionally warm-start with `student-sft`, then distill with `logit-distill`.
    On-policy runs add `student-rollout-generator` alongside the trainer; offline runs can use
    `teacher-logits` instead of holding the teacher in memory.
-4. **Export** — [`steps/aux/hf-export`](../../misc/hf-export) turns a checkpoint into a
+4. **Export** — [`steps/aux/hf-export`](../../aux/hf-export) turns a checkpoint into a
    publishable HF model directory. It is generic, so it lives outside this collection.
 5. **Measure** — `teacher-divergence` on the exported model (and once on the untrained
    student, as the baseline); `repetition-check` on each export.

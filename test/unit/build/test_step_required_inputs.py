@@ -44,7 +44,7 @@ STEPS = {
     "train/distill/student-sft": _LSF_ENV,
     "train/distill/logit-distill": _LSF_ENV,
     "train/distill/teacher-divergence": _LSF_ENV,
-    "misc/hf-export": _LSF_ENV,
+    "aux/hf-export": _LSF_ENV,
     "train/distill/teacher-logits": _LSF_ENV,
     "train/distill/student-rollout-generator": _LSF_ENV,
     "inference": _BASH_ENV,
