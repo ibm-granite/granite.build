@@ -89,6 +89,7 @@ class LocalLogQueryAPI:
             where = self._build_where_filter(query)
             storage = get_admin_storage()
             events: List[StoredEvent] = storage.event_storage.get_by_where(where)
+            events = self._sort_events(events, query)
 
             logs = [self._event_to_log(event) for event in events]
 
@@ -100,6 +101,24 @@ class LocalLogQueryAPI:
         except Exception as e:
             logger.error("LocalLogQueryAPI query failed: %s", e)
             return LogqueryResponse(status=400, error=str(e))
+
+    @staticmethod
+    def _sort_events(events: List[StoredEvent], query: Item) -> List[StoredEvent]:
+        """Order events by timestamp in the direction gbcli requested.
+
+        get_by_where() does not define an order, and gbcli relies on one: it
+        requests "desc" and then reverses the result (and takes the first entry as
+        the newest). Without a "timestamp" sort in the query, the storage order is
+        kept. Events with equal timestamps keep their storage (insertion) order, and
+        "desc" is the exact reverse of "asc".
+        """
+        sort_model = query.queryDef.sortModel or []
+        for sort in sort_model:
+            if sort.field != "timestamp":
+                continue
+            ordered = sorted(events, key=lambda e: e.build_event.timestamp.timestamp())
+            return ordered[::-1] if sort.ordering == "desc" else ordered
+        return events
 
     def _build_where_filter(self: Self, query: Item) -> dict:
         """Translate Item query parameters to gb_events column filters."""
@@ -146,7 +165,8 @@ class LocalLogQueryAPI:
         if event.build_event.payload is not None:
             msg = getattr(event.build_event.payload, "msg", "") or ""
 
-        timestamp = event.build_event.timestamp.timestamp()
+        # gbcli expects /logquery timestamps in epoch milliseconds.
+        timestamp = int(event.build_event.timestamp.timestamp() * 1000)
 
         return LogqueryResponseLogs(
             timestamp=timestamp,

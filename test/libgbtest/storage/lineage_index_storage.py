@@ -613,6 +613,36 @@ class BaseLineageIndexStorageTest(AbstractStorageTest):
             storage.add_replacing(row(job_id="J"), [terminal.uuid])
         assert len(storage.get_rows_by_job("J")) == 2
 
+    def test_row_over_index_byte_cap_dropped_stored_keeps_merging(self):
+        """~450 CJK characters per side fit the columns but overflow the Postgres
+        btree entry (``index row size 3240 exceeds btree maximum 2704``) on every
+        retry. A new such row is refused; one long multi-byte side still fits; and a
+        row already stored keeps merging, so nothing indexed before is cut off."""
+        from gbserver.lineage.merge import (
+            ADDED,
+            REJECTED,
+            UNCHANGED,
+            UPDATED,
+            rows_to_add,
+            upsert_row,
+        )
+
+        storage = self._get_tested_storage()
+        prefix = "https://huggingface.co/org/"
+        wide = prefix + "模" * 450
+        assert len(wide) <= MAX_LINEAGE_URI_LENGTH
+        assert upsert_row(storage, row(job_id="J1", input=wide, output=wide + "x")) == (
+            REJECTED
+        )
+        assert storage.get_rows_by_job("J1") == []
+        assert rows_to_add([row(job_id="J1", input=wide, output=wide + "x")]) == []
+        assert upsert_row(storage, row(job_id="J2", input=wide)) == ADDED
+
+        # Stored before the guard existed: written past upsert_row.
+        storage.add(row(job_id="J3", input=wide, output=wide + "x"))
+        again = row(job_id="J3", input=wide, output=wide + "x")
+        assert upsert_row(storage, again) in (UNCHANGED, UPDATED)
+
     def test_purge_scheme_drops_mem_endpoints_and_keeps_real_artifacts(self):
         """#561: rows indexed before mem:// was excluded. A real side left with no row
         becomes a terminal row; jobs without mem:// are untouched."""

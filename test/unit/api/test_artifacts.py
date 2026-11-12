@@ -43,7 +43,7 @@ confirm_space_member_access is never stubbed by conftest.
 
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -528,3 +528,74 @@ def test_the_normalized_match_keeps_the_space_scope():
             match_lineage_uri=True,
         )
     assert resp.artifacts == []
+
+
+def test_several_registrations_of_one_identity_come_back_in_a_fixed_order():
+    """``cos://`` and ``s3://`` (or two spellings of one HF repo) normalize to one
+    id; the panel takes the first, so it must be the same one every time: not
+    archived first, then newest."""
+    from datetime import datetime, timezone
+
+    old = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    old.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    new = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    new.uri = f"https://huggingface.co/{ALICE_SPACE}/alice-model"
+    new.created_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    archived = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    archived.created_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    archived.is_archived = True
+    for order in ([old, new, archived], [archived, new, old]):
+        with (
+            _patched_list_registry(order),
+            patch("gbserver.api.utils.is_super_admin", return_value=False),
+            patch("gbserver.api.utils.get_space_access_manager") as manager,
+        ):
+            _set_alice_access(manager)
+            resp = list_artifacts(
+                _fake_request(ALICE, f"{ALICE}@example.com"),
+                uri=f"https://huggingface.co/{ALICE_SPACE}/alice-model/",
+                match_lineage_uri=True,
+            )
+        assert [a.uuid for a in resp.artifacts] == [new.uuid, old.uuid, archived.uuid]
+
+
+def test_lineage_uri_match_does_not_cache_the_request_uri_or_long_uris():
+    """The request's uri is caller-supplied and unbounded: caching it would let
+    any client fill the module cache. Long registry URIs skip it too."""
+    from gbserver.api import artifacts as api
+
+    api._normalized_cached.cache_clear()
+    storage = MagicMock()
+    storage.artifact_registry.get_by_where.return_value = []
+    api._by_lineage_uri(storage, "hf://org/" + "x" * 5000)
+    assert api._normalized_cached.cache_info().currsize == 0
+    api._normalized("hf://org/" + "y" * (api._MAX_CACHED_URI_LENGTH + 1))
+    assert api._normalized_cached.cache_info().currsize == 0
+    api._normalized("hf://org/model")
+    assert api._normalized_cached.cache_info().currsize == 1
+
+
+def test_lineage_uri_matches_come_unarchived_first_then_newest():
+    from datetime import datetime, timezone
+
+    from gbserver.api import artifacts as api
+
+    def reg(uuid, archived, day):
+        return MagicMock(
+            uri="https://huggingface.co/org/model",
+            uuid=uuid,
+            is_archived=archived,
+            created_at=datetime(2026, 1, day, tzinfo=timezone.utc),
+        )
+
+    storage = MagicMock()
+    storage.artifact_registry.get_by_where.return_value = [
+        reg("old", False, 1),
+        reg("archived-new", True, 9),
+        reg("new", False, 5),
+        reg("none", None, 7),
+    ]
+    order = [
+        m.uuid for m in api._by_lineage_uri(storage, "https://huggingface.co/org/model")
+    ]
+    assert order == ["none", "new", "old", "archived-new"]

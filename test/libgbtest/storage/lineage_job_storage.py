@@ -542,3 +542,13 @@ class BaseLineageJobStorageTest(AbstractStorageTest):
         after = storage.get_job("J1")
         assert after.recorded_at == before.recorded_at
         assert after.tags == before.tags
+
+    def test_add_more_than_five_in_one_call(self):
+        """Past five items the add used bulk_save_objects, which cannot bind the
+        database-stamped recorded_at expression, so every bulk add failed."""
+        storage = self._get_tested_storage()
+        jobs = [job(job_id=f"bulk-{i}") for i in range(7)]
+        storage.add(jobs)
+        for record in jobs:
+            stored = storage.get_job(record.job_id)
+            assert stored is not None and stored.recorded_at

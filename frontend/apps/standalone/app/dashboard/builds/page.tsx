@@ -10,6 +10,11 @@ import { useQuery } from "@tanstack/react-query";
 import { listBuilds, getBuildTags, listSpaces } from "@granite-build/ui-core/api/gbserver";
 import { BuildsTable } from "@granite-build/ui-core/components/BuildsTable";
 import { PageHeader } from "@granite-build/ui-core/components/PageHeader";
+import {
+  SEARCH_WINDOW,
+  buildsView,
+  type BuildsFetchMode,
+} from "@granite-build/ui-core/lib/buildSearch";
 import type { BuildStatus } from "@granite-build/ui-core/types";
 import styles from "./page.module.scss";
 
@@ -64,25 +69,33 @@ export default function BuildsPage() {
     queryFn: () => getBuildTags(spaceName),
   });
 
-  // Builds
+  const searching = search.trim().length > 0;
+  const mode: BuildsFetchMode = searching ? "window" : "page";
+
+  // Builds — server-paginated normally; one bounded window while searching
+  // (lib/buildSearch: the term is not in the key, as filtering is local).
   const { data, isLoading, error } = useQuery({
     queryKey: [
       "builds",
       spaceName,
       selectedTags,
       status,
-      page,
-      pageSize,
+      ...(searching ? ["search-window"] : [page, pageSize]),
     ],
-    queryFn: () =>
-      listBuilds({
+    queryFn: async () => ({
+      mode,
+      ...(await listBuilds({
         space_name: spaceName,
         tags: selectedTags.length ? selectedTags : undefined,
         status: status === "all" ? undefined : (status as BuildStatus),
         sort: "created_time:desc",
-        page_index: page - 1,
-        page_size: pageSize,
-      }),
+        page_index: searching ? 0 : page - 1,
+        page_size: searching ? SEARCH_WINDOW : pageSize,
+      })),
+    }),
+    // Keep the previous result while the next loads: without it BuildsTable
+    // shows its skeleton, which unmounts the search box mid-typing. buildsView
+    // renders it per the mode it was fetched in, not the one now wanted.
     placeholderData: (prev) => prev,
   });
 
@@ -96,15 +109,7 @@ export default function BuildsPage() {
     setPage(1);
   }, []);
 
-  // gbserver's list endpoint has no name/search param, so search filters the
-  // current page of already-fetched builds rather than querying the server.
-  const allItems = data?.items ?? [];
-  const visibleItems = search
-    ? allItems.filter((b) =>
-        b.name.toLowerCase().includes(search.toLowerCase()),
-      )
-    : allItems;
-  const visibleTotal = search ? visibleItems.length : data?.total ?? 0;
+  const view = buildsView(data, data?.mode, { term: search, page, pageSize });
 
   const spaceItems = [
     { id: "__all__", label: "All spaces" },
@@ -195,9 +200,20 @@ export default function BuildsPage() {
         />
       )}
 
+      {view.truncated && (
+        <InlineNotification
+          kind="info"
+          lowContrast
+          hideCloseButton
+          title="Search limited to recent builds"
+          subtitle={`Searching the ${SEARCH_WINDOW} most recent builds matching the current filters. Narrow the filters to search further back.`}
+          style={{ marginBottom: "1rem" }}
+        />
+      )}
+
       <BuildsTable
-        builds={visibleItems}
-        total={visibleTotal}
+        builds={view.items}
+        total={view.total}
         page={page}
         pageSize={pageSize}
         isLoading={isLoading}
