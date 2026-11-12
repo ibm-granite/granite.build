@@ -21,6 +21,9 @@ a directory) and nothing else, keeps the repo layout under the pull
 destination, and binds ``<dest>/data/train``. Every pull path does this: the
 Python ``HfURI.pull`` (bash, docker, k8s), the skypilot and LSF hfpull shell
 scripts, and the skypilot inline download line.
+
+The ``mocked`` tests turn HF mocking back on: a mocked pull downloads nothing
+but still creates ``<dest>/<path>``, so the binding exists.
 """
 
 import asyncio
@@ -157,6 +160,16 @@ def test_mocked_pull_creates_the_bound_path(tmp_path, monkeypatch):
         assert uri.pull(tmp_path / "d") is True
     mock_dl.assert_not_called()
     assert uri.local_path(tmp_path / "d").is_dir()
+
+
+def test_mocked_pull_keeps_a_file_already_at_the_path(tmp_path, monkeypatch):
+    """A live run may have left the real file there (a shared cache)."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    pulled = tmp_path / "d" / "config.json"
+    pulled.parent.mkdir(parents=True)
+    pulled.write_text("{}")
+    assert HfURI.parse("hf:///org/m/main/config.json").pull(tmp_path / "d") is True
+    assert pulled.read_text() == "{}"
 
 
 @pytest.mark.parametrize(
@@ -467,3 +480,22 @@ def test_mocked_hfpull_script_creates_the_bound_path(tmp_path, script, path_in_r
     assert proc.returncode == 0, proc.stderr
     assert "mocking hfpull" in proc.stdout
     assert (dest / path_in_repo.strip("/")).is_dir()
+
+
+@_SCRIPTS
+def test_mocked_hfpull_script_keeps_a_file_already_at_the_path(tmp_path, script):
+    """A live run may have left the real file there (a shared cache)."""
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "config.json").write_text("{}")
+    text = _render(script(), "config.json").replace("DEST_PLACEHOLDER", str(dest))
+    proc = subprocess.run(
+        ["bash", "-c", text],
+        env={**os.environ, ENV_VAR_GBTEST_MOCK_HF: "true"},
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (dest / "config.json").read_text() == "{}"

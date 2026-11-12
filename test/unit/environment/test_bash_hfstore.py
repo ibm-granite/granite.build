@@ -87,10 +87,12 @@ async def test_mocked_pullasset_hfstore_binds_a_path_that_exists(
 ):
     """With HF mocked nothing is downloaded, but the bound path still exists."""
     monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
-    binding_config, _ = await bash_env.pullasset_hfstore(
-        uri=HfURI.parse("hf:///datasets/org/repo/main/data/train"),
-        storeload_config=StoreLoad(config={"cache_path": str(tmp_path)}),
-    )
+    with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+        binding_config, _ = await bash_env.pullasset_hfstore(
+            uri=HfURI.parse("hf:///datasets/org/repo/main/data/train"),
+            storeload_config=StoreLoad(config={"cache_path": str(tmp_path)}),
+        )
+    mock_dl.assert_not_called()
     bound = Path(binding_config[BINDING_KEY]["path"])
     assert bound == tmp_path / "org" / "repo" / "main" / "data" / "train"
     assert bound.is_dir()
