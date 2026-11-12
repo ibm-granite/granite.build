@@ -260,7 +260,7 @@ environment_configs:
               --allow-crimes '{{ q(c.allow_crimes | string | lower) }}' \
               --trust-remote-code '{{ q(c.trust_remote_code | string | lower) }}' \
               --output-model '{{ q(c.output_path or "./model") }}' \
-              --run-id '{{ q(run_metadata.targetsteprun_id if run_metadata is defined else "") }}'
+              --retry-key '{{ q((run_metadata.build_id ~ "/" ~ run_metadata.target_name ~ "/" ~ run_metadata.target_step_index) if (run_metadata is defined and run_metadata.build_id) else "") }}'
     monitors:
       skypilot_monitor:
         ref: space://monitors/skypilot
