@@ -44,14 +44,3 @@ def test_the_autotune_import_override_is_retained() -> None:
 
     assert autotune, "the autotune ignore_missing_imports override must survive vendoring"
     assert autotune[0]["ignore_missing_imports"] is True
-
-
-def test_the_granite_build_extra_no_longer_points_at_an_internal_host() -> None:
-    config = _config()
-
-    extra = config["project"]["optional-dependencies"]["granite-build"]  # type: ignore[index]
-
-    assert not any("ibm.com" in dep for dep in extra), (
-        "fm-tune is vendored at src/fm-tune and installed from the local path; "
-        "the extra must not fetch it from an internal host"
-    )

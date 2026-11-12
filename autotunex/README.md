@@ -53,6 +53,14 @@ uvicorn autotunex.main:app --reload
 `autotune` catalog that the configuration-template, dataset-format and `suggest-mapping`
 endpoints need — without it they return `503`.
 
+For the `llmb` job backend (and live build logs), also install granite.build from
+this checkout, so the `llmb` CLI and the `gbcli` package match the gbserver in the
+same commit:
+
+```bash
+uv pip install -e ..
+```
+
 The server starts on <http://127.0.0.1:8000> and creates a local SQLite database
 (`autotunex.db`) on first run. No database server needed.
 

@@ -14,6 +14,7 @@ only as a failed toolchain build.
 from __future__ import annotations
 
 import fnmatch
+import tomllib
 from pathlib import Path
 
 _AUTOTUNEX = Path(__file__).resolve().parents[1]
@@ -154,3 +155,15 @@ def test_the_aio_image_carries_one_granite_build() -> None:
 
     assert "granite-build" not in instructions
     assert 'GB_PKG="-e /opt/granite.build"' in _stage_body(_text(_AIO), "py-builder")
+
+
+def test_autotunex_pulls_no_dependency_from_a_url() -> None:
+    # A direct reference (`granite.build @ git+https://...@stable`) installs a
+    # granite.build other than the one in this checkout.
+    project = tomllib.loads(_text(_AUTOTUNEX / "pyproject.toml"))
+    deps = list(project["project"]["dependencies"])
+    for extra in project["project"].get("optional-dependencies", {}).values():
+        deps += extra
+
+    assert not [dep for dep in deps if " @ " in dep]
+    assert "metadata" not in project.get("tool", {}).get("hatch", {})
