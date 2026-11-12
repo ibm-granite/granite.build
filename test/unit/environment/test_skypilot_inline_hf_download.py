@@ -26,8 +26,8 @@ from gbserver.environment.skypilot import _inline_hf_download_cmd
 _NASTY = 'x"; touch PWNED; echo "$(touch PWNED2)`touch PWNED3`'
 
 
-def _run_with_stub_hf(tmp_path, cmd):
-    """Run ``cmd`` under ``sh -eu`` with a stub ``hf`` that records its argv."""
+def _stub_hf_env(tmp_path):
+    """An env whose ``hf`` is a stub that records its argv and downloads nothing."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     stub = bindir / "hf"
@@ -35,7 +35,12 @@ def _run_with_stub_hf(tmp_path, cmd):
         '#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done > argv.txt\n'
     )
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
-    env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+    return {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def _run_with_stub_hf(tmp_path, cmd):
+    """Run ``cmd`` under ``sh -eu`` with a stub ``hf`` that records its argv."""
+    env = _stub_hf_env(tmp_path)
     subprocess.run(["sh", "-euc", cmd], cwd=tmp_path, env=env, check=True)
     return (tmp_path / "argv.txt").read_text().splitlines()
 
@@ -60,6 +65,21 @@ def test_metacharacters_reach_hf_literally(tmp_path, field):
     )
     value = argv[1] if flag is None else argv[argv.index(flag) + 1]
     assert value == _NASTY
+    assert not list(tmp_path.glob("PWNED*")), "a value was executed by the shell"
+
+
+def test_path_in_repo_metacharacters_are_not_executed(tmp_path):
+    info = {"repo": "o/r", "path": "/p", "path_in_repo": _NASTY}
+    proc = subprocess.run(
+        ["sh", "-uc", _inline_hf_download_cmd(info)],
+        cwd=tmp_path,
+        env=_stub_hf_env(tmp_path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0, "the path was not downloaded, so the check fails"
+    assert "matched nothing" in proc.stderr
     assert not list(tmp_path.glob("PWNED*")), "a value was executed by the shell"
 
 

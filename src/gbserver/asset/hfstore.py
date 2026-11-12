@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Self, Union
 
 from huggingface_hub import create_repo, upload_file, upload_folder
 
-from gbcommon.uri.hf import HfURI
+from gbcommon.uri.hf import HfType, HfURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
 from gbserver.types.artifact import ArtifactType
@@ -221,7 +221,11 @@ class Hfstore(Assetstore):
             # Sub-path within the repo ("" when none). The skypilot/LSF hfpull
             # scripts download only it (``--include``), into ``path`` with the
             # repo layout kept; the k8s template re-parses it from ``uri``.
-            "path_in_repo": hfuri.get_path_in_repo(),
+            # A bucket is bound at ``path`` itself (HfURI.local_path), so it
+            # gets no filter.
+            "path_in_repo": (
+                "" if hfuri.get_hf_type() == HfType.BUCKET else hfuri.get_path_in_repo()
+            ),
             "hf": {
                 "type": hf_type,
             },
