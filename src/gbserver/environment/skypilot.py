@@ -2125,7 +2125,7 @@ def _build_skypilot_mounts(
 
 
 def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
-    """The ``hf download`` line an inline hfpull adds to a step's setup script.
+    """The ``hf download`` lines an inline hfpull adds to a step's setup script.
 
     Every value is ``shlex.quote``d, so a ``"``, ``$`` or backtick in one can
     neither break the setup line nor be expanded by the shell. The repo and
@@ -2134,22 +2134,36 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     ``pullasset_hfstore`` refuses one containing ``$``.
 
     :param pull_info: A binding's ``_hfpull`` dict (``repo``, ``path``, and the
-        optional ``revision``, ``type`` and ``path_in_repo``; with a path in the
-        repo only it is downloaded, as ``HfURI.pull`` does).
-    :returns: The shell command line.
+        optional ``revision``, ``type`` and ``path_in_repo``). With a path in the
+        repo, only it is downloaded, and a second line exits the setup when it
+        matched nothing, as ``HfURI.pull`` does.
+    :returns: The shell command line(s).
     """
+    from gbcommon.uri.hf import hf_path_patterns
+
+    dest = str(pull_info["path"])
     cmd = (
         f"hf download {shlex.quote(str(pull_info['repo']))} "
-        f"--local-dir {shlex.quote(str(pull_info['path']))}"
+        f"--local-dir {shlex.quote(dest)}"
     )
     if pull_info.get("revision"):
         cmd += f" --revision {shlex.quote(str(pull_info['revision']))}"
     if pull_info.get("type"):
         cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
     path_in_repo = str(pull_info.get("path_in_repo") or "").strip("/")
+    for pattern in hf_path_patterns(path_in_repo) or []:
+        cmd += f" --include {shlex.quote(pattern)}"
     if path_in_repo:
-        for pattern in (path_in_repo, f"{path_in_repo}/*"):
-            cmd += f" --include {shlex.quote(pattern)}"
+        # A failed test left of `||` does not trip the setup's `set -e`, and a
+        # bare `[ -e ]` would fail with no message: report it and exit.
+        missing = (
+            f"hfpull: '{path_in_repo}' matched nothing in {pull_info['repo']} "
+            f"(type={pull_info.get('type')}, rev={pull_info.get('revision')})"
+        )
+        cmd += (
+            f"\n[ -e {shlex.quote(f'{dest}/{path_in_repo}')} ] || "
+            f"{{ echo {shlex.quote(missing)} >&2; exit 1; }}"
+        )
     return cmd
 
 
@@ -5647,7 +5661,7 @@ class Skypilot(Environment):
         deferred to the main step's setup phase (no separate cluster launched).
         This is required for environments without shared filesystems (e.g. AWS).
         """
-        from gbcommon.uri.hf import HfURI
+        from gbcommon.uri.hf import HfType, HfURI
         from gbserver.asset.hfstore import Hfstore
         from gbserver.environment.local_assets import get_hf_cache_dir
 
@@ -5697,7 +5711,15 @@ class Skypilot(Environment):
                 "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
                 "revision": hfuri.get_revision(),
                 "type": hfuri.get_hf_type() or "model",
-                "path_in_repo": hfuri.get_path_in_repo(),
+                # A bucket is bound at the download dir (HfURI.local_path), so
+                # it gets no filter, as in Hfstore.build_hfpull_step_config.
+                # (`hf download` has no bucket repo type, so an inline bucket
+                # pull fails either way.)
+                "path_in_repo": (
+                    ""
+                    if hfuri.get_hf_type() == HfType.BUCKET
+                    else hfuri.get_path_in_repo()
+                ),
                 "uri": str(hfuri),
                 "hf_token": hf_token,
             }

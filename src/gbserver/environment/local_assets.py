@@ -63,14 +63,14 @@ def pull_asset_hfstore(
     uses the returned path differently: Bash binds it directly, Docker mounts
     it as a container volume.
 
-    Uses ``HfURI.sync`` to download all repo files directly into *dest*.
-    When *dest* is not provided it defaults to
+    Uses ``HfURI.pull`` to download the repo into *dest*, or only its path in
+    the repo when the URI has one. When *dest* is not provided it defaults to
     ``<cache_dir>/<owner>/<repo>/<revision>``.
 
     Args:
         uri: HfURI instance or URI string pointing to the model to pull.
         assetstore: Optional Hfstore instance; when provided its secrets
-            (e.g. ``HF_TOKEN``) are injected into the URI before syncing.
+            (e.g. ``HF_TOKEN``) are injected into the URI before pulling.
         storeload_config: StoreLoad config (may be None); may carry
             ``config.cache_path`` to override the default cache directory.
             Ignored when *dest* is provided explicitly.
@@ -83,7 +83,7 @@ def pull_asset_hfstore(
 
     Raises:
         AssertionError: If ``uri`` is None or does not resolve to an HfURI.
-        RuntimeError: If the HuggingFace sync operation fails.
+        RuntimeError: If the pull fails.
     """
     from gbcommon.uri.hf import HfURI
     from gbcommon.uri.uri import URI

@@ -21,10 +21,14 @@ a directory) and nothing else, keeps the repo layout under the pull
 destination, and binds ``<dest>/data/train``. Every pull path does this: the
 Python ``HfURI.pull`` (bash, docker, k8s), the skypilot and LSF hfpull shell
 scripts, and the skypilot inline download line.
+
+The ``mocked`` tests turn HF mocking back on: a mocked pull downloads nothing
+but still creates ``<dest>/<path>``, so the binding exists.
 """
 
 import asyncio
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -35,7 +39,7 @@ from jinja2 import Environment
 
 import gbserver
 from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
-from gbcommon.uri.hf import HfType, HfURI, hf_path_patterns
+from gbcommon.uri.hf import HfType, HfURI, _hfpull_lock_path, hf_path_patterns
 from gbserver.asset.hfstore import Hfstore
 from gbserver.environment.skypilot import _inline_hf_download_cmd
 
@@ -125,6 +129,59 @@ def test_local_pull_binds_the_path(tmp_path):
     assert bound == tmp_path / "d" / _SUB
 
 
+def test_pull_evicted_before_the_path_lands_rewaits(tmp_path):
+    """Losing the lock before the path is downloaded is a re-wait, not a miss.
+
+    A peer that reclaims our lock is still writing the tree, so the path may not
+    be there yet. The pull must re-wait and retry (the #320 design), not report
+    that the path matched nothing.
+    """
+    dest = tmp_path / "d"
+    calls = []
+
+    def fake_download(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            # A peer reclaims our lock before the path has landed.
+            shutil.rmtree(_hfpull_lock_path(dest), ignore_errors=True)
+            return
+        (Path(kw["local_dir"]) / _SUB).mkdir(parents=True)
+
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        assert HfURI.parse(_URI).pull(dest) is True
+    assert len(calls) == 2
+
+
+def test_mocked_pull_creates_the_bound_path(tmp_path, monkeypatch):
+    """A mocked pull downloads nothing, but the input is still bound at the path."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    uri = HfURI.parse(_URI)
+    with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+        assert uri.pull(tmp_path / "d") is True
+    mock_dl.assert_not_called()
+    assert uri.local_path(tmp_path / "d").is_dir()
+
+
+def test_mocked_pull_keeps_a_file_already_at_the_path(tmp_path, monkeypatch):
+    """A live run may have left the real file there (a shared cache)."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    pulled = tmp_path / "d" / "config.json"
+    pulled.parent.mkdir(parents=True)
+    pulled.write_text("{}")
+    assert HfURI.parse("hf:///org/m/main/config.json").pull(tmp_path / "d") is True
+    assert pulled.read_text() == "{}"
+
+
+@pytest.mark.parametrize(
+    "uri", ["hf:///datasets/org/repo", "hf:///buckets/org/b/some/dir"]
+)
+def test_mocked_pull_without_a_path_creates_nothing(tmp_path, monkeypatch, uri):
+    """Without a path in the repo the binding is dest, which the caller owns."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    assert HfURI.parse(uri).pull(tmp_path / "d") is True
+    assert not (tmp_path / "d").exists()
+
+
 # ── hfpull step configs and bindings ─────────────────────────────────────────
 
 
@@ -134,6 +191,13 @@ def test_hfpull_step_config_carries_the_path():
     assert cfg["path"] == "/cache/x"
     whole = Hfstore.build_hfpull_step_config(HfURI.parse("hf:///org/m"), "/c")
     assert whole["path_in_repo"] == ""
+
+
+def test_hfpull_step_config_has_no_path_for_a_bucket():
+    """A bucket is bound at dest (local_path), so the shell steps get no filter."""
+    uri = HfURI.parse("hf:///buckets/org/b/some/dir")
+    cfg = Hfstore.build_hfpull_step_config(uri, "/cache/x")
+    assert cfg["path_in_repo"] == ""
 
 
 def _hfstore():
@@ -184,6 +248,17 @@ async def test_skypilot_inline_pull_carries_the_path(skypilot_env):
     assert step is None
     assert binding["_hfpull"]["path_in_repo"] == _SUB
     assert binding["binding"]["path"].endswith(f"/main/{_SUB}")
+
+
+@pytest.mark.asyncio
+async def test_skypilot_inline_bucket_pull_has_no_path(skypilot_env):
+    binding, _ = await skypilot_env.pullasset_hfstore(
+        uri=HfURI.parse("hf:///buckets/org/b/some/dir"),
+        assetstore=_hfstore(),
+        storeload_config=_storeload(inline=True),
+    )
+    assert binding["_hfpull"]["path_in_repo"] == ""
+    assert binding["binding"]["path"] == binding["_hfpull"]["path"]
 
 
 @pytest.mark.asyncio
@@ -257,10 +332,28 @@ def test_inline_line_includes_only_the_path(tmp_path):
             "path_in_repo": f"/{_SUB}/",
         }
     )
-    _, argv = _run(tmp_path, cmd, _SUB)
+    proc, argv = _run(tmp_path, cmd, _SUB)
+    assert proc.returncode == 0, proc.stderr
     assert argv[argv.index("--include") + 1] == _SUB
     assert argv.count("--include") == 2
     assert f"{_SUB}/*" in argv
+
+
+def test_inline_line_fails_when_the_path_matches_nothing(tmp_path):
+    cmd = _inline_hf_download_cmd(
+        {
+            "repo": "org/repo",
+            "path": str(tmp_path / "dest"),
+            "revision": "main",
+            "type": "dataset",
+            "path_in_repo": _SUB,
+        }
+    )
+    # Run without `set -e`, so only the explicit exit can stop the setup.
+    proc, _ = _run(tmp_path, f"{cmd}\necho setup-continued", "")
+    assert proc.returncode != 0
+    assert "matched nothing" in proc.stderr
+    assert "setup-continued" not in proc.stdout
 
 
 def _render(text, path_in_repo):
@@ -368,3 +461,41 @@ def test_hfpull_script_whole_repo_has_no_include(tmp_path, script):
     proc, argv = _run(tmp_path, _pull_slice(script, "", tmp_path / "d"), "")
     assert proc.returncode == 0, proc.stderr
     assert "--include" not in argv
+
+
+@_SCRIPTS
+@pytest.mark.parametrize("path_in_repo", ["", f"/{_SUB}/"])
+def test_mocked_hfpull_script_creates_the_bound_path(tmp_path, script, path_in_repo):
+    """The mock branch exits before any download, but the binding must exist."""
+    dest = tmp_path / "dest"
+    text = _render(script(), path_in_repo).replace("DEST_PLACEHOLDER", str(dest))
+    proc = subprocess.run(
+        ["bash", "-c", text],
+        env={**os.environ, ENV_VAR_GBTEST_MOCK_HF: "true"},
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "mocking hfpull" in proc.stdout
+    assert (dest / path_in_repo.strip("/")).is_dir()
+
+
+@_SCRIPTS
+def test_mocked_hfpull_script_keeps_a_file_already_at_the_path(tmp_path, script):
+    """A live run may have left the real file there (a shared cache)."""
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "config.json").write_text("{}")
+    text = _render(script(), "config.json").replace("DEST_PLACEHOLDER", str(dest))
+    proc = subprocess.run(
+        ["bash", "-c", text],
+        env={**os.environ, ENV_VAR_GBTEST_MOCK_HF: "true"},
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (dest / "config.json").read_text() == "{}"

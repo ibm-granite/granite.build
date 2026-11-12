@@ -1,0 +1,36 @@
+granite.build:
+  name: path_in_repo_bash-test
+  # Single bash target whose hf:// input names one file in the repo
+  # (.../<revision>/config.json). Only that file is downloaded, and the step is
+  # bound at the file itself, not the repo root.
+  #
+  # This is an extended/nightly test (see the @extended_testing_only marker on
+  # the test class): it performs a REAL HuggingFace pull of a small public
+  # model's config.json.
+  targets:
+    command:
+      allow_unknown: true
+      environment_uri: space://environments/bash
+      inputs:
+        hf_input:
+          uri: hf:///ibm-granite/granite-4.0-350m/main/config.json
+      steps:
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              # The binding must be the downloaded file: a non-empty regular file
+              # named config.json. Under `set -e` any failed test fails the build.
+              # The leading `sleep 10` keeps the build in RUNNING long enough for
+              # the runner_cancellation test to land its cancel (as in bash/1step).
+              # NOTE: this is a folded (>-) scalar, so an inline `#` here would
+              # fold into the single command line and comment out the rest.
+              command: >-
+                set -e;
+                sleep 10;
+                p="{{ bindings.hf_input.binding.path }}";
+                echo "hf input path: $p";
+                test -f "$p";
+                test -s "$p";
+                test "$(basename "$p")" = config.json
+            compute_config:
+              num_nodes: 1

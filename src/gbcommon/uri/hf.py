@@ -920,6 +920,32 @@ class HfURI(URI):
             return Path(dest)
         return Path(dest) / path
 
+    def _verify_path_in_repo_pulled(self, dest: Path) -> bool:
+        """Whether a pull into *dest* found this URI's path in the repo.
+
+        Call it only after the ownership fence in :meth:`pull`. A puller that
+        lost the lock must re-wait instead, since the new owner may still be
+        writing the path.
+
+        :param dest: The pull destination.
+        :returns: ``False``, after logging an error, when the URI names a path
+            in the repo that the pull did not download; otherwise ``True``.
+        """
+        bound = self.local_path(dest)
+        if bound == Path(dest) or bound.exists():
+            return True
+        p = self._parts()
+        logger.error(
+            "HF pull of %s: %r matched nothing in %s/%s (type=%s, rev=%s)",
+            str(self),
+            p.path_in_repo,
+            p.owner,
+            p.repo,
+            p.hf_type,
+            p.revision,
+        )
+        return False
+
     def custom_str(self) -> str:
         """Return the canonical URI string, always including the type segment."""
         p = self._parts()
@@ -1089,7 +1115,10 @@ class HfURI(URI):
         pull rather than binding an empty directory.
 
         Returns ``True`` immediately without network calls when HF mocking is
-        enabled via ``GBTEST_MOCK_HF``.
+        enabled via ``GBTEST_MOCK_HF``. A path in the repo is then created as
+        an empty directory, unless something is already there, so the input is
+        still bound at a path that exists. A mocked and a live run should not
+        share a cache: a live pull cannot put a file where that directory is.
 
         Token is resolved from ``self.secrets['HF_TOKEN']`` or the ``HF_TOKEN``
         environment variable.  For non-default hosts the ``endpoint`` kwarg is
@@ -1104,6 +1133,9 @@ class HfURI(URI):
             True if the download succeeded, False on any error.
         """
         if is_hf_mocked():
+            bound = self.local_path(dest)
+            if bound != Path(dest) and not bound.exists():
+                bound.mkdir(parents=True)
             return True
         try:
             # Normalize so the lock-path derivation below tolerates a str dest,
@@ -1172,20 +1204,6 @@ class HfURI(URI):
                                 lock=lock,
                                 path_in_repo=p.path_in_repo,
                             )
-                            if (
-                                p.path_in_repo.strip("/")
-                                and not self.local_path(dest).exists()
-                            ):
-                                logger.error(
-                                    "HF pull of %s: %r matched nothing in %s "
-                                    "(type=%s, rev=%s)",
-                                    str(self),
-                                    p.path_in_repo,
-                                    repo_id,
-                                    repo_type,
-                                    p.revision,
-                                )
-                                return False
                             logger.debug(
                                 "Completed HF pull of %s (type=%s, rev=%s) to %s",
                                 repo_id,
@@ -1199,7 +1217,7 @@ class HfURI(URI):
                         # owner is still writing as authoritative.
                         if lock is not None and not lock.still_owned():
                             raise _HfEvicted()
-                        return True
+                        return self._verify_path_in_repo_pulled(dest)
                 except _HfEvicted:
                     rewaits += 1
                     if rewaits > HFPULL_MAX_LOCK_REWAITS:
