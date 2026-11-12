@@ -2125,7 +2125,7 @@ def _build_skypilot_mounts(
 
 
 def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
-    """The ``hf download`` line an inline hfpull adds to a step's setup script.
+    """The ``hf download`` lines an inline hfpull adds to a step's setup script.
 
     Every value is ``shlex.quote``d, so a ``"``, ``$`` or backtick in one can
     neither break the setup line nor be expanded by the shell. The repo and
@@ -2154,7 +2154,8 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     for pattern in hf_path_patterns(path_in_repo) or []:
         cmd += f" --include {shlex.quote(pattern)}"
     if path_in_repo:
-        # The step's setup may not run under `set -e`, so exit explicitly.
+        # A failed test left of `||` does not trip the setup's `set -e`, and a
+        # bare `[ -e ]` would fail with no message: report it and exit.
         missing = (
             f"hfpull: '{path_in_repo}' matched nothing in {pull_info['repo']} "
             f"(type={pull_info.get('type')}, rev={pull_info.get('revision')})"
@@ -5712,6 +5713,8 @@ class Skypilot(Environment):
                 "type": hfuri.get_hf_type() or "model",
                 # A bucket is bound at the download dir (HfURI.local_path), so
                 # it gets no filter, as in Hfstore.build_hfpull_step_config.
+                # (`hf download` has no bucket repo type, so an inline bucket
+                # pull fails either way.)
                 "path_in_repo": (
                     ""
                     if hfuri.get_hf_type() == HfType.BUCKET

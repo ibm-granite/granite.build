@@ -316,7 +316,7 @@ def test_inline_line_fails_when_the_path_matches_nothing(tmp_path):
             "path_in_repo": _SUB,
         }
     )
-    # No `set -e`: the inline lines go in front of the step's own setup.
+    # Run without `set -e`, so only the explicit exit can stop the setup.
     proc, _ = _run(tmp_path, f"{cmd}\necho setup-continued", "")
     assert proc.returncode != 0
     assert "matched nothing" in proc.stderr
