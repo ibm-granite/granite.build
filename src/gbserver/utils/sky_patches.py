@@ -48,7 +48,7 @@ from sky.provision.slurm import instance as slurm_instance
 from sky.server import common as server_common
 from sky.server import plugins as sky_plugins
 from sky.server.requests import process
-from sky.utils import schemas
+from sky.utils import annotations, schemas
 
 logger = logging.getLogger(__name__)
 
@@ -519,6 +519,110 @@ def replace_file_atomically(src: Any, dst_dir: Any) -> None:
             os.unlink(tmp)
 
 
+#: Modules whose request-scoped caches hold Kubernetes clients or per-context
+#: lookups (``sky.adaptors.kubernetes``, ``sky.provision.kubernetes.utils``).
+_KUBE_CACHE_MODULE_MARKER = "kubernetes"
+
+
+def _kubeconfig_keyed(cached: Any) -> Callable:
+    """A copy of a request-scoped ``lru_cache`` keyed by ``KUBECONFIG`` too.
+
+    SkyPilot keys these by their arguments only (a context name), and clears
+    them when a request starts. That is enough in a worker process, which runs
+    one request at a time, but not for the requests the API server runs on
+    shared threads in its main process (``/validate`` before every launch,
+    ``/logs``): one request could get a client another built from a different
+    kubeconfig. ``os.environ`` is per request there (SkyPilot's
+    ``ContextualEnviron``), so adding ``KUBECONFIG`` to the key keeps each
+    request's clients its own. Registered for SkyPilot's per-request clearing,
+    like the original.
+    """
+    inner = cached.__wrapped__
+    params = cached.cache_parameters()
+    keyed = functools.lru_cache(maxsize=params["maxsize"], typed=params["typed"])(
+        lambda kubeconfig, *args, **kwargs: inner(*args, **kwargs)
+    )
+
+    @functools.wraps(inner)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return keyed(os.environ.get("KUBECONFIG"), *args, **kwargs)
+
+    wrapper.cache_clear = keyed.cache_clear  # type: ignore[attr-defined]
+    wrapper.cache_info = keyed.cache_info  # type: ignore[attr-defined]
+    wrapper.cache_parameters = keyed.cache_parameters  # type: ignore[attr-defined]
+    annotations._register_functions_need_reload_cache(
+        wrapper
+    )  # pylint: disable=protected-access
+    return wrapper
+
+
+def _rebind(cached: Any, replacement: Callable) -> None:
+    """Point every binding of ``cached`` at ``replacement``.
+
+    The binding is the module or class attribute named by its ``__qualname__``:
+    the cache itself, a ``classmethod`` around it, or an outer decorator whose
+    closure holds it (SkyPilot's ``_api_logging_decorator``).
+
+    :raises RuntimeError: If no binding is found, so an upgrade that changes
+        how a cache is bound stops the server instead of leaving it unkeyed.
+    """
+    owner: Any = sys.modules[cached.__module__]
+    *path, name = cached.__qualname__.split(".")
+    for part in path:
+        owner = getattr(owner, part)
+    bound = inspect.getattr_static(owner, name)
+    if bound is cached:
+        setattr(owner, name, replacement)
+        return
+    if isinstance(bound, classmethod) and bound.__func__ is cached:
+        setattr(owner, name, classmethod(replacement))
+        return
+    outer = bound.__func__ if isinstance(bound, (classmethod, staticmethod)) else bound
+    for cell in getattr(outer, "__closure__", None) or ():
+        if cell.cell_contents is cached:
+            cell.cell_contents = replacement
+            setattr(outer, "__wrapped__", replacement)
+            return
+    raise RuntimeError(
+        f"sky_patches: can't rebind request-scoped cache "
+        f"{cached.__module__}.{cached.__qualname__}; re-check the Kubernetes "
+        "cache patch against this SkyPilot release"
+    )
+
+
+def kube_request_caches() -> list:
+    """SkyPilot's request-scoped caches in Kubernetes modules, as registered."""
+    found = []
+    for ref in list(
+        annotations._FUNCTIONS_NEED_RELOAD_CACHE
+    ):  # pylint: disable=protected-access
+        func = ref()
+        module = getattr(func, "__module__", "") or ""
+        if (
+            func is not None
+            and _KUBE_CACHE_MODULE_MARKER in module.split(".")
+            and isinstance(
+                func, functools._lru_cache_wrapper
+            )  # pylint: disable=protected-access
+        ):
+            found.append(func)
+    return found
+
+
+def _patch_kube_caches_by_kubeconfig() -> None:
+    """Key SkyPilot's request-scoped Kubernetes caches by ``KUBECONFIG`` too.
+
+    gbserver's ``kube_configs`` gives each environment instance its own
+    kubeconfig, carried per request, and two instances may define the same
+    context name with different credentials (see :func:`_kubeconfig_keyed`).
+    """
+    # Import the modules that define them, so every cache is registered.
+    importlib.import_module("sky.adaptors.kubernetes")
+    importlib.import_module("sky.provision.kubernetes.utils")
+    for cached in kube_request_caches():
+        _rebind(cached, _kubeconfig_keyed(cached))
+
+
 @functools.cache
 def apply() -> None:
     """Apply every fix once per process. Raises if SkyPilot is not the pin."""
@@ -541,6 +645,7 @@ def apply() -> None:
     _patch_backend()
     _patch_aws_host_image()
     _patch_misc()
+    _patch_kube_caches_by_kubeconfig()
 
 
 def ensure_plugin_config(gb_home: str) -> None:

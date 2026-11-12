@@ -654,6 +654,24 @@ def _env_allowed_contexts(cloud_config: Dict) -> Any:
     return k8s.get("allowed_contexts") if isinstance(k8s, dict) else None
 
 
+def _env_remote_identities(cloud_config: Dict) -> List[str]:
+    """``kubernetes.remote_identity`` values an env's ``cloud_config`` sets (any workspace)."""
+    from gbserver.environment.skypilot_kube import remote_identity_values
+
+    blocks = [cloud_config.get("kubernetes")]
+    workspaces = cloud_config.get("workspaces")
+    if isinstance(workspaces, dict):
+        blocks += [
+            ws.get("kubernetes") for ws in workspaces.values() if isinstance(ws, dict)
+        ]
+    return [
+        v
+        for b in blocks
+        if isinstance(b, dict)
+        for v in remote_identity_values(b.get("remote_identity"))
+    ]
+
+
 def _kube_scoped(strict: bool) -> Callable:
     """Decorate a ``Skypilot`` coroutine so its SkyPilot requests carry its kubeconfig.
 
@@ -2674,8 +2692,13 @@ class Skypilot(Environment):
         ``all``: otherwise SkyPilot wouldn't use the context, and a typo would
         only surface at launch.
 
+        ``remote_identity: LOCAL_CREDENTIALS`` is refused: SkyPilot then flattens
+        each request's kubeconfig (the instance's credentials included) into a
+        temporary file it never removes.
+
         :returns: The ``KubeConfigEntry`` list (empty when unset).
-        :raises ValueError: If ``kube_configs`` is malformed or unpinned.
+        :raises ValueError: If ``kube_configs`` is malformed or unpinned, or
+            ``LOCAL_CREDENTIALS`` is set.
         """
         from gbserver.types.environmentconfig import KubeConfigEntry
 
@@ -2708,26 +2731,17 @@ class Skypilot(Environment):
                     "cloud_config.kubernetes.allowed_contexts (or the active "
                     "workspace's)"
                 )
+        identities = _env_remote_identities(self._cloud_config() or {})
+        if HAS_SKYPILOT:
+            identities += skypilot_kube.host_remote_identities()
+        if "LOCAL_CREDENTIALS" in identities:
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs can't be used "
+                "with kubernetes.remote_identity: LOCAL_CREDENTIALS (SkyPilot "
+                "would leave the credentials in a temporary file); use the "
+                "default SERVICE_ACCOUNT"
+            )
         return entries
-
-    def _kube_safe_log_mode(self: Self, log_mode: str) -> str:
-        """``log_mode``, except ``stream`` becomes ``periodic`` with ``kube_configs``.
-
-        ``stream`` uses ``sky.tail_logs``, which the API server runs on threads
-        sharing one Kubernetes client cache keyed only by context name, so it
-        could reach another instance's same-named context (``skypilot_kube``).
-        ``periodic`` uses ``sky.download_logs``, run in a worker process.
-        """
-        cfg = self.config.config if self.config else {}
-        if log_mode != LOG_RETRIEVAL_STREAM or not cfg.get("kube_configs"):
-            return log_mode
-        logger.warning(
-            "environment '%s': log_retrieval: stream is not supported with "
-            "kube_configs; using %s",
-            self._env_name(),
-            LOG_RETRIEVAL_PERIODIC,
-        )
-        return LOG_RETRIEVAL_PERIODIC
 
     def _kube_request_kubeconfig(self: Self, strict: bool) -> Optional[str]:
         """The ``KUBECONFIG`` this instance's requests carry, or ``None``.
@@ -2742,9 +2756,9 @@ class Skypilot(Environment):
 
         :param strict: Setup and launch: raise on a bad ``kube_configs`` or a
             server that would ignore it. Polls, cleanup and teardown pass
-            False: the error is logged once and their requests go out without
-            the file, so they fail on the unknown context rather than reach
-            another one.
+            False: the error is logged once and their requests carry a
+            ``KUBECONFIG`` that resolves nothing, so they fail rather than reach
+            a same-named context in the user's or the server's kubeconfig.
         :raises ValueError: If ``strict`` and ``kube_configs`` is invalid or
             the API server would drop the per-request ``KUBECONFIG``.
         :raises SkypilotConfigCollisionError: If ``strict`` and a context clashes
@@ -2781,7 +2795,7 @@ class Skypilot(Environment):
                     e,
                 )
                 self._kube_warned = True
-            return None
+            return skypilot_kube.unresolvable_kubeconfig()
 
     async def _materialize_ssh_for_launch(
         self: Self, cloud: str, target_alias: Optional[str]
@@ -4965,7 +4979,6 @@ class Skypilot(Environment):
         log_mode, log_interval, startup_window = _parse_log_retrieval(
             kwargs, poll_interval
         )
-        log_mode = self._kube_safe_log_mode(log_mode)
         last_status = None
         ssh_hpc = launch_id in self._ssh_hpc_launches
         poll_failures = _PollFailureTracker(

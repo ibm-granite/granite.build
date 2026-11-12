@@ -55,6 +55,9 @@ API server applies it to that request alone. gbserver never changes its process 
 else sees the file: not other environments, not other spaces, not the native Kubernetes (`K8s`)
 environment or the `kubectl`/`helm` commands it runs. Two spaces can use the same context name with
 different credentials, and `allowed_contexts: all` only ever means your contexts plus the instance's own.
+SkyPilot's API server caches its Kubernetes clients by context name; gbserver's `sky_patches` server plugin
+keys those caches by `KUBECONFIG` too, so requests the server runs side by side on shared threads (launch
+validation, `sky logs`) never get each other's client.
 
 - **Static credentials only.** A secret's `user` may hold only `token`, `client-certificate-data`,
   `client-key-data`, or `username`/`password`; its `cluster` only `server`, `certificate-authority-data`
@@ -72,22 +75,21 @@ different credentials, and `allowed_contexts: all` only ever means your contexts
 - **Rotation.** An instance reads its secrets once, so a rotated secret takes effect with the next build.
 - **Lifetime.** A file is removed when its environment instance is released (normally when its build
   finishes) or gbserver exits; files left by a gbserver that crashed are removed when gbserver next starts
-  a SkyPilot environment. Files belonging to another running gbserver sharing the home directory are kept.
+  a SkyPilot environment. Files belonging to another running gbserver sharing the home directory, or to
+  another host, are kept.
 
 Limits:
 - **Local API server only.** `kube_configs` is refused unless gbserver's SkyPilot API server is local,
   bound to loopback and not deployed: only such a server applies a forwarded `KUBECONFIG` (gbserver's
   `sky_patches` plugin reports this). Elsewhere the credentials would be silently ignored.
-- **No live log streaming.** `log_retrieval: stream` falls back to `periodic` for `kube_configs`
-  environments (with a warning). Streaming uses `sky logs`, which the API server runs on threads sharing one
-  Kubernetes client cache keyed only by context name, so it could reach another instance's same-named
-  context; the other modes use `sky.download_logs`, which runs in a separate worker process.
 - **Not for managed jobs.** `Skypilot_managed` refuses `kube_configs`: its jobs controller is shared by all
   of your managed jobs and keeps the credentials it's provisioned with.
 - **Background server work** (e.g. the API server's periodic status refresh) uses the server's own
   environment, so it doesn't see these contexts; gbserver's own requests do.
-- **`remote_identity: LOCAL_CREDENTIALS`** uploads that request's kubeconfig (your contexts plus the
-  instance's) to the pods. The Kubernetes default, `SERVICE_ACCOUNT`, uploads none.
+- **No `remote_identity: LOCAL_CREDENTIALS`.** It's refused for `kube_configs` environments (in the
+  environment's `cloud_config` or the host's `~/.sky/config.yaml`): SkyPilot would flatten each request's
+  kubeconfig, credentials included, into a temporary file it never removes. The Kubernetes default,
+  `SERVICE_ACCOUNT`, uploads no credentials.
 - **No exec-based auth** (e.g. `aws eks get-token`): use a static token or client certificate.
 
 ### No `cluster_ssh_configs` or `aws_credentials`

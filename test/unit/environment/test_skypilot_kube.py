@@ -283,28 +283,26 @@ class TestInstanceFile:
         sk.write_instance_kubeconfig(_build(_kubeconfig()), path)
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert path.parent == tmp_path / ".sky" / sk.KUBE_DIR
-        assert path.name.startswith(f"{os.getpid()}-")
+        assert path.name.startswith(f"{sk._host_id()}-{os.getpid()}-")
 
     def test_sweep_keeps_live_processes_and_removes_the_rest(self, tmp_path):
         d = tmp_path / ".sky" / sk.KUBE_DIR
         d.mkdir(parents=True)
         me = sk._process_tag()
-        pid, start = me.split("-")
+        host, pid, start = me.split("-")
         files = {
             "mine": d / f"{me}-a.yaml",
             "mine_tmp": d / f"{me}-a.x.tmp",
-            "dead_pid": d / "999999999-1-b.yaml",
-            "reused_pid": d / f"{pid}-{int(start) - 1000}-c.yaml",
+            "dead_pid": d / f"{host}-999999999-1-b.yaml",
+            "reused_pid": d / f"{host}-{pid}-{int(start) - 1000}-c.yaml",
+            "other_host": d / "deadbeef-999999999-1-d.yaml",
             "other": d / "notes.txt",
         }
         for f in files.values():
             f.write_text("x")
         sk.sweep_stale_instance_files(d)
-        assert {k for k, f in files.items() if f.exists()} == {
-            "mine",
-            "mine_tmp",
-            "other",
-        }
+        kept = {k for k, f in files.items() if f.exists()}
+        assert kept == {"mine", "mine_tmp", "other_host", "other"}
 
     def test_existing_directory_is_tightened_to_0700(self, tmp_path):
         path = sk.instance_kubeconfig_path("abc")
@@ -348,7 +346,8 @@ class TestRequestPatch:
 
         monkeypatch.setattr(common, "is_api_server_local", lambda *a: True)
         sk.install()
-        assert "KUBECONFIG" not in payloads.request_body_env_vars() or (
+        # Unset: SkyPilot's own value (the process KUBECONFIG) is untouched.
+        assert (
             payloads.request_body_env_vars()["KUBECONFIG"] == os.environ["KUBECONFIG"]
         )
         token = sk.set_request_kubeconfig("/a:/b")
@@ -420,31 +419,6 @@ class TestRequestPatch:
             return await asyncio.gather(*(body_for(f"/v{i}") for i in range(10)))
 
         assert asyncio.run(run()) == [f"/v{i}" for i in range(10)]
-
-    def test_only_logs_requests_share_server_threads(self):
-        """Guard: SkyPilot runs only /logs and /hook_logs on shared server threads.
-
-        Those share the server's Kubernetes client cache, so gbserver never sends
-        them for a kube_configs instance (tail_logs is only used by the stream
-        log mode, which is downgraded; hook_logs is never used). A SkyPilot
-        upgrade that moves more requests there fails this test.
-        """
-        import re
-
-        from sky.server import server as sky_server
-
-        src = Path(sky_server.__file__).read_text()
-        routes = set()
-        for m in re.finditer(r"execute_request_in_coroutine\(", src):
-            routes.add(re.findall(r"@app\.\w+\('([^']+)'", src[: m.start()])[-1])
-        assert routes == {"/logs", "/hook_logs"}, routes
-        gb = Path(sp.__file__).parent.parent
-        users = {
-            str(f.relative_to(gb))
-            for f in gb.rglob("*.py")
-            if re.search(r"sky\.(tail_logs|hook_logs)\(|\.hook_logs\(", f.read_text())
-        }
-        assert users <= {"monitoring/streams/skypilot_log_stream.py"}, users
 
     def test_sky_executor_carries_the_contextvar(self):
         async def run():
@@ -548,10 +522,16 @@ class TestEnvironmentInstance:
             bad._kube_request_kubeconfig(True)
         assert good._kube_request_kubeconfig(True)
 
-    def test_non_strict_failure_logs_once_and_sends_no_file(self, caplog):
-        env = _env(secrets={})
-        assert env._kube_request_kubeconfig(False) is None
-        assert env._kube_request_kubeconfig(False) is None
+    def test_non_strict_failure_logs_once_and_resolves_nothing(self, tmp_path, caplog):
+        """A failed rebuild must not fall back to the user's same-named context."""
+        _user_kubeconfig(tmp_path / "user-kubeconfig", "remote")  # now clashes
+        env = _env()
+        first = env._kube_request_kubeconfig(False)
+        assert (
+            first == env._kube_request_kubeconfig(False) == sk.unresolvable_kubeconfig()
+        )
+        assert str(tmp_path / "user-kubeconfig") not in first
+        assert not Path(first).exists()
         assert caplog.text.count("kube_configs not applied") == 1
 
     @pytest.mark.parametrize(
@@ -590,13 +570,46 @@ class TestEnvironmentInstance:
             _env(cfg)._kube_config_entries()
         assert "S3CRET" not in str(e.value)
 
-    def test_stream_log_retrieval_downgraded_with_kube_configs(self, caplog):
-        assert _env()._kube_safe_log_mode("stream") == sp.LOG_RETRIEVAL_PERIODIC
-        assert "not supported with kube_configs" in caplog.text
-        for mode in ("on_completion", "periodic", "startup_window"):
-            assert _env()._kube_safe_log_mode(mode) == mode
-        plain = _env(_config(kube=False), secrets={})
-        assert plain._kube_safe_log_mode("stream") == "stream"
+    @pytest.mark.parametrize(
+        "cloud_config",
+        [
+            {
+                "kubernetes": {
+                    "allowed_contexts": ["remote"],
+                    "remote_identity": "LOCAL_CREDENTIALS",
+                }
+            },
+            {
+                "kubernetes": {"allowed_contexts": ["remote"]},
+                "workspaces": {
+                    "w": {"kubernetes": {"remote_identity": "LOCAL_CREDENTIALS"}}
+                },
+            },
+            {
+                "kubernetes": {
+                    "allowed_contexts": ["remote"],
+                    "remote_identity": [{"gb-*": "LOCAL_CREDENTIALS"}],
+                }
+            },
+        ],
+    )
+    def test_local_credentials_refused(self, cloud_config):
+        """SkyPilot would leave the flattened credentials in a temp file."""
+        with pytest.raises(ValueError, match="LOCAL_CREDENTIALS"):
+            _env({**_config(), "cloud_config": cloud_config})._kube_config_entries()
+
+    def test_local_credentials_in_host_config_refused(self, tmp_path):
+        (tmp_path / ".sky").mkdir()
+        (tmp_path / ".sky" / "config.yaml").write_text(
+            yaml.safe_dump({"kubernetes": {"remote_identity": "LOCAL_CREDENTIALS"}})
+        )
+        with pytest.raises(ValueError, match="LOCAL_CREDENTIALS"):
+            _env()._kube_config_entries()
+
+    def test_service_account_is_fine(self):
+        cfg = {**_config()}
+        cfg["cloud_config"]["kubernetes"]["remote_identity"] = "SERVICE_ACCOUNT"
+        assert _env(cfg)._kube_config_entries()
 
     def test_no_kube_configs_leaves_the_instance_untouched(self):
         env = _env(_config(kube=False), secrets={})
@@ -649,8 +662,11 @@ class TestServerPrecondition:
         if ok:
             sk.check_server_forwards_kubeconfig("e")
         else:
-            with pytest.raises(ValueError, match="does not apply"):
+            from sky.skylet import constants
+
+            with pytest.raises(ValueError, match="does not apply") as e:
                 sk.check_server_forwards_kubeconfig("e")
+            assert constants.ENV_VAR_ENFORCE_MOUNT_CONTAINMENT in str(e.value)
 
     @pytest.mark.parametrize(
         "flag,forwarded", [("0", True), ("1", False), (None, False)]
@@ -703,6 +719,67 @@ class TestServerPrecondition:
         monkeypatch.setattr(common, "make_authenticated_request", lambda *a, **k: r)
         with pytest.raises(ValueError, match="does not apply"):
             sk.check_server_forwards_kubeconfig("e")
+
+
+# --------------------------------------------------------------------------- #
+# The API server's Kubernetes client caches
+# --------------------------------------------------------------------------- #
+
+_SHARED_CACHE_SCRIPT = Path(__file__).with_name("kube_shared_cache_probe.py")
+
+
+class TestServerClientCaches:
+    """SkyPilot keys its Kubernetes client caches by context name only (#571)."""
+
+    def _probe(self, mode):
+        import json
+        import subprocess
+        import sys
+
+        env = {k: v for k, v in os.environ.items() if k != "KUBECONFIG"}
+        out = subprocess.run(
+            [sys.executable, str(_SHARED_CACHE_SCRIPT), mode],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+            check=True,
+        )
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    def test_unpatched_server_shares_clients_across_kubeconfigs(self):
+        """Documents SkyPilot's behaviour: if this stops leaking, drop the patch."""
+        got = self._probe("unpatched")
+        assert got["sequential"] == ["https://10.0.0.1:6443"] * 2
+
+    def test_patched_server_keeps_each_kubeconfigs_client(self):
+        """The main-process path (/validate, /logs): per-request env, shared threads."""
+        got = self._probe("patched")
+        expected = ["https://10.0.0.1:6443", "https://10.0.0.2:6443"]
+        assert got["sequential"] == expected and got["concurrent"] == expected
+
+    def test_every_kube_request_cache_is_rebound(self):
+        """Guard: after apply(), no binding reaches an unkeyed Kubernetes cache.
+
+        New request-scoped caches in a Kubernetes module are re-keyed
+        automatically; one the patch can't rebind fails at server start.
+        """
+        got = self._probe("guard")
+        assert got["count"] >= 19 and got["unkeyed"] == [], got
+
+    def test_unbindable_cache_fails_loudly(self):
+        import functools
+
+        from gbserver.utils import sky_patches
+
+        orphan = functools.lru_cache()(lambda: 1)
+        orphan.__module__, orphan.__qualname__ = __name__, "no_such_binding_xyz"
+        globals()["no_such_binding_xyz"] = lambda: 2  # bound to something else
+        try:
+            with pytest.raises(RuntimeError, match="can't rebind"):
+                sky_patches._rebind(orphan, lambda: 3)
+        finally:
+            del globals()["no_such_binding_xyz"]
 
 
 # --------------------------------------------------------------------------- #

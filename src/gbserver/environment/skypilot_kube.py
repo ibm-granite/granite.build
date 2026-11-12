@@ -32,20 +32,20 @@ instance's file, and a request can resolve only the user's contexts and its own
 instance's. A server that would drop the forwarded value (remote, deployed, or
 non-loopback) is refused up front (:func:`check_server_forwards_kubeconfig`).
 
-One exception on the server side: ``sky logs`` (``sky.tail_logs``) requests run
-on threads that share the server process's Kubernetes client cache, which is
-keyed only by context name, so two instances defining the same context name
-could share a client there. The Skypilot environment therefore never sends one
-for a ``kube_configs`` instance (``log_retrieval: stream`` falls back to
-``periodic``, which uses ``sky.download_logs`` in a worker process).
+The API server's own Kubernetes client caches are keyed by context name
+only; gbserver's ``sky_patches`` server plugin keys them by ``KUBECONFIG`` too
+(``_patch_kube_caches_by_kubeconfig``), so two instances defining the same
+context name never share a client, even on the server's shared threads.
 """
 
 import base64
 import binascii
 import contextvars
 import copy
+import hashlib
 import os
 import re
+import socket
 import tempfile
 import weakref
 from pathlib import Path
@@ -433,27 +433,33 @@ def build_instance_kubeconfig(
 _PROCESS_TAG: Optional[str] = None
 
 
+def _host_id() -> str:
+    """A short id of this host, so processes on other hosts (or containers with
+    their own pid namespace) sharing the home directory are never judged here."""
+    return hashlib.sha256(socket.gethostname().encode()).hexdigest()[:8]
+
+
 def _process_tag(pid: Optional[int] = None) -> Optional[str]:
-    """``<pid>-<start time>`` of a process (this one by default), or None if gone.
+    """``<host>-<pid>-<start time>`` of a process (this one by default), or None if gone.
 
     The start time tells a running process from a later one that reused its pid
     (gbserver is often pid 1 in a container).
     """
     try:
         proc = psutil.Process(pid)
-        return f"{proc.pid}-{int(proc.create_time())}"
+        return f"{_host_id()}-{proc.pid}-{int(proc.create_time())}"
     except (psutil.NoSuchProcess, psutil.ZombieProcess):
         return None
 
 
 def instance_kubeconfig_path(instance_id: str, home: Optional[Path] = None) -> Path:
-    """Where an environment instance's kubeconfig lives: ``<pid>-<start>-<id>.yaml``.
+    """Where an environment instance's kubeconfig lives: ``<host>-<pid>-<start>-<id>.yaml``.
 
     The process tag lets :func:`sweep_stale_instance_files` tell a running
     gbserver's files from ones left by a stopped one.
     """
     global _PROCESS_TAG  # pylint: disable=global-statement
-    if _PROCESS_TAG is None or not _PROCESS_TAG.startswith(f"{os.getpid()}-"):
+    if _PROCESS_TAG is None or _PROCESS_TAG.split("-")[1] != str(os.getpid()):
         _PROCESS_TAG = _process_tag()
     return _home(home) / ".sky" / KUBE_DIR / f"{_PROCESS_TAG}-{instance_id}.yaml"
 
@@ -490,23 +496,37 @@ def remove_when_collected(owner: Any, path: Path) -> None:
 def sweep_stale_instance_files(directory: Optional[Path] = None) -> None:
     """Remove instance files (and temporary files) of gbserver processes that are gone.
 
-    A file belongs to the process ``<pid>-<start>`` in its name; it's stale when
-    that pid no longer runs, or runs with a different start time (a reused pid).
-    Files of other running gbserver processes sharing the home dir are kept.
+    A file belongs to the process ``<host>-<pid>-<start>`` in its name; it's
+    stale when it's from this host and that pid no longer runs, or runs with a
+    different start time (a reused pid). Files of other running gbserver
+    processes sharing the home dir, and any from another host, are kept.
     """
     directory = directory or _home(None) / ".sky" / KUBE_DIR
     if not directory.is_dir():
         return
+    host = _host_id()
     for path in directory.iterdir():
-        parts = path.name.split("-", 2)
-        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+        parts = path.name.split("-", 3)
+        if len(parts) < 4 or parts[0] != host:
             continue
-        if _process_tag(int(parts[0])) == f"{parts[0]}-{parts[1]}":
+        if not parts[1].isdigit() or not parts[2].isdigit():
+            continue
+        if _process_tag(int(parts[1])) == "-".join(parts[:3]):
             continue
         try:
             path.unlink()
         except OSError as e:
             logger.debug("could not remove stale kubeconfig %s: %s", path, e)
+
+
+def unresolvable_kubeconfig() -> str:
+    """A ``KUBECONFIG`` that resolves no context at all (a path never written).
+
+    Sent instead of the process default when an instance's own file can't be
+    made, so its requests fail rather than resolve a same-named context from
+    the user's or the server's kubeconfig.
+    """
+    return str(_home(None) / ".sky" / KUBE_DIR / "unavailable.yaml")
 
 
 def request_kubeconfig(instance_file: Path) -> str:
@@ -574,6 +594,38 @@ def install() -> None:
     _INSTALLED = True
 
 
+def _enforce_env_var() -> str:
+    from sky.skylet import constants
+
+    return constants.ENV_VAR_ENFORCE_MOUNT_CONTAINMENT
+
+
+def host_remote_identities(home: Optional[Path] = None) -> List[str]:
+    """``kubernetes.remote_identity`` values in the host's ``~/.sky/config.yaml``.
+
+    A value may be one string or a list of ``{cluster-pattern: value}`` maps;
+    returns every value. Unreadable files read as none.
+    """
+    try:
+        doc = yaml.safe_load(
+            (_home(home) / ".sky" / "config.yaml").read_text(encoding="utf-8")
+        )
+    except (OSError, yaml.YAMLError, RecursionError):
+        return []
+    k8s = doc.get("kubernetes") if isinstance(doc, dict) else None
+    value = k8s.get("remote_identity") if isinstance(k8s, dict) else None
+    return remote_identity_values(value)
+
+
+def remote_identity_values(value: Any) -> List[str]:
+    """Every value in a ``remote_identity`` setting (a string, or pattern maps)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(v) for m in value if isinstance(m, dict) for v in m.values()]
+    return []
+
+
 def check_server_forwards_kubeconfig(env_name: str) -> None:
     """Refuse ``kube_configs`` unless the API server will apply each request's own.
 
@@ -604,7 +656,7 @@ def check_server_forwards_kubeconfig(env_name: str) -> None:
         raise ValueError(
             f"environment '{env_name}': the SkyPilot API server does not apply "
             "per-request KUBECONFIG (it is deployed, not bound to loopback, or "
-            "SKYPILOT_ENFORCE_MOUNT_CONTAINMENT is set), so kube_configs "
+            f"{_enforce_env_var()} is set), so kube_configs "
             "credentials would be ignored. Restart it as a local server "
             "(`sky api stop`; gbserver starts it again)."
         )
