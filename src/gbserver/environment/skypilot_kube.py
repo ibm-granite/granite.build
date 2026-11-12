@@ -31,23 +31,30 @@ native K8s environment, kubectl/helm subprocesses, other environments) sees an
 instance's file, and a request can resolve only the user's contexts and its own
 instance's. A server that would drop the forwarded value (remote, deployed, or
 non-loopback) is refused up front (:func:`check_server_forwards_kubeconfig`).
+
+One exception on the server side: ``sky logs`` (``sky.tail_logs``) requests run
+on threads that share the server process's Kubernetes client cache, which is
+keyed only by context name, so two instances defining the same context name
+could share a client there. The Skypilot environment therefore never sends one
+for a ``kube_configs`` instance (``log_retrieval: stream`` falls back to
+``periodic``, which uses ``sky.download_logs`` in a worker process).
 """
 
 import base64
 import binascii
 import contextvars
 import copy
-import hashlib
-import json
 import os
 import re
+import tempfile
+import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import psutil
 import yaml
 
-from gbserver.environment.skypilot_config import _home, _write_atomic
+from gbserver.environment.skypilot_config import _home
 from gbserver.types.environmentconfig import KubeConfigEntry
 from gbserver.types.errors import SkypilotConfigCollisionError
 from gbserver.utils.logger import get_logger
@@ -65,10 +72,6 @@ _DEFAULT_KUBECONFIG = "~/.kube/config"
 _REQUEST_KUBECONFIG: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "gbserver_request_kubeconfig", default=None
 )
-
-#: Path of the gbserver ``sky_patches`` plugin endpoint reporting whether the API
-#: server keeps a forwarded ``KUBECONFIG`` (see :func:`forwarding_endpoint`).
-FORWARDING_ROUTE = "/gbserver/kubeconfig-forwarding"
 
 # --------------------------------------------------------------------------- #
 # Validation and extraction of one context from a secret
@@ -128,7 +131,10 @@ _KUBE_BOOL_FIELDS = frozenset({"insecure-skip-tls-verify", "disable-compression"
 #: Context names may only use these characters: no whitespace, control or
 #: invisible characters that could make two names look alike, or compare
 #: differently in gbserver and in kubectl/SkyPilot.
-_KUBE_CONTEXT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+=-]*$")
+_KUBE_CONTEXT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+=-]*")
+#: A Kubernetes namespace is a DNS-1123 label. Checked, not just typed: SkyPilot
+#: puts it unquoted into the SSH ProxyCommand it writes on the gbserver host.
+_KUBE_NAMESPACE_RE = re.compile(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?")
 
 
 def reserved_kube_context(name: str) -> bool:
@@ -232,6 +238,11 @@ def extract_kube_context(kubeconfig_text: Any, context: str) -> Dict[str, Dict]:
     if not refs.get("cluster") or not refs.get("user"):
         raise ValueError(
             f"kubeconfig context '{context}' must name both a cluster and a user"
+        )
+    if "namespace" in refs and not _KUBE_NAMESPACE_RE.fullmatch(refs["namespace"]):
+        raise ValueError(
+            f"kubeconfig context '{context}': namespace is not a valid Kubernetes "
+            "namespace name (lowercase letters, digits and -, at most 63)"
         )
     cluster = _named(doc.get("clusters"), refs["cluster"])
     user = _named(doc.get("users"), refs["user"])
@@ -382,7 +393,7 @@ def build_instance_kubeconfig(
     }
     seen: Set[str] = set()
     for entry in entries:
-        if not _KUBE_CONTEXT_NAME_RE.match(entry.context):
+        if not _KUBE_CONTEXT_NAME_RE.fullmatch(entry.context):
             raise ValueError(
                 f"environment '{env_name}': kube_configs context name "
                 f"{entry.context!r} may use only letters, digits and . _ : @ / + = - "
@@ -419,59 +430,83 @@ def build_instance_kubeconfig(
     return doc
 
 
+_PROCESS_TAG: Optional[str] = None
+
+
+def _process_tag(pid: Optional[int] = None) -> Optional[str]:
+    """``<pid>-<start time>`` of a process (this one by default), or None if gone.
+
+    The start time tells a running process from a later one that reused its pid
+    (gbserver is often pid 1 in a container).
+    """
+    try:
+        proc = psutil.Process(pid)
+        return f"{proc.pid}-{int(proc.create_time())}"
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return None
+
+
 def instance_kubeconfig_path(instance_id: str, home: Optional[Path] = None) -> Path:
-    """Where an environment instance's kubeconfig lives.
+    """Where an environment instance's kubeconfig lives: ``<pid>-<start>-<id>.yaml``.
 
-    The gbserver pid is part of the name, so :func:`sweep_stale_instance_files`
-    can tell a running process's files from ones left by a stopped one.
+    The process tag lets :func:`sweep_stale_instance_files` tell a running
+    gbserver's files from ones left by a stopped one.
     """
-    return _home(home) / ".sky" / KUBE_DIR / f"{os.getpid()}-{instance_id}.yaml"
+    global _PROCESS_TAG  # pylint: disable=global-statement
+    if _PROCESS_TAG is None or not _PROCESS_TAG.startswith(f"{os.getpid()}-"):
+        _PROCESS_TAG = _process_tag()
+    return _home(home) / ".sky" / KUBE_DIR / f"{_PROCESS_TAG}-{instance_id}.yaml"
 
 
-def write_instance_kubeconfig(doc: Dict[str, Any], path: Path) -> str:
-    """Write ``doc`` to ``path`` (0600, atomically) if it differs; return its digest.
+def write_instance_kubeconfig(doc: Dict[str, Any], path: Path) -> None:
+    """Write ``doc`` to ``path`` atomically, readable only by this user.
 
-    Removes files left by stopped gbserver processes the first time it runs in
-    a process (:func:`sweep_stale_instance_files`).
+    The temporary file is created 0600 (``mkstemp``) with a unique name, so the
+    credentials are never readable under a looser umask and concurrent writers
+    never share a temporary file. The directory is kept at 0700.
     """
-    text = yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
-    digest = hashlib.sha256(text.encode()).hexdigest()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if _sweep_once(path.parent):
-        sweep_stale_instance_files(path.parent)
-    if not path.exists() or path.read_text(encoding="utf-8") != text:
-        _write_atomic(path, text, mode=0o600)
-    return digest
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.stem}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
-_SWEPT: Set[str] = set()
+def remove_when_collected(owner: Any, path: Path) -> None:
+    """Delete ``path`` once ``owner`` (the environment instance) is collected.
 
-
-def _sweep_once(directory: Path) -> bool:
-    key = f"{os.getpid()}:{directory}"
-    if key in _SWEPT:
-        return False
-    _SWEPT.add(key)
-    return True
-
-
-def sweep_stale_instance_files(directory: Path) -> None:
-    """Remove instance files whose gbserver process is gone.
-
-    Files are named ``<pid>-<instance>.yaml``; one whose pid no longer runs
-    (and isn't this process) is a leftover. Nothing reads another process's
-    files, so a reused pid only delays the cleanup to a later start.
+    ``weakref.finalize`` also runs at interpreter exit, so a cleanly stopped
+    gbserver leaves no credentials behind; :func:`sweep_stale_instance_files`
+    catches the rest.
     """
-    for path in directory.glob("*.yaml"):
-        pid_text = path.name.split("-", 1)[0]
-        if not pid_text.isdigit():
+    weakref.finalize(owner, path.unlink, missing_ok=True)
+
+
+def sweep_stale_instance_files(directory: Optional[Path] = None) -> None:
+    """Remove instance files (and temporary files) of gbserver processes that are gone.
+
+    A file belongs to the process ``<pid>-<start>`` in its name; it's stale when
+    that pid no longer runs, or runs with a different start time (a reused pid).
+    Files of other running gbserver processes sharing the home dir are kept.
+    """
+    directory = directory or _home(None) / ".sky" / KUBE_DIR
+    if not directory.is_dir():
+        return
+    for path in directory.iterdir():
+        parts = path.name.split("-", 2)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
             continue
-        pid = int(pid_text)
-        if pid != os.getpid() and not psutil.pid_exists(pid):
-            try:
-                path.unlink()
-            except OSError as e:
-                logger.debug("could not remove stale kubeconfig %s: %s", path, e)
+        if _process_tag(int(parts[0])) == f"{parts[0]}-{parts[1]}":
+            continue
+        try:
+            path.unlink()
+        except OSError as e:
+            logger.debug("could not remove stale kubeconfig %s: %s", path, e)
 
 
 def request_kubeconfig(instance_file: Path) -> str:
@@ -481,17 +516,6 @@ def request_kubeconfig(instance_file: Path) -> str:
     (none is possible: clashes are refused when the file is built).
     """
     return os.pathsep.join([*kubeconfig_paths(), str(instance_file)])
-
-
-def fingerprint(entries: List[KubeConfigEntry], secrets: Dict[str, str]) -> str:
-    """Digest of the inputs an instance file is built from (entries + secret values)."""
-    material = json.dumps(
-        [[e.context, e.kubeconfig, secrets.get(e.kubeconfig)] for e in entries]
-        + [kubeconfig_paths()],
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.sha256(material.encode()).hexdigest()
 
 
 # --------------------------------------------------------------------------- #
@@ -522,11 +546,16 @@ def install() -> None:
     Wraps ``payloads.request_body_env_vars()``, the one place every request
     body's environment is built (``RequestBody.__init__``). Outside a
     ``kube_configs`` request the contextvar is unset and the wrapper returns
-    SkyPilot's own result unchanged. Idempotent.
+    SkyPilot's own result unchanged. Also removes instance files left by
+    stopped gbserver processes. Idempotent.
     """
     global _INSTALLED  # pylint: disable=global-statement
     if _INSTALLED:
         return
+    try:
+        sweep_stale_instance_files()
+    except OSError as e:
+        logger.debug("could not sweep stale kubeconfigs: %s", e)
     from sky.server import common as server_common
     from sky.server.requests import payloads
 
@@ -545,19 +574,6 @@ def install() -> None:
     _INSTALLED = True
 
 
-def forwarding_endpoint() -> Dict[str, bool]:
-    """Server side: whether this API server keeps a forwarded ``KUBECONFIG``.
-
-    Served by the gbserver ``sky_patches`` plugin at :data:`FORWARDING_ROUTE`.
-    ``executor._sanitize_request_env_vars`` keeps ``KUBECONFIG`` from a loopback
-    request only when mount containment isn't enforced (a non-deployed server
-    bound to loopback, unless an operator forces it).
-    """
-    from sky.server import common as server_common
-
-    return {"forwarded": not server_common.should_enforce_mount_containment()}
-
-
 def check_server_forwards_kubeconfig(env_name: str) -> None:
     """Refuse ``kube_configs`` unless the API server will apply each request's own.
 
@@ -569,6 +585,8 @@ def check_server_forwards_kubeconfig(env_name: str) -> None:
     """
     from sky.server import common as server_common
 
+    from gbserver.utils.sky_patches import KUBECONFIG_FORWARDING_ROUTE
+
     if not server_common.is_api_server_local():
         raise ValueError(
             f"environment '{env_name}': kube_configs needs a local SkyPilot API "
@@ -576,9 +594,13 @@ def check_server_forwards_kubeconfig(env_name: str) -> None:
             "environment's"
         )
     response = server_common.make_authenticated_request(
-        "GET", FORWARDING_ROUTE, retry=False
+        "GET", KUBECONFIG_FORWARDING_ROUTE, retry=False
     )
-    if not response.ok or response.json().get("forwarded") is not True:
+    try:
+        forwarded = response.ok and response.json().get("forwarded") is True
+    except ValueError:  # not JSON: an old server, or no gbserver plugin
+        forwarded = False
+    if not forwarded:
         raise ValueError(
             f"environment '{env_name}': the SkyPilot API server does not apply "
             "per-request KUBECONFIG (it is deployed, not bound to loopback, or "

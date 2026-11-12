@@ -178,6 +178,18 @@ class TestSecretValidation:
         with pytest.raises(ValueError, match="context fields"):
             _build(_kubeconfig(ctx_extra={"extensions": []}))
 
+    @pytest.mark.parametrize(
+        "ns", ["a;touch /tmp/pwn;", "Team", "-a", "a" * 64, "a b", "a\n"]
+    )
+    def test_bad_namespace_refused(self, ns):
+        """SkyPilot puts it unquoted into an SSH ProxyCommand on the host."""
+        with pytest.raises(ValueError, match="namespace"):
+            _build(_kubeconfig(ctx_extra={"namespace": ns}))
+
+    @pytest.mark.parametrize("ns", ["default", "team-a", "a" * 63, "x1"])
+    def test_good_namespace_accepted(self, ns):
+        _build(_kubeconfig(ctx_extra={"namespace": ns}))
+
     def test_sibling_keys_dropped(self):
         doc = yaml.safe_load(_kubeconfig())
         doc["users"][0]["exec"] = {"command": "evil"}
@@ -193,7 +205,9 @@ class TestSecretValidation:
             _build(text)
         assert e.value.__cause__ is None
 
-    @pytest.mark.parametrize("name", ["mine ", "a\tb", "-x", "in-cluster\u200b", ""])
+    @pytest.mark.parametrize(
+        "name", ["mine ", "a\tb", "-x", "in-cluster\u200b", "", "remote\n"]
+    )
     def test_odd_context_names_refused(self, name):
         with pytest.raises(ValueError, match="may use only"):
             _build(_kubeconfig(context=name), context=name)
@@ -271,18 +285,55 @@ class TestInstanceFile:
         assert path.parent == tmp_path / ".sky" / sk.KUBE_DIR
         assert path.name.startswith(f"{os.getpid()}-")
 
-    def test_sweep_removes_dead_processes_files_only(self, tmp_path):
+    def test_sweep_keeps_live_processes_and_removes_the_rest(self, tmp_path):
         d = tmp_path / ".sky" / sk.KUBE_DIR
         d.mkdir(parents=True)
-        dead, mine, other = (
-            d / "999999999-x.yaml",
-            d / f"{os.getpid()}-y.yaml",
-            d / "notes.txt",
-        )
-        for p in (dead, mine, other):
-            p.write_text("x")
+        me = sk._process_tag()
+        pid, start = me.split("-")
+        files = {
+            "mine": d / f"{me}-a.yaml",
+            "mine_tmp": d / f"{me}-a.x.tmp",
+            "dead_pid": d / "999999999-1-b.yaml",
+            "reused_pid": d / f"{pid}-{int(start) - 1000}-c.yaml",
+            "other": d / "notes.txt",
+        }
+        for f in files.values():
+            f.write_text("x")
         sk.sweep_stale_instance_files(d)
-        assert not dead.exists() and mine.exists() and other.exists()
+        assert {k for k, f in files.items() if f.exists()} == {
+            "mine",
+            "mine_tmp",
+            "other",
+        }
+
+    def test_existing_directory_is_tightened_to_0700(self, tmp_path):
+        path = sk.instance_kubeconfig_path("abc")
+        path.parent.mkdir(parents=True, mode=0o755)
+        os.chmod(path.parent, 0o755)
+        sk.write_instance_kubeconfig({"a": 1}, path)
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert not list(path.parent.glob("*.tmp"))
+
+    def test_concurrent_writes_never_collide(self, tmp_path):
+        import concurrent.futures
+
+        path = sk.instance_kubeconfig_path("same")
+        doc = _build(_kubeconfig())
+        with concurrent.futures.ThreadPoolExecutor(8) as ex:
+            list(ex.map(lambda _: sk.write_instance_kubeconfig(doc, path), range(64)))
+        assert yaml.safe_load(path.read_text()) == doc
+
+    def test_file_removed_when_the_instance_is_collected(self, local_server):
+        import gc
+
+        env = _env()
+        env._kube_request_kubeconfig(True)
+        path = env._kube_file
+        assert path.exists()
+        del env
+        gc.collect()
+        assert not path.exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -348,6 +399,53 @@ class TestRequestPatch:
             "UploadZipFileResponse",
         }, others
 
+    def test_concurrent_tasks_build_bodies_with_their_own_value(self, monkeypatch):
+        from sky.server import common
+        from sky.server.requests import payloads
+
+        monkeypatch.setattr(common, "is_api_server_local", lambda *a: True)
+        sk.install()
+
+        async def body_for(value):
+            token = sk.set_request_kubeconfig(value)
+            try:
+                await asyncio.sleep(0)
+                return await asyncio.to_thread(
+                    lambda: payloads.RequestBody().env_vars["KUBECONFIG"]
+                )
+            finally:
+                sk.reset_request_kubeconfig(token)
+
+        async def run():
+            return await asyncio.gather(*(body_for(f"/v{i}") for i in range(10)))
+
+        assert asyncio.run(run()) == [f"/v{i}" for i in range(10)]
+
+    def test_only_logs_requests_share_server_threads(self):
+        """Guard: SkyPilot runs only /logs and /hook_logs on shared server threads.
+
+        Those share the server's Kubernetes client cache, so gbserver never sends
+        them for a kube_configs instance (tail_logs is only used by the stream
+        log mode, which is downgraded; hook_logs is never used). A SkyPilot
+        upgrade that moves more requests there fails this test.
+        """
+        import re
+
+        from sky.server import server as sky_server
+
+        src = Path(sky_server.__file__).read_text()
+        routes = set()
+        for m in re.finditer(r"execute_request_in_coroutine\(", src):
+            routes.add(re.findall(r"@app\.\w+\('([^']+)'", src[: m.start()])[-1])
+        assert routes == {"/logs", "/hook_logs"}, routes
+        gb = Path(sp.__file__).parent.parent
+        users = {
+            str(f.relative_to(gb))
+            for f in gb.rglob("*.py")
+            if re.search(r"sky\.(tail_logs|hook_logs)\(|\.hook_logs\(", f.read_text())
+        }
+        assert users <= {"monitoring/streams/skypilot_log_stream.py"}, users
+
     def test_sky_executor_carries_the_contextvar(self):
         async def run():
             token = sk.set_request_kubeconfig("/scoped")
@@ -399,18 +497,42 @@ class TestEnvironmentInstance:
         }
         assert tokens == {a._kube_file: "A", b._kube_file: "B"}
 
-    def test_rotation_and_rollback_rewrite_only_that_instance(self, local_server):
-        secrets = {"kc": _kubeconfig(user={"token": "old"})}
-        a, b = _env(secrets=secrets), _env(secrets={"kc": _kubeconfig()})
+    def test_secrets_are_fixed_per_instance(self, local_server):
+        """A rotated secret reaches the next build's instance, not a running one."""
+        a = _env(secrets={"kc": _kubeconfig(user={"token": "old"})})
         a._kube_request_kubeconfig(True)
+        b = _env(secrets={"kc": _kubeconfig(user={"token": "new"})})
         b._kube_request_kubeconfig(True)
-        before_b = b._kube_file.read_text()
-        for token in ("new", "old"):
-            secrets["kc"] = _kubeconfig(user={"token": token})
-            a._kube_request_kubeconfig(False)
-            doc = yaml.safe_load(a._kube_file.read_text())
-            assert doc["users"][0]["user"]["token"] == token
-        assert b._kube_file.read_text() == before_b
+
+        def tok(e):
+            return yaml.safe_load(e._kube_file.read_text())["users"][0]["user"]["token"]
+
+        assert (tok(a), tok(b)) == ("old", "new")
+
+    def test_concurrent_first_calls_on_one_instance(self, local_server, monkeypatch):
+        """Parallel steps of one environment share an instance: one file, one value."""
+        import concurrent.futures
+        import threading
+        import time
+
+        env = _env()
+        real = sk.instance_kubeconfig_path
+
+        def slow_path(instance_id, home=None):
+            time.sleep(0.05)  # widen the first-use window
+            return real(instance_id, home)
+
+        monkeypatch.setattr(sk, "instance_kubeconfig_path", slow_path)
+        barrier = threading.Barrier(8)
+
+        def call(_):
+            barrier.wait()
+            return env._kube_request_kubeconfig(True)
+
+        with concurrent.futures.ThreadPoolExecutor(8) as ex:
+            results = list(ex.map(call, range(8)))
+        assert len(set(results)) == 1 and results[0]
+        assert len(list(env._kube_file.parent.glob("*.yaml"))) == 1
 
     def test_missing_file_is_rewritten(self, local_server):
         env = _env()
@@ -459,6 +581,27 @@ class TestEnvironmentInstance:
             with pytest.raises(ValueError, match="must also be listed"):
                 env._kube_config_entries()
 
+    def test_malformed_entry_does_not_echo_the_input(self):
+        cfg = {
+            **_config(),
+            "kube_configs": [{"context": "remote", "kubeconfig": {"token": "S3CRET"}}],
+        }
+        with pytest.raises(ValueError, match="malformed") as e:
+            _env(cfg)._kube_config_entries()
+        assert "S3CRET" not in str(e.value)
+
+    def test_stream_log_retrieval_downgraded_with_kube_configs(self, caplog):
+        assert _env()._kube_safe_log_mode("stream") == sp.LOG_RETRIEVAL_PERIODIC
+        assert "not supported with kube_configs" in caplog.text
+        for mode in ("on_completion", "periodic", "startup_window"):
+            assert _env()._kube_safe_log_mode(mode) == mode
+        plain = _env(_config(kube=False), secrets={})
+        assert plain._kube_safe_log_mode("stream") == "stream"
+
+    def test_no_kube_configs_leaves_the_instance_untouched(self):
+        env = _env(_config(kube=False), secrets={})
+        assert env._kube_file is None and env._kube_request_kubeconfig(True) is None
+
     def test_strict_checks_the_server_first(self, monkeypatch):
         monkeypatch.setattr(sp, "_ensure_skypilot_api_running", lambda: None)
 
@@ -469,7 +612,7 @@ class TestEnvironmentInstance:
         env = _env()
         with pytest.raises(ValueError, match="server drops it"):
             env._kube_request_kubeconfig(True)
-        assert not env._kube_file.exists()
+        assert env._kube_file is None
 
 
 # --------------------------------------------------------------------------- #
@@ -521,7 +664,9 @@ class TestServerPrecondition:
             )
         else:
             monkeypatch.setenv(constants.ENV_VAR_ENFORCE_MOUNT_CONTAINMENT, flag)
-        assert sk.forwarding_endpoint() == {"forwarded": forwarded}
+        from gbserver.utils import sky_patches
+
+        assert sky_patches.kubeconfig_forwarding_endpoint() == {"forwarded": forwarded}
 
     def test_plugin_serves_the_endpoint(self):
         from gbserver.utils import sky_patches
@@ -530,8 +675,34 @@ class TestServerPrecondition:
         with patch.object(sky_patches, "apply"):
             sky_patches.SkyPatchesPlugin().install(MagicMock(app=app))
         app.add_api_route.assert_called_once_with(
-            sk.FORWARDING_ROUTE, sk.forwarding_endpoint, methods=["GET"]
+            sky_patches.KUBECONFIG_FORWARDING_ROUTE,
+            sky_patches.kubeconfig_forwarding_endpoint,
+            methods=["GET"],
         )
+
+    def test_plugin_does_not_import_the_environment_package(self):
+        """The API server must not load gbserver's environments (or its client patch)."""
+        import subprocess
+        import sys
+
+        code = (
+            "import sys; from gbserver.utils import sky_patches; "
+            "print('gbserver.environment' in sys.modules)"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        )
+        assert out.stdout.strip() == "False"
+
+    def test_non_json_response_is_refused(self, monkeypatch):
+        from sky.server import common
+
+        r = MagicMock(ok=True)
+        r.json.side_effect = ValueError("not json")
+        monkeypatch.setattr(common, "is_api_server_local", lambda *a: True)
+        monkeypatch.setattr(common, "make_authenticated_request", lambda *a, **k: r)
+        with pytest.raises(ValueError, match="does not apply"):
+            sk.check_server_forwards_kubeconfig("e")
 
 
 # --------------------------------------------------------------------------- #
@@ -606,21 +777,37 @@ def test_every_request_path_is_scoped():
             if k not in reach and cs & reach:
                 reach.add(k)
                 changed = True
-    unscoped_roots = [
-        k
-        for k in reach
-        if k not in scoped and not any(k in graph[c] for c in reach if c != k)
-    ]
-    assert not unscoped_roots, unscoped_roots
+    # A function is covered when it is scoped, or it has callers and every
+    # caller that reaches a request is covered. Iterate to a fixed point.
+    callers = {
+        k: {c for c, cs in graph.items() if k in cs and c in reach} for k in reach
+    }
+    covered = set(scoped & reach)
+    changed = True
+    while changed:
+        changed = False
+        for k in reach - covered:
+            if callers[k] and callers[k] <= covered:
+                covered.add(k)
+                changed = True
+    # retry_workload is called by the RetryHandler, whose task the scoped
+    # monitor_skypilot_monitor starts (Environment._with_retry_handler), so it
+    # runs in the monitor's scope.
+    monitor_src = ast.unparse(funcs["self.monitor_skypilot_monitor"])
+    assert "_with_retry_handler" in monitor_src
+    covered.add("self.retry_workload")
+    assert reach <= covered, sorted(reach - covered)
     # The entry points gbserver's dispatch calls by name are scoped, strict for
     # setup and launch.
     for name, strict in {
         "setup_skypilot": True,
         "launch_skypilot": True,
-        "retry_workload": True,
         "monitor_skypilot_monitor": False,
         "cleanup_skypilot": False,
         "teardown_skypilot": False,
         "launch_skypilot_teardown": False,
     }.items():
         assert getattr(sp.Skypilot, name).__kube_scoped__ is strict, name
+    # retry_workload runs inside the monitor's scope and calls the scoped
+    # cleanup/launch; scoping it again would hide its own errors.
+    assert not hasattr(sp.Skypilot.retry_workload, "__kube_scoped__")

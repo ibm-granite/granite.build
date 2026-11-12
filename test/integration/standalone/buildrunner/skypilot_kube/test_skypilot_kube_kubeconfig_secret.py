@@ -105,6 +105,7 @@ class TestSkypilotKubeKubeconfigSecret(AbstractYamlBuildRunnerTest):
 
     @pytest.fixture(autouse=True)
     def _credentials_only_from_the_secret(self, tmp_path, monkeypatch):
+        _api_server_started_before_kubeconfig_changes()
         context = expected_kind_context()
         secrets_dir = tmp_path / "secrets"
         secrets_dir.mkdir()
@@ -121,6 +122,18 @@ class TestSkypilotKubeKubeconfigSecret(AbstractYamlBuildRunnerTest):
         monkeypatch.setenv("KUBECONFIG", str(host))
         yield
         _remove_this_process_kubeconfigs()
+
+
+def _api_server_started_before_kubeconfig_changes() -> None:
+    """Start the SkyPilot API server (if needed) before a test changes KUBECONFIG.
+
+    A server started while KUBECONFIG points at a test's temporary file keeps it
+    as its own; later requests that forward no KUBECONFIG (any build without
+    kube_configs, with KUBECONFIG unset) would then miss the kind context.
+    """
+    from gbserver.environment.skypilot import _ensure_skypilot_api_running
+
+    _ensure_skypilot_api_running()
 
 
 def _remove_this_process_kubeconfigs() -> None:
@@ -176,6 +189,7 @@ class TestSkypilotKubeInstancesStayApart:
         host = tmp_path / "host-kubeconfig"
         host.write_text(yaml.safe_dump(_without_context(_kubectl_view(), context)))
         os.chmod(host, 0o600)
+        _api_server_started_before_kubeconfig_changes()
         monkeypatch.setenv("KUBECONFIG", str(host))
 
         async def node_names(self):
@@ -202,5 +216,8 @@ class TestSkypilotKubeInstancesStayApart:
             _remove_this_process_kubeconfigs()
         real_results, decoy_results = results[0::2], results[1::2]
         assert all(isinstance(r, list) and r for r in real_results), real_results
-        assert all(isinstance(r, Exception) for r in decoy_results), decoy_results
+        # The decoy's own dead endpoint, not any other failure (a race, say).
+        assert all(
+            type(r).__name__ == "KubeAPIUnreachableError" for r in decoy_results
+        ), decoy_results
         assert os.environ["KUBECONFIG"] == str(host)  # the process value is untouched

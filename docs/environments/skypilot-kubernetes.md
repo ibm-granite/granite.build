@@ -62,19 +62,26 @@ different credentials, and `allowed_contexts: all` only ever means your contexts
   are refused (they'd run a command on the gbserver host), and so are file paths (they'd resolve on the
   host). Values must be strings (`true`/`false` for the two flags), and `*-data` must be base64 (line-wrapped
   is fine). `server` and `proxy-url` aren't restricted: whoever can write the secret chooses the endpoint.
-- **Names.** Context names may use letters, digits and `. _ : @ / + = -`. `ssh-*` names, SkyPilot's
-  in-cluster context name and `gbserver-no-default-context` are reserved. A context, cluster or user of the
+- **Names.** Context names may use letters, digits and `. _ : @ / + = -`, and a context's `namespace` must be
+  a valid Kubernetes namespace name. `ssh-*` names, SkyPilot's in-cluster context name and
+  `gbserver-no-default-context` are reserved. A context, cluster or user of the
   same name in your own kubeconfig is refused, as is one your kubeconfig's `current-context` names. The
   cluster and user are renamed `gbserver/<context>`.
 - **No secret context becomes a default.** If your kubeconfig sets no usable `current-context`, the
   instance file's default is an unreachable, credential-less placeholder (`gbserver-no-default-context`).
-- **Rotation.** A changed secret rewrites only that instance's file before its next request.
-- **Lifetime.** Files stay while gbserver runs and are removed by the next gbserver start.
+- **Rotation.** An instance reads its secrets once, so a rotated secret takes effect with the next build.
+- **Lifetime.** A file is removed when its environment instance is released (normally when its build
+  finishes) or gbserver exits; files left by a gbserver that crashed are removed when gbserver next starts
+  a SkyPilot environment. Files belonging to another running gbserver sharing the home directory are kept.
 
 Limits:
 - **Local API server only.** `kube_configs` is refused unless gbserver's SkyPilot API server is local,
   bound to loopback and not deployed: only such a server applies a forwarded `KUBECONFIG` (gbserver's
   `sky_patches` plugin reports this). Elsewhere the credentials would be silently ignored.
+- **No live log streaming.** `log_retrieval: stream` falls back to `periodic` for `kube_configs`
+  environments (with a warning). Streaming uses `sky logs`, which the API server runs on threads sharing one
+  Kubernetes client cache keyed only by context name, so it could reach another instance's same-named
+  context; the other modes use `sky.download_logs`, which runs in a separate worker process.
 - **Not for managed jobs.** `Skypilot_managed` refuses `kube_configs`: its jobs controller is shared by all
   of your managed jobs and keeps the credentials it's provisioned with.
 - **Background server work** (e.g. the API server's periodic status refresh) uses the server's own

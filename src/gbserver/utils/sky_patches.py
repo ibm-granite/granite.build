@@ -578,6 +578,21 @@ def server_has_patches() -> bool:
     )
 
 
+#: Endpoint the plugin adds, reporting whether this server keeps a forwarded
+#: ``KUBECONFIG`` (``gbserver.environment.skypilot_kube``).
+KUBECONFIG_FORWARDING_ROUTE = "/gbserver/kubeconfig-forwarding"
+
+
+def kubeconfig_forwarding_endpoint() -> dict[str, bool]:
+    """Server side: whether this API server keeps a forwarded ``KUBECONFIG``.
+
+    ``executor._sanitize_request_env_vars`` keeps ``KUBECONFIG`` from a loopback
+    request only when mount containment isn't enforced (a non-deployed server
+    bound to loopback, unless an operator forces it).
+    """
+    return {"forwarded": not server_common.should_enforce_mount_containment()}
+
+
 class SkyPatchesPlugin(sky_plugins.BasePlugin):
     """Applies the fixes in every SkyPilot server process context."""
 
@@ -589,10 +604,8 @@ class SkyPatchesPlugin(sky_plugins.BasePlugin):
         if app is not None:
             # Lets gbserver refuse kube_configs on a server that would drop each
             # request's KUBECONFIG (gbserver.environment.skypilot_kube).
-            from gbserver.environment import skypilot_kube
-
             app.add_api_route(
-                skypilot_kube.FORWARDING_ROUTE,
-                skypilot_kube.forwarding_endpoint,
+                KUBECONFIG_FORWARDING_ROUTE,
+                kubeconfig_forwarding_endpoint,
                 methods=["GET"],
             )

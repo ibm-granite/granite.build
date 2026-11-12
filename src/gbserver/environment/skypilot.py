@@ -40,6 +40,7 @@ from typing import (
     Union,
 )
 
+import pydantic
 from tenacity import (
     AsyncRetrying,
     retry,
@@ -2550,14 +2551,10 @@ class Skypilot(Environment):
         **kwargs,
     ) -> None:
         self._cluster_names: Dict[str, str] = {}  # launch_id -> cluster_name
-        # kube_configs: this instance's own kubeconfig file and the fingerprint
-        # of the inputs it was last written from (see _kube_request_kubeconfig).
-        self._kube_file = None
-        if HAS_SKYPILOT:
-            self._kube_file = skypilot_kube.instance_kubeconfig_path(
-                uuid.uuid4().hex[:12]
-            )
-        self._kube_written: Optional[str] = None
+        # kube_configs: this instance's own kubeconfig file, written on first
+        # use (see _kube_request_kubeconfig), and the lock serializing that.
+        self._kube_file: Optional[Path] = None
+        self._kube_lock = threading.Lock()
         self._kube_warned = False
         self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
         # launch_id -> LSF cluster name (the ~/.lsf/config host), for lsf launches
@@ -2689,7 +2686,17 @@ class Skypilot(Environment):
             raise ValueError(
                 f"environment '{self._env_name()}': kube_configs must be a list"
             )
-        entries = [KubeConfigEntry.model_validate(e) for e in raw]
+        try:
+            entries = [KubeConfigEntry.model_validate(e) for e in raw]
+        except pydantic.ValidationError as e:
+            # Field paths only: pydantic's message echoes the input, which may
+            # be a pasted kubeconfig.
+            fields = sorted({".".join(map(str, err["loc"])) for err in e.errors()})
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs entries are "
+                f"malformed (fields {fields}); each needs a context and the name "
+                "of a kubeconfig secret"
+            ) from None
         allowed = _env_allowed_contexts(self._cloud_config() or {})
         if allowed != "all":
             pinned = allowed if isinstance(allowed, list) else []
@@ -2703,14 +2710,35 @@ class Skypilot(Environment):
                 )
         return entries
 
+    def _kube_safe_log_mode(self: Self, log_mode: str) -> str:
+        """``log_mode``, except ``stream`` becomes ``periodic`` with ``kube_configs``.
+
+        ``stream`` uses ``sky.tail_logs``, which the API server runs on threads
+        sharing one Kubernetes client cache keyed only by context name, so it
+        could reach another instance's same-named context (``skypilot_kube``).
+        ``periodic`` uses ``sky.download_logs``, run in a worker process.
+        """
+        cfg = self.config.config if self.config else {}
+        if log_mode != LOG_RETRIEVAL_STREAM or not cfg.get("kube_configs"):
+            return log_mode
+        logger.warning(
+            "environment '%s': log_retrieval: stream is not supported with "
+            "kube_configs; using %s",
+            self._env_name(),
+            LOG_RETRIEVAL_PERIODIC,
+        )
+        return LOG_RETRIEVAL_PERIODIC
+
     def _kube_request_kubeconfig(self: Self, strict: bool) -> Optional[str]:
         """The ``KUBECONFIG`` this instance's requests carry, or ``None``.
 
         ``None`` without ``kube_configs``: requests then behave exactly as
-        before. Otherwise (re)writes this instance's file when its inputs
-        changed (a rotated secret) or it is missing, and returns the user's
-        kubeconfig files plus that file. Blocking (file I/O, and on strict
-        calls an API server check), so callers run it off the event loop.
+        before. Otherwise writes this instance's file on first use (or if it
+        has gone missing) and returns the user's kubeconfig files plus that
+        file. An instance's secrets are fixed for its life, so a rotated secret
+        takes effect with the next build's instance. Blocking (file I/O, and on
+        strict calls an API server check), so callers run it off the event
+        loop.
 
         :param strict: Setup and launch: raise on a bad ``kube_configs`` or a
             server that would ignore it. Polls, cleanup and teardown pass
@@ -2729,17 +2757,20 @@ class Skypilot(Environment):
             if strict:
                 _ensure_skypilot_api_running()
                 skypilot_kube.check_server_forwards_kubeconfig(self._env_name())
-            secrets = self.secrets or {}
-            stamp = skypilot_kube.fingerprint(entries, secrets)
-            assert self._kube_file is not None
-            if stamp != self._kube_written or not self._kube_file.exists():
-                doc = skypilot_kube.build_instance_kubeconfig(
-                    entries, secrets, self._env_name()
-                )
-                skypilot_kube.write_instance_kubeconfig(doc, self._kube_file)
-                self._kube_written = stamp
+            with self._kube_lock:
+                if self._kube_file is None:
+                    self._kube_file = skypilot_kube.instance_kubeconfig_path(
+                        uuid.uuid4().hex[:12]
+                    )
+                    skypilot_kube.remove_when_collected(self, self._kube_file)
+                if not self._kube_file.exists():
+                    doc = skypilot_kube.build_instance_kubeconfig(
+                        entries, self.secrets or {}, self._env_name()
+                    )
+                    skypilot_kube.write_instance_kubeconfig(doc, self._kube_file)
+                path = self._kube_file
             self._kube_warned = False
-            return skypilot_kube.request_kubeconfig(self._kube_file)
+            return skypilot_kube.request_kubeconfig(path)
         except Exception as e:  # pylint: disable=broad-exception-caught
             if strict:
                 raise
@@ -4934,6 +4965,7 @@ class Skypilot(Environment):
         log_mode, log_interval, startup_window = _parse_log_retrieval(
             kwargs, poll_interval
         )
+        log_mode = self._kube_safe_log_mode(log_mode)
         last_status = None
         ssh_hpc = launch_id in self._ssh_hpc_launches
         poll_failures = _PollFailureTracker(
@@ -5654,7 +5686,6 @@ class Skypilot(Environment):
                     "launch_skypilot_teardown: failed to tear down %s: %s", name, e
                 )
 
-    @_kube_scoped(strict=True)
     async def retry_workload(
         self: Self,
         launch_id: str,
