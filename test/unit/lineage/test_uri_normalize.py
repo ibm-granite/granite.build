@@ -280,14 +280,9 @@ def test_lh_label_named_like_the_default_keeps_its_real_revision():
     assert normalize_uri(raw) == raw
 
 
-def test_mem_uri_is_byte_exact():
-    """``mem://`` is an opaque key and must not be touched.
-
-    Its value may itself be a URL, which path normalization corrupts -- the
-    reason ``MemURI.custom_str`` exists.
-    """
-    raw = "mem://http://host:8000/some//path"
-    assert normalize_uri(raw) == raw
+def test_mem_uri_has_no_identity():
+    """``mem://`` is a build-local Memstore key, not lineage (#561): it is dropped."""
+    assert normalize_uri("mem://http://host:8000/some//path") == ""
 
 
 def test_relative_file_uri_is_not_resolved():
@@ -435,7 +430,7 @@ def test_uri_at_exactly_the_limit_is_kept():
 # Every raw spelling the tables above use, plus the cases a non-idempotent rule
 # broke before, so ``n(n(u)) == n(u)`` is checked across all of them.
 _ALL_SPELLINGS = sorted(
-    {raw for group in CONVERGING_GROUPS for raw in group.values[0]}
+    {raw for group in CONVERGING_GROUPS for raw in group.values[0]}  # type: ignore[union-attr]
     | {
         "hf:///buckets/org/b/tree/x",
         "lh://prod/ns/models/tbl/granite-dot-build",

@@ -123,7 +123,7 @@ git -C $CODE_DIR commit -am "ce anchor and entropy guard"
 
 # Then one arm per coefficient. RUN_NAME MUST differ per arm, and CORPUS_DIR pins the
 # corpus so the sweep derives it once rather than once per arm.
-CORPUS=/proj/granite-build/g4os/distill/distill-350m-s1v2-ce040/c20ed3c0-.../corpus
+CORPUS=<shared-fs>/distill/distill-350m-s1v2-ce040/c20ed3c0-.../corpus
 for C in 0 0.05 0.15 0.40; do
   gb build start -f recipes/granite4-350m/lsf/distill-stage1-v2/build.yaml --space <space> \
     --param CE_COEF=$C \
@@ -163,7 +163,7 @@ Details that remain load-bearing:
 
 `train-gold` runs trainer code that does not come from the pinned steps checkout. Until v2
 nothing pinned what it *did* read: `distill-stage1` pointed it at
-`/proj/granite-build/g4os/kd-sandbox` — another project's working tree, carrying **159
+`<shared-fs>/kd-sandbox` — another project's working tree, carrying **159
 uncommitted files** including `gold/` — so `df8512e0` recorded a commit that does not
 describe the code that ran.
 
@@ -171,9 +171,9 @@ v2 fixed that by pinning a local clone this project controls, and that clone had
 because it carried the CE patch. With the anchor retired, the pin moves back to the step's
 own `code_config`: an unauthenticated clone of
 [`github.com/laminair/gb-steps-distillation`](https://github.com/laminair/gb-steps-distillation)
-at `a5d59bc4`. That is strictly better provenance than a `/proj` checkout — the clone path
+at `a5d59bc4`. That is strictly better provenance than a shared-filesystem checkout — the clone path
 is at `code_config.ref` by construction and cannot drift — and it is what makes this recipe
-runnable anywhere that can reach github.com rather than on BlueVela alone.
+runnable anywhere that can reach github.com rather than on one cluster alone.
 
 `CODE_EXPECT_REF` is empty because `expect_ref` is only consulted on the `CODE_DIR` path. It
 is the value to fill in the moment a `CODE_DIR` *is* set, because that is when a checkout
@@ -221,7 +221,7 @@ Not wired into this recipe: it is ~4 GPU-h per model and needs `bcb-server` up f
 
 ```bash
 gb build start -f recipes/granite4-350m/lsf/full-eval/build.yaml --space <space> \
-  --param MODEL_PATH=/proj/granite-build/g4os/distill/distill-350m-stage1-v2/<build-id>/export-<N> \
+  --param MODEL_PATH=<shared-fs>/distill/distill-350m-stage1-v2/<build-id>/export-<N> \
   --param EXPERIMENT=distill-350m-stage1-v2-ck<N>
 ```
 

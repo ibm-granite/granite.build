@@ -150,7 +150,7 @@ class Space:
             uriobj.pull(dest=tmppath, force=force_fetch)
             space_yamls = glob.glob(str(tmppath / "**" / SPACE_YAML), recursive=True)
             builtins_uri = (Path(__file__).parent.parent / "builtins").as_uri()
-            base_uris = [self.uristr, builtins_uri]
+            base_uris = [self.uristr]
             if space_yamls is None or len(space_yamls) == 0:
                 raise ValueError(f"No '{SPACE_YAML}' found at path: {tmppath}")
             self.space_config: SpaceConfig = SpaceConfig.from_yaml(Path(space_yamls[0]))
@@ -160,6 +160,9 @@ class Space:
                         self.space_config.base_uris, self.uristr
                     )
                 URI.set_space_config(self.space_config)
+            # Builtins last: the fallback for any asset the space and its
+            # base_uris don't ship, so a listed base can override one.
+            base_uris.append(builtins_uri)
             self.secrets = self._fetch_secrets(username=username)
 
             SpaceURI.set_baseuris(base_uris=base_uris, space_secrets=self.secrets)

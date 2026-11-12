@@ -1,4 +1,4 @@
-# hle-tools on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# hle-tools on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/cais/hle @ 5a81a4c7271a2a2a312b9a690f0c2fde837e4c29
 # (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
 #

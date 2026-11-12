@@ -1,4 +1,4 @@
-# multi-challenge on BlueVela (SkyPilot / SLURM), judged family image.
+# multi-challenge on SkyPilot/SLURM, judged family image.
 # Data: pinned inside the image (GitHub/PyPI/task data baked by the family's extras.sh), nothing to fetch.
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
@@ -50,8 +50,8 @@ POLL_INTERVAL_SECONDS: 300
 LOG_RETRIEVAL_INTERVAL_SECONDS: 300
 
 # ─── Local scoring (build-local.yaml only) ────────────────────────────
-# build-local.yaml generates on BlueVela as above, then copies the output dir (generation.json and
-# items/) to the gbserver host and scores it there in IMAGE_CPU (local Docker), for a judge BlueVela cannot reach. E.g.:
+# build-local.yaml generates on SkyPilot/SLURM as above, then copies the output dir (generation.json and
+# items/) to the gbserver host and scores it there in IMAGE_CPU (local Docker), for a judge the cluster cannot reach. E.g.:
 #   gb build start -f recipes/evals/judged/multi-challenge/skypilot/build-local.yaml --space <space> \
 #     --param OUTPUT_ROOT=<root> \
 #     --param JUDGE_BASE_URL=<judge-base-url> \

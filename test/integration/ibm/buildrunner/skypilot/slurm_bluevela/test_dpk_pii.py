@@ -72,10 +72,11 @@ A containerized step never hit this — its file_mounts run as root inside the
 enroot container, where SkyPilot aliases ``sudo`` away — which is why the sibling
 image-mode fixtures, and ``test_dpk_tok_image.py``, passed without the fix.
 
-**Memory is requested explicitly.** BlueVela enforces per-job memory, but gbserver
-drops ``compute_config.total_memory_per_node`` on slurm/lsf, so the build sets
-``launcher_config.resources.memory``. Without it the job got the partition default
-(2 CPUs / 2G) and was OOM-killed loading ``flair/ner-english-large``.
+**Memory is requested explicitly.** BlueVela enforces per-job memory. Before #657,
+gbserver dropped ``compute_config.total_memory_per_node`` on slurm, so the job got
+SkyPilot's 1 GB per CPU (2 CPUs / 2G) and was OOM-killed loading
+``flair/ner-english-large``. The floor now applies on BlueVela, and the build's
+explicit ``launcher_config.resources.memory`` wins either way.
 """
 
 import os

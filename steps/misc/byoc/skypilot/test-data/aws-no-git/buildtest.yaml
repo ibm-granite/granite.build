@@ -1,0 +1,26 @@
+# YAML-driven spec for test_skypilot_aws_byoc_no_git.py (located by the test/ <->
+# test-data/ helper, so this pairing holds in both test modes; see steps/README.md).
+# The aws fixture's build, run in pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime,
+# which has no git (#529): byoc must install git before it can clone.
+targets:
+  - byoc-run
+target_expectations:
+  - target_name: byoc-run
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    # The commit is recorded by run's own `git rev-parse`, so this also proves
+    # run found the git that setup installed.
+    expected_steps:
+      - metadata_matches:
+          commit_hash: "^[0-9a-f]{40}$"
+        config:
+          byoc_config:
+            image: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
+# Rewritten by `make publish-step` for Mode 2, as in the aws fixture.
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# EC2 bring-up, plus pulling a ~3 GB image and installing git from conda-forge.
+timeout_minutes: 50

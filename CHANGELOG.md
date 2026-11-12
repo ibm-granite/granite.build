@@ -36,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model). Custom image `quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-6`
   (torch 2.15.0 / CUDA 13.2) with a fully hashed dependency lock. Build tests on skypilot/aws
   (QLoRA, aLoRA) and BlueVela SLURM (LoRA/FSDP, QLoRA/DeepSpeed).
+- **`mergekit` step (#238)**, `space://steps/merge/mergekit`, in a new `merge` category: one
+  MergeKit (`mergekit-yaml`, v0.1.5, LGPL-3.0) merge on any SkyPilot endpoint, single node, on
+  the CPU unless GPUs are requested. Public image: `setup` installs `mergekit==<mergekit_version>`
+  with uv, as data-designer does, or `mk_image` provides it. `merge_config` is MergeKit's
+  own recipe, passed through unchanged except that a model reference naming a bound input
+  (`model_1`–`model_4`, `base_model`) gets the staged path. Hugging Face ids and node paths
+  pass through, so MergeKit fetches them itself. An inline Jinja `chat_template` needs
+  `{% raw %}`, because gbserver renders config strings. `args` takes further
+  `mergekit-yaml` flags. Config errors fail at step creation. Because MergeKit reports a
+  failed tokenizer copy as success, the step checks the merged output (tensors, tokenizer,
+  requested chat template) before registering it. Build tests on local SLURM and local
+  kind run MergeKit's `gradient-slerp` example on SmolLM2-135M + -Instruct, and
+  `make test-mergekit` runs the real-MergeKit tests in a separate venv.
 - **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
   pointing at one image, and SLURM's `slurm_image_cache` keys its `.sqsh` by tag, so a re-pushed
   tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
@@ -64,6 +77,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
+  (#558).** `space://steps/<name>` now resolves to the first base, in `base_uris` order, that
+  holds a copy serving the active environment, so an earlier base always outranks a later one.
+  The space's own root `steps/<name>` still wins outright. Within one base, the copy in the
+  active environment's own `steps/` comes first, then shared copies; among shared copies, the
+  one whose `environment_configs` list the fewest classes wins. See
+  [docs/environments/step-resolution.md](docs/environments/step-resolution.md).
+  **Breaking changes:**
+  - **A step's name is its full path below `steps/`.** Only an env-class folder directly under
+    `steps/` (`bash`, `docker`, `k8s`, `lsf`, `runpod`, `skypilot`, `skypilot_managed`) may be
+    left out, as with the builtins' `space://steps/command`. Any other folder is part of the
+    name, so `space://steps/<leaf>` no longer reaches `steps/<category>/<leaf>`: write
+    `space://steps/<category>/<leaf>`, e.g. `space://steps/distill/sft`, not
+    `space://steps/sft`.
+  - **A `steps/` folder next to an `environment.yaml` serves only that environment.** Steps
+    there are no longer shared with other environments, of the same class or otherwise, and
+    folder names (`environments/…`) no longer decide which environments a folder serves. Put a
+    step meant for several environments in a folder with no `environment.yaml`, and limit it
+    with `subtypes` if needed.
+  - **`subtypes` apply wherever a step lives,** including an environment's own `steps/`. The
+    env-owned steps under `skypilot/aws/steps/` and `skypilot/lsf/ibm-bluevela/steps/` no
+    longer declare `subtypes`; their folder scopes them.
+  - **New errors instead of a silent pick:** `Ambiguous space uri` when one base holds two
+    equally specific copies of a name for the environment, and `Invalid step for its
+    environment` when the copy that would be selected is in the environment's own `steps/` but
+    doesn't admit it.
 - **`gb build --parameters-path` is repeatable and layers over the recipe's `parameters.yaml`
   instead of replacing it (#663).** `start`, `validate` and `describe` take the recipe's
   `parameters.yaml` (next to `build.yaml`) as the base, then each `--parameters-path` in the order
@@ -262,6 +301,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
+  memory (#657).** Before, it was always dropped on SLURM, so jobs got SkyPilot's 1 GB per CPU.
+  The built-in `hfpull`/`hfpush` (10Gi) were OOM-killed on BlueVela. gbserver now reads the
+  cluster's `SelectTypeParameters` and sends the step's memory only on `CR_*_Memory` clusters;
+  `CR_CPU`/`CR_Core` clusters and LSF are unchanged. **Behavior change:** on a memory-tracking
+  cluster a step now requests its declared memory, so one that declares more than the partition
+  allows sits PENDING instead of running. Set `resources.memory` to override it per step
+  (`memory: 0` omits `--mem`). The BlueVela environment's `resources: { memory: 8 }` stopgap
+  for hfpull/hfpush is removed. See
+  [skypilot-slurm.md](docs/environments/skypilot-slurm.md#step-memory-total_memory_per_node).
 - **K8s steps no longer fail for email usernames (ibmid auth) (#630).** The gbstep chart rendered
   `run_metadata.username` verbatim as a label, so the API server rejected the AppWrapper.
   `launch_helm` now passes a sanitized username (`user@x.com` -> `user_x.com`) chart-wide.

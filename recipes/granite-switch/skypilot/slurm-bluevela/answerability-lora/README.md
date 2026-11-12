@@ -1,9 +1,9 @@
-# Answerability LoRA / aLoRA adapter (hf-peft-sft, BlueVela SLURM)
+# Answerability LoRA / aLoRA adapter (hf-peft-sft, SkyPilot/SLURM)
 
 Trains an answerability adapter on `ibm-granite/granite-4.2-8b`, either a
 regular LoRA (`METHOD=lora`, the default) or an activated LoRA
 (`METHOD=alora`, see [aLoRA](#alora)), with the [`hf-peft-sft`](../../../../../steps/train/hf-peft-sft/skypilot/USAGE.md)
-step, on IBM BlueVela over SLURM. It registers the **adapter**, not a merged
+step, on SkyPilot/SLURM. It registers the **adapter**, not a merged
 model, as the `adapter` artifact.
 
 ```bash
@@ -17,8 +17,8 @@ prepare ──(dataset)──> train
 ```
 
 - **`prepare`** (CPU, `cpu` partition) pulls the answerability parquet from the
-  private HF dataset repo `ibm-research/touma` and writes a prompt/completion
-  copy to shared `/proj`. The `hf://` URI ends in a path inside the repo, so
+  private HF dataset repo named by `SOURCE_DATA_URI` and writes a prompt/completion
+  copy to the cluster's shared filesystem. The `hf://` URI ends in a path inside the repo, so
   only that directory is downloaded, not the whole repo. It also binds the
   base model, for its tokenizer.
 - **`train`** (4×H200, DDP) stages the base model, binds `prepare.dataset`,
@@ -26,8 +26,8 @@ prepare ──(dataset)──> train
 
 ## The one prerequisite: an `HF_TOKEN` secret
 
-`ibm-research/touma` is private, so the pull needs a read-only token from an
-account with access to the `ibm-research` org. The download runs on a cluster
+The default dataset repo is private, so the pull needs a read-only token from an
+account with read access to it. The download runs on a cluster
 node, which can't see your shell, so register the token once by name:
 
 ```bash
@@ -40,14 +40,14 @@ gb secret list --personal --skip-version-check    # -> HF_TOKEN
 found. The token never appears in `build.yaml`, `parameters.yaml`, or a command
 line.
 
-`ibm-research/touma` is a **dataset** repo, so the URI needs `datasets/`:
-`hf:///datasets/ibm-research/touma/...`. Without it, the name resolves to a
+The source is a **dataset** repo, so the URI needs `datasets/`:
+`hf:///datasets/<org>/<dataset>/...`. Without it, the name resolves to a
 model repo and the Hub answers 404 "Repository not found".
 
 ## The data
 
 `SOURCE_DATA_URI` points at
-`training_data/answerability/parquet_granite4.2_8b` in `ibm-research/touma`:
+`training_data/answerability/parquet_granite4.2_8b` in the dataset repo:
 
 | file | sha256 |
 |---|---|
@@ -87,9 +87,9 @@ is too long, `prepare` fails: `MAX_LENGTH` is then too short for the data.
 Every dropped row is logged and listed, by its row in the source parquet, in
 the dataset's `README.md` (`dropped_rows`, `too_long_rows`).
 
-The output is `$DATA_ROOT/$RUN_ID/data/{train,test}.parquet` on `/proj`, under
-the container-visible `/proj/data-eng/llmb-read-write` tree. SkyPilot's SLURM
-backend bind-mounts only that tree and home, not all of `/proj`.
+The output is `$DATA_ROOT/$RUN_ID/data/{train,test}.parquet` on the shared
+filesystem, under the container-visible `<shared-fs>` tree. SkyPilot's SLURM
+backend bind-mounts only that tree and home, not the whole shared filesystem.
 
 ### Checking the tokenization (optional)
 
@@ -98,7 +98,7 @@ and compares the result with the stored `input_ids` / `labels`. It needs
 `transformers` and `jinja2`, no GPU and no weights:
 
 ```bash
-hf download ibm-research/touma --repo-type dataset \
+hf download <org>/<dataset> --repo-type dataset \
   --include 'training_data/answerability/parquet_granite4.2_8b/*' --local-dir .
 python -I check_tokenization.py ibm-granite/granite-4.2-8b \
   training_data/answerability/parquet_granite4.2_8b/train.parquet 500
@@ -169,18 +169,18 @@ the LoRA adapters in `answerability-lora/`.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `RUN_ID` | `it1-r1` | Names the build, the dataset dir (`$DATA_ROOT/$RUN_ID`), the adapter dir (`$ADAPTER_ROOT/answerability-$METHOD/$RUN_ID`) and the ClearML task. Use a new one per run: re-using one replaces that run's outputs. The dataset dir does not include the method, so builds running at the same time (a LoRA and an aLoRA run, say) need different `RUN_ID`s, or their `prepare` targets write the same files. |
-| `SOURCE_DATA_URI` | `hf:///datasets/ibm-research/touma/main/training_data/answerability/parquet_granite4.2_8b` | The source parquet dir. The path after the revision limits the pull to it. |
-| `DATA_ROOT` | `/proj/data-eng/llmb-read-write/touma/data/answerability-lora` | Where `prepare` writes, on shared `/proj`. |
+| `SOURCE_DATA_URI` | `hf:///datasets/<org>/<dataset>/main/training_data/answerability/parquet_granite4.2_8b` | The source parquet dir. The path after the revision limits the pull to it. |
+| `DATA_ROOT` | `<shared-fs>/data/answerability-lora` | Where `prepare` writes, on the shared filesystem. |
 | `PREP_IMAGE` / `PREP_CPUS` / `PREP_MEMORY` | the hf-peft-sft image / `2` / `16` | `prepare` runs in the step image (its venv has pyarrow), so the node's image cache serves both targets. The cpu partition allows at most 8 GiB per CPU: keep `PREP_MEMORY` ≤ 8 × `PREP_CPUS`, or SLURM raises the CPU count and SkyPilot's `srun` aborts. |
-| `BASE_MODEL_URI` | `hf:///ibm-granite/granite-4.2-8b` | Staged by an hfpull job on the cpu partition. If that job fails (it runs in a small cgroup), point this at an existing copy: `env:///proj/...`. |
+| `BASE_MODEL_URI` | `hf:///ibm-granite/granite-4.2-8b` | Staged by an hfpull job on the cpu partition. If that job fails (it runs in a small cgroup), point this at an existing copy: `env://<shared-fs>/...`. |
 | `DATASET_SPLIT` | `train` | `load_dataset` split; `train[:256]` for a smoke run. |
 | `MAX_LENGTH` | `8192` | Tokens per row: `prepare` drops longer rows, and `train` uses it as `max_length`. |
 | `METHOD` | `lora` | `lora` or `alora`. Also names the build, the ClearML task and the adapter subdirectory. |
 | `ALORA_INVOCATION_STRING` | `<\|im_start\|>assistant` | Only for `METHOD=alora`. A trailing newline would be dropped (see [aLoRA](#alora)). |
 | `LORA_R` / `LORA_ALPHA` / `LEARNING_RATE` | `16` / `32` / `5e-5` | Adapter rank, scale and learning rate. |
-| `ADAPTER_ROOT` | `/proj/data-eng/llmb-read-write/touma/adapters` | Shared, so the adapter survives teardown. Each method gets its own subdirectory, `answerability-lora/` or `answerability-alora/`, so a LoRA and an aLoRA run with the same `RUN_ID` don't collide. |
+| `ADAPTER_ROOT` | `<shared-fs>/adapters` | Shared, so the adapter survives teardown. Each method gets its own subdirectory, `answerability-lora/` or `answerability-alora/`, so a LoRA and an aLoRA run with the same `RUN_ID` don't collide. |
 | `ACCELERATORS` | `H200:4` | DDP over 4 GPUs. Effective batch 4 × 1 × 8 = 32. |
-| `MEMORY` | `512` | Host GiB for `train`. On SLURM, gbserver drops `compute_config` memory. |
+| `MEMORY` | `512` | Host GiB for `train`, set as `resources.memory` so it wins on every cluster. |
 | `NUM_TRAIN_EPOCHS` / `MAX_STEPS` | `3` / `-1` | A positive `MAX_STEPS` caps the run. |
 | `CLEARML` | `false` | `true` turns tracking on and declares space secrets `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY`, which must exist. |
 
@@ -208,9 +208,9 @@ gb build start -f build.yaml --param-file parameters.yaml \
 
 ## Findings from iteration 1
 
-Runs on IBM BlueVela (SLURM), gbserver standalone, before hf-peft-sft was
-merged (#596) and with the `peft-v0.21.2-4` image; the environment was then
-named `skypilot/slurm/ibm-bluevela` (now `skypilot/slurm/bluevela`, #590). Training loss here is only a plumbing check: the
+Runs on SkyPilot/SLURM, gbserver standalone, before hf-peft-sft was
+merged (#596) and with the `peft-v0.21.2-4` image; the environment has since
+been renamed (#590). Training loss here is only a plumbing check: the
 completion is one label plus `</think>` and `<|im_end|>`, so loss falls to
 near zero quickly and says nothing about held-out accuracy. No evaluation has
 been run yet.
@@ -240,7 +240,7 @@ What these runs found:
   build FAILED and dropped the cluster while training kept running. The SLURM
   job then held its 4 H200s, idle, until cancelled by hand, and the two
   post-build cleanup VMs failed, orphaning
-  `/proj/.../builds/builds/a255acdc-.../runs/*`. Not fixed here: run gbserver
+  `${shared_workdir}/builds/a255acdc-.../runs/*`. Not fixed here: run gbserver
   from a host with stable access to the login nodes, and check `squeue` after
   a FAILED build.
 - **gbserver drops a trailing newline from config strings** (see

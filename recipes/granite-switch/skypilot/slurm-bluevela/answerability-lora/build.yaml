@@ -1,14 +1,14 @@
 #####
 # Answerability LoRA adapter on granite-4.2-8b, trained with the hf-peft-sft
-# step on IBM BlueVela over SLURM.
+# step on SkyPilot/SLURM.
 #
 # Two targets, wired by one artifact:
 #
 #   prepare ──(dataset)──> train
 #
 # `prepare` pulls the answerability parquet from the private HF dataset repo
-# ibm-research/touma (only that directory: the hf:// URI names a path in the
-# repo), keeps its prompt/completion columns, and writes them to shared /proj.
+# named by SOURCE_DATA_URI (only that directory: the hf:// URI names a path in the
+# repo), keeps its prompt/completion columns, and writes them to the shared filesystem.
 # `train` stages the base model (hfpull), binds that dataset, trains a LoRA
 # adapter with TRL's SFTTrainer (loss on the completion only), and registers
 # the ADAPTER as the `adapter` artifact.
@@ -25,7 +25,7 @@ granite.build:
   targets:
 
     ##########################################################################
-    # prepare — HF parquet -> prompt/completion dataset on /proj (CPU only)
+    # prepare — HF parquet -> prompt/completion dataset on shared storage (CPU only)
     ##########################################################################
     prepare:
       environment_uri: "$${ENVIRONMENT_URI}"
@@ -42,7 +42,7 @@ granite.build:
           uri: "$${BASE_MODEL_URI}"
           type: model
       outputs:
-        # Shared /proj, so train (another SLURM job) can read it.
+        # Shared filesystem, so train (another SLURM job) can read it.
         dataset:
           uri: "env://$${DATA_ROOT}/$${RUN_ID}"
           type: dataset
@@ -240,7 +240,7 @@ granite.build:
         dataset:
           binding: prepare.dataset
       outputs:
-        # Written to shared /proj so it survives teardown; must match
+        # Written to the shared filesystem so it survives teardown; must match
         # hf_peft_sft_config.output_path below.
         adapter:
           uri: "env://$${ADAPTER_ROOT}/answerability-$${METHOD}/$${RUN_ID}"
@@ -251,9 +251,10 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             launcher_config:
               resources:
-                # H200 is the only GPU bluevela schedules (its constraint).
+                # H200 is the only GPU the cluster schedules (its constraint).
                 accelerators: "$${ACCELERATORS}"
-                # gbserver drops compute_config memory on slurm; bare GiB string.
+                # Explicit memory wins over compute_config on every cluster; bare
+                # GiB string.
                 memory: "$${MEMORY}"
               envs:
                 PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"

@@ -1,5 +1,5 @@
 ######
-# sft-smoke — smoke-test distill-sft IN ISOLATION, on BlueVela (SkyPilot / LSF).
+# sft-smoke — smoke-test distill-sft IN ISOLATION, on SkyPilot/LSF.
 #
 # Three targets, not seven: align -> corpus -> train-sft, then stop. This is
 # NOT a trimmed distill-smoke — it deliberately does not continue into GOLD,
@@ -42,8 +42,8 @@ granite.build:
     # tokenizer artifacts train-sft reads.
     #
     # TEACHER_MODEL_URI / STUDENT_MODEL_URI / CHAT_TEMPLATE_URI carry a FULL
-    # URI, not a bare path: "env:///proj/..." for a shared-filesystem
-    # checkout (what BlueVela has always used), "hf:///org/repo" to pull a
+    # URI, not a bare path: "env://<shared-fs>/..." for a shared-filesystem
+    # checkout (what this cluster has always used), "hf:///org/repo" to pull a
     # public (or token-gated) Hub model fresh, or "s3://bucket/key" /
     # "cos://bucket/key" for object storage — see ibm-bluevela's
     # environment.yaml assetstores block for what's wired in. Whichever

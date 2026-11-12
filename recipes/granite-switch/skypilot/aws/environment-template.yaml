@@ -65,6 +65,15 @@ config:
   # from build.yaml, so the pin has to live here. A build running another step
   # type here must pin it too (launcher_config.resources.infra:
   # aws/<region>), or add it to this list.
+  #
+  # The GPU step types run on the AWS Deep Learning Base GPU AMI, whose
+  # per-region id setup-local-space.sh fills in below. SkyPilot's default AMI
+  # leaves an 8-GPU H200 instance without the GPUs: NVSwitch needs the DLAMI's
+  # NVIDIA Fabric Manager before CUDA initializes. docker.host_image_id is the
+  # host a container runs on, and the AMI itself for a step without one (byoc
+  # with an empty IMAGE); either way the step keeps its own image. Not
+  # image_id: that would replace the docker:<image> a step builds. The CPU-only
+  # steps stay on SkyPilot's default AMI.
   steps:
     hfpull:
       launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
@@ -73,9 +82,13 @@ config:
     command:
       launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
     hf-peft-sft:
-      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
+      launcher_config:
+        resources: { infra: aws/REGION-REPLACE-ME }
+        docker: { host_image_id: AMI-REPLACE-ME }
     byoc:
-      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
+      launcher_config:
+        resources: { infra: aws/REGION-REPLACE-ME }
+        docker: { host_image_id: AMI-REPLACE-ME }
 assetstores:
   # No cache_path and no inline: hfpull runs as its own step and caches to
   # ${shared_workdir}/hf_cache on the EFS.

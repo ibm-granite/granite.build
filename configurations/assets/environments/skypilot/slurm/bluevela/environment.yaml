@@ -28,7 +28,9 @@ config:
   # The auto-queued HF I/O steps need no GPU, so send them to the cpu partition
   # (keyed by step-type slug; a build can still override). The cpu partition has
   # no H200 nodes, so they also drop the h200 constraint below: `null` removes the
-  # directive, where "" would emit a bare `--constraint=`.
+  # directive, where "" would emit a bare `--constraint=`. Their memory comes from
+  # the steps' own total_memory_per_node (10Gi): BlueVela tracks memory, so gbserver
+  # sends it as --mem (see docs/environments/skypilot-slurm.md#step-memory-total_memory_per_node).
   steps:
     hfpull:
       zone: cpu

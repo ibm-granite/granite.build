@@ -1,0 +1,45 @@
+granite.build:
+  name: skypilot-aws-byoc-no-git-test
+  targets:
+    byoc-run:
+      environment_uri: space://environments/skypilot/aws
+      inputs:
+        # env:// input: a no-op pull (see the aws fixture); keeps the test HF-free.
+        env_input:
+          uri: "env:///tmp/gb-env-input.txt"
+      outputs:
+        env_output:
+          uri: "env:///tmp/gb-byoc-output.txt"
+          type: fileset
+      steps:
+        # The aws fixture's build, run in a container image that has no git
+        # (#529). Build cb7a2e33 failed at setup in this image with
+        # `bash: git: command not found`, because byoc clones before
+        # setup_command runs. The step now installs git first; this image has
+        # conda, so git comes from conda-forge.
+        - step_uri: space://steps/misc/byoc
+          config:
+            poll_interval_seconds: 5
+            byoc_config:
+              # The image the granite-switch answerability-sr recipe uses. CUDA
+              # libraries do not need a GPU to load, and the clone needs none.
+              image: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
+              repo: "https://github.com/octocat/Hello-World.git"
+              ref: ""
+              workdir: "code"
+              # Writes a sentinel that run requires, so SUCCESS proves the clone
+              # and setup_command both ran after git was installed.
+              setup_command: >-
+                echo byoc-setup-ran > code/setup_marker
+              # Also checks the step put the installed git where the command can
+              # find it, as setup did: run is a separate shell.
+              command: >-
+                test -f code/setup_marker;
+                echo "setup marker: $(cat code/setup_marker)";
+                echo "git: $(command -v git)";
+                git -C code log -1 --format=%H;
+                echo "env input path: {{ bindings.env_input.binding.path }}";
+                echo "GB_ARTIFACT_ID:env_output GB_ARTIFACT_PATH:/tmp/gb-byoc-output.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

@@ -1,6 +1,6 @@
 ######
 # distill-stage1-v2 — off-policy GOLD for the granite4-350m pair, instrumented and
-# bounded by steps rather than by an epoch. BlueVela (SkyPilot / LSF).
+# bounded by steps rather than by an epoch. SkyPilot/LSF.
 #
 # SUPERSEDED. ITS PREMISE WAS A BUG IN THE EXPORT, NOT IN THE OBJECTIVE.
 #
@@ -82,7 +82,7 @@ granite.build:
   # A retry is here because of a MEASURED cluster fault, not as general
   # insurance. Builds 7853d33b and b5f030cd lost three GPU targets to
   # `RuntimeError: CUDA unknown error` raised inside torch at cuda_init, every
-  # one of them on host p2-r03-n1 — 3 runs, 3 failures on that host, against 0
+  # one of them on one specific host — 3 runs, 3 failures on that host, against 0
   # failures across several hundred runs on every other host in the logs. The
   # node takes the allocation and cannot initialise CUDA.
   #
