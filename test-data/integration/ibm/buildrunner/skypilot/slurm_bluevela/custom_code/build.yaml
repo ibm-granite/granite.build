@@ -54,7 +54,7 @@ granite.build:
               # validators/byoc_config.schema.json (json_schema) + byoc_validator.py.
               # Keys below mirror assets/steps/custom_code_skypilot/step.yaml.
               # NOTE: distinct from the `byoc` step under
-              # configurations/assets/environments/skypilot/steps/misc/byoc — same block
+              # configurations/assets/environments/skypilot/steps/aux/byoc — same block
               # name, different schema (that step takes repo/ref/workdir/command).
               # Public Debian image with git preinstalled (the -scm variant also
               # ships curl/wget/ca-certificates, which env_provider.sh needs to

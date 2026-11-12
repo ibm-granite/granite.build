@@ -263,15 +263,15 @@ class TestAnchorRelativeStepUris:
     def test_space_and_default_step_uris_are_unchanged(self, tmp_path, in_dir):
         """``space://`` and the builtin gbstep default are never rewritten."""
         build_dir = tmp_path / "build"
-        _write_step(build_dir / "steps" / "misc" / "byoc", "byoc")
-        config = _config(build_dir, "space://environments/x", "space://steps/misc/byoc")
+        _write_step(build_dir / "steps" / "aux" / "byoc", "byoc")
+        config = _config(build_dir, "space://environments/x", "space://steps/aux/byoc")
         empty = _config(tmp_path / "empty", "space://environments/x", '""')
         in_dir(tmp_path)
 
         _anchor_relative_file_uris(config, build_dir)
         _anchor_relative_file_uris(empty, tmp_path / "empty")
 
-        assert config.targets["t"].steps[0].step_uri == "space://steps/misc/byoc"
+        assert config.targets["t"].steps[0].step_uri == "space://steps/aux/byoc"
         assert (
             empty.targets["t"].steps[0].step_uri
             == CODE_GBSERVER_BUILTINS_STEPS_GBSTEP_URI
