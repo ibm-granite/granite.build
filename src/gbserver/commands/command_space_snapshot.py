@@ -34,6 +34,7 @@ from typing import Dict, List, Optional, Tuple, cast
 import click
 import yaml
 
+from gbcommon.types.gbenvconfig import DEFAULT_GH_DOMAIN
 from gbserver.spaces.db_space import (
     ASSETS_SLOT,
     SNAPSHOT_MAX_ENTRIES,
@@ -65,7 +66,7 @@ class _Source:
     """Where to snapshot a repo from."""
 
     location: str  # local checkout dir, or a clonable URL
-    ref: str
+    ref: Optional[str]  # None: the repo's default branch
     source_uri: str  # normalized https://host/owner/repo (or file://)
 
 
@@ -73,9 +74,10 @@ def _git(args: List[str], cwd: Optional[Path] = None) -> bytes:
     """Run git, with the GitHub token (if any) as an auth header, not in argv."""
     env = dict(os.environ)
     if GBSERVER_GITHUB_TOKEN:
+        # Scoped to the GHE host: never sent to a host a space.yaml names.
         env.update(
             GIT_CONFIG_COUNT="1",
-            GIT_CONFIG_KEY_0="http.extraHeader",
+            GIT_CONFIG_KEY_0=f"http.https://{DEFAULT_GH_DOMAIN}/.extraHeader",
             GIT_CONFIG_VALUE_0=f"Authorization: token {GBSERVER_GITHUB_TOKEN}",
         )
     result = subprocess.run(
@@ -89,18 +91,26 @@ def _git(args: List[str], cwd: Optional[Path] = None) -> bytes:
 
 
 def _split_ref(uri: str) -> Tuple[str, Optional[str]]:
-    """Split a pip-style ``...repo.git@ref[#frag]`` into (uri-without-ref, ref)."""
-    if "://" not in uri:
-        return uri, None  # scp form or path: '@' is userinfo, not a ref
-    parsed = urllib.parse.urlparse(uri)
-    path, sep, ref = parsed.path.rpartition("@")
-    if not sep or "/" in ref:
-        return parsed._replace(fragment="").geturl(), None
-    return parsed._replace(path=path, fragment="").geturl(), ref
+    """Split a pip-style ``...repo.git@ref[#frag]`` into (uri-without-ref, ref).
+
+    The fragment is dropped. Works for URLs and the scp form alike: a ref is an
+    ``@`` in the last path segment (userinfo ``git@`` never is).
+    """
+    base = uri.partition("#")[0]
+    head, slash, last = base.rpartition("/")
+    if not slash:
+        return base, None
+    name, at, ref = last.rpartition("@")
+    if not at or not name or not ref:
+        return base, None
+    return f"{head}/{name}", ref
 
 
 def _resolve_source(
-    repo: str, ref: Optional[str], source_uri: Optional[str], default_ref: str
+    repo: str,
+    ref: Optional[str],
+    source_uri: Optional[str],
+    default_ref: Optional[str],
 ) -> _Source:
     """Turn a --*-repo value (URL in any form, or local checkout) into a _Source."""
     local = Path(repo).expanduser()
@@ -140,7 +150,12 @@ def _snapshot(source: _Source) -> Tuple[bytes, str]:
     """
     if Path(source.location).is_dir():
         repo_dir = Path(source.location)
-        for candidate in (source.ref, f"origin/{source.ref}"):
+        candidates = (
+            (source.ref, f"origin/{source.ref}")
+            if source.ref
+            else ("origin/HEAD", "HEAD")
+        )
+        for candidate in candidates:
             try:
                 commit = _git(
                     ["rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
@@ -151,23 +166,30 @@ def _snapshot(source: _Source) -> Tuple[bytes, str]:
                 continue
         else:
             raise click.ClickException(
-                f"ref {source.ref!r} not found in {repo_dir} (nor origin/{source.ref})"
+                f"ref {source.ref!r} not found in {repo_dir} ({', '.join(candidates)})"
             )
         sha = commit.decode().strip()
         return _git(["archive", "--format=zip", sha], cwd=repo_dir), sha
     with tempfile.TemporaryDirectory() as tmp:
         clone_dir = Path(tmp) / "repo"
+        branch = [f"--branch={source.ref}"] if source.ref else []
         _git(
             [
                 "clone",
                 "--quiet",
                 "--depth=1",
                 "--single-branch",
-                f"--branch={source.ref}",
+                *branch,
                 _clone_url(source.location),
                 str(clone_dir),
             ]
         )
+        if source.ref is None:
+            source.ref = (
+                _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=clone_dir)
+                .decode()
+                .strip()
+            )
         sha = _git(["rev-parse", "HEAD"], cwd=clone_dir).decode().strip()
         return _git(["archive", "--format=zip", sha], cwd=clone_dir), sha
 
@@ -239,7 +261,7 @@ def _rewrite_assets_base_uris(
     for base_uri in _base_uris(space_yaml):
         if is_db_uri(base_uri) or not same_repo(base_uri, assets_source_uri):
             continue
-        fragment = urllib.parse.urlparse(base_uri).fragment if "://" in base_uri else ""
+        fragment = base_uri.partition("#")[2]
         rewrites[base_uri] = db_assets_uri + (f"#{fragment}" if fragment else "")
     text = space_yaml
     for old, new in rewrites.items():
@@ -293,7 +315,7 @@ def _old_identity_uris(row: StoredSpace) -> Optional[Tuple[str, str]]:
 
 
 def _verify_secret_groups(
-    row: StoredSpace, space_yaml: str, source_uri: str, ref: str
+    row: StoredSpace, space_yaml: str, source_uri: str, ref: Optional[str]
 ) -> None:
     """Refuse a snapshot whose identity would resolve different secret groups."""
     old = _old_identity_uris(row)
@@ -448,9 +470,7 @@ def cli(
                     " pass --assets-repo or --no-assets"
                 )
             assets_repo = remote[0]
-        assets_src = _resolve_source(
-            assets_repo, assets_ref, assets_source_uri, SPACE_REPO_CONFIG_BRANCH_NAME
-        )
+        assets_src = _resolve_source(assets_repo, assets_ref, assets_source_uri, None)
         if not any(same_repo(b, assets_src.source_uri) for b in remote):
             raise click.ClickException(
                 f"no {SPACE_YAML} base_uris entry refers to {assets_src.source_uri};"
@@ -472,7 +492,9 @@ def cli(
                 )
             if entry_refs:
                 assets_src.ref = entry_refs[0]
-        click.echo(f"assets: {assets_src.location} @ {assets_src.ref}")
+        click.echo(
+            f"assets: {assets_src.location} @ {assets_src.ref or 'default branch'}"
+        )
         assets_zip, assets_sha = _snapshot(assets_src)
         _check_size(assets_zip, "assets")
         space_yaml, rewrites = _rewrite_assets_base_uris(
@@ -508,6 +530,8 @@ def cli(
     updated = row.model_copy(update={"space": space, "assets": assets})
     if switch:
         updated.git_repo_uri = make_db_uri(space_name)
+    elif is_new:
+        updated.git_repo_uri = space_src.source_uri  # stored, not yet served
 
     # Same guard create-spaces applies: no two spaces may share local secrets.
     if is_db_uri(updated.git_repo_uri):
@@ -525,7 +549,7 @@ def cli(
         f" space {space_src.source_uri}@{space_sha[:12]} ({len(space_zip)} bytes)"
         + (
             f", assets {assets.source_uri}@{(assets.source_commit or '')[:12]}"
-            f" ({len(assets.load_archive())} bytes)"
+            f" ({len(assets_zip)} bytes)"
             if assets
             else ""
         )

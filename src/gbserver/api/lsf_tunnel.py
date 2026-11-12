@@ -88,6 +88,15 @@ def _clean_login_nodes(nodes: List[str]) -> List[str]:
     return cleaned
 
 
+def _local_uri(environment_uri: str) -> str:
+    """Unpack a db:// environment URI (a db-backed space's snapshot) locally."""
+    from gbserver.spaces.db_space import is_db_uri, resolve_db_uri
+
+    if is_db_uri(environment_uri):
+        return resolve_db_uri(environment_uri).file_uri
+    return environment_uri
+
+
 async def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str, str]:
     """Load environment.yaml for `environment_uri` and return Lsf SSH params.
 
@@ -101,7 +110,7 @@ async def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str
         # (matching the rest of the api/ package) — only the network-bound
         # work goes through to_thread.
         env_config, _asset = await asyncio.to_thread(
-            Environment.load_environment_config, environment_uri
+            Environment.load_environment_config, _local_uri(environment_uri)
         )
     except Exception as e:
         raise HTTPException(

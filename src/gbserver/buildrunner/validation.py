@@ -30,7 +30,7 @@ from gbserver.build.build import Build
 from gbserver.build.buildrun import BuildRun
 from gbserver.build.space import Space
 from gbserver.metrics.metrics_client import push_metrics
-from gbserver.spaces.db_space import create_space, get_identity_uri
+from gbserver.spaces.db_space import create_space, get_resolved_identity_uri
 from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
@@ -286,10 +286,11 @@ class BuildValidation:
                 return errors
             # identity_uri is the source repo for a db-backed space, whose
             # uristr is a local unpacked copy.
-            if not _same_space_repo(get_identity_uri(stored_space), space.identity_uri):
+            expected = get_resolved_identity_uri(stored_space)
+            if not _same_space_repo(expected, space.identity_uri):
                 errors.add(
                     err=(
-                        f"Build space {stored_space.git_repo_uri!r} does not match "
+                        f"Build space {expected!r} does not match "
                         f"the runner's space {space.identity_uri!r}."
                     )
                 )

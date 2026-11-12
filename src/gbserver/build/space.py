@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
-from gbserver.spaces.db_space import is_db_uri, resolve_db_uri
+from gbserver.spaces.db_space import is_db_uri, parse_db_uri, resolve_db_uri
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 from gbserver.types.constants import GBSERVER_PROCEED_WITHOUT_SECRETS, is_debug_mode
 from gbserver.types.spaceconfig import SpaceConfig
@@ -41,7 +41,9 @@ logger = get_logger(__name__)
 SPACE_YAML = "space.yaml"
 
 
-def _resolve_base_uris(base_uris: List[str], space_uri: str) -> List[str]:
+def _resolve_base_uris(
+    base_uris: List[str], space_uri: str, db_space_name: Optional[str] = None
+) -> List[str]:
     """Resolve relative file:// base_uris against the space's source directory.
 
     Absolute URIs (any scheme, including file:///abs/path) pass through
@@ -53,6 +55,8 @@ def _resolve_base_uris(base_uris: List[str], space_uri: str) -> List[str]:
         base_uris: The base_uris list from a SpaceConfig.
         space_uri: The URI string of the space being loaded
             (``Space.uristr``).  Used as the anchor for relative paths.
+        db_space_name: The gb_spaces row the space is served from, if any.
+            ``db://`` entries may only name that row's snapshots.
 
     Returns:
         A new list with relative entries resolved to absolute file:// URIs.
@@ -63,7 +67,9 @@ def _resolve_base_uris(base_uris: List[str], space_uri: str) -> List[str]:
             URI — there is no anchor to resolve it against.
     """
     space_dir = _space_dir_from_uri(space_uri)
-    return [_resolve_one_base_uri(b, space_dir, space_uri) for b in base_uris]
+    return [
+        _resolve_one_base_uri(b, space_dir, space_uri, db_space_name) for b in base_uris
+    ]
 
 
 def _space_dir_from_uri(space_uri: str) -> Optional[Path]:
@@ -85,7 +91,10 @@ def _space_dir_from_uri(space_uri: str) -> Optional[Path]:
 
 
 def _resolve_one_base_uri(
-    base_uri: str, space_dir: Optional[Path], space_uri: str
+    base_uri: str,
+    space_dir: Optional[Path],
+    space_uri: str,
+    db_space_name: Optional[str] = None,
 ) -> str:
     """Resolve a single base_uri entry.
 
@@ -108,7 +117,13 @@ def _resolve_one_base_uri(
             relative path while ``space_dir`` is None.
     """
     if is_db_uri(base_uri):
-        # A db-backed space's assets snapshot (db://spaces/<name>/assets).
+        # A db-backed space's assets snapshot (db://spaces/<name>/assets). Only
+        # its own row: naming another space's would bypass that space's access.
+        if parse_db_uri(base_uri).space_name != db_space_name:
+            raise ValueError(
+                f"base_uri {base_uri!r} names another space's snapshot; a space"
+                f" ({space_uri!r}) may only use its own db:// snapshots"
+            )
         return resolve_db_uri(base_uri).file_uri
     parsed = urlparse(base_uri)
     if parsed.scheme and parsed.scheme != "file":
@@ -155,7 +170,9 @@ class Space:
                 the snapshot's source repo.
         """
         self.uristr = URI.get_uristr(uri)
+        db_space_name = None
         if is_db_uri(self.uristr):
+            db_space_name = parse_db_uri(self.uristr).space_name
             resolved = resolve_db_uri(self.uristr)
             logger.info("db space %s unpacked at %s", self.uristr, resolved.file_uri)
             self.uristr = uri = resolved.file_uri
@@ -179,7 +196,7 @@ class Space:
             if self.space_config is not None:
                 if self.space_config.base_uris is not None:
                     base_uris = base_uris + _resolve_base_uris(
-                        self.space_config.base_uris, self.uristr
+                        self.space_config.base_uris, self.uristr, db_space_name
                     )
                 URI.set_space_config(self.space_config)
             # Builtins last: the fallback for any asset the space and its

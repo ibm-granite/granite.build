@@ -61,7 +61,7 @@ def _zip(files: Dict[str, str]) -> bytes:
     return buf.getvalue()
 
 
-def _snapshot(files: Dict[str, str], source: str, ref: str = "gbspace-config"):
+def _snapshot(files: Dict[str, str], source, ref: str = "gbspace-config"):
     snap = RepoSnapshot(source_uri=source, source_ref=ref, source_commit="abc")
     snap.save_archive(_zip(files))
     return snap
@@ -218,3 +218,49 @@ def test_snapshot_round_trips_through_json():
     again = StoredSpace.model_validate_json(row.model_dump_json())
     assert again.space.load_archive() == row.space.load_archive()
     assert again.assets.source_uri == ASSETS_SOURCE
+
+
+def test_portable_uri_round_trips(rows):
+    rows["x"] = _row()
+    local = resolve_db_uri("db://spaces/x").file_uri + "/environments/e"
+    portable = db_space.portable_uri(local)
+    assert portable == "db://spaces/x#subdirectory=environments/e"
+    assert resolve_db_uri(portable).file_uri == local
+    assert db_space.portable_uri("git+ssh://h/o/r.git") == "git+ssh://h/o/r.git"
+
+
+def test_base_uri_may_not_name_another_space(rows):
+    """A space.yaml naming another row's snapshot must not get its assets."""
+    rows["other"] = _row(name="other", git_repo_uri=make_db_uri("other"))
+    yaml_other = SPACE_YAML.replace("db://spaces/x/assets", "db://spaces/other/assets")
+    rows["x"] = _row(space=_snapshot({"space.yaml": yaml_other}, SOURCE))
+    with pytest.raises(ValueError, match="another space's snapshot"):
+        create_space(rows["x"])
+
+
+def test_concurrent_finish_is_kept(rows, tmp_path, monkeypatch):
+    """If another extractor completes first, its tree is reused, not deleted."""
+    rows["x"] = _row()
+    real_extract = db_space.extract_archive
+
+    def extract_then_race(data, out, **kw):
+        ok = real_extract(data, out, **kw)
+        # Simulate the other process finishing between our check and rename.
+        digest = out.name.split("-")[0].lstrip(".")
+        other = tmp_path / "c" / digest
+        other.mkdir(parents=True)
+        (other / "theirs").touch()
+        (other / ".gb-snapshot-complete").touch()
+        return ok
+
+    monkeypatch.setattr(db_space, "extract_archive", extract_then_race)
+    path = Path(resolve_db_uri("db://spaces/x").file_uri[len("file://") :])
+    assert (path / "theirs").is_file()
+
+
+def test_validation_identity_without_source(rows):
+    """A snapshot with no recorded source still matches the Space built from it."""
+    row = _row(space=_snapshot({"space.yaml": SPACE_YAML}, source=None))
+    rows["x"] = row
+    space = create_space(row)
+    assert _same_space_repo(db_space.get_resolved_identity_uri(row), space.identity_uri)

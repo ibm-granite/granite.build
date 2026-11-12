@@ -40,7 +40,10 @@ class _Valid:
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    monkeypatch.setattr(build_setup, "get_admin_storage", MagicMock)
+    space = StoredSpace(name="s", git_repo_uri="https://github.example.com/o/space")
+    storage = MagicMock()
+    storage.space_storage.get_by_name.return_value = space
+    monkeypatch.setattr(build_setup, "get_admin_storage", lambda: storage)
     monkeypatch.setattr(build_setup, "PR_CREATION_RETRY_INTERVAL", 0)
     monkeypatch.setattr(
         build_setup.BuildValidation,
@@ -88,6 +91,19 @@ def test_pr_success_is_recorded(setup, monkeypatch):
     success, updates = setup.setup.run(setup.build)
     assert success and updates == {"source_uri": url}
     setup.messages.warning.assert_not_called()
+
+
+def test_space_without_pr_repo_skips_pr(setup, monkeypatch):
+    """A local space has no GitHub repo: no attempts, no breaker failures."""
+    setup.setup.storage.space_storage.get_by_name.return_value = StoredSpace(
+        name="s", git_repo_uri="file:///tmp/space"
+    )
+    helper = MagicMock()
+    monkeypatch.setattr(BuildSetup, "_BuildSetup__create_pr_for_build_helper", helper)
+    success, _ = setup.setup.run(setup.build)
+    assert success
+    helper.assert_not_called()
+    assert get_build_git_breaker(setup.build.uuid).consecutive_failures == 0
 
 
 def test_pr_messages_stop_once_given_up(monkeypatch):

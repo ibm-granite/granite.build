@@ -50,7 +50,7 @@ from gbserver.buildrunner.buildlogger import (
 )
 from gbserver.github.myghapi import MyGHApi
 from gbserver.metrics.metrics_client import push_metrics
-from gbserver.spaces.db_space import create_space
+from gbserver.spaces.db_space import create_space, portable_uri
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -374,16 +374,20 @@ class BuildRunner(AbstractBuildRunner):
         owner, repo, pr_id = self.stored_build.get_pr_info()
         if not pr_id:
             return
-        build_config = self.stored_build.get_build_config()
-        body = (
-            f"Build failed (attempt {self.stored_build.retry_count} of "
-            f"{build_config.retries.max_retries}). Automatically retrying."
-        )
+
+        def post() -> None:
+            max_retries = self.stored_build.get_build_config().retries.max_retries
+            body = (
+                f"Build failed (attempt {self.stored_build.retry_count} of "
+                f"{max_retries}). Automatically retrying."
+            )
+            MyGHApi(token=self.gh_token, owner=owner, repo=repo).update_issue_comment(
+                body=body, pr_id=pr_id
+            )
+
+        # Optional; never raises, so it can't abort the retry.
         get_build_git_breaker(self.stored_build.uuid).call(
-            f"post the retry comment on PR {pr_id}",
-            lambda: MyGHApi(
-                token=self.gh_token, owner=owner, repo=repo
-            ).update_issue_comment(body=body, pr_id=pr_id),
+            f"post the retry comment on PR {pr_id}", post
         )
 
     async def __async_run_build(self) -> None:
@@ -1166,7 +1170,8 @@ Download : {download_msg}
         if env_asset is None:
             logger.warning("the environment_asset is None")
         else:
-            environment_uri = env_asset.uristr
+            # Persisted and read by the REST server: never a runner-local path.
+            environment_uri = portable_uri(env_asset.uristr)
         stored_target = StoredTargetRun(
             uuid=target_id,
             build_id=build_id,

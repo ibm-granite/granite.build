@@ -278,11 +278,22 @@ def _upsert_space_alias(space_storage, stored_space) -> None:
         space_storage: The admin space storage.
         stored_space: The row to write (a StoredSpace).
     """
+    from gbserver.spaces.db_space import is_db_uri
+
     name, uri = stored_space.name, stored_space.git_repo_uri
     existing = space_storage.get_by_name(name)
     if existing is None:
         space_storage.add(stored_space)
         logger.info("Created '%s' space with URI %s", name, uri)
+    elif is_db_uri(existing.git_repo_uri):
+        # Served from a stored snapshot (gbserver space-snapshot); re-pointing
+        # would silently drop it.
+        logger.warning(
+            "'%s' space is served from %s; not re-pointing it at %s",
+            name,
+            existing.git_repo_uri,
+            uri,
+        )
     elif existing.git_repo_uri != uri:
         # Update the existing row to point at the current --space-dir.
         # Without this, re-launching standalone against a different

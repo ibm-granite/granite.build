@@ -39,6 +39,7 @@ from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_
 from gbserver.storage.space_storage import IStoredSpaceStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.constants import (
+    BUILD_GIT_OPERATION_DEADLINE,
     DEFAULT_BUILDWATCHER_COMMITTER_EMAIL,
     DEFAULT_BUILDWATCHER_COMMITTER_NAME,
     DEFAULT_DIR_PERMS,
@@ -187,7 +188,10 @@ class BuildSetup:
                 cwd=repo_dir,
             )
             # repo.git.commit("-m", commit_msg, "-c", "commit.gpgsign=false")
-            repo.git.push("origin", branch_name)
+            # Bounded: unlike the retries, a hung push isn't cut by the deadline.
+            repo.git.push(
+                "origin", branch_name, kill_after_timeout=BUILD_GIT_OPERATION_DEADLINE
+            )
             create_result = myapi.create_pr(
                 src_branch=branch_name, title=pr_title, body=pr_body
             )
@@ -230,6 +234,10 @@ class BuildSetup:
         The PR is optional: on repeated failure the build runs without it. Tries
         stop once this run's git breaker opens (see GitAccessBreaker).
         """
+        stored_space = self.storage.space_storage.get_by_name(stored_build.space_name)
+        if stored_space is None or get_pr_repo_uri(stored_space) is None:
+            logger.info("build %s: no GitHub repo for its PR", stored_build.uuid)
+            return None
         breaker = get_build_git_breaker(stored_build.uuid)
         try_count = 0
         while (

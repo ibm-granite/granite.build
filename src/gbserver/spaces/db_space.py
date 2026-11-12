@@ -35,7 +35,7 @@ import tempfile
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, Optional, cast
+from typing import TYPE_CHECKING, Dict, Final, Literal, Optional, cast
 
 from gbcommon.uri.git import GitURI
 from gbserver.spaces.repo_identity import normalize_repo_uri, to_config_uri
@@ -142,6 +142,8 @@ def unpack_snapshot(snapshot: RepoSnapshot, label: str) -> Path:
         ):
             raise ValueError(f"{label} is not a readable zip archive")
         (tmp / _COMPLETE_MARKER).touch()
+        if (target / _COMPLETE_MARKER).is_file():
+            return target  # a concurrent extraction finished first
         if target.exists():
             # Left by an interrupted extraction (no marker).
             shutil.rmtree(target, ignore_errors=True)
@@ -173,6 +175,28 @@ def _get_snapshot(row: StoredSpace, slot: Slot) -> RepoSnapshot:
     return snapshot
 
 
+# Unpacked dir -> the db URI it came from, so a path under the cache can be
+# turned back into a URI that means the same on another host (portable_uri).
+_origins: Dict[Path, str] = {}
+
+
+def portable_uri(uri: str) -> str:
+    """Map a ``file://`` URI inside an unpacked snapshot back to its db:// URI.
+
+    The unpacked path exists only on this host and changes with each snapshot,
+    so anything persisted or handed to another process uses this instead.
+    Other URIs are returned unchanged.
+    """
+    if not uri.startswith("file://"):
+        return uri
+    path = Path(uri[len("file://") :])
+    for root, db_uri in list(_origins.items()):
+        if path == root or root in path.parents:
+            rel = path.relative_to(root).as_posix()
+            return db_uri + (f"#subdirectory={rel}" if rel != "." else "")
+    return uri
+
+
 @dataclass(frozen=True)
 class ResolvedDbUri:
     """A db:// URI unpacked onto the local filesystem."""
@@ -195,6 +219,7 @@ def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri
         row = _get_row(ref.space_name)
     snapshot = _get_snapshot(row, ref.slot)
     path = unpack_snapshot(snapshot, f"space {row.name!r} {ref.slot} snapshot")
+    _origins[path.resolve()] = make_db_uri(row.name, ref.slot)
     if ref.subdirectory:
         path = path / ref.subdirectory
     file_uri = path.resolve().as_uri()
@@ -223,6 +248,19 @@ def get_identity_uri(stored_space: StoredSpace) -> str:
     row = _source_row(stored_space)
     snapshot = _get_snapshot(row, SPACE_SLOT)
     return snapshot.source_uri or stored_space.git_repo_uri
+
+
+def get_resolved_identity_uri(stored_space: StoredSpace) -> str:
+    """The identity a Space built from this row reports (Space.identity_uri).
+
+    Same as get_identity_uri, except a db-backed row without a recorded source
+    falls back to its unpacked location, as Space does.
+    """
+    if not is_db_uri(stored_space.git_repo_uri):
+        return stored_space.git_repo_uri
+    return resolve_db_uri(
+        stored_space.git_repo_uri, row=_source_row(stored_space)
+    ).identity_uri
 
 
 def get_pr_repo_uri(stored_space: StoredSpace) -> Optional[str]:

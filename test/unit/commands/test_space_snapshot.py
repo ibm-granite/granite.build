@@ -235,6 +235,7 @@ def test_secret_group_change_is_refused(env, monkeypatch):
         ("git+ssh://h/o/r.git@b#subdirectory=s", ("git+ssh://h/o/r.git", "b")),
         ("https://h/o/r", ("https://h/o/r", None)),
         ("git@h:o/r.git", ("git@h:o/r.git", None)),
+        ("git@h:o/r.git@v2#subdirectory=s", ("git@h:o/r.git", "v2")),
     ],
 )
 def test_split_ref(uri, expected):
@@ -261,3 +262,54 @@ def test_identical_identity_skips_secret_lookup(env, monkeypatch):
     result = _run(env)
     assert result.exit_code == 0, result.output
     assert env.storage.rows["x"].git_repo_uri == "db://spaces/x"
+
+
+def test_create_no_switch_keeps_git(env):
+    result = _run(env, "--create", "--no-switch")
+    assert result.exit_code == 0, result.output
+    row = env.storage.rows["x"]
+    assert row.git_repo_uri == "https://github.example.com/org/gbspace-x"
+    assert row.space.source_commit == env.space_sha
+
+
+def test_assets_without_ref_uses_default_branch(env, tmp_path, monkeypatch):
+    """No @ref in base_uris: snapshot the default branch, not the config one."""
+    space_dir = tmp_path / "space-noref"
+    _repo(
+        space_dir,
+        {"space.yaml": SPACE_YAML.replace("@gbspace-config", "")},
+        "git@github.example.com:org/gbspace-x.git",
+        "gbspace-config",
+    )
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(space_dir),
+            "--space-ref",
+            "gbspace-config",
+            "--assets-repo",
+            str(env.tmp / "assets"),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert env.storage.rows["x"].assets.source_commit == env.assets_sha
+
+
+def test_token_header_scoped_to_ghe_host(monkeypatch):
+    seen = {}
+
+    def fake_run(args, cwd=None, env=None, **_):
+        seen.update(env)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(cmd, "GBSERVER_GITHUB_TOKEN", "tok")
+    monkeypatch.setattr(cmd.subprocess, "run", fake_run)
+    cmd._git(["status"])
+    assert seen["GIT_CONFIG_KEY_0"] == (
+        f"http.https://{cmd.DEFAULT_GH_DOMAIN}/.extraHeader"
+    )
