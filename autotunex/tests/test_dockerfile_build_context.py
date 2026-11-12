@@ -60,7 +60,8 @@ def _in_context(path: str, rules: list[str]) -> bool:
 
     An approximation of BuildKit's matcher, enough for the patterns these files
     use: the last matching rule wins, a rule naming a directory covers everything
-    under it, and a leading ``**/`` also matches at the top level.
+    under it, and a leading ``**/`` also matches at the top level. A ``/**/``
+    matches zero directories too, so ``frontend/**/out`` covers ``frontend/out``.
     """
     parts = path.strip("/").split("/")
     candidates = ["/".join(parts[: i + 1]) for i in range(len(parts))]
@@ -68,7 +69,9 @@ def _in_context(path: str, rules: list[str]) -> bool:
     for rule in rules:
         negate = rule.startswith("!")
         pattern = (rule[1:] if negate else rule).rstrip("/")
-        patterns = [pattern, pattern[3:]] if pattern.startswith("**/") else [pattern]
+        patterns = [pattern, pattern.replace("/**/", "/")]
+        if pattern.startswith("**/"):
+            patterns += [p[3:] for p in patterns]
         if any(fnmatch.fnmatchcase(c, p) for c in candidates for p in patterns):
             included = negate
     return included
@@ -100,6 +103,7 @@ def test_local_env_files_never_enter_the_context() -> None:
             "autotunex/src/ux/.env",
             "autotunex/src/api-bridge/.env",
             "src/gbserver/.env",
+            "autotunex/src/ux/.env.local",
         ):
             assert not _in_context(secret, rules), f"{dockerfile.name}: {secret} would be sent"
 
@@ -120,9 +124,23 @@ def test_the_aio_context_keeps_frontend_build_outputs_and_local_env_out() -> Non
         "frontend/apps/standalone/out",
         "frontend/apps/standalone/.env.local",
         "frontend/apps/standalone/certificates",
+        "frontend/certificates/localhost-key.pem",
+        "frontend/.next",
+        "frontend/out",
     ):
         assert not _in_context(path, rules), f"{path} would be sent"
     assert _in_context("frontend/apps/standalone/package.json", rules)
+
+
+def test_the_aio_runtime_does_not_ship_the_builders_git_directory() -> None:
+    # The version is stamped into dist-info by the editable installs; .git would
+    # publish the builder's config, remotes, branches and reflogs.
+    body = _instructions(_stage_body(_text(_AIO), "py-builder"))
+    installs = [i for i in range(len(body)) if body.startswith("pip install -e", i)]
+    last = max(i for i in installs if "/opt/granite.build" in body[i : i + 80])
+
+    assert "rm -rf /opt/granite.build/.git" in body
+    assert body.index("rm -rf /opt/granite.build/.git") > last
 
 
 def test_the_aio_image_does_not_clone_granite_build() -> None:

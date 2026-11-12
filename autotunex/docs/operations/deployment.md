@@ -358,9 +358,15 @@ root:
 - every job: `--local context=.` becomes `--local context=..`. Keep
   `--local dockerfile=.`, so BuildKit still finds the Dockerfile and its
   `.dockerignore` in `autotunex/`;
-- the `llmb` job: build `Dockerfile` (`Dockerfile.gb` is gone) and add
+- the `llmb` job: remove `--opt filename=Dockerfile.gb` (`Dockerfile.gb` is gone;
+  `Dockerfile` is the default filename) and add
   `--opt build-arg:JOB_BACKEND=llmb`;
-- the AIO job keeps `--opt filename=Dockerfile.aio`.
+- the AIO job keeps `--opt filename=Dockerfile.aio`, but remove any
+  `--opt build-arg:GB_REF=...` / `GB_REPO=...`. BuildKit ignores them silently
+  now, so a job that pinned `GB_REF` quietly switches to building from the
+  checkout.
+
+Edit the jobs when this change merges: until then all three fail.
 
 The pipeline's checkout must include tags: a tag-less or shallow clone fails the
 first build at the version check, by design.

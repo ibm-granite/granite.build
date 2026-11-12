@@ -17,7 +17,8 @@
 # override CUDA_KERNEL_BASE for that. The value vocabulary (cpu|cuda) matches
 # fm-tune's own runtime override, FMTUNE_DEVICE=cuda|mps|cpu, on purpose.
 #
-# JOB_BACKEND names one of the two backend stages below: `local` trains in
+# JOB_BACKEND picks one of the two backend stages below (`backend-local`,
+# `backend-llmb`): `local` trains in
 # process; `llmb` submits builds to a granite.build server, trains nothing here,
 # and is therefore CPU-only.
 # ---------------------------------------------------------------------------
@@ -55,7 +56,7 @@ RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
 
 # ---------------------------------------------------------------------------
 # Stage 1b — a granite.build wheel from THIS checkout, for the llmb backend.
-# Only the `llmb` stage below uses it, so a `local` build never runs this stage
+# Only the `backend-llmb` stage below uses it, so a `local` build never runs this stage
 # and needs neither .git nor its tags.
 #
 # granite.build takes its version from git tags (setuptools_scm). With no
@@ -111,7 +112,7 @@ ENV FM_TUNE_EXTRAS=full
 # Stage 2c — backend: local. Trains in process with fm-tune's extras from the
 # device stage. These defaults are the ones this image has always baked.
 # ---------------------------------------------------------------------------
-FROM ${DEVICE} AS local
+FROM ${DEVICE} AS backend-local
 ENV AUTOTUNEX_JOB_BACKEND=local \
     AUTOTUNEX_AUTO_CREATE_SCHEMA=true \
     AUTOTUNEX_EXTRAS=""
@@ -125,7 +126,7 @@ ENV AUTOTUNEX_JOB_BACKEND=local \
 # AUTO_CREATE_SCHEMA stays false and TRAINER_REF oss-main, as Dockerfile.gb had
 # them: this is the image deployments run, against a migrated database.
 # ---------------------------------------------------------------------------
-FROM ${DEVICE} AS llmb
+FROM ${DEVICE} AS backend-llmb
 RUN [ "$FM_TUNE_EXTRAS" = "core" ] \
     || { echo "FATAL: JOB_BACKEND=llmb trains on the granite.build server, not in this image;" >&2; \
          echo "       build it with DEVICE=cpu." >&2; \
@@ -144,11 +145,11 @@ ENV AUTOTUNEX_JOB_BACKEND=llmb \
 
 # ---------------------------------------------------------------------------
 # Stage 3 — runtime: the AutoTuneX API, serving the SPA in-process. `FROM
-# ${JOB_BACKEND}` picks one of the two backend stages above, each sitting on the
+# backend-${JOB_BACKEND}` picks one of the two backend stages above, each sitting on the
 # `${DEVICE}` base; everything below is shared, which is why the extras and the
 # backend defaults arrive as inherited ENV.
 # ---------------------------------------------------------------------------
-FROM ${JOB_BACKEND} AS runtime
+FROM backend-${JOB_BACKEND} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

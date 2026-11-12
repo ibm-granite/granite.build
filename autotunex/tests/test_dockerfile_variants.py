@@ -1,4 +1,4 @@
-"""The root ``Dockerfile``'s device stages stay wired the way a plain build expects.
+"""``autotunex/Dockerfile``'s device stages stay wired the way a plain build expects.
 
 A plain ``docker build -f autotunex/Dockerfile .`` must keep producing the CPU image.
 Which base image the runtime stage sits on is chosen by a global ``ARG DEVICE``, so
@@ -23,7 +23,7 @@ _KERNELS = ("flash-attn", "mamba-ssm", "causal-conv1d")
 
 
 def _dockerfile() -> str:
-    """Return the root Dockerfile's text."""
+    """Return autotunex/Dockerfile's text."""
     return _DOCKERFILE.read_text(encoding="utf-8")
 
 
@@ -272,13 +272,13 @@ def test_the_job_backend_build_arg_defaults_to_local() -> None:
 def test_the_runtime_stage_sits_on_the_selected_backend_stage() -> None:
     content = _dockerfile()
 
-    assert re.search(r"^FROM \$\{DEVICE\} AS local$", content, re.MULTILINE)
-    assert re.search(r"^FROM \$\{DEVICE\} AS llmb$", content, re.MULTILINE)
-    assert re.search(r"^FROM \$\{JOB_BACKEND\} AS runtime$", content, re.MULTILINE)
+    assert re.search(r"^FROM \$\{DEVICE\} AS backend-local$", content, re.MULTILINE)
+    assert re.search(r"^FROM \$\{DEVICE\} AS backend-llmb$", content, re.MULTILINE)
+    assert re.search(r"^FROM backend-\$\{JOB_BACKEND\} AS runtime$", content, re.MULTILINE)
 
 
 def test_the_local_backend_keeps_todays_defaults_and_needs_no_granite_build() -> None:
-    body = _stage_body(_dockerfile(), "local")
+    body = _stage_body(_dockerfile(), "backend-local")
 
     assert "AUTOTUNEX_JOB_BACKEND=local" in body
     assert "AUTOTUNEX_AUTO_CREATE_SCHEMA=true" in body
@@ -288,7 +288,7 @@ def test_the_local_backend_keeps_todays_defaults_and_needs_no_granite_build() ->
 
 
 def test_the_llmb_backend_bakes_what_dockerfile_gb_baked() -> None:
-    body = _stage_body(_dockerfile(), "llmb")
+    body = _stage_body(_dockerfile(), "backend-llmb")
 
     assert "AUTOTUNEX_JOB_BACKEND=llmb" in body
     assert "AUTOTUNEX_AUTO_CREATE_SCHEMA=false" in body
@@ -299,7 +299,7 @@ def test_the_llmb_backend_bakes_what_dockerfile_gb_baked() -> None:
 
 def test_the_llmb_backend_refuses_the_cuda_base_before_installing_anything() -> None:
     # llmb trains on the granite.build side; a CUDA llmb image is ~10 GB of dead weight.
-    body = _instructions(_stage_body(_dockerfile(), "llmb"))
+    body = _instructions(_stage_body(_dockerfile(), "backend-llmb"))
     guard = body.index('[ "$FM_TUNE_EXTRAS" = "core" ]')
 
     assert guard < body.index("apt-get")
@@ -307,7 +307,7 @@ def test_the_llmb_backend_refuses_the_cuda_base_before_installing_anything() -> 
 
 
 def test_the_llmb_backend_installs_granite_build_from_this_checkout() -> None:
-    body = _stage_body(_dockerfile(), "llmb")
+    body = _stage_body(_dockerfile(), "backend-llmb")
 
     assert "from=gb-wheel" in body
     assert "git+https" not in _dockerfile()

@@ -28,7 +28,8 @@
 **/.ruff_cache
 **/.DS_Store
 **/node_modules
-**/.env
-**/.env.*
+**/.env*
+**/.venv
 autotunex/src/ux/build
 autotunex/src/ux/.svelte-kit
+src/gbserver/static/ui

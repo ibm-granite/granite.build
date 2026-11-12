@@ -32,8 +32,8 @@
 **/.ruff_cache
 **/.DS_Store
 **/node_modules
-**/.env
-**/.env.*
+**/.env*
+**/.venv
 **/*.tsbuildinfo
 autotunex/src/ux/build
 autotunex/src/ux/.svelte-kit

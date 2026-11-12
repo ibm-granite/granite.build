@@ -170,7 +170,7 @@ CUDA stage at another kernel base, e.g. one you built yourself (below).
 > the CUDA stage above pins it by digest. Rebuild it when torch, CUDA, one of the
 > three kernel pins, or fm-tune's `[tool.uv.extra-build-variables]` (the CUDA arch
 > list) changes: bump `CUDA_BASE_IMAGE_VERSION`, run `make publish-base-image`,
-> and pin the digest it prints in the root `Dockerfile`'s `CUDA_KERNEL_BASE`. The
+> and pin the digest it prints in `autotunex/Dockerfile`'s `CUDA_KERNEL_BASE`. The
 > CUDA build refuses a base whose kernel or torch pins no longer match fm-tune's;
 > it cannot tell a changed arch list, so rebuild for that by hand. The quay
 > repository must be Public, since every CUDA build pulls it anonymously. Compiling takes ~35 minutes and needs a

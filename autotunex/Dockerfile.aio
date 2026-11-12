@@ -206,6 +206,11 @@ RUN python -m venv /opt/venv/gb \
     && /opt/venv/gb/bin/pip install --upgrade pip \
     && /opt/venv/gb/bin/pip install -e "/opt/granite.build[standalone]" psycopg2-binary
 
+# The version is already stamped into the editable installs' dist-info, so nothing
+# at run time needs the git history; leaving .git would publish the builder's
+# config, remotes, branches, reflogs and worktree paths in the runtime image.
+RUN rm -rf /opt/granite.build/.git
+
 # --- venv 3: api-bridge (synchronous MySQL/Postgres write-path) -----------------
 # The `[postgres]` extra (psycopg 3) ships for the same reason venv 1 carries
 # asyncpg: the bridge reads the SAME AUTOTUNEX_DATABASE_URL as AutoTuneX and
