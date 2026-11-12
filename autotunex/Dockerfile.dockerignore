@@ -1,0 +1,34 @@
+# Build context for autotunex/Dockerfile, which builds from the REPOSITORY ROOT.
+# BuildKit reads this file in place of the root .dockerignore (which serves the
+# gbserver image and excludes autotunex/ altogether). It is an allowlist:
+# everything is out unless re-included below, so nothing new at the root, and no
+# local secret, can drift into the image.
+*
+
+# AutoTuneX itself.
+!autotunex/pyproject.toml
+!autotunex/README.md
+!autotunex/src
+
+# granite.build, for the gb-wheel stage of the llmb backend. .git carries the
+# version tags setuptools_scm stamps the version from.
+!pyproject.toml
+!README.md
+!.git
+!src
+!test
+!configurations
+
+# Never: caches, local env files, build outputs.
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/.DS_Store
+**/node_modules
+**/.env
+**/.env.*
+autotunex/src/ux/build
+autotunex/src/ux/.svelte-kit

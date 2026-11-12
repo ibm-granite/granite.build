@@ -1,17 +1,28 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# Build-time device selection. Declared before the first FROM because only a
-# global ARG can be used in a FROM line.
+# Build-time device and job-backend selection. Declared before the first FROM
+# because only a global ARG can be used in a FROM line.
 #
-#   docker build -t autotunex:local .                        # CPU (default)
-#   docker build -t autotunex:cuda --build-arg DEVICE=cuda . # CUDA + [full]
+# Build from the REPOSITORY ROOT, not autotunex/: the llmb backend installs
+# granite.build from the same checkout. Always name this file — without -f the
+# root Dockerfile (the gbserver image) is built instead. What enters the context
+# is set by autotunex/Dockerfile.dockerignore, not the root .dockerignore.
+#
+#   docker build -f autotunex/Dockerfile -t autotunex:local .                           # CPU, local backend (default)
+#   docker build -f autotunex/Dockerfile -t autotunex:cuda --build-arg DEVICE=cuda .    # CUDA + [full]
+#   docker build -f autotunex/Dockerfile -t autotunex:gb --build-arg JOB_BACKEND=llmb . # llmb backend
 #
 # DEVICE names one of the two base stages below, not an image reference —
 # override CUDA_KERNEL_BASE for that. The value vocabulary (cpu|cuda) matches
 # fm-tune's own runtime override, FMTUNE_DEVICE=cuda|mps|cpu, on purpose.
+#
+# JOB_BACKEND names one of the two backend stages below: `local` trains in
+# process; `llmb` submits builds to a granite.build server, trains nothing here,
+# and is therefore CPU-only.
 # ---------------------------------------------------------------------------
 ARG DEVICE=cpu
+ARG JOB_BACKEND=local
 # The CUDA kernel base: the CUDA 13 devel toolchain, python3.12 in /opt/venv, torch,
 # and flash-attn / mamba-ssm / causal-conv1d compiled from source. It is built from
 # docker/cuda-base/Dockerfile (`make publish-base-image`) and pinned by digest, so
@@ -34,13 +45,42 @@ WORKDIR /app/ux
 ARG PUBLIC_AUTOTUNEX_API_URL=""
 
 # Install deps first for layer caching (re-runs only when the lockfile changes).
-COPY src/ux/package.json src/ux/package-lock.json ./
+COPY autotunex/src/ux/package.json autotunex/src/ux/package-lock.json ./
 RUN npm ci
 
 # Build the static SPA (adapter-static; base path /autotune; index.html fallback).
-COPY src/ux/ ./
+COPY autotunex/src/ux/ ./
 RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
     && npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 1b — a granite.build wheel from THIS checkout, for the llmb backend.
+# Only the `llmb` stage below uses it, so a `local` build never runs this stage
+# and needs neither .git nor its tags.
+#
+# granite.build takes its version from git tags (setuptools_scm). With no
+# reachable v* tag it is stamped below the llmb CLI's supported floor, and every
+# `llmb build start` from AutoTuneX then exits 1 — so fail the build here. A git
+# worktree fails too: its .git is a file pointing outside the build context.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS gb-wheel
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /gb
+COPY pyproject.toml README.md ./
+COPY .git/ ./.git/
+COPY src/ ./src/
+COPY test/ ./test/
+COPY configurations/ ./configurations/
+RUN git describe --tags --match 'v[0-9]*' >/dev/null 2>&1 \
+      || { echo "FATAL: no v* version tag is reachable in this checkout (or it is a git worktree)." >&2; \
+           echo "       granite.build would be stamped below the llmb CLI's version floor, and" >&2; \
+           echo "       every job launch would exit 1. Build from a full clone with tags." >&2; \
+           exit 1; } \
+    && pip wheel --no-cache-dir --no-deps --wheel-dir /wheels .
 
 # ---------------------------------------------------------------------------
 # Stage 2a — base: CPU. python:3.12-slim already has python and pip, so the only
@@ -68,24 +108,63 @@ FROM ${CUDA_KERNEL_BASE} AS cuda
 ENV FM_TUNE_EXTRAS=full
 
 # ---------------------------------------------------------------------------
-# Stage 3 — runtime: the AutoTuneX API, serving the SPA in-process. `FROM
-# ${DEVICE}` picks one of the two base stages above; everything below is
-# identical for both, which is why the extras arrive as inherited ENV rather
-# than as a conditional here.
+# Stage 2c — backend: local. Trains in process with fm-tune's extras from the
+# device stage. These defaults are the ones this image has always baked.
 # ---------------------------------------------------------------------------
-FROM ${DEVICE} AS runtime
+FROM ${DEVICE} AS local
+ENV AUTOTUNEX_JOB_BACKEND=local \
+    AUTOTUNEX_AUTO_CREATE_SCHEMA=true \
+    AUTOTUNEX_EXTRAS=""
+
+# ---------------------------------------------------------------------------
+# Stage 2d — backend: llmb. Submits builds to an external granite.build server
+# and trains nothing here, so it installs granite.build from this checkout (the
+# llmb CLI, and the gbcli package live build logs read), AutoTuneX's mysql + mcp
+# extras, and fm-tune at its torch-free base (FM_TUNE_EXTRAS=none).
+#
+# AUTO_CREATE_SCHEMA stays false and TRAINER_REF oss-main, as Dockerfile.gb had
+# them: this is the image deployments run, against a migrated database.
+# ---------------------------------------------------------------------------
+FROM ${DEVICE} AS llmb
+RUN [ "$FM_TUNE_EXTRAS" = "core" ] \
+    || { echo "FATAL: JOB_BACKEND=llmb trains on the granite.build server, not in this image;" >&2; \
+         echo "       build it with DEVICE=cpu." >&2; \
+         exit 1; }
+# git, as Dockerfile.gb had it: granite.build depends on GitPython, which shells out to it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=bind,from=gb-wheel,source=/wheels,target=/wheels \
+    pip install --no-cache-dir /wheels/*
+ENV AUTOTUNEX_JOB_BACKEND=llmb \
+    AUTOTUNEX_AUTO_CREATE_SCHEMA=false \
+    AUTOTUNEX_JOB_TRAINER_REF=oss-main \
+    AUTOTUNEX_EXTRAS="[mysql,mcp]" \
+    FM_TUNE_EXTRAS=none
+
+# ---------------------------------------------------------------------------
+# Stage 3 — runtime: the AutoTuneX API, serving the SPA in-process. `FROM
+# ${JOB_BACKEND}` picks one of the two backend stages above, each sitting on the
+# `${DEVICE}` base; everything below is shared, which is why the extras and the
+# backend defaults arrive as inherited ENV.
+# ---------------------------------------------------------------------------
+FROM ${JOB_BACKEND} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install AutoTuneX + its exactly-pinned BASE deps only. Every base dependency
+# Install AutoTuneX + its exactly-pinned deps, plus the backend's extras
+# (AUTOTUNEX_EXTRAS: none for `local`, mysql + mcp for `llmb`). Every dependency
 # ships a cp312 manylinux wheel, so no compiler/build-essential layer is needed.
-# No postgres/mysql extras.
-COPY pyproject.toml README.md ./
-COPY src/ ./src/
-RUN pip install --no-cache-dir .
+# For `llmb`, granite.build was installed first, by its own stage, so the two
+# were not resolved together: `pip check` fails the build if AutoTuneX's pins
+# broke granite.build's.
+COPY autotunex/pyproject.toml autotunex/README.md ./
+COPY autotunex/src/ ./src/
+RUN pip install --no-cache-dir ".${AUTOTUNEX_EXTRAS}" \
+    && if [ "$AUTOTUNEX_JOB_BACKEND" = "llmb" ]; then pip check; fi
 
 # Install the vendored autotune core (src/fm-tune). WHICH extras arrive is set by
 # the base stage: `core` on CPU — the lean training stack the default `local` job
@@ -120,7 +199,12 @@ RUN pip install --no-cache-dir .
 #
 # On the CPU base the guard is false and this collapses to exactly
 # `pip install "./src/fm-tune[core]"` — the same install this image has today.
-RUN pip install --no-cache-dir "./src/fm-tune[core]" \
+#
+# The llmb backend sets FM_TUNE_EXTRAS=none: it trains nothing here, so it
+# installs fm-tune at its torch-free base (pyyaml only, so the catalog imports)
+# and stops.
+RUN if [ "$FM_TUNE_EXTRAS" = "none" ]; then pip install --no-cache-dir ./src/fm-tune; exit 0; fi \
+    && pip install --no-cache-dir "./src/fm-tune[core]" \
     && if [ "$FM_TUNE_EXTRAS" != "core" ]; then \
          python -c "import os, sys, torch; base = os.environ['AUTOTUNEX_KERNEL_BASE_TORCH']; sys.exit(0 if torch.__version__.split('+')[0] == base else f'torch {torch.__version__} differs from the {base} the kernel base was compiled against; rebuild it (make publish-base-image)')" \
          && pip install --no-cache-dir uv==0.13.7 \
@@ -136,13 +220,12 @@ COPY --from=ui-builder /app/ux/build /app/ux-build
 
 # Self-sufficient standalone defaults. Every one is overridable at run time with
 # `podman run -e AUTOTUNEX_...=...`. All writable state lives under /data (a
-# volume) so the SQLite DB and artifacts survive container restarts.
+# volume) so the SQLite DB and artifacts survive container restarts. The job
+# backend, schema creation and trainer ref come from the backend stage.
 ENV AUTOTUNEX_ENVIRONMENT=dev \
     AUTOTUNEX_DATABASE_URL=sqlite+aiosqlite:////data/autotunex.db \
-    AUTOTUNEX_AUTO_CREATE_SCHEMA=true \
     AUTOTUNEX_AUTH_PROVIDERS=[\"disabled\"] \
     AUTOTUNEX_STANDALONE_ROLE=admin \
-    AUTOTUNEX_JOB_BACKEND=local \
     AUTOTUNEX_ARTIFACT_DIR=/data/artifacts \
     AUTOTUNEX_DATASET_STORAGE_DIR=/data/artifacts/datasets \
     AUTOTUNEX_LOCAL_OUTPUT_DIR=/data/artifacts/local \
