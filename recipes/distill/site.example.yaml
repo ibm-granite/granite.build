@@ -33,6 +33,9 @@ SLURM_ACCOUNT: "my-account"
 SLURM_QOS: "normal"
 # QOS for jobs on CPU_PARTITION.
 CPU_QOS: "cpu"
+# QOS for jobs on EVAL_PARTITION, when that partition refuses SLURM_QOS (a
+# preemptible partition often admits only its own). "" uses SLURM_QOS there.
+EVAL_QOS: ""
 
 # ─── Environment: filesystems ────────────────────────────────────────
 # Shared root of the per-run build workdirs (GB_BUILD_WORKDIR hangs off it).

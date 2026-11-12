@@ -184,6 +184,16 @@ config:
             $${CPU_PARTITION}:
               sbatch_options:
                 qos: $${CPU_QOS}
+          # The eval lane. A preemptible partition often admits only its own QOS
+          # (`AllowQos` in `scontrol show partition`), and SkyPilot merges sbatch
+          # options global < cluster < partition, so this overrides the env-wide
+          # QOS on that partition alone. EVAL_QOS "" adds nothing, and so does an
+          # EVAL_PARTITION that is the GPU or CPU partition, whose QOS is already set.
+<%- if EVAL_QOS and EVAL_PARTITION != GPU_PARTITION and EVAL_PARTITION != CPU_PARTITION %>
+            $${EVAL_PARTITION}:
+              sbatch_options:
+                qos: $${EVAL_QOS}
+<%- endif %>
       # Env-wide #SBATCH defaults, forwarded verbatim to sbatch (keys without the
       # leading --). `account` is the SLURM association of the user the jobs run
       # as (`sacctmgr show associations user=<user>`). `qos` must be one the

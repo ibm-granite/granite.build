@@ -222,6 +222,9 @@ def _site_from_real_env(env):
         "SLURM_ACCOUNT": slurm["sbatch_options"]["account"],
         "SLURM_QOS": slurm["sbatch_options"]["qos"],
         "CPU_QOS": cc["partition_configs"][cpu_partition]["sbatch_options"]["qos"],
+        # The source env has no eval-lane entry: its evals share the GPU partition.
+        "EVAL_PARTITION": cfg["zone"],
+        "EVAL_QOS": "",
         "SHARED_WORKDIR": cfg["shared_workdir"],
         "CLUSTER_WORKDIR": cc["workdir"],
         "CLUSTER_TMPDIR": cc["tmpdir"],
@@ -257,6 +260,41 @@ def test_real_values_reproduce_the_source_env(tmp_path):
     real.pop("name")
     assert rendered.pop("name") == "rendered-for-comparison"
     assert rendered == real
+
+
+def _partition_configs(site, tmp_path):
+    site_path = tmp_path / "site.yaml"
+    site_path.write_text(yaml.safe_dump(site), encoding="utf-8")
+    cfg = yaml.safe_load(_render(site_path, tmp_path))["config"]
+    (cc,) = cfg["cloud_config"]["slurm"]["cluster_configs"].values()
+    return cfg, cc["partition_configs"]
+
+
+def test_eval_qos_gets_its_own_partition_entry(tmp_path):
+    site = _site()
+    site["EVAL_PARTITION"] = "gpu-preemptible"
+    site["EVAL_QOS"] = "burst"
+    cfg, parts = _partition_configs(site, tmp_path)
+    assert parts["gpu-preemptible"] == {"sbatch_options": {"qos": "burst"}}
+    assert parts[site["CPU_PARTITION"]] == {"sbatch_options": {"qos": site["CPU_QOS"]}}
+    # The env-wide QOS, which the training targets use, is unchanged.
+    assert cfg["cloud_config"]["slurm"]["sbatch_options"]["qos"] == site["SLURM_QOS"]
+
+
+@pytest.mark.parametrize(
+    "partition,qos",
+    [("gpu-preemptible", ""), ("GPU", "burst"), ("CPU", "burst")],
+    ids=["empty-qos", "eval-on-gpu-partition", "eval-on-cpu-partition"],
+)
+def test_eval_qos_adds_nothing_when_not_needed(tmp_path, partition, qos):
+    site = _site()
+    site["EVAL_PARTITION"] = {
+        "GPU": site["GPU_PARTITION"],
+        "CPU": site["CPU_PARTITION"],
+    }.get(partition, partition)
+    site["EVAL_QOS"] = qos
+    _, parts = _partition_configs(site, tmp_path)
+    assert set(parts) == {site["CPU_PARTITION"]}
 
 
 def test_empty_gpu_constraint_drops_the_directive(tmp_path):
