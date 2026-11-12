@@ -29,7 +29,8 @@ hf_mocked() {
 }
 if hf_mocked; then
     echo "[GBTEST_MOCK_HF] mocking hfpull — skipping real download"
-    mkdir -p "${HF_DEST}"
+    # The input is bound at the path in the repo, so it must exist.
+    mkdir -p "${HF_DEST}/${HF_PATH_IN_REPO}"
     echo mock > "${HF_DEST}/.gbtest_mock_hfpull"
     echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
     echo 'hfpull end'

@@ -1115,7 +1115,8 @@ class HfURI(URI):
         pull rather than binding an empty directory.
 
         Returns ``True`` immediately without network calls when HF mocking is
-        enabled via ``GBTEST_MOCK_HF``.
+        enabled via ``GBTEST_MOCK_HF``. A path in the repo is then created as
+        an empty directory, so the input is still bound at a path that exists.
 
         Token is resolved from ``self.secrets['HF_TOKEN']`` or the ``HF_TOKEN``
         environment variable.  For non-default hosts the ``endpoint`` kwarg is
@@ -1130,6 +1131,9 @@ class HfURI(URI):
             True if the download succeeded, False on any error.
         """
         if is_hf_mocked():
+            bound = self.local_path(dest)
+            if bound != Path(dest):
+                bound.mkdir(parents=True, exist_ok=True)
             return True
         try:
             # Normalize so the lock-path derivation below tolerates a str dest,

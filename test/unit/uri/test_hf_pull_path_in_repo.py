@@ -149,6 +149,26 @@ def test_pull_evicted_before_the_path_lands_rewaits(tmp_path):
     assert len(calls) == 2
 
 
+def test_mocked_pull_creates_the_bound_path(tmp_path, monkeypatch):
+    """A mocked pull downloads nothing, but the input is still bound at the path."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    uri = HfURI.parse(_URI)
+    with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+        assert uri.pull(tmp_path / "d") is True
+    mock_dl.assert_not_called()
+    assert uri.local_path(tmp_path / "d").is_dir()
+
+
+@pytest.mark.parametrize(
+    "uri", ["hf:///datasets/org/repo", "hf:///buckets/org/b/some/dir"]
+)
+def test_mocked_pull_without_a_path_creates_nothing(tmp_path, monkeypatch, uri):
+    """Without a path in the repo the binding is dest, which the caller owns."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    assert HfURI.parse(uri).pull(tmp_path / "d") is True
+    assert not (tmp_path / "d").exists()
+
+
 # ── hfpull step configs and bindings ─────────────────────────────────────────
 
 
@@ -428,3 +448,22 @@ def test_hfpull_script_whole_repo_has_no_include(tmp_path, script):
     proc, argv = _run(tmp_path, _pull_slice(script, "", tmp_path / "d"), "")
     assert proc.returncode == 0, proc.stderr
     assert "--include" not in argv
+
+
+@_SCRIPTS
+@pytest.mark.parametrize("path_in_repo", ["", f"/{_SUB}/"])
+def test_mocked_hfpull_script_creates_the_bound_path(tmp_path, script, path_in_repo):
+    """The mock branch exits before any download, but the binding must exist."""
+    dest = tmp_path / "dest"
+    text = _render(script(), path_in_repo).replace("DEST_PLACEHOLDER", str(dest))
+    proc = subprocess.run(
+        ["bash", "-c", text],
+        env={**os.environ, ENV_VAR_GBTEST_MOCK_HF: "true"},
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "mocking hfpull" in proc.stdout
+    assert (dest / path_in_repo.strip("/")).is_dir()
