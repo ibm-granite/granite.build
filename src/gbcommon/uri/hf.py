@@ -57,6 +57,12 @@ _GB_RG_SPACE_NAME_ALIASES = {"standalone": "public", "local": "public"}
 HF_HOST = "huggingface.co"
 HF_URI_SCHEME = "hf"
 
+# What an hf:// URI path segment and host may hold (see
+# HfURI._reject_unsafe_characters): nothing bash, a Python string literal or a
+# download-filter glob treats specially.
+_HF_SAFE_SEGMENT = re.compile(r"[\w.\-+=@,~]+")
+_HF_SAFE_HOST = re.compile(r"[A-Za-z0-9.\-]+(:[0-9]+)?")
+
 URLSEGMENT_MODELS = "models"
 URLSEGMENT_DATASETS = "datasets"
 URLSEGMENT_SPACES = "spaces"
@@ -689,6 +695,7 @@ class HfURI(URI):
         # Fail at construction so build validation reports the URI as invalid.
         if self.uri is not None:
             self._reject_dot_segments()
+            self._reject_unsafe_characters()
 
     def _reject_dot_segments(self) -> None:
         """Refuse a URI with a ``.`` or ``..`` path segment.
@@ -703,6 +710,41 @@ class HfURI(URI):
             raise ValueError(
                 f"Malformed HF URI path {self.uri.path!r}: "
                 "'.' and '..' segments are not allowed"
+            )
+
+    def _reject_unsafe_characters(self) -> None:
+        """Refuse a URI the hfpull/hfpush steps cannot render literally.
+
+        The steps put the URI, host, owner, repo, revision and path in the repo
+        into bash (single- and double-quoted) and Python string literals, and
+        the path in the repo is a download filter (``allow_patterns`` /
+        ``--include``). So each path segment may hold only letters, digits and
+        ``. _ - + = @ , ~``; the host only letters, digits, ``.`` and ``-``,
+        with an optional ``:<port>``; and there may be no query (``?``) or
+        fragment (``#``), which would silently cut the path short.
+        """
+        assert self.uri is not None, "self.uri is None"
+        path, query, fragment = self.uri.path, self.uri.query, self.uri.fragment
+        if query or fragment:
+            typed = (
+                path
+                + (f"?{query}" if query else "")
+                + (f"#{fragment}" if fragment else "")
+            )
+            raise ValueError(
+                f"Malformed HF URI path {typed!r}: '?' and '#' are not allowed"
+            )
+        for segment in path.split("/"):
+            if segment and not _HF_SAFE_SEGMENT.fullmatch(segment):
+                raise ValueError(
+                    f"Malformed HF URI path {path!r}: segment {segment!r} may only"
+                    " contain letters, digits and . _ - + = @ , ~"
+                )
+        host = self.uri.netloc
+        if host and not _HF_SAFE_HOST.fullmatch(host):
+            raise ValueError(
+                f"Malformed HF URI host {host!r}: only letters, digits, '.' and"
+                " '-' are allowed, with an optional ':<port>'"
             )
 
     @staticmethod
@@ -732,6 +774,7 @@ class HfURI(URI):
             return self.parts
         # Re-checked here: append_path can change the path after construction.
         self._reject_dot_segments()
+        self._reject_unsafe_characters()
         assert self.uri is not None, "self.uri is None"
         parts = self.uri.path.strip("/").split("/")
         host = self.uri.netloc or HF_HOST  # default to huggingface.co if not provided
