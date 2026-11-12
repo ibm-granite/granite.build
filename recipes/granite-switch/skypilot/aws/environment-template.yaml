@@ -1,0 +1,101 @@
+# Environment template for the granite-switch recipes on AWS: SkyPilot on EC2
+# with a pre-provisioned EFS filesystem shared by every step.
+#
+# Not an environment by itself: it is not in any space, and `fs-REPLACE-ME` /
+# `REGION-REPLACE-ME` are placeholders. `setup-local-space.sh <region>` (next to
+# this file) fills them in with your EFS id and region and writes the result to
+# your own space under ~/.granite.build, as
+# space://environments/skypilot-local/aws-gb-shared[-<region>], the recipes'
+# ENVIRONMENT_URI (README.md, step 4).
+#
+# What it adds to a plain SkyPilot-on-AWS environment:
+#
+#   * shared_filesystem: the EFS, mounted at /mnt/gb-shared on every step's
+#     instance (and inside its container), so data passes between targets
+#     that run on different instances;
+#   * hf pulls as their own steps, cached on the EFS (`config: {}`), so a model
+#     is downloaded once and reused by later targets and builds;
+#   * every step type pinned to the EFS region, the only region it has mount
+#     targets in.
+name: skypilot-local-aws-gb-shared
+type: Skypilot
+subtype: aws
+config:
+  default_cloud: aws
+  idle_minutes_to_autostop: 5
+  # GPU capacity is often short. A launch that finds none is retried with
+  # backoff (30 s, doubling, capped at provision_backoff_max), up to max_retries
+  # attempts: about 2 h of trying before the build fails. max_retries also caps
+  # re-runs of a step whose workload failed after it started (hfpull's are on
+  # by default); re-run n waits 60 s x 2^n, capped at delay_seconds.
+  retry:
+    max_retries: 12
+    provision_backoff_max: 900
+    delay_seconds: 600
+  # Credentials: secret NAMES resolved by the space's secret manager, written to
+  # a non-default profile in ~/.aws/credentials (as in the shipped environment).
+  aws_credentials:
+    - profile: gb-skypilot
+      aws_access_key_id: GB_AWS_ACCESS_KEY_ID
+      aws_secret_access_key: GB_AWS_SECRET_ACCESS_KEY
+  cloud_config:
+    workspaces:
+      default:
+        aws:
+          profile: gb-skypilot
+  # The EFS needs a mount target in every AZ of the region, a security group
+  # allowing NFS (TCP 2049) from the workers, and its root chmod'd 1777
+  # (docs/environments/skypilot-aws.md, "Runbook: provision a shared EFS
+  # filesystem").
+  #
+  # tls: true encrypts NFS traffic only where amazon-efs-utils (mount.efs) is
+  # installed. The hf-peft-sft image and the bare workers lack it, so their
+  # mounts fall back to plain NFSv4 inside the VPC, with a warning in the step
+  # log. Data at rest is encrypted by the filesystem.
+  shared_workdir: /mnt/gb-shared/gbroot
+  shared_filesystem:
+    provider: efs
+    mount_point: /mnt/gb-shared
+    efs:
+      file_system_id: fs-REPLACE-ME
+      region: REGION-REPLACE-ME
+      tls: true
+  # Pin each step type to the EFS region. hfpull and hfpush are the hidden
+  # steps queued for every hf:// input and output; they take no launcher_config
+  # from build.yaml, so the pin has to live here. A build running another step
+  # type here must pin it too (launcher_config.resources.infra:
+  # aws/<region>), or add it to this list.
+  #
+  # The GPU step types run on the AWS Deep Learning Base GPU AMI, whose
+  # per-region id setup-local-space.sh fills in below. SkyPilot's default AMI
+  # leaves an 8-GPU H200 instance without the GPUs: NVSwitch needs the DLAMI's
+  # NVIDIA Fabric Manager before CUDA initializes. docker.host_image_id is the
+  # host a container runs on, and the AMI itself for a step without one (byoc
+  # with an empty IMAGE); either way the step keeps its own image. Not
+  # image_id: that would replace the docker:<image> a step builds. The CPU-only
+  # steps stay on SkyPilot's default AMI.
+  steps:
+    hfpull:
+      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
+    hfpush:
+      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
+    command:
+      launcher_config: { resources: { infra: aws/REGION-REPLACE-ME } }
+    hf-peft-sft:
+      launcher_config:
+        resources: { infra: aws/REGION-REPLACE-ME }
+        docker: { host_image_id: AMI-REPLACE-ME }
+    byoc:
+      launcher_config:
+        resources: { infra: aws/REGION-REPLACE-ME }
+        docker: { host_image_id: AMI-REPLACE-ME }
+assetstores:
+  # No cache_path and no inline: hfpull runs as its own step and caches to
+  # ${shared_workdir}/hf_cache on the EFS.
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}

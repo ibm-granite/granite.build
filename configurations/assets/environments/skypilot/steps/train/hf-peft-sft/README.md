@@ -37,7 +37,7 @@ Inputs are assetstore bindings (portable across endpoints), not `file_mounts`.
 | Name | Kind | Required | Type | Purpose |
 |---|---|---|---|---|
 | `base_model` | input | **yes** | model | The model to adapt. Must be a Hugging Face model directory with a `config.json` at its root. An `hf://` URI or a prior-step model binding. Passed as `--model_name_or_path <path>`. |
-| `dataset` | input | no | dataset | Training data as a staged dataset dir (for example an `hf:///datasets/...` URI). Passed to `load_dataset(<path>, split=<dataset_split>)`; a `datasets` `save_to_disk` dir also works. |
+| `dataset` | input | no | dataset | Training data as a staged dataset dir (for example an `hf:///datasets/...` URI; `hf:///datasets/<org>/<repo>/<revision>/<dir>` stages and binds just that directory). Passed to `load_dataset(<path>, split=<dataset_split>)`; a `datasets` `save_to_disk` dir also works. |
 | `adapter` | output | no | model | The trained PEFT adapter dir. Registered under the name in `hf_peft_sft_config.output` (default `adapter`). |
 
 **Exactly one data source.** Either bind a `dataset` input or set
@@ -380,9 +380,10 @@ endpoint:
   start the container in seconds. No manual `enroot` import and no `image_id`
   override are needed. To pin a `.sqsh` you built yourself, set `image_id` to its
   path; the step adds `docker:`, and Pyxis gets the path as is.
-- **Request memory.** gbserver drops `compute_config` memory on SLURM, and a
-  partition default can be as small as 2G. Request memory in
-  `launcher_config.resources` as bare GiB, as a string. For a 2-GPU job:
+- **Request memory.** On SLURM, gbserver sends `compute_config` memory only on
+  clusters that track memory, and SkyPilot's default without it is 1 GB per CPU
+  (4 GB per CPU with GPUs). Request memory in `launcher_config.resources`, which
+  wins on every cluster, as bare GiB, as a string. For a 2-GPU job:
 
   ```yaml
   launcher_config:

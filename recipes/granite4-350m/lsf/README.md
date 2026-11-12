@@ -1,7 +1,7 @@
-# Granite 4.0 350M — LSF (BlueVela) recipes
+# Granite 4.0 350M — SkyPilot/LSF recipes
 
 Build recipes for SFT training and evaluation of the Granite 4.0 350M
-model on the BlueVela LSF cluster via the SkyPilot LSF backend.
+model on an LSF cluster via the SkyPilot LSF backend.
 
 ## Recipes
 
@@ -28,20 +28,23 @@ retired along with LSF support. Distillation now lives in
 and on-policy λ modes and a `smoke.yaml` layer, plus `distill-eval` for benchmarking
 existing exports.
 
-## Defaults are BlueVela-specific
+## Defaults are cluster-specific
 
 The `parameters.yaml` files in this directory carry default values for
-paths, queues, and resources that are specific to the BlueVela cluster
+paths, queues, and resources that are specific to the original LSF cluster
 and the granite-build project layout — for example:
 
 ```yaml
-MODEL_PATH: "/proj/granite-build/g4os/granite-4.0-350m-base/r251014a"
-OUTPUT_DIR: "/proj/granite-build/g4os/sft/checkpoints"
+MODEL_PATH: "<shared-fs>/granite-4.0-350m-base/r251014a"
+OUTPUT_DIR: "<shared-fs>/sft/checkpoints"
 QUEUE: "normal"
 ACCELERATORS: "H100:1"
 ```
 
-These are placeholders for a working BlueVela deployment. To run on a
+`<shared-fs>` in these docs and comments stands for a directory on the
+cluster's shared filesystem; see [Placeholders](../../README.md#placeholders).
+
+These are placeholders for a working SkyPilot/LSF deployment. To run on a
 different LSF cluster, override every infrastructure-specific parameter
 on the command line:
 

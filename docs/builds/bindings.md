@@ -18,11 +18,11 @@ schemas stay in the [`build.yaml` reference](build-yaml-reference.md#inputs) and
  │   checkpoint:              │◄──── binding ────────────│   model:                             │
  │     uri: file:workspace/ck │  producer.checkpoint     │     binding: producer.checkpoint     │
  └─────────────┬──────────────┘                          │ steps:                               │
-               │                                         │   - step_uri: space://steps/eval     │
+               │                                         │   - step_uri: space://steps/my-eval  │
    step workload prints                                  └──────────────────┬───────────────────┘
    GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:/ws/ck                        │
                │                                                            ▼
-   monitor turns it into an artifact event               step.yaml of "eval" declares input `model`
+   monitor turns it into an artifact event               step.yaml of "my-eval" declares input `model`
    → output `checkpoint` now has a value                 and reads {{ bindings.model.binding.path }}
 ```
 
@@ -125,7 +125,7 @@ granite.build:
       outputs:
         checkpoint: { uri: file:workspace/checkpoint }
       steps:
-        - step_uri: space://steps/sft
+        - step_uri: space://steps/my-sft
 
     evaluate:
       inputs:
@@ -254,7 +254,7 @@ targets:
       server_url:
         uri: "mem://server_url"
     steps:
-      - step_uri: space://steps/vllm-server      # its workload prints
+      - step_uri: space://steps/my-server      # its workload prints
                                                  # GB_ARTIFACT_ID:server_url GB_ARTIFACT_STATE:http://host:8000
   train:
     inputs:

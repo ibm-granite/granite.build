@@ -125,7 +125,7 @@ Declare `eval_metrics` on the target (typically `uri: "env://{{ binding.path }}"
 
 A t=0 baseline and a post-training measurement against the same teacher and corpus.
 `align`, `corpus` and `export` are targets running the `space://steps/train/distill/tokenizer-align`,
-`space://steps/train/distill/data-prep` and `space://steps/misc/hf-export` steps; they are
+`space://steps/train/distill/data-prep` and `space://steps/aux/hf-export` steps; they are
 elided here.
 
 ```yaml
@@ -277,7 +277,7 @@ no output *and* no error.
 
 ### Where the artifact marker lives
 
-Unlike the `space://steps/train/distill/data-prep` and `space://steps/misc/hf-export` steps, the
+Unlike the `space://steps/train/distill/data-prep` and `space://steps/aux/hf-export` steps, the
 marker is printed by **`src/run-eval.sh`**, not by the template. The script calls
 `publish_artifacts()` on both the success path **and** the already-measured SKIP path, because a
 resumed recipe whose eval says "already done" and then publishes nothing has broken whatever

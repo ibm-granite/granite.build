@@ -1,5 +1,5 @@
 ######
-# Sage code evaluation suite on BlueVela (LSF).
+# Sage code evaluation suite on SkyPilot/LSF.
 # Runs 9 parallel eval targets: OLMES code evals, EvalPlus, and Multiple-language.
 ######
 granite.build:

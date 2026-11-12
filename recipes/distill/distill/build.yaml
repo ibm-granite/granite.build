@@ -734,7 +734,7 @@ $${ corpus_inputs() }
           uri: "env://{{ binding.path }}"
           type: model
       steps:
-        - step_uri: space://steps/misc/hf-export
+        - step_uri: space://steps/aux/hf-export
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}

@@ -41,11 +41,10 @@ RUN apt-get update \
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Managed Python under /opt, not root's home: the venv's interpreter is a symlink
-# into it, and Pyxis on SLURM runs the job as the submitting user. No bytecode at
-# install time: peft-v0.21.2-5 shipped it (13,438 extra .pyc in the 3.4 GB venv
-# layer), and quay's security scan of that image never left "queued", while the
-# same lock without .pyc scans in minutes. Python compiles in memory on import
-# instead (/opt is read-only for the Pyxis job user, so nothing is written back).
+# into it, and /opt (a+rX) works whatever user and $HOME the container runtime
+# gives the job. No bytecode at install time: quay's scanner stalls on it (see
+# README, Scanning). SkyPilot runs the job as root in a writable container (Pyxis:
+# --container-remap-root --container-writable), so Python writes it on first import.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_NO_CACHE=1 \
     UV_LINK_MODE=copy \
@@ -75,5 +74,6 @@ ENV HF_PEFT_SFT_HOME=/opt/hf-peft-sft \
 
 # Root, like the repo's other step images: SkyPilot's docker runtime saves root's
 # environment (HOME=/root) to /etc/profile.d, so a non-root default USER fails
-# provisioning. Pyxis on SLURM still runs the container as the job user.
+# provisioning. Pyxis on SLURM remaps the job to root inside the container
+# (--container-remap-root); on the host it is still the submitting user.
 WORKDIR /root

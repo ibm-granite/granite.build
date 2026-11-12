@@ -1,4 +1,4 @@
-# livecodebench-v6 on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# livecodebench-v6 on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/livecodebench/code_generation_lite @ c52cd175916e995019dcd848d1054b419d2e70b5
 # (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
 #

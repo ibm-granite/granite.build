@@ -1,0 +1,24 @@
+# YAML spec for the CUDA kernel base's GPU smoke test on BlueVela SLURM. Run it
+# with
+#   gbtest autotunex/docker/buildtest/slurm-bluevela/buildtest.yaml
+# and, for another build of the base, add `-f <build.yaml with that image>`.
+targets:
+  - smoke
+target_expectations:
+  - target_name: smoke
+    # Just the byoc step: no inputs, no outputs.
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 0
+    expected_steps:
+      - step_uri: space://steps/aux/byoc
+        metadata_matches:
+          # byoc records the commit it cloned (build.yaml pins it).
+          commit_hash: "^[0-9a-f]{40}$"
+space_uri: ../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# A cold image cache imports the 7.5 GB image in a CPU job first, then gpu-mid
+# queueing; the test itself takes seconds once the container starts.
+timeout_minutes: 240

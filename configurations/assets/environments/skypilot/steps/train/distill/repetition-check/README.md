@@ -55,7 +55,7 @@ All fields in the first two tables live under the step's `config.gen_smoke_confi
 The step declares no named inputs (`inputs: {allow_unknown: true}`): its rungs are a
 variable-length list, so there is no fixed set of names to declare. It reads the model
 directories named in `rungs`, each of which must be a complete local HF export — the
-`hf_model` output of the `space://steps/misc/hf-export` step. A recipe declares one input
+`hf_model` output of the `space://steps/aux/hf-export` step. A recipe declares one input
 per export on the target (`binding: export-<N>.hf_model`) and lists the same directories in
 `rungs`. Binding the export targets as inputs makes gen-smoke wait for every checkpoint it
 reads.
@@ -89,7 +89,7 @@ Declare `repetition_report` on the target (typically `uri: "env://{{ binding.pat
 ## Example build.yaml
 
 One `gen-smoke` target for a two-rung ladder. `export-500` and `export-1000` are targets
-running the `space://steps/misc/hf-export` step; they are elided here.
+running the `space://steps/aux/hf-export` step; they are elided here.
 
 ```yaml
 granite.build:

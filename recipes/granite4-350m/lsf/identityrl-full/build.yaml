@@ -1,12 +1,10 @@
 ######
 # Identity-RL full recipe — the complete Identity RL run.
-# Reproduces gbansible run_rl_bluevela_identity.sh end-to-end. Structurally
-# identical to identityrl-smoke (same three targets, same 8-GPU topology); the
+# Structurally identical to identityrl-smoke (same three targets, same 8-GPU topology); the
 # only difference is full-run training-length parameters instead of the smoke
 # overrides.
 #
-# Identity RL has NO code-server (the source script sets start_code_server=false
-# / code_server_url=""). The LSF openinstruct-rl step gates the CODE_SERVER_URL
+# Identity RL has NO code-server (start_code_server=false / code_server_url=""). The LSF openinstruct-rl step gates the CODE_SERVER_URL
 # export on a non-empty URL, so dropping the code-server target is sufficient:
 # the trainer takes only the rm_server_url binding, and teardown downs only the
 # rm-server cluster.

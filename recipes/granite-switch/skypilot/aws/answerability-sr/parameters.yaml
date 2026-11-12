@@ -1,0 +1,181 @@
+# Parameters for the Shadow Residual answerability adapter recipe on AWS.
+# gb build start picks this file up from beside build.yaml; override any value
+# with --param KEY=VALUE.
+
+# Names the build, the adapter dir and the report dir. Use a new value per run:
+# a re-run with the same RUN_ID replaces that run's adapter and report.
+RUN_ID: "sr-r1"
+
+# ── Environment ──────────────────────────────────────────────────────────────
+# SkyPilot on AWS with a shared EFS (it also pins the byoc step to the EFS
+# region): the environment ../setup-local-space.sh writes into your own space
+# under ~/.granite.build from ../environment-template.yaml, with your EFS id.
+# This default is the name it uses for us-east-1; for us-west-2 it is
+# .../aws-gb-shared-usw2, and the script records the right one in
+# ~/.granite.build/local-env/granite-switch.params (../README.md, step 4).
+# Without that setup the build fails before it is submitted, as gbserver finds
+# no environment by this name.
+ENVIRONMENT_URI: "space://environments/skypilot-local/aws-gb-shared"
+
+# Container image both targets run in. Empty runs the step on the bare EC2
+# instance, and that is the default for now: the byoc step `git clone`s the
+# repo before setup_command runs, and the pytorch/pytorch images have no git,
+# so with an image the step fails at setup with `git: command not found`
+# (issue #529). The bare instance has git, and setup_command's pip install
+# brings torch from PyPI. Once byoc installs git itself, use a pinned PyTorch
+# CUDA image:
+#   IMAGE: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
+IMAGE: ""
+
+# ── Code under test ──────────────────────────────────────────────────────────
+# The byoc step does an UNAUTHENTICATED `git clone`, so this must be a public
+# repo. Keep it pointed at the public github.com repo.
+SR_REPO: "https://github.com/generative-computing/shadow-residual"
+# Pin a SHA or tag for reproducibility. `main` tracks the stock-PEFT API this
+# recipe's generated config is written against.
+SR_REF: "main"
+
+# ── Model ────────────────────────────────────────────────────────────────────
+# An INPUT of both targets, not something the training code downloads. Two
+# reasons. The weights land in the shared asset cache once and are reused by
+# every later run rather than re-fetched into whatever $HOME the job happens to
+# get; and both targets bind the SAME artifact, so "eval ran against the base
+# it was trained on" is recorded rather than asserted. A base that silently
+# differs is the one error this recipe cannot catch from its own output.
+#
+# Public on the Hub, so this pull needs no credential — an HF_TOKEN secret
+# would also cover a gated model if you repoint this.
+BASE_MODEL_URI: "hf:///ibm-granite/granite-4.2-8b"
+
+# The Hub id naming the SAME weights as BASE_MODEL_URI — keep the two in sync.
+# Written into the trained adapter's adapter_config.json in place of the local
+# cache path the trainer would otherwise record there, so the adapter is still
+# loadable by someone who does not share this cluster's filesystem.
+BASE_MODEL_ID: "ibm-granite/granite-4.2-8b"
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+# DATA_URI has no default: bring your own data and pass it with --param
+# (README.md, "Your data"). Both datasets live under ONE root, and DATA_URI
+# names that root — for a Hugging Face dataset repo, the repo, not a
+# directory inside it. granite.build resolves the URI to a local directory on
+# the cluster before either step runs, so the code never sees a URI: it is
+# handed the root, and build.yaml appends the two subdirs below. The scheme
+# picks the transport (hf:// pulls cache on the EFS):
+#   hf:///datasets/<org>/<repo>   pulled from the Hub (three slashes: the host
+#                                 defaults to huggingface.co — "hf://datasets/..."
+#                                 parses "datasets" as the HOST and pulls from
+#                                 nowhere). A private repo needs an HF_TOKEN
+#                                 secret; the token never reaches the recipe.
+#   env://<absolute path>         already on the EFS; the pull is a no-op
+#   DATA_URI: "hf:///datasets/<org>/<repo>"
+
+# Subdirectory of DATA_URI holding train.jsonl + test.jsonl in
+# shadow-residual's {"messages": [...]} JSONL format (test.jsonl is the
+# validation set).
+TRAIN_DATA_SUBDIR: "train"
+
+# Subdirectory holding the eval set, in the layout answerability_eval.py
+# expects: gold.jsonl, rag.jsonl, unanswerable_v2.{a,b,c}.jsonl plus
+# collection.txt and setting.txt (README.md, "Your data").
+EVAL_DATA_SUBDIR: "eval"
+
+# ── Adapter geometry ─────────────────────────────────────────────────────────
+# rank 16 / alpha 32 / dropout 0.05, the shared-KV SR configuration for an 8B
+# Granite 4.2 base.
+#
+# k_proj and v_proj are deliberately absent and must stay absent: SR computes
+# K/V once from the frozen base stream and shares it, so a K/V LoRA delta has
+# nowhere to land and the model rejects it at build time.
+LORA_RANK: 16
+# Rank of the per-layer base->adapter cross_stream injection. Listing
+# cross_stream at all is what engages SR's dual-stream forward; drop it and the
+# run silently degrades to plain LoRA.
+CROSS_STREAM_RANK: 16
+LORA_ALPHA: 32
+LORA_DROPOUT: 0.05
+
+# ── Tokenizer markers ────────────────────────────────────────────────────────
+# granite-4.2 is ChatML, and its chat template carries no {% generation %}
+# tags, so TRL's assistant_only_loss path is unavailable and the trainer falls
+# back to ResponseOnlyCollator. That collator's default marker is Granite 4.1's
+# <|start_of_role|>assistant<|end_of_role|>, which never appears in a 4.2 row —
+# so this override is load-bearing, not cosmetic. Without it the loss mask is
+# wrong rather than absent. The empty <think></think> block is part of 4.2's
+# assistant opener, so the marker includes it: the collator masks through the
+# whole opener and supervision starts after </think>. This matches
+# shadow-residual's own 4.2 config (sr-qo-mlp-r32-c32-sharedkv-g42.yaml).
+ASSISTANT_MARKER: "<|im_start|>assistant\\n<think></think>"
+# Final context token before generation: the last token of ASSISTANT_MARKER.
+# </think> is a single added token on the 4.2 tokenizer, which is what the
+# trainer requires; it validates every row's supervised-region boundary against
+# it and fails loudly on a mismatch. Recorded into adapter_config.json.
+LAST_CONTEXT_TOKEN: "</think>"
+# End-of-completion marker, appended to any training row not already ending in
+# it, and recorded into adapter_config.json. <|im_end|> is 4.2's eos and is a
+# single added token, which is what the trainer requires of this field.
+LAST_TOKEN: "<|im_end|>"
+
+# ── Optimizer / schedule ─────────────────────────────────────────────────────
+LEARNING_RATE: "5.0e-05"
+WEIGHT_DECAY: 0.01
+LR_SCHEDULER: "cosine"
+WARMUP_RATIO: 0.05
+
+# ── Batch geometry ───────────────────────────────────────────────────────────
+PER_DEVICE_TRAIN: 1
+GRADIENT_ACCUMULATION: 8
+PER_DEVICE_EVAL: 4
+MAX_LENGTH: 8192
+# On by default because SR holds two hidden-state streams, roughly doubling
+# activation memory for an 8B at 8192 context. The stock-PEFT SR's dual-stream
+# decoder forward is pure, so recompute is exact — checkpointing costs time,
+# not correctness.
+GRADIENT_CHECKPOINTING: true
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+NUM_EPOCHS: 3
+SEED: 0
+LOGGING_STEPS: 1
+DATALOADER_NUM_WORKERS: 4
+SAVE_TOTAL_LIMIT: 3
+# YAML list, injected verbatim. tensorboard is pip-installed by setup_command.
+# Use "[]" to disable reporting entirely.
+REPORT_TO: "[tensorboard]"
+# >0 caps training at N optimizer steps. 0 trains the full schedule.
+MAX_STEPS: 0
+
+# ── Eval knobs ───────────────────────────────────────────────────────────────
+EVAL_BATCH_SIZE: 4
+# 30, not 6: a 4.2 generation prompt opens a <think></think> block before the
+# label, and a tighter cap truncates it into a repeat loop. Generation stops on
+# eos/<|im_end|> regardless, so this is a ceiling and not a cost.
+EVAL_MAX_NEW_TOKENS: 30
+# Rows loaded per eval JSONL file. Lower it for a quick scoring pass.
+EVAL_DATASET_SIZE: 100000
+
+# ── Output ───────────────────────────────────────────────────────────────────
+# On the EFS, outside the per-run workdirs gbserver removes when a target ends:
+# eval runs on another instance and reads the adapter from ADAPTER_ROOT/RUN_ID.
+ADAPTER_ROOT: "/mnt/gb-shared/granite-switch/answerability-sr/adapters"
+REPORT_ROOT: "/mnt/gb-shared/granite-switch/answerability-sr/reports"
+
+# ── Compute ──────────────────────────────────────────────────────────────────
+# 1 GPU, the setup these hyperparameters were set with (needs at least 48 GB:
+# see README.md, "GPUs"). H100:1 is p5.4xlarge; SkyPilot picks the
+# instance from ACCELERATORS unless INSTANCE_TYPE names one (another size with
+# the same GPUs, when the cheapest one has no capacity).
+ACCELERATORS: "H100:1"
+INSTANCE_TYPE: ""
+# Training processes. 1 runs `sr-train` on one GPU. >1 runs the same trainer
+# under `accelerate launch --multi_gpu` (DDP, one process per GPU), and must
+# equal the GPU count in ACCELERATORS. With DDP the effective batch is
+# SR_NUM_PROCESSES x PER_DEVICE_TRAIN x GRADIENT_ACCUMULATION: on H200:8, set
+# GRADIENT_ACCUMULATION=1 to keep the effective batch of 8.
+SR_NUM_PROCESSES: 1
+
+# Eval is a single-GPU generation pass over the eval set; it needs no more
+# hardware than training and is kept separate so the two can be sized apart.
+EVAL_ACCELERATORS: "H100:1"
+EVAL_INSTANCE_TYPE: ""
+
+POLL_INTERVAL_SECONDS: 120

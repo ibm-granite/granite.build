@@ -1,5 +1,5 @@
 ######
-# Sage math evaluation suite on BlueVela (LSF).
+# Sage math evaluation suite on SkyPilot/LSF.
 # Runs 5 parallel eval targets: DeepMind Math, GPQA, GSM8K, GSM Symbolic, Minerva Math.
 ######
 granite.build:

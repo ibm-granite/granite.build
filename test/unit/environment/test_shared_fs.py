@@ -1,5 +1,6 @@
 import asyncio
 import pathlib
+import re
 import subprocess
 from types import SimpleNamespace
 from unittest import mock
@@ -679,6 +680,20 @@ def test_example_env_fixtures_validate(rel):
 
     data = yaml.safe_load((_ROOT / rel).read_text())
     EnvironmentConfig.model_validate(data)  # must not raise
+
+
+def test_committed_env_fixtures_name_no_real_efs():
+    """Committed EFS ids are placeholders; a real one belongs in a local copy.
+
+    A real id (``fs-`` plus 17 hex digits) names a filesystem in one AWS
+    account, and the repo is public.
+    """
+    real = []
+    for path in sorted((_ROOT / "test-data").rglob("environment.yaml")):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"\bfs-[0-9a-f]{17}\b", line):
+                real.append(f"{path.relative_to(_ROOT)}:{i}")
+    assert not real
 
 
 # --- #396: BYO EFS access_point_id ---

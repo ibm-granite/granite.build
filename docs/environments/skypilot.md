@@ -558,7 +558,7 @@ Three keys are read:
 |---|---|
 | `num_nodes` | Becomes `sky.Task(num_nodes=...)`. Overridable by `launcher_config.num_nodes`. |
 | `num_cpus_per_node` | A low-precedence `cpus` floor on `sky.Resources`. |
-| `total_memory_per_node` | A low-precedence `memory` floor (skipped on slurm/lsf). |
+| `total_memory_per_node` | A low-precedence `memory` floor. Skipped on LSF, and on SLURM clusters that don't track memory (see [skypilot-slurm.md](skypilot-slurm.md#step-memory-total_memory_per_node)). |
 
 `num_gpus_per_node` is **not** read. Request GPUs with `resources.accelerators` (in the step.yaml or
 the build.yaml), e.g. `accelerators: "H100:8"`. A step that needs the count at runtime can read

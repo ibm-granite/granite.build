@@ -81,7 +81,7 @@ granite.build:
               dpk_version: "1.1.8"
               # The dpk step declares `docs` as a named input and reads this
               # target's `docs` binding directly, so no input_path config line
-              # is set here (steps/misc/byoc/skypilot/USAGE.md).
+              # is set here (steps/aux/byoc/skypilot/USAGE.md).
               output: tokens
               # The point of this fixture. One line replaces a whole second target;
               # the step runs src/validate_tokenization2arrow.py before registering
@@ -121,8 +121,7 @@ granite.build:
               # it keeps the pool from oversubscribing: 2 workers, 2 cores.
               num_cpus_per_node: 2
               num_gpus_per_node: 0
-              # The compute_config memory floor is skipped for the SLURM/LSF
-              # clouds (they don't reliably track memory as a consumable), so this
-              # is advisory here and will not leave the job PENDING even though the
-              # local cluster's nodes advertise RealMemory=1024.
+              # Sent as --mem only on a SLURM cluster that tracks memory. The local
+              # cluster is CR_Core, so it's skipped there and won't leave the job
+              # PENDING even though its nodes advertise RealMemory=1024.
               total_memory_per_node: 4Gi

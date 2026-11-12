@@ -45,10 +45,9 @@ use; the fixture allows 60 minutes, where the sibling bluevela fixtures use 20-3
 The fixture's build.yaml and buildtest.yaml live in the directory returned by
 _get_yaml_spec_dir below.
 
-REQUIRES the SlurmCommandRunner wrap-exemption fix in the SkyPilot fork this repo
-pins (``git+https://github.com/cmadam/skypilot.git@gb-sky-v1-stable``). Green on
-BlueVela SLURM 2026-09-28 against the patched fork; without it the test fails in
-SkyPilot's file-mount stage, before the transform runs::
+REQUIRES the Slurm file-mount wrap-exemption fix in ``gbserver/utils/sky_patches.py``
+(green on BlueVela SLURM 2026-09-28). Without it the test fails in SkyPilot's
+file-mount stage, before the transform runs::
 
     sudo: a password is required
     srun: error: p1-r08-n1: task 0: Exited with exit code 1
@@ -73,10 +72,11 @@ A containerized step never hit this — its file_mounts run as root inside the
 enroot container, where SkyPilot aliases ``sudo`` away — which is why the sibling
 image-mode fixtures, and ``test_dpk_tok_image.py``, passed without the fix.
 
-**Memory is requested explicitly.** BlueVela enforces per-job memory, but gbserver
-drops ``compute_config.total_memory_per_node`` on slurm/lsf, so the build sets
-``launcher_config.resources.memory``. Without it the job got the partition default
-(2 CPUs / 2G) and was OOM-killed loading ``flair/ner-english-large``.
+**Memory is requested explicitly.** BlueVela enforces per-job memory. Before #657,
+gbserver dropped ``compute_config.total_memory_per_node`` on slurm, so the job got
+SkyPilot's 1 GB per CPU (2 CPUs / 2G) and was OOM-killed loading
+``flair/ner-english-large``. The floor now applies on BlueVela, and the build's
+explicit ``launcher_config.resources.memory`` wins either way.
 """
 
 import os

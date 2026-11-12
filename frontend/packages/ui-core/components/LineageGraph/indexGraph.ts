@@ -63,6 +63,30 @@ export function depthForNextLevel(seedId: string, shown: number, metadata?: Reco
   return seed.job_id || seed.job_ids ? Math.max(1, shown) : shown + 1
 }
 
+// What to show when GET /lineage/graph fails. A 422 is a request the API refused:
+// the non-admin depth cap is named by the `x-lineage-error-code: depth_limit`
+// header (not the wording of `detail`), and any other string `detail` says why
+// in the server's words; a 503 means
+// the index could not be read. Read structurally rather than via
+// `axios.isAxiosError`, so this module stays free of runtime imports.
+export function expansionErrorMessage(error: unknown): string {
+  const response = (
+    error as { response?: { status?: unknown; data?: { detail?: unknown }; headers?: Record<string, unknown> } } | null
+  )?.response
+  const detail = response?.data?.detail
+  if (response?.status === 422) {
+    if (response.headers?.['x-lineage-error-code'] === 'depth_limit') {
+      return typeof detail === 'string' && detail ? `Expansion depth limit reached (${detail})` : 'Expansion depth limit reached'
+    }
+    // A non-string detail is FastAPI's request validation.
+    if (typeof detail !== 'string' || !detail) return 'Invalid lineage request'
+    return detail
+  }
+  if (response?.status === 503) return 'Lineage index temporarily unavailable, try again'
+  if (typeof detail === 'string' && detail) return detail
+  return error instanceof Error ? error.message : String(error)
+}
+
 // `rename` maps index ids onto ids already in the caller's graph (e.g. a build
 // panel keys artifacts by UUID, the index by URI) so merging does not duplicate them.
 export function indexGraphToElk(

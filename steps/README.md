@@ -7,8 +7,8 @@ Granite.build space.
 Subdirectories contain step implementations (`byoc`, `dpk`, etc.), each with
 per-compute-environment subdirectories (`skypilot`, `lsf`, `k8s`, ...). Related steps
 can be grouped under a category directory (see [Nested steps](#nested-steps)). For
-example, `steps/misc/byoc/skypilot` holds the SkyPilot implementation of the `byoc`
-step in the `misc` category, and `steps/eval/eval-example/skypilot` holds the SkyPilot
+example, `steps/aux/byoc/skypilot` holds the SkyPilot implementation of the `byoc`
+step in the `aux` category, and `steps/eval/eval-example/skypilot` holds the SkyPilot
 implementation of the `eval-example` step in the `eval` category.
 
 > **Audience:** step *developers* authoring and publishing step implementations.
@@ -133,7 +133,7 @@ generates the skeleton of a new step in this framework. In Claude Code, run
 It asks two rounds of questions, skipping any your request already answers:
 
 1. **What the step is:** its name, its category, and comma-separated lists of input
-   and output names. The category is `eval`, `train`, `tune`, `data`, or one you
+   and output names. The category is `eval`, `train`, `tune`, `data`, `aux`, or one you
    type, and it becomes the directory under `steps/`: the step lands at
    `steps/<category>/<name>/<env>/` and is referenced as
    `space://steps/<category>/<name>` (see [Nested steps](#nested-steps)).
@@ -175,13 +175,13 @@ The build tests can't pass until `run.sh` prints the artifact marker (see
 [Emitting data from a step](#emitting-data-from-a-step-stdout-markers)).
 
 **Existing steps.** Every step sits under a category (`steps/data/dpk`, the
-`steps/eval/<family>` granite-evals steps, `steps/eval/eval-example`, `steps/misc/byoc`,
+`steps/eval/<family>` granite-evals steps, `steps/eval/eval-example`, `steps/aux/byoc`,
 the `steps/distill/*` steps). A single-level `steps/<name>/<env>/` step is still supported,
 but none ship today.
 
 ## Layout of a step/environment directory
 
-Each step/environment directory (e.g. `steps/misc/byoc/skypilot`) mixes files you
+Each step/environment directory (e.g. `steps/aux/byoc/skypilot`) mixes files you
 author with a directory `make` generates. They fall into three groups.
 
 ### Required
@@ -236,7 +236,7 @@ Present or absent depending on what the step needs:
   tree, so the step is self-contained.
 * **`README.md`** — the **development-oriented** doc: how the step is
   generated/built/published, its test modes, drift, and framework framing, plus a
-  prominent pointer to `USAGE.md` (see [`misc/byoc/skypilot`](misc/byoc/skypilot/README.md) and
+  prominent pointer to `USAGE.md` (see [`aux/byoc/skypilot`](aux/byoc/skypilot/README.md) and
   [`eval/eval-example/skypilot`](eval/eval-example/skypilot/README.md) for the two step-type examples). Unlike
   `USAGE.md`, this authoring README is **not** published — `publish-step` ships
   `USAGE.md` as the released step's `README.md` instead. Conventional for every step,
@@ -428,7 +428,7 @@ Defined once in [`common.mk`](common.mk) and shared by every step:
 | `REGISTRY`        | *(required for image steps; set by the step's Makefile)* | image registry + namespace |
 | `IMAGE_NAME`      | `steps/<STEP_PATH>/<STEP_ENV>`            | image repository, one per step, mirroring the step's directory (e.g. `steps/train/openinstruct-sft/skypilot`) |
 | `IMAGE_VERSION`   | git short SHA, else `latest`              | version part of the tag; pin a release in the step's Makefile |
-| `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-6` |
+| `IMAGE_TAG`       | `$(IMAGE_VERSION)`                        | image tag; the version of the step's image, e.g. `oi-v0.3.0-9` |
 | `IMAGE_REF`       | `$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)`   | full image reference (derived)   |
 | `PUBLISH_OVERWRITE` | `false`                                 | set exactly `true` to let `publish-image` replace an existing tag (or push without checking) |
 | `TEST_PUBLISHED`  | `false`                                   | set exactly `true` to skip `make test`'s comparison of the local build with the published `IMAGE_REF`, and its registry query (see [Two test modes](#two-test-modes)) |
@@ -527,14 +527,14 @@ substitution.) This is factored into the `render-step-template` helper in
 ## Referencing a generated step from a build.yaml
 
 After `make space`, the step lives in the generated Space at
-`steps/misc/byoc/skypilot/space/`. Point the build's Space at that directory (its
+`steps/aux/byoc/skypilot/space/`. Point the build's Space at that directory (its
 `space_uri`) and reference the step by the stable `space://steps/<step-path>` URI —
 the generated `space.yaml`'s `base_uris` resolve everything else (environments,
 monitors, other steps) from `configurations/assets`:
 
 ```yaml
 steps:
-  - step_uri: space://steps/misc/byoc
+  - step_uri: space://steps/aux/byoc
     config:
       byoc_config:
         image: "python:3.12-slim"
@@ -546,10 +546,10 @@ steps:
 Two worked examples, one per step type, each in a per-cluster subdir:
 
 * **Public-image step on SkyPilot/slurm** — the `byoc` build test at
-  [`misc/byoc/skypilot/test/slurm/test_skypilot_byoc.py`](misc/byoc/skypilot/test/slurm/test_skypilot_byoc.py),
+  [`aux/byoc/skypilot/test/slurm/test_skypilot_byoc.py`](aux/byoc/skypilot/test/slurm/test_skypilot_byoc.py),
   driven by its fixtures in the sibling
-  [`misc/byoc/skypilot/test-data/slurm/`](misc/byoc/skypilot/test-data/slurm/). Run it with
-  `make -C steps/misc/byoc/skypilot test`, which renders the Space (`make space`) first
+  [`aux/byoc/skypilot/test-data/slurm/`](aux/byoc/skypilot/test-data/slurm/). Run it with
+  `make -C steps/aux/byoc/skypilot test`, which renders the Space (`make space`) first
   so the test's `space_uri` resolves. End-to-end execution needs a real SkyPilot
   cluster (see the local `make slurm-setup`).
 * **Custom-image step on SkyPilot/aws** — the `eval-example` build test at
@@ -612,7 +612,7 @@ step**: a step records metadata only if its own `run:` block prints the marker.
   line appears in both files. That pair is [source vs. release](#source-of-truth-steps-vs-configurations),
   **not** a duplicate hand-edit — only the `step-template.yaml` copy is edited; the
   asset copy is regenerated. Never hand-edit the emitted marker in the asset tree.
-- **Current coverage.** Only [`misc/byoc/skypilot`](misc/byoc/skypilot/step-template.yaml)
+- **Current coverage.** Only [`aux/byoc/skypilot`](aux/byoc/skypilot/step-template.yaml)
   emits metadata today (a `commit_hash` recording the resolved git commit). Every
   other step emits nothing — the absence is expected, not a bug.
 - **Asset-only steps cannot inherit it.** The ~30+ steps that exist *only* under
@@ -715,7 +715,7 @@ both test modes: `make publish-step` copies the whole `test-data/<cluster>/` fol
 environment included. The step still comes from the generated space, so the test
 exercises your local source.
 
-The example is [`misc/byoc/skypilot/test-data/slurm-bluevela/`](misc/byoc/skypilot/test-data/slurm-bluevela/).
+The example is [`aux/byoc/skypilot/test-data/slurm-bluevela/`](aux/byoc/skypilot/test-data/slurm-bluevela/).
 Its `build.yaml` runs on the shared BlueVela SLURM environment by default; the
 `environment.yaml` beside it is a ready-made copy to edit when testing environment
 changes, by switching to `environment_uri: file:.`. Notes:

@@ -222,7 +222,7 @@ GB_ARTIFACT_ID:checkpoint_<N> GB_ARTIFACT_PATH:<CKPT_DIR>/checkpoint-<N>
 
 The `<N>` in `<run_name>_node<N>` comes from the allocation, not from a parameter, so it
 always describes the run that produced it. The trainer's ZeRO-3 config saves 16-bit weights,
-so a checkpoint is HF-native; downstream, the `space://steps/misc/hf-export` step selects
+so a checkpoint is HF-native; downstream, the `space://steps/aux/hf-export` step selects
 and checks one.
 
 ## Working directory and paths

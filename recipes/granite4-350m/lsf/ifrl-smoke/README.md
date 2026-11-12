@@ -1,7 +1,7 @@
 # IFRL smoke recipe
 
-A minutes-long smoke test of the end-to-end IFRL plumbing on BlueVela (LSF via
-SkyPilot), before committing to the full ~1-day run. First integration of the
+A minutes-long smoke test of the end-to-end IFRL plumbing on SkyPilot/LSF,
+before committing to the full ~1-day run. First integration of the
 `openinstruct-rl` step (#36) with the `rm-server` / `code-server` auxiliary
 targets (#37).
 

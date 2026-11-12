@@ -54,7 +54,7 @@ EXPECTED = {
     f"{_SKY}/train/distill/student-sft": ({"student", "corpus"}, set()),
     f"{_SKY}/train/distill/logit-distill": ({"student", "teacher", "corpus"}, {"vllm"}),
     f"{_SKY}/train/distill/teacher-divergence": ({"student"}, {"teacher"}),
-    f"{_SKY}/misc/hf-export": ({"train_output"}, {"expected_tokenizer"}),
+    f"{_SKY}/aux/hf-export": ({"train_output"}, {"expected_tokenizer"}),
     f"{_SKY}/train/distill/teacher-logits": (
         {"corpus", "teacher", "teacher_tokenizer"},
         set(),
@@ -92,6 +92,8 @@ EXPECTED = {
     f"{_SKY}/eval/swebench": (set(), set()),
     f"{_SKY}/eval/tau": (set(), set()),
     f"{_SKY}/eval/tbench": (set(), set()),
+    # Evaluation: not in any tag yet either, so the model input is required outright.
+    f"{_SKY}/eval/unitxt": ({"model"}, set()),
     # Shipped in v0.3.x: optional during the deprecation window, with the old config
     # key as a fallback.
     f"{_SKY}/sage-eval": (set(), {"model"}),
@@ -110,8 +112,14 @@ EXPECTED = {
     "environments/bash/steps/lora-finetune": ({"model"}, {"dataset"}),
     "environments/bash/steps/tune/fm-tune": ({"dataset"}, {"base_model"}),
     f"{_SKY}/tune/fm-tune": ({"dataset"}, {"base_model"}),
+    # MergeKit merge: new, so model_1 is required outright; the rest are optional (a recipe
+    # may also name Hugging Face models directly, which MergeKit fetches itself).
+    f"{_SKY}/merge/mergekit": (
+        {"model_1"},
+        {"model_2", "model_3", "model_4", "base_model"},
+    ),
     # Exceptions: no named inputs, by design.
-    f"{_SKY}/misc/byoc": (set(), set()),  # free-form command, any number of inputs
+    f"{_SKY}/aux/byoc": (set(), set()),  # free-form command, any number of inputs
     f"{_SKY}/skypilot-teardown": (set(), set()),  # variable-length cluster list
     f"{_LSF}/rm-server": (set(), set()),
     f"{_LSF}/code-server": (set(), set()),

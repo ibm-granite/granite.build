@@ -46,9 +46,10 @@ variables:                        # Optional. Template values exposed to build.y
 
 `base_uris` is the search path for `space://` URIs. When a target uses
 `environment_uri: space://environments/skypilot/kubernetes` or a step is `space://steps/hfpull`, the
-resolver walks the `base_uris` chain (plus the active environment's own directory) to find the matching
-asset. The full resolution algorithm — space-root priority (a step the space itself ships wins),
-env-co-located lookup, env-class matching, and env-agnostic fallback — is documented in
+resolver searches the `base_uris` chain to find the matching
+asset. For steps, only copies that match the active environment count, and the earliest base with
+one wins: the space's own directory, then `base_uris` in the order listed, then the builtins. The full
+algorithm, including how copies inside one base are ranked, is in
 [step-resolution.md](../environments/step-resolution.md).
 
 #### Worked example: how a space references environments and asset stores
@@ -77,11 +78,10 @@ ahead of any `base_uris` — it is `base_uris[0]` in the resolver. This holds fo
 kinds: an `environments/<name>`, `assetstores/<name>`, or `steps/<name>` the space itself ships
 **overrides** any copy inherited through the rest of the `base_uris` chain (e.g. a shared
 `configurations/assets` tree). So a space can develop and test its own environment, asset store, or
-step locally and have it take effect before — or instead of — the published/inherited version. (Steps
-need an extra rule to guarantee this because their env-co-located lookup would otherwise reach into the
-inherited tree first; see [step-resolution.md](../environments/step-resolution.md#space-root-steps-highest-priority).
-Environments and asset stores have no such lookup, so the space-first `base_uris` order already decides
-them.)
+step locally and have it take effect before — or instead of — the published/inherited version. The
+same order runs through the rest of the chain: an earlier base's copy outranks a later one's (for
+steps, among copies that match the environment; see
+[step-resolution.md](../environments/step-resolution.md#resolution-order)).
 
 **`base_uris` is optional.** Because the space's own directory is always searched, a **self-contained**
 space can drop the `environments/`, `assetstores/`, and `steps/` directories right next to its

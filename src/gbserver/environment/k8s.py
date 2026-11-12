@@ -98,7 +98,10 @@ from gbserver.types.environmentconfig import (
 from gbserver.types.errors import LogMonitoringFailedException
 from gbserver.utils.launch import launch_command_and_raise_errors
 from gbserver.utils.logger import get_logger
-from gbserver.utils.utils import short_alphanumeric_lower_hash
+from gbserver.utils.utils import (
+    sanitize_k8s_label_value,
+    short_alphanumeric_lower_hash,
+)
 from gbserver.utils.utils_k8s import is_helm_v4_or_higher
 
 logger = get_logger(__name__)
@@ -717,6 +720,18 @@ class K8s(Environment):
 
     # --------------------------------------------------------------------------------------------
 
+    @staticmethod
+    def _label_helm_values(run_metadata: Dict) -> List[Tuple[str, str]]:
+        """Sanitized ``run_metadata.username`` override for the chart.
+
+        ibmid usernames are emails, invalid as label values. Applies chart-wide,
+        not only to the label.
+        """
+        username = sanitize_k8s_label_value(
+            run_metadata.get("username") or "", fallback="none"
+        )
+        return [("run_metadata.username", username)]
+
     async def launch_helm(
         self: Self,
         launch_id: str,
@@ -808,12 +823,12 @@ class K8s(Environment):
         # booleans, which would render as `value: true` (boolean) in the pod
         # spec and fail Kubernetes validation. Secret-backed env vars are handled
         # separately above via valueFrom.secretKeyRef.
+        run_metadata = kwargs.get("run_metadata") or {}
         extra_runmetadata_string_values = [
             (f"k8s.env.{k}.value", v)
-            for k, v in self.get_launch_env_vars(
-                run_metadata=kwargs.get("run_metadata", {})
-            ).items()
+            for k, v in self.get_launch_env_vars(run_metadata=run_metadata).items()
         ]
+        extra_runmetadata_string_values.extend(self._label_helm_values(run_metadata))
 
         # --- Build --set overrides ---
         extra_runmetadata_overrides = " ".join(

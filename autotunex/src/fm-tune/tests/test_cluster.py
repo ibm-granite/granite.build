@@ -2,6 +2,9 @@
 
 import os
 import socket
+from types import SimpleNamespace
+
+import pytest
 
 import autotune.cluster as cluster
 from autotune.cluster import (
@@ -124,39 +127,54 @@ class TestRayDataBlockTarget:
 
 
 class TestComputeRayDataSizing:
-    def _patch_cpus(self, monkeypatch, total):
-        monkeypatch.setattr(cluster.ray, "cluster_resources", lambda: {"CPU": total, "GPU": 0})
+    def _patch_cpus(self, monkeypatch, available):
+        monkeypatch.setattr(cluster.ray, "available_resources", lambda: {"CPU": available, "GPU": 0})
 
-    def test_auto_reserves_workers(self, monkeypatch):
-        self._patch_cpus(monkeypatch, 64)
-        concurrency, num_cpus = compute_ray_data_sizing(8, None, None)
-        assert concurrency == 56  # 64 - 8
+    def test_auto_uses_available_cpus(self, monkeypatch):
+        # Tokenization finishes before the GPU workers exist: take every free CPU.
+        self._patch_cpus(monkeypatch, 63)
+        concurrency, num_cpus = compute_ray_data_sizing(None, None)
+        assert concurrency == 63
         assert num_cpus == 1.0
+
+    def test_fractional_num_cpus_scales_concurrency(self, monkeypatch):
+        self._patch_cpus(monkeypatch, 16)
+        concurrency, num_cpus = compute_ray_data_sizing(None, 0.5)
+        assert concurrency == 32
+        assert num_cpus == 0.5
 
     def test_override_takes_precedence(self, monkeypatch):
         self._patch_cpus(monkeypatch, 64)
-        concurrency, num_cpus = compute_ray_data_sizing(8, 4, 0.5)
+        concurrency, num_cpus = compute_ray_data_sizing(4, 0.5)
         assert concurrency == 4
         assert num_cpus == 0.5
 
     def test_auto_clamped_to_one(self, monkeypatch):
-        # More workers than CPUs → still at least 1.
-        self._patch_cpus(monkeypatch, 2)
-        concurrency, _ = compute_ray_data_sizing(8, None, None)
+        # Every CPU held by sibling trials -> still at least 1.
+        self._patch_cpus(monkeypatch, 0)
+        concurrency, _ = compute_ray_data_sizing(None, None)
         assert concurrency == 1
 
     def test_floors_fractional_cpus(self, monkeypatch):
         self._patch_cpus(monkeypatch, 7.9)
-        concurrency, _ = compute_ray_data_sizing(2, None, None)
-        assert concurrency == 5  # floor(7.9)=7, 7-2
+        concurrency, _ = compute_ray_data_sizing(None, None)
+        assert concurrency == 7
+
+    def test_zero_num_cpus_does_not_divide_by_zero(self, monkeypatch):
+        # num_cpus=0 is valid for Ray (reserve nothing per actor); size the pool
+        # one actor per free CPU rather than raising ZeroDivisionError.
+        self._patch_cpus(monkeypatch, 16)
+        concurrency, num_cpus = compute_ray_data_sizing(None, 0)
+        assert concurrency == 16
+        assert num_cpus == 0.0
 
     def test_falls_back_when_resources_unavailable(self, monkeypatch):
         def _raise():
             raise RuntimeError("no cluster")
 
-        monkeypatch.setattr(cluster.ray, "cluster_resources", _raise)
-        concurrency, num_cpus = compute_ray_data_sizing(4, None, None)
-        assert concurrency == 1  # total_cpus=0 → max(1, 0-4)
+        monkeypatch.setattr(cluster.ray, "available_resources", _raise)
+        concurrency, num_cpus = compute_ray_data_sizing(None, None)
+        assert concurrency == 1
         assert num_cpus == 1.0
 
 
@@ -175,3 +193,34 @@ class TestResolveLocalRayGpus:
         monkeypatch.setattr(cluster, "detect_accelerator", lambda: Accelerator("cuda", 8, True, True, True, True))
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2")
         assert cluster.resolve_local_ray_gpus() == 3
+
+
+class TestStopRayClusterMatchesWholePath:
+    """Teardown must not kill a sibling run whose temp dir shares a prefix."""
+
+    def _matched(self, monkeypatch, temp_dir, cmdlines):
+        psutil = pytest.importorskip("psutil")
+        procs = [SimpleNamespace(info={"pid": i, "cmdline": c.split()}) for i, c in enumerate(cmdlines)]
+        killed = []
+        for p in procs:
+            p.terminate = lambda p=p: killed.append(p.info["pid"])
+        monkeypatch.setattr(psutil, "process_iter", lambda attrs: procs)
+        monkeypatch.setattr(psutil, "wait_procs", lambda ps, timeout: (ps, []))
+        cluster.stop_ray_cluster(temp_dir)
+        return killed
+
+    def test_prefix_sibling_is_left_alone(self, monkeypatch):
+        killed = self._matched(
+            monkeypatch,
+            "/tmp/_ray-501/job_4521",
+            [
+                "raylet --temp_dir=/tmp/_ray-501/job_4521 --x",
+                "raylet --temp_dir=/tmp/_ray-501/job_45210 --x",
+                "gcs_server --log_dir=/tmp/_ray-501/job_4521/session_1/logs",
+            ],
+        )
+        assert killed == [0, 2]
+
+    def test_trailing_slash_in_temp_dir(self, monkeypatch):
+        killed = self._matched(monkeypatch, "/tmp/_ray-501/job_7/", ["raylet --temp_dir=/tmp/_ray-501/job_7"])
+        assert killed == [0]

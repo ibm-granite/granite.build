@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any, List, Optional, Self, Tuple
 
 from sqlalchemy import and_, desc, func, literal_column, or_, tuple_
+from sqlalchemy.exc import DataError
 
 from gbserver.storage.sql.sql_storage import BaseSQLItemStorage, retry_read
 from gbserver.storage.storage import JSON_COLUMN_NAME, UUID_COLUMN_NAME
@@ -150,6 +151,15 @@ class SQLTargetRunStorage(
             f"{UUID_COLUMN_NAME})"
         )
 
+    # A legacy row's completion time on Postgres: a successful row written before
+    # the ``finished_at`` column existed, which has the time in its blob only.
+    # The CASE guarantees the cast runs on those rows alone, so a malformed blob
+    # on any other row cannot fail the probe. The blob time carries its offset.
+    _PG_LEGACY_FINISHED = (
+        f"(CASE WHEN status = '{Status.SUCCESS.name}' AND finished_at IS NULL "
+        f"THEN ({JSON_COLUMN_NAME}::json ->> 'finished_at')::timestamptz END)"
+    )
+
     @retry_read
     def get_successful_finished_after(
         self,
@@ -169,7 +179,9 @@ class SQLTargetRunStorage(
 
         Postgres: the key is the ``finished_at`` timestamp column. A successful
         row with no column value (written before the column existed) cannot be
-        placed, and raises the same way.
+        placed, and raises the same way -- but only when its blob time is at or
+        after ``cutoff_utc``: one behind the checkpoint is already indexed, so the
+        legacy rows of an upgraded deployment do not mean a full read forever.
         """
         assert self._engine is not None
         dialect = self._engine.dialect.name
@@ -206,20 +218,42 @@ class SQLTargetRunStorage(
             ]
         else:
             key = model.finished_at
-            unplaceable = [and_(success, model.finished_at.is_(None))]
+            legacy: Any = literal_column(self._PG_LEGACY_FINISHED)
+            # Only a row whose blob has a time counts: one with none is not
+            # finished, and is passed over like a null key elsewhere.
+            unplaceable = [
+                and_(
+                    success,
+                    model.finished_at.is_(None),
+                    legacy >= cutoff_utc if cutoff_utc else legacy.isnot(None),
+                )
+            ]
             cutoff_key = cutoff_utc
         session = self._get_session_without_retry()
         try:
             if after is None:
                 # On every scan's first page, not once per process: a row written
                 # later that cannot be placed would otherwise be passed over for
-                # good. Each probe is an index seek, so this stays cheap.
-                for probe in unplaceable:
-                    if session.query(uuid_col).filter(probe).first() is not None:
-                        raise NotImplementedError(
-                            "successful targets with a completion time that cannot "
-                            "be ordered in SQL"
-                        )
+                # good. Each probe seeks on the (status, finished_at) index.
+                # A legacy row whose blob Postgres cannot cast cannot be ordered
+                # either, so it means the fallback too.
+                try:
+                    found = any(
+                        session.query(uuid_col).filter(probe).first() is not None
+                        for probe in unplaceable
+                    )
+                except DataError:
+                    session.rollback()
+                    self.logger.warning(
+                        "A successful target has an unreadable completion time; "
+                        "reading targets the slow way"
+                    )
+                    found = True
+                if found:
+                    raise NotImplementedError(
+                        "successful targets with a completion time that cannot "
+                        "be ordered in SQL"
+                    )
             query = session.query(model, key).filter(success, key.isnot(None))
             if cutoff_key is not None:
                 query = query.filter(key >= cutoff_key)

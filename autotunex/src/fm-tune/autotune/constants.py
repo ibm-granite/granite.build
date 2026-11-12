@@ -54,6 +54,7 @@ AUTOTUNE_TUNING_ALGO = [
     "vera",
     "sft",
     "alora",
+    "sr",
     "none",
 ]
 
@@ -68,7 +69,7 @@ AUTOTUNE_ONLINE_RL = ["ppo", "grpo", "dapo"]
 
 # Tuning algorithms the MLX backend can run (sft = full fine-tune, lora, qlora
 # = 4-bit quantized base + LoRA). PEFT-specific methods (alora/loha/lokr/vera)
-# have no mlx-lm equivalent.
+# and the Shadow Residual architecture (sr) have no mlx-lm equivalent.
 MLX_SUPPORTED_TUNING_ALGO = {"sft", "lora", "qlora"}
 
 # List of supported evaluation metrics
@@ -89,6 +90,13 @@ AUTOTUNE_TUNING_TO_PEFT_TYPE = {
     "vera": PeftType.VERA,
     "sft": None,
     "alora": "ALORA",
+    # Shadow Residual is a dual-stream Granite architecture adapted with 100%
+    # stock PEFT LoRA (its frozen zero-init CrossStream linears are wrapped by
+    # the ordinary lora.Linear), so it needs no PeftType of its own -- the string
+    # sentinel only steers fm-tune's own dispatch, exactly like "alora" above.
+    # get_peft_config maps it back to a plain LoraConfig. See
+    # autotune/shadow_residual.py.
+    "sr": "SR",
     "none": None,
 }
 
@@ -128,6 +136,11 @@ AutotuneTuningTypes = {
         "tuner_name": "tuner.prefix_tuning",
     },
     "p_tuning": {"description": "P-Tuning", "peft_type": PeftType.P_TUNING, "tuner_name": "tuner.p_tuning"},
+    "sr": {
+        "description": "Shadow Residual (dual-stream Granite + LoRA) Fine-Tuning",
+        "peft_type": "SR",
+        "tuner_name": "tuner.sr",
+    },
 }
 
 # Metrics supported by AutoTune

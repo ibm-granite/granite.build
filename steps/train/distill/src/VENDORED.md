@@ -64,9 +64,9 @@ granite.build venv.
 
 ## A second copy elsewhere
 
-`steps/misc/hf-export/skypilot/src/hf_export_state/` carries its own copies of
+`steps/aux/hf-export/skypilot/src/hf_export_state/` carries its own copies of
 `step_state.py`, `export_state.py` and `tokenizer_identity.py`, so that generic step depends
 on nothing in this collection. Both copies must keep writing and reading the same
 `.step-done.json` marker: change the marker format in both places, together.
-`steps/misc/hf-export/skypilot/test/test_step_template.py::TestResumeCompatibility` fails if
+`steps/aux/hf-export/skypilot/test/test_step_template.py::TestResumeCompatibility` fails if
 the schema or marker name drift apart.

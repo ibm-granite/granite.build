@@ -1,0 +1,286 @@
+######
+# answerability-sr — train and evaluate a Shadow Residual (SR) answerability
+# adapter on AWS EC2 GPUs, with a shared EFS filesystem (an environment
+# written by ../setup-local-space.sh).
+#
+# A template: it ships without data (DATA_URI has no default; see README.md).
+# Two targets, wired by one artifact; both run on the bare EC2 instance by
+# default (IMAGE is empty; see parameters.yaml):
+#
+#   train ──(adapter)──> eval
+#
+# `train` clones the public shadow-residual repo, generates an SR training
+# config from the parameters beside this file, and runs `sr-train` (or, with
+# SR_NUM_PROCESSES > 1, the same trainer under `accelerate launch`, DDP).
+# `eval` binds the adapter that produced and scores it with the same repo's
+# answerability evaluator, which rebuilds the SR base and attaches the adapter
+# through stock PEFT. Both targets run the same base model; they must, or the
+# adapter is attached to a different graph than it was trained on.
+#
+# Each target runs on its own EC2 instance, so the adapter and the report are
+# written to the EFS (ADAPTER_ROOT, REPORT_ROOT), not to the per-run workdir
+# gbserver removes when a target ends: eval, on another instance, reads the
+# adapter from there.
+#
+# Values come from parameters.yaml beside this file; the comments explaining WHY
+# each value is what it is live there and in README.md.
+#
+#   gb build start -f build.yaml --param RUN_ID=r1 --param DATA_URI=<root>
+######
+<% set _rid = RUN_ID | string %>
+<% if not _rid or _rid in [".", ".."] or _rid.startswith("-") or _rid | list | reject("in", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") | list %>
+# RUN_ID names directories the targets clear and replace (`rm -rf`), so only a
+# plain name may pass: letters, digits, `.`, `_`, `-`; not `.`, `..` or a
+# leading `-`. An undefined name fails the render (StrictUndefined).
+$${ RUN_ID_must_be_letters_digits_dot_underscore_dash_and_not_dot_or_dotdot }
+<% endif %>
+granite.build:
+  name: answerability-sr-$${RUN_ID}
+  targets:
+
+    ##########################################################################
+    # train — SR adapter on the answerability task
+    ##########################################################################
+    train:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # DATA_URI names the dataset ROOT (for hf://, the repo), not the
+        # directory inside it. The pull materializes it on the cluster and
+        # hands this step a local path to it, so the command appends TRAIN_DATA_SUBDIR
+        # itself. Declaring it as an input rather than hardcoding a path is
+        # what puts the dataset in `gb build status` and in the lineage record,
+        # so the trainer's arguments and the lineage cannot disagree.
+        train_data:
+          uri: "$${DATA_URI}"
+          type: dataset
+        # The base weights, bound rather than downloaded by the trainer. Both
+        # targets bind this same artifact, which is what makes "eval scored the
+        # adapter on the base it was trained on" a recorded fact instead of a
+        # convention two parameters happen to agree on.
+        base_model:
+          uri: "$${BASE_MODEL_URI}"
+          type: model
+      outputs:
+        # On the EFS so it outlives this target's instance; eval runs on
+        # another one. Must match OUT in the command below.
+        adapter:
+          uri: "env://$${ADAPTER_ROOT}/$${RUN_ID}"
+          type: model
+      steps:
+        - step_uri: space://steps/aux/byoc
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+            launcher_config:
+              resources:
+                # SkyPilot picks the cheapest instance with these GPUs unless
+                # INSTANCE_TYPE names one. The region comes from the environment.
+                accelerators: "$${ACCELERATORS}"
+<% if INSTANCE_TYPE %>
+                instance_type: "$${INSTANCE_TYPE}"
+<% endif %>
+            byoc_config:
+              image: "$${IMAGE}"
+              repo: "$${SR_REPO}"
+              ref: "$${SR_REF}"
+              workdir: "code"
+              # Not editable, and not `-e`: the clone is per-run and throwaway,
+              # so an editable install would only pin the env to a path that
+              # stops existing. tensorboard is not a shadow-residual dependency
+              # but REPORT_TO defaults to it, so it is installed here rather
+              # than discovered missing after the model has loaded.
+              #
+              # 8-GPU p5/p5e/p5en instances join their GPUs through NVSwitch,
+              # which needs NVIDIA Fabric Manager running before CUDA can
+              # initialize: without it nvidia-smi lists every GPU while torch
+              # sees none (CUDA error 802, "system not yet initialized"), and
+              # sr-train fails at "Your setup doesn't support bf16/gpu". Start
+              # it when the unit exists and is stopped; elsewhere this is a
+              # no-op.
+              #
+              # torch loads pip's cuDNN, but cuDNN loads its sub-libraries by
+              # name, and a GPU image that puts its own CUDA dirs (with an
+              # older cuDNN) on LD_LIBRARY_PATH makes it mix two versions: the
+              # first attention call fails with CUDNN_STATUS_SUBLIBRARY_VERSION_
+              # MISMATCH. So pip's cuDNN dir goes first on LD_LIBRARY_PATH,
+              # here and in the command. Setup then runs one bf16 attention
+              # forward and backward, so a broken GPU stack fails here, not
+              # after the base model has loaded.
+              setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && export LD_LIBRARY_PATH=\"$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"; python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"cudnn\", torch.backends.cudnn.version(), \"gpus\", torch.cuda.device_count() if ok else 0); ok or sys.exit(\"torch sees no GPU: check the driver and nvidia-fabricmanager\"); q = torch.randn(1, 8, 256, 128, device=\"cuda\", dtype=torch.bfloat16, requires_grad=True); torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal=True).float().sum().backward(); torch.cuda.synchronize(); print(\"bf16 attention fwd+bwd ok\")'"
+              # The SR config the printf below writes is a copy of the one in
+              # ../../lsf-bluevela/answerability-sr/build.yaml: change both
+              # (test_granite_switch_recipe_copies.py checks they match; #650 is
+              # to keep one copy).
+              # One folded line on purpose. The step injects this verbatim into
+              # its own `run:` block, so a multi-line value would break that
+              # block's indentation.
+              command: >-
+                set -e;
+                WORKROOT="$(pwd)";
+                OUT="$${ADAPTER_ROOT}/$${RUN_ID}";
+                ROOT="$${ADAPTER_ROOT}";
+                CFG="$WORKROOT/sr_answerability.yaml";
+                TRAIN_DIR="{{ bindings.train_data.binding.path }}/$${TRAIN_DATA_SUBDIR}";
+                BASE="{{ bindings.base_model.binding.path }}";
+                export PYTHONUNBUFFERED=1;
+                export LD_LIBRARY_PATH="$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}";
+                export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True;
+                echo "=== inputs ===";
+                id -un; nvidia-smi -L || true;
+                ls -la "$TRAIN_DIR" || true;
+                test -f "$BASE/config.json" || { echo "ERROR: no config.json under $BASE — the base-model pull did not land here"; exit 1; };
+                for f in "$TRAIN_DIR/train.jsonl" "$TRAIN_DIR/test.jsonl"; do
+                test -f "$f" || { echo "ERROR: missing $f — TRAIN_DATA_SUBDIR must hold the messages-JSONL export; see README.md"; exit 1; };
+                done;
+                case "$OUT" in "$${ADAPTER_ROOT}"/*/*|*/..|*/.|*/../*|*/./*) echo "ERROR: unsafe RUN_ID; refusing to clear $OUT"; exit 1;; "$${ADAPTER_ROOT}"/?*) ;; *) echo "ERROR: RUN_ID is empty; refusing to clear $OUT"; exit 1;; esac;
+                M="/mnt/gb-shared/"; case "$ROOT" in "$M"?*) ;; *) M="";; esac; D="${M%/}"; for P in $( [ -n "$M" ] && echo "${ROOT#$M}" | tr "/" " "); do D="$D/$P"; if [ ! -d "$D" ]; then mkdir -p "$D" 2>/dev/null || { echo "ERROR: cannot create $D: $(dirname "$D") is not writable by $(id -un) (a run as another user, e.g. root in a container, created it). Fix once, from any instance that mounts the EFS: sudo chmod 1777 $(dirname "$D")"; exit 1; }; chmod 1777 "$D" 2>/dev/null || true; fi; done; [ -w "$ROOT" ] || { mkdir -p "$ROOT" 2>/dev/null || true; }; [ -w "$ROOT" ] || { echo "ERROR: $ROOT is not writable by $(id -un) (a run as another user, e.g. root in a container, created it). Fix once, from any instance that mounts the EFS: sudo chmod 1777 $ROOT"; exit 1; };
+                rm -rf "$OUT"; mkdir -p "$OUT";
+                printf '%s\n'
+                'model:'
+                "  base: $BASE"
+                'data:'
+                "  train_path: $TRAIN_DIR/train.jsonl"
+                "  val_path: $TRAIN_DIR/test.jsonl"
+                '  max_length: $${MAX_LENGTH}'
+                '  assistant_marker: "$${ASSISTANT_MARKER}"'
+                'adapter:'
+                '  target_modules:'
+                '    q_proj: $${LORA_RANK}'
+                '    o_proj: $${LORA_RANK}'
+                '    gate_proj: $${LORA_RANK}'
+                '    up_proj: $${LORA_RANK}'
+                '    down_proj: $${LORA_RANK}'
+                '    cross_stream: $${CROSS_STREAM_RANK}'
+                '  alpha: $${LORA_ALPHA}'
+                '  dropout: $${LORA_DROPOUT}'
+                '  last_context_token: "$${LAST_CONTEXT_TOKEN}"'
+                '  last_token: "$${LAST_TOKEN}"'
+                'optimizer:'
+                '  name: adamw_torch'
+                '  learning_rate: $${LEARNING_RATE}'
+                '  weight_decay: $${WEIGHT_DECAY}'
+                'scheduler:'
+                '  type: $${LR_SCHEDULER}'
+                '  warmup_ratio: $${WARMUP_RATIO}'
+                'batch:'
+                '  per_device_train: $${PER_DEVICE_TRAIN}'
+                '  gradient_accumulation: $${GRADIENT_ACCUMULATION}'
+                '  per_device_eval: $${PER_DEVICE_EVAL}'
+                '  gradient_checkpointing: $${GRADIENT_CHECKPOINTING}'
+                'validation:'
+                '  strategy: epoch'
+                '  load_best_model_at_end: true'
+                '  metric_for_best_model: eval_loss'
+                '  greater_is_better: false'
+                '  early_stopping_patience: 3'
+                '  stop_on_nan: true'
+                'save:'
+                '  strategy: epoch'
+                '  total_limit: $${SAVE_TOTAL_LIMIT}'
+                "  output_dir: $OUT"
+                'runtime:'
+                '  num_train_epochs: $${NUM_EPOCHS}'
+                '  seed: $${SEED}'
+                '  logging_steps: $${LOGGING_STEPS}'
+                '  dataloader_num_workers: $${DATALOADER_NUM_WORKERS}'
+                '  report_to: $${REPORT_TO}'
+                > "$CFG";
+                echo "=== generated SR training config ==="; cat "$CFG";
+                EXTRA="";
+                if [ "$${MAX_STEPS}" -gt 0 ]; then EXTRA="--max-steps $${MAX_STEPS}"; fi;
+                cd code;
+                NPROC="$${SR_NUM_PROCESSES}";
+                echo "=== training ($NPROC process(es)) ===";
+                if [ "$NPROC" -gt 1 ]; then
+                accelerate launch --num_processes "$NPROC" --multi_gpu --mixed_precision bf16
+                -m shadow_residual.training.train --config "$CFG" --skip-post-train-generate $EXTRA;
+                else
+                sr-train --config "$CFG" --skip-post-train-generate $EXTRA;
+                fi;
+                test -f "$OUT/adapter_config.json" || { echo "ERROR: training wrote no adapter_config.json to $OUT"; exit 1; };
+                python -c "import json; p='$OUT/adapter_config.json'; d=json.load(open(p)); d['base_model_name_or_path']='$${BASE_MODEL_ID}'; json.dump(d, open(p,'w'), indent=2)";
+                echo "=== adapter base recorded as ==="; grep base_model_name_or_path "$OUT/adapter_config.json";
+                ls -la "$OUT";
+                echo "GB_ARTIFACT_ID:adapter GB_ARTIFACT_PATH:$OUT"
+
+    ##########################################################################
+    # eval — score that adapter on the answerability eval set
+    ##########################################################################
+    eval:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The adapter train produced. Binding it rather than naming a path is
+        # what sequences the two targets and records the lineage edge.
+        adapter:
+          binding: train.adapter
+        # The same repo train pulled. The destination is keyed by repo and
+        # revision, not by target, so this second pull finds the cache warm and
+        # re-downloads nothing; EVAL_DATA_SUBDIR picks the directory inside it.
+        eval_data:
+          uri: "$${DATA_URI}"
+          type: dataset
+        # The same model artifact train bound, so the pull is already warm and
+        # the two targets cannot drift onto different weights.
+        base_model:
+          uri: "$${BASE_MODEL_URI}"
+          type: model
+      outputs:
+        # result_df.csv (per-row predictions) + eval_summary.{jsonl,md,csv}, on
+        # the EFS. Must match OUT in the command below.
+        report:
+          uri: "env://$${REPORT_ROOT}/$${RUN_ID}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/aux/byoc
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            compute_config:
+              num_nodes: 1
+            launcher_config:
+              resources:
+                accelerators: "$${EVAL_ACCELERATORS}"
+<% if EVAL_INSTANCE_TYPE %>
+                instance_type: "$${EVAL_INSTANCE_TYPE}"
+<% endif %>
+            byoc_config:
+              image: "$${IMAGE}"
+              repo: "$${SR_REPO}"
+              ref: "$${SR_REF}"
+              workdir: "code"
+              # As in train: Fabric Manager, pip's cuDNN first on
+              # LD_LIBRARY_PATH, and a bf16 attention check.
+              setup_command: "if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 && ! systemctl is-active --quiet nvidia-fabricmanager; then echo 'byoc: starting nvidia-fabricmanager'; sudo systemctl start nvidia-fabricmanager; fi; cd code && pip install --no-cache-dir '.[train]' tensorboard && export LD_LIBRARY_PATH=\"$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"; python -c 'import sys, torch; ok = torch.cuda.is_available(); print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"cudnn\", torch.backends.cudnn.version(), \"gpus\", torch.cuda.device_count() if ok else 0); ok or sys.exit(\"torch sees no GPU: check the driver and nvidia-fabricmanager\"); q = torch.randn(1, 8, 256, 128, device=\"cuda\", dtype=torch.bfloat16, requires_grad=True); torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal=True).float().sum().backward(); torch.cuda.synchronize(); print(\"bf16 attention fwd+bwd ok\")'"
+              command: >-
+                set -e;
+                OUT="$${REPORT_ROOT}/$${RUN_ID}";
+                ROOT="$${REPORT_ROOT}";
+                ADAPTER="{{ bindings.adapter.binding.path }}";
+                EVAL_DIR="{{ bindings.eval_data.binding.path }}/$${EVAL_DATA_SUBDIR}";
+                BASE="{{ bindings.base_model.binding.path }}";
+                export PYTHONUNBUFFERED=1;
+                export LD_LIBRARY_PATH="$(python -c 'import nvidia.cudnn as m; print(list(m.__path__)[0])' 2>/dev/null)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}";
+                echo "=== inputs ===";
+                id -un; nvidia-smi -L || true;
+                ls -la "$ADAPTER" || true;
+                ls -la "$EVAL_DIR" || true;
+                test -f "$ADAPTER/adapter_config.json" || { echo "ERROR: no adapter_config.json under $ADAPTER"; exit 1; };
+                case "$OUT" in "$${REPORT_ROOT}"/*/*|*/..|*/.|*/../*|*/./*) echo "ERROR: unsafe RUN_ID; refusing to clear $OUT"; exit 1;; "$${REPORT_ROOT}"/?*) ;; *) echo "ERROR: RUN_ID is empty; refusing to clear $OUT"; exit 1;; esac;
+                M="/mnt/gb-shared/"; case "$ROOT" in "$M"?*) ;; *) M="";; esac; D="${M%/}"; for P in $( [ -n "$M" ] && echo "${ROOT#$M}" | tr "/" " "); do D="$D/$P"; if [ ! -d "$D" ]; then mkdir -p "$D" 2>/dev/null || { echo "ERROR: cannot create $D: $(dirname "$D") is not writable by $(id -un) (a run as another user, e.g. root in a container, created it). Fix once, from any instance that mounts the EFS: sudo chmod 1777 $(dirname "$D")"; exit 1; }; chmod 1777 "$D" 2>/dev/null || true; fi; done; [ -w "$ROOT" ] || { mkdir -p "$ROOT" 2>/dev/null || true; }; [ -w "$ROOT" ] || { echo "ERROR: $ROOT is not writable by $(id -un) (a run as another user, e.g. root in a container, created it). Fix once, from any instance that mounts the EFS: sudo chmod 1777 $ROOT"; exit 1; };
+                rm -rf "$OUT"; mkdir -p "$OUT";
+                cd code;
+                echo "=== evaluating ===";
+                python -m shadow_residual.eval.answerability_eval
+                --mode peft
+                --base-model "$BASE"
+                --adapter-path "$ADAPTER"
+                --adapter-sub-path .
+                --dataset-path "$EVAL_DIR"
+                --dataset-size $${EVAL_DATASET_SIZE}
+                --output-path "$OUT"
+                --device cuda
+                --batch-size $${EVAL_BATCH_SIZE}
+                --max-new-tokens $${EVAL_MAX_NEW_TOKENS};
+                test -f "$OUT/eval_summary.md" || { echo "ERROR: eval wrote no eval_summary.md to $OUT"; exit 1; };
+                echo "=== eval summary ==="; cat "$OUT/eval_summary.md";
+                echo "GB_ARTIFACT_ID:report GB_ARTIFACT_PATH:$OUT"

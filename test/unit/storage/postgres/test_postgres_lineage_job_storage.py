@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # Copyright LLM.build Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""``gb_lineage_job`` against postgres: the widths SQLite does not enforce.
+"""``gb_lineage_job`` (SQLLineageJobStorage) tests against PostgreSQL.
 
+The backend-agnostic bodies live in test/libgbtest/storage/lineage_job_storage.py.
+What is here is only what postgres can prove: the widths SQLite does not enforce.
 SQLite ignores VARCHAR lengths, so a value too long for a column is stored there
 and rejected by postgres -- where the job record is the only record of the
 execution under the ``db`` provider, so a rejected write loses it for good.
@@ -24,11 +28,12 @@ test/integration/ibm/storage/sql/test_sql_lineage_job_storage.py, against the ho
 
 import uuid as uuid_module
 
-import pytest
 from libgbtest.local_postgres import LOCAL_POSTGRES_TEST_MARKS
+from libgbtest.storage.lineage_job_storage import BaseLineageJobStorageTest
+from libgbtest.storage.postgres_storage import PostgresStorageTestMixin
+from sqlalchemy import text
 
 from gbserver.lineage.merge import ADDED, REJECTED, upsert_job
-from gbserver.storage.sql.storage_factory import SQLStorageFactory
 from gbserver.storage.stored_lineage_job import StoredLineageJob
 from gbserver.storage.stored_lineage_row import MAX_JOB_ID_LENGTH
 
@@ -47,86 +52,66 @@ _REALISTIC_TAGS = [
 ]
 
 
-@pytest.fixture(name="storage")
-def sql_storage_fixture():
-    table = f"t_ljob_{uuid_module.uuid4().hex[:8]}"
-    storage = SQLStorageFactory().create_lineage_job_storage(table_name=table)
-    yield storage
-    try:
-        storage.delete_table()
-    except Exception:  # pragma: no cover - best-effort cleanup
-        pass
+class SQLLineageJobStorageTests(PostgresStorageTestMixin, BaseLineageJobStorageTest):
+    """``gb_lineage_job`` tests, shared with the IBM copy (see TestSQLLineageJobStorage below)."""
 
+    def _tags_type(self, storage) -> str:
+        with storage._engine.connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name = :table AND column_name = 'tags' "
+                    "AND table_schema = coalesce(:schema, current_schema())"
+                ),
+                {"table": storage.table_name, "schema": storage._db_schema or None},
+            ).scalar()
 
-def test_a_realistic_tag_set_is_stored(storage):
-    assert len(",".join(_REALISTIC_TAGS)) > 256
-    assert upsert_job(storage, StoredLineageJob(job_id="J", tags=_REALISTIC_TAGS)) == (
-        ADDED
-    )
-    stored = storage.get_job("J")
-    assert stored is not None
-    assert sorted(stored.tags) == sorted(_REALISTIC_TAGS)
+    def test_schema_tags_realistic_set(self):
+        storage = self._get_tested_storage()
+        assert len(",".join(_REALISTIC_TAGS)) > 256
+        assert upsert_job(
+            storage, StoredLineageJob(job_id="J", tags=_REALISTIC_TAGS)
+        ) == (ADDED)
+        stored = storage.get_job("J")
+        assert stored is not None
+        assert sorted(stored.tags) == sorted(_REALISTIC_TAGS)
 
+    def test_schema_tags_unbounded_text(self):
+        storage = self._get_tested_storage()
+        storage.add(StoredLineageJob(job_id="seed"))
+        assert self._tags_type(storage) == "text"
 
-def test_tags_column_is_unbounded_text(storage):
-    from sqlalchemy import text
-
-    storage.add(StoredLineageJob(job_id="seed"))
-    schema = storage._db_schema or None
-    with storage._engine.connect() as connection:
-        kind = connection.execute(
-            text(
-                "SELECT data_type FROM information_schema.columns "
-                "WHERE table_name = :table AND column_name = 'tags' "
-                "AND table_schema = coalesce(:schema, current_schema())"
-            ),
-            {"table": storage.table_name, "schema": schema},
-        ).scalar()
-    assert kind == "text"
-
-
-def _tags_type(storage) -> str:
-    from sqlalchemy import text
-
-    with storage._engine.connect() as connection:
-        return connection.execute(
-            text(
-                "SELECT data_type FROM information_schema.columns "
-                "WHERE table_name = :table AND column_name = 'tags' "
-                "AND table_schema = coalesce(:schema, current_schema())"
-            ),
-            {"table": storage.table_name, "schema": storage._db_schema or None},
-        ).scalar()
-
-
-def test_an_existing_varchar_tags_column_is_widened(storage):
-    """A table from before ``tags`` was Text keeps VARCHAR(256) unless the schema
-    adjust widens it; this is the upgrade path, not the fresh-table one."""
-    from sqlalchemy import text
-
-    storage.add(StoredLineageJob(job_id="seed"))
-    table = (
-        f"{storage._db_schema}.{storage.table_name}"
-        if storage._db_schema
-        else storage.table_name
-    )
-    with storage._engine.connect() as connection:
-        connection.execute(
-            text(f"ALTER TABLE {table} ALTER COLUMN tags TYPE VARCHAR(256)")
+    def test_schema_tags_varchar_widened(self):
+        """A table from before ``tags`` was Text keeps VARCHAR(256) unless the schema
+        adjust widens it; this is the upgrade path, not the fresh-table one."""
+        storage = self._get_tested_storage()
+        storage.add(StoredLineageJob(job_id="seed"))
+        table = (
+            f"{storage._db_schema}.{storage.table_name}"
+            if storage._db_schema
+            else storage.table_name
         )
-        connection.commit()
-    assert _tags_type(storage) == "character varying"
+        with storage._engine.connect() as connection:
+            connection.execute(
+                text(f"ALTER TABLE {table} ALTER COLUMN tags TYPE VARCHAR(256)")
+            )
+            connection.commit()
+        assert self._tags_type(storage) == "character varying"
 
-    reopened = SQLStorageFactory().create_lineage_job_storage(
-        table_name=storage.table_name
-    )
-    assert upsert_job(reopened, StoredLineageJob(job_id="J", tags=_REALISTIC_TAGS)) == (
-        ADDED
-    )
-    assert _tags_type(reopened) == "text"
+        reopened = self._get_storage_factory().create_lineage_job_storage(
+            table_name=storage.table_name
+        )
+        assert upsert_job(
+            reopened, StoredLineageJob(job_id="J", tags=_REALISTIC_TAGS)
+        ) == (ADDED)
+        assert self._tags_type(reopened) == "text"
+
+    def test_upsert_job_rejects_over_long_job_id(self):
+        storage = self._get_tested_storage()
+        job_id = "x" * (MAX_JOB_ID_LENGTH + 1)
+        assert upsert_job(storage, StoredLineageJob(job_id=job_id)) == REJECTED
+        assert storage.get_job(job_id) is None
 
 
-def test_an_over_long_job_id_is_rejected_before_the_db(storage):
-    job_id = "x" * (MAX_JOB_ID_LENGTH + 1)
-    assert upsert_job(storage, StoredLineageJob(job_id=job_id)) == REJECTED
-    assert storage.get_job(job_id) is None
+class TestSQLLineageJobStorage(SQLLineageJobStorageTests):
+    """``gb_lineage_job`` tests against the local test PostgreSQL."""

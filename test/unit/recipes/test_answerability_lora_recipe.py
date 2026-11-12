@@ -36,7 +36,14 @@ from gbcli.utils.buildutil import apply_parameters
 from gbserver.utils.template import fill_objtemplate, fill_template
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
-_RECIPE = _REPO / "recipes" / "granite-switch" / "slurm" / "answerability-lora"
+_RECIPE = (
+    _REPO
+    / "recipes"
+    / "granite-switch"
+    / "skypilot"
+    / "slurm-bluevela"
+    / "answerability-lora"
+)
 _STEP = _REPO / "steps" / "train" / "hf-peft-sft" / "skypilot"
 _TEMPLATE = yaml.safe_load((_STEP / "step-template.yaml").read_text())
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
@@ -154,6 +161,24 @@ def test_prepare_writes_to_shared_storage_on_the_cpu_partition(tmp_path):
     # cpu's MaxMemPerCPU is 8 GiB: more makes SLURM raise cpus-per-task past
     # SkyPilot's srun --cpus, and srun aborts.
     assert int(resources["memory"]) <= 8 * int(resources["cpus"])
+
+
+def test_prepare_runs_in_the_image_the_train_runs_in(tmp_path):
+    """prepare borrows the hf-peft-sft image for its venv, counts tokens with
+    its transformers to drop the rows train would truncate, and shares the
+    node's image cache with train. So PREP_IMAGE must follow the image of the
+    published step (configurations/), which train runs unless it overrides it."""
+    published = (
+        _REPO / "configurations/assets/environments/skypilot/steps/train/hf-peft-sft"
+    )
+    step = yaml.safe_load((published / "step.yaml").read_text())
+    build = _build(tmp_path)
+    image = build["targets"]["prepare"]["steps"][0]["config"]["command_config"]["image"]
+    train = _step_config(build["targets"]["train"])["hf_peft_sft_config"]
+    train_image = train.get(
+        "image_id", step["config"]["hf_peft_sft_config"]["image_id"]
+    )
+    assert image == train_image.removeprefix("docker:")
 
 
 def test_output_path_matches_the_output_uri(tmp_path):

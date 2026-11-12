@@ -70,8 +70,7 @@ _STEP_SCHEMAS = {
     / "train/distill/teacher-divergence/skypilot/step-template.yaml",
     "space://steps/train/distill/repetition-check": _STEPS
     / "train/distill/repetition-check/skypilot/step-template.yaml",
-    "space://steps/misc/hf-export": _STEPS
-    / "misc/hf-export/skypilot/step-template.yaml",
+    "space://steps/aux/hf-export": _STEPS / "aux/hf-export/skypilot/step-template.yaml",
     "space://steps/skypilot-teardown": _SKYPILOT_STEPS / "skypilot-teardown/step.yaml",
     "space://steps/sage-eval": _SKYPILOT_STEPS / "sage-eval/step.yaml",
     "space://steps/bfcl-eval": _SKYPILOT_STEPS / "bfcl-eval/step.yaml",

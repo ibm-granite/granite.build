@@ -26,7 +26,7 @@ images; nothing is cloned or mounted at job launch.
 3. **Train** — optionally warm-start with `student-sft`, then distill with `logit-distill`.
    On-policy runs add `student-rollout-generator` alongside the trainer; offline runs can use
    `teacher-logits` instead of holding the teacher in memory.
-4. **Export** — [`steps/misc/hf-export`](../../misc/hf-export) turns a checkpoint into a
+4. **Export** — [`steps/aux/hf-export`](../../misc/hf-export) turns a checkpoint into a
    publishable HF model directory. It is generic, so it lives outside this collection.
 5. **Measure** — `teacher-divergence` on the exported model (and once on the untrained
    student, as the baseline); `repetition-check` on each export.

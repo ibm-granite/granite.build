@@ -64,7 +64,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# A second copy of this module lives in steps/misc/hf-export/skypilot/src/hf_export_state/
+# A second copy of this module lives in steps/aux/hf-export/skypilot/src/hf_export_state/
 # (that step depends on nothing in steps/train/distill). Both must read and write the same
 # marker: change MARKER_NAME, SCHEMA or the record layout in both copies together.
 MARKER_NAME = ".step-done.json"
