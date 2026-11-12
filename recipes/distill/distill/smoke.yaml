@@ -12,6 +12,10 @@
 # The site's SMOKE_DATASET_URI, a small think-filtered file, instead of its dataset.
 SMOKE: true
 TARGET_ROWS: 0
+# The smoke file is a few MB, and the mixture step is single-threaded. 8 GB per CPU,
+# as in parameters.yaml.
+SOURCES_CPUS: 2
+SOURCES_MEMORY: 16
 MAX_EXAMPLES: 64
 EVAL_FRACTION: 0.25
 MAX_LENGTH: 4096
@@ -22,6 +26,9 @@ MAX_COMPLETION_LENGTH: 1024
 GOLD_MAX_STEPS: 2
 GOLD_SAVE_STEPS: 1
 CKPT_LADDER: "1,2"
+# No warmup: at 2 steps the recipe's ratio is one warmup step, whose learning rate
+# is 0, so rung 1 would be an untouched copy of the student.
+WARMUP_RATIO: 0
 GOLD_PER_DEVICE_TRAIN_BATCH_SIZE: 1
 GOLD_GRADIENT_ACCUMULATION_STEPS: 1
 # One node, two GPUs: the distributed path, and the per-rank checkpoint files the

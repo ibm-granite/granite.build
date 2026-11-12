@@ -66,8 +66,11 @@ CORPUS_DIR: ""
 TARGET_ROWS: 800000
 # Seeds the per-split sampling and the shuffle: the corpus is reproducible from it.
 SHUFFLE_SEED: 42
-SOURCES_CPUS: 8
-# The sampled rows are held in memory while they are shuffled.
+# The sampled rows are held in memory while they are shuffled. The script is
+# single-threaded: the CPUs are sized to the memory, at the 8 GB per CPU a cpu
+# partition may enforce (MaxMemPerCPU). With fewer, SLURM raises cpus-per-task
+# to fit the memory, it then disagrees with SkyPilot's srun, and the job fails.
+SOURCES_CPUS: 16
 SOURCES_MEMORY: 128
 
 # ─── Alignment and the corpus ─────────────────────────────────────────
