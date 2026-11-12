@@ -2239,17 +2239,17 @@ def load_layered_params(
     case it applies at that position (never twice)."""
     if not parameters_paths:
         layers: List[str] = []
-    elif isinstance(parameters_paths, (str, os.PathLike)):
-        layers = [os.fspath(parameters_paths)]
+    elif isinstance(parameters_paths, str):
+        layers = [parameters_paths]
     else:
-        layers = [os.fspath(p) for p in parameters_paths]
+        layers = list(parameters_paths)
 
     for layer in layers:
         if not os.path.isfile(layer):
             raise FileNotFoundError(f"parameters file not found: {layer}")
 
     recipe_file = os.path.join(
-        os.path.dirname(os.fspath(build_file_path or "")), BUILD_PARAMETERS_FILE
+        os.path.dirname(build_file_path or ""), BUILD_PARAMETERS_FILE
     )
     recipe_real = os.path.realpath(recipe_file)
     if os.path.isfile(recipe_file) and not any(
