@@ -18,12 +18,70 @@ Kubernetes alongside other clouds with a uniform launcher.
 
 ## Kubernetes-specific configuration
 
-### Credentials: `~/.kube/config`
+### Credentials: your kubeconfig, or `kube_configs`
 
-SkyPilot reads the kube context from `~/.kube/config` on the gbserver host. This must be provisioned
-out-of-band (it is not one of the inline materialized blocks). For a full setup walkthrough — including
-the SkyPilot SSH-node-pool / RBAC requirements — see
-[setup/skypilot-kubernetes-setup.md](setup/skypilot-kubernetes-setup.md).
+SkyPilot reads kube contexts from `KUBECONFIG` (or `~/.kube/config`) on the gbserver host. There are two
+ways to supply them:
+
+- **Out of band:** your kubeconfig already has the context, e.g. written by `sky local up` for the local
+  kind cluster. For a full setup walkthrough, including the SkyPilot SSH-node-pool / RBAC requirements, see
+  [setup/skypilot-kubernetes-setup.md](setup/skypilot-kubernetes-setup.md).
+- **From the environment, with `kube_configs`:** each entry names a context and a space secret holding a
+  kubeconfig that defines it.
+
+  ```yaml
+  config:
+    default_cloud: kubernetes
+    kube_configs:
+      - context: my-cluster
+        kubeconfig: my-cluster-kubeconfig   # space secret: a kubeconfig defining my-cluster
+    cloud_config:
+      kubernetes:
+        allowed_contexts: [my-cluster]
+  ```
+
+  `kubeconfig` is the **name** of a space secret whose value is the whole kubeconfig (YAML); no credentials
+  appear in `environment.yaml`. It must name an existing secret (matched exactly, including case): a
+  missing one fails setup, and a pasted kubeconfig is refused rather than used. Each context must also be
+  pinned in the environment's own `allowed_contexts` (top level or the active workspace's), or
+  `allowed_contexts` must be `all`.
+
+#### How `kube_configs` stays isolated
+
+Each environment *instance* (one per space, environment and build thread) gets its own kubeconfig file under
+`~/.sky/gbserver-kube/` (mode 0600), holding only its contexts. Only that instance's SkyPilot requests carry
+it: each request's `KUBECONFIG` is your own kubeconfig files followed by that file, and the local SkyPilot
+API server applies it to that request alone. gbserver never changes its process `KUBECONFIG`, so nothing
+else sees the file: not other environments, not other spaces, not the native Kubernetes (`K8s`)
+environment or the `kubectl`/`helm` commands it runs. Two spaces can use the same context name with
+different credentials, and `allowed_contexts: all` only ever means your contexts plus the instance's own.
+
+- **Static credentials only.** A secret's `user` may hold only `token`, `client-certificate-data`,
+  `client-key-data`, or `username`/`password`; its `cluster` only `server`, `certificate-authority-data`
+  and TLS options; its context only `cluster`, `user` and `namespace`. `exec` and `auth-provider` plugins
+  are refused (they'd run a command on the gbserver host), and so are file paths (they'd resolve on the
+  host). Values must be strings (`true`/`false` for the two flags), and `*-data` must be base64 (line-wrapped
+  is fine). `server` and `proxy-url` aren't restricted: whoever can write the secret chooses the endpoint.
+- **Names.** Context names may use letters, digits and `. _ : @ / + = -`. `ssh-*` names, SkyPilot's
+  in-cluster context name and `gbserver-no-default-context` are reserved. A context, cluster or user of the
+  same name in your own kubeconfig is refused, as is one your kubeconfig's `current-context` names. The
+  cluster and user are renamed `gbserver/<context>`.
+- **No secret context becomes a default.** If your kubeconfig sets no usable `current-context`, the
+  instance file's default is an unreachable, credential-less placeholder (`gbserver-no-default-context`).
+- **Rotation.** A changed secret rewrites only that instance's file before its next request.
+- **Lifetime.** Files stay while gbserver runs and are removed by the next gbserver start.
+
+Limits:
+- **Local API server only.** `kube_configs` is refused unless gbserver's SkyPilot API server is local,
+  bound to loopback and not deployed: only such a server applies a forwarded `KUBECONFIG` (gbserver's
+  `sky_patches` plugin reports this). Elsewhere the credentials would be silently ignored.
+- **Not for managed jobs.** `Skypilot_managed` refuses `kube_configs`: its jobs controller is shared by all
+  of your managed jobs and keeps the credentials it's provisioned with.
+- **Background server work** (e.g. the API server's periodic status refresh) uses the server's own
+  environment, so it doesn't see these contexts; gbserver's own requests do.
+- **`remote_identity: LOCAL_CREDENTIALS`** uploads that request's kubeconfig (your contexts plus the
+  instance's) to the pods. The Kubernetes default, `SERVICE_ACCOUNT`, uploads none.
+- **No exec-based auth** (e.g. `aws eks get-token`): use a static token or client certificate.
 
 ### No `cluster_ssh_configs` or `aws_credentials`
 

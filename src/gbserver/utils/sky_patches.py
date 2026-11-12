@@ -585,3 +585,14 @@ class SkyPatchesPlugin(sky_plugins.BasePlugin):
 
     def install(self, extension_context: Any) -> None:
         apply()
+        app = getattr(extension_context, "app", None)
+        if app is not None:
+            # Lets gbserver refuse kube_configs on a server that would drop each
+            # request's KUBECONFIG (gbserver.environment.skypilot_kube).
+            from gbserver.environment import skypilot_kube
+
+            app.add_api_route(
+                skypilot_kube.FORWARDING_ROUTE,
+                skypilot_kube.forwarding_endpoint,
+                methods=["GET"],
+            )

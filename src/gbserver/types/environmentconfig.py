@@ -116,6 +116,26 @@ class AwsCredentialProfile(Config):
     aws_session_token: Optional[str] = None
 
 
+class KubeConfigEntry(Config):
+    """One Kubernetes context whose credentials a Skypilot environment supplies.
+
+    gbserver writes the context (with its cluster and user) from the named
+    kubeconfig secret into a kubeconfig file of the environment instance's own,
+    which only that instance's SkyPilot requests carry (see
+    ``gbserver.environment.skypilot_kube``). The context must also be pinned in
+    the environment's ``cloud_config`` ``allowed_contexts`` (or set to ``all``).
+
+    Attributes:
+        context: The context name, as it appears in the kubeconfig secret.
+        kubeconfig: Name of the space secret holding a kubeconfig (YAML) that
+            defines ``context``. Only the secret *name* appears in
+            environment.yaml.
+    """
+
+    context: str
+    kubeconfig: str
+
+
 class StoreLoad(Config):
     # Type of the ``pull`` entries on an assetstore (the input side). ``mode``
     # selects *how* an asset is loaded, but this is only meaningful in k8s
