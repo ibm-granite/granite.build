@@ -42,12 +42,16 @@ granite.build:
             # trusted local root expects; hosted at
             # ibm-granite/officeqa-buildtest-synthetic).
             dataset: "{{ bindings.data.binding.path }}"
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "officeqa"
             run_name: "buildtest"
             limit: "2"
             workers: "2"
             phase: "generate"
-            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
             sandbox_cache: ""
             launcher_config:
               resources:
@@ -85,8 +89,9 @@ granite.build:
             # Must match the generate target's expression exactly: the score
             # phase checks the generation record's model against this run's
             # (results.py read_generation), and the binding path is what
-            # generate recorded. Bindings are build-scoped, so the score
-            # target resolves the same staged path without declaring the input.
+            # generate recorded. The score target declares the same model
+            # input, so it resolves the identical staged path (the second pull
+            # hits the shared assetstore cache).
             model_path: "{{ bindings.model.binding.path }}"
             options: ""
             # Same synthetic dataset and output dir: the score phase reads
@@ -96,8 +101,11 @@ granite.build:
             # trusted local root expects; hosted at
             # ibm-granite/officeqa-buildtest-synthetic).
             dataset: "{{ bindings.data.binding.path }}"
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/officeqa"
-            run_name: "buildtest"
+            # The generate target's output dir, followed from the artifact:
+            # target-runs get distinct workdirs, so take the dirname of the
+            # bound generation.json -- the one path guaranteed to be where
+            # generate wrote it.
+            output_dir: "{{ bindings.generation.binding.path.rsplit('/', 1)[0] }}"
             limit: "2"
             workers: "2"
             phase: "score"

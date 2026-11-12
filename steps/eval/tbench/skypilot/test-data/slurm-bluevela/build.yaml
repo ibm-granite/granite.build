@@ -27,16 +27,20 @@ granite.build:
             model_path: "{{ bindings.model.binding.path }}"
             served_model_name: "granite-4.2-3b"
             options: ""
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/tbench"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "tbench"
             run_name: "buildtest"
             # Smoke knob: first N examples, so the run stays minutes-scale.
             limit: "1"
             workers: "2"
             phase: "all"
-            # One shared HF cache across the eval build tests: the model is
-            # pulled once and reused by every family's run.
-            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
-            sandbox_cache: "/proj/data-eng/llmb-read-write/eval-build-tests/enroot-cache"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
+            # enroot squashfs cache, workdir-relative: each build pulls its
+            # own task images (hermetic; no cross-environment path).
+            sandbox_cache: "enroot-cache"
             launcher_config:
               resources:
                 cluster: "bluevela"

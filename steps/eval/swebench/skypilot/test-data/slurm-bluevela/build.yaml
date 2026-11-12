@@ -30,13 +30,20 @@ granite.build:
             model_path: "{{ bindings.model.binding.path }}"
             served_model_name: "granite-4.2-3b"
             options: ""
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/swebench"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "swebench"
             run_name: "buildtest"
             limit: "1"
             workers: "2"
             phase: "generate"
-            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
-            sandbox_cache: "/tmp/eval-build-tests-swebench"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
+            # enroot squashfs cache, workdir-relative (per-build): instance
+            # images re-pull per build instead of sharing a node-local /tmp
+            # -- hermetic, at the cost of shared-FS traffic.
+            sandbox_cache: "enroot-cache"
             launcher_config:
               resources:
                 cluster: "bluevela"
@@ -70,18 +77,23 @@ granite.build:
             # Must match the generate target's expression exactly: the score
             # phase checks the generation record's model against this run's
             # (results.py read_generation), and the binding path is what
-            # generate recorded. Bindings are build-scoped, so the score
-            # target resolves the same staged path without declaring the input.
+            # generate recorded. The score target declares the same model
+            # input, so it resolves the identical staged path (the second pull
+            # hits the shared assetstore cache).
             model_path: "{{ bindings.model.binding.path }}"
             options: ""
-            # Same output dir as the generate target: the score phase reads
-            # the generation.json the generate phase wrote there.
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/swebench"
-            run_name: "buildtest"
+            # The generate target's output dir, followed from the artifact:
+            # target-runs get distinct workdirs, so take the dirname of the
+            # bound generation.json -- the one path guaranteed to be where
+            # generate wrote it.
+            output_dir: "{{ bindings.generation.binding.path.rsplit('/', 1)[0] }}"
             limit: "1"
             workers: "4"
             phase: "score"
-            sandbox_cache: "/tmp/eval-build-tests-swebench"
+            # enroot squashfs cache, workdir-relative (per-build): instance
+            # images re-pull per build instead of sharing a node-local /tmp
+            # -- hermetic, at the cost of shared-FS traffic.
+            sandbox_cache: "enroot-cache"
             launcher_config:
               resources:
                 cluster: "bluevela"

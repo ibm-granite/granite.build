@@ -17,7 +17,9 @@ granite.build:
             # answers=gold: the GoldLM answers every question with its reference
             # letter, so no model is served and nothing needs a GPU or a key.
             model_path: "none"
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/lmeval"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "lmeval"
             run_name: "buildtest"
             # Smoke knob: first N per (question_id, language), so a small N
             # still covers every language.

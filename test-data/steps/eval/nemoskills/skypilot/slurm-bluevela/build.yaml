@@ -19,12 +19,16 @@ granite.build:
             image: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:ce003c94"
             model_path: "ibm-granite/granite-4.2-3b"
             options: "answers=gold"
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/nemoskills"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "nemoskills"
             run_name: "buildtest"
             limit: "5"
             workers: "8"
             phase: "generate"
-            hf_home: "/proj/data-eng/llmb-read-write/eval-build-tests/hf-home"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
             sandbox_cache: ""
             launcher_config:
               resources:
@@ -56,10 +60,11 @@ granite.build:
             image: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:ce003c94"
             model_path: "ibm-granite/granite-4.2-3b"
             options: "answers=gold"
-            # Same output dir as the generate target: the score phase reads
-            # the generation.json the generate phase wrote there.
-            output_root: "/proj/data-eng/llmb-read-write/eval-build-tests/nemoskills"
-            run_name: "buildtest"
+            # The generate target's output dir, followed from the artifact:
+            # target-runs get distinct workdirs, so take the dirname of the
+            # bound generation.json -- the one path guaranteed to be where
+            # generate wrote it.
+            output_dir: "{{ bindings.generation.binding.path.rsplit('/', 1)[0] }}"
             limit: "5"
             workers: "4"
             phase: "score"
