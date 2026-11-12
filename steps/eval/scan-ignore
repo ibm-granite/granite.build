@@ -1,0 +1,12 @@
+# Trivy ignorefile for the eval family images (trivy image --ignorefile).
+#
+# judged's fork keeps pillow 11.3.0: its stirrup pins moviepy, and no
+# moviepy release allows pillow>=12 (gradio's old <13 cap is lifted;
+# this one is structural). The five advisories below are fixed only in
+# pillow 13, which judged cannot take until moviepy relaxes upstream.
+# Every other family resolves pillow 13.0.0 and needs no entries here.
+CVE-2026-112393
+CVE-2026-112398
+CVE-2026-112403
+CVE-2026-112900
+CVE-2026-96639
