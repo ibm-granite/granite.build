@@ -169,6 +169,17 @@ conflicts = [
     [{ extra = "bird" }, { extra = "tbench" }],
     [{ extra = "ifbench" }, { extra = "tbench" }],
     [{ extra = "nemoskills" }, { extra = "tbench" }],
+    # judged's stirrup pins moviepy, which caps pillow<12 (no moviepy release
+    # allows more); every other family resolves pillow 13 and its CVE fixes.
+    # judged keeps the cap in its own fork (its image carries the scan-ignore).
+    [{ extra = "judged" }, { extra = "bfcl" }],
+    [{ extra = "judged" }, { extra = "tau" }],
+    [{ extra = "judged" }, { extra = "bird" }],
+    [{ extra = "judged" }, { extra = "ifbench" }],
+    [{ extra = "judged" }, { extra = "nemoskills" }],
+    [{ extra = "judged" }, { extra = "swebench" }],
+    [{ extra = "judged" }, { extra = "tbench" }],
+    [{ extra = "judged" }, { extra = "officeqa" }],
 ]
 
 [tool.pytest.ini_options]
