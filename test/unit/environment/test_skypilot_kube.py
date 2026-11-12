@@ -750,7 +750,14 @@ class TestServerClientCaches:
     def test_unpatched_server_shares_clients_across_kubeconfigs(self):
         """Documents SkyPilot's behaviour: if this stops leaking, drop the patch."""
         got = self._probe("unpatched")
-        assert got["sequential"] == ["https://10.0.0.1:6443"] * 2
+        assert len(set(got["sequential"])) == 1, got
+
+    def test_patched_server_keys_every_kind_of_cache(self):
+        """Zero-argument and per-context caches, and per-request clearing."""
+        got = self._probe("paths")
+        assert got["current"] == ["ctx-a", "ctx-b"], got
+        assert got["namespace"] == ["X-a", "X-b"], got
+        assert got["after_clear"] == [0, 0], got
 
     def test_patched_server_keeps_each_kubeconfigs_client(self):
         """The main-process path (/validate, /logs): per-request env, shared threads."""
@@ -766,6 +773,12 @@ class TestServerClientCaches:
         """
         got = self._probe("guard")
         assert got["count"] >= 19 and got["unkeyed"] == [], got
+
+    def test_refresh_interval_env_var_refused(self, monkeypatch):
+        """SkyPilot's refresh rebuilds clients from os.environ at refresh time."""
+        monkeypatch.setenv("SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS", "60")
+        with pytest.raises(ValueError, match="REFRESH_INTERVAL"):
+            _env()._kube_config_entries()
 
     def test_unbindable_cache_fails_loudly(self):
         import functools

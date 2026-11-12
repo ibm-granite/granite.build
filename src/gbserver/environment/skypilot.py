@@ -2734,6 +2734,14 @@ class Skypilot(Environment):
         identities = _env_remote_identities(self._cloud_config() or {})
         if HAS_SKYPILOT:
             identities += skypilot_kube.host_remote_identities()
+        if os.environ.get("SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS"):
+            # SkyPilot's refresh rebuilds a cached client from os.environ at
+            # refresh time, which can be the server's own on a thread without a
+            # request context.
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs can't be used "
+                "with SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS set"
+            )
         if "LOCAL_CREDENTIALS" in identities:
             raise ValueError(
                 f"environment '{self._env_name()}': kube_configs can't be used "

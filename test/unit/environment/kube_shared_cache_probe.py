@@ -19,10 +19,19 @@
 cluster each request's ``core_api("X")`` client points at.
 
 ``guard``: list SkyPilot's request-scoped Kubernetes caches, apply the patches,
-and print any binding that still reaches an unkeyed cache.
+and print any binding that still reaches an unkeyed cache (checked on the
+binding itself: the module attribute, the classmethod's function, or the
+closure cells of an outer decorator).
+
+``paths`` (patched): per-request results for a zero-argument cache (the current
+context), a cache taking a context (its namespace), and that SkyPilot's
+per-request clearing empties the keyed caches.
 """
 
 import asyncio
+import functools
+import importlib
+import inspect
 import json
 import os
 import sys
@@ -31,32 +40,39 @@ import tempfile
 import yaml
 
 mode = sys.argv[1]
-if mode == "guard":
-    import functools
-    import importlib
-    import inspect
 
+
+def _reaches(obj, pred):
+    """Whether ``obj`` or a closure cell of it satisfies ``pred``."""
+    if pred(obj):
+        return True
+    return any(pred(c.cell_contents) for c in (getattr(obj, "__closure__", None) or ()))
+
+
+if mode == "guard":
     from gbserver.utils import sky_patches
 
-    importlib.import_module("sky.adaptors.kubernetes")
-    importlib.import_module("sky.provision.kubernetes.utils")
-    names = [(c.__module__, c.__qualname__) for c in sky_patches.kube_request_caches()]
+    sky_patches.import_kube_modules()
+    originals = sky_patches.kube_request_caches()
+    names = [(c.__module__, c.__qualname__) for c in originals]
     sky_patches.apply()
     unkeyed = []
-    for module, qualname in names:
+    for cached, (module, qualname) in zip(originals, names):
         owner = importlib.import_module(module)
         *path, name = qualname.split(".")
         for part in path:
             owner = getattr(owner, part)
         bound = inspect.getattr_static(owner, name)
-        fn = bound.__func__ if isinstance(bound, classmethod) else bound
-        reached = [fn, getattr(fn, "__wrapped__", None)]
-        if any(isinstance(f, functools._lru_cache_wrapper) for f in reached):
+        fn = bound.__func__ if isinstance(bound, (classmethod, staticmethod)) else bound
+        still_original = _reaches(fn, lambda o, c=cached: o is c)
+        keyed = _reaches(fn, lambda o: getattr(o, "gbserver_kubeconfig_keyed", False))
+        if still_original or not keyed:
             unkeyed.append(f"{module}.{qualname}")
     print(json.dumps({"count": len(names), "unkeyed": unkeyed}))
     sys.exit(0)
-patched = mode == "patched"
-from sky.utils import context, context_utils
+
+patched = mode in ("patched", "paths")
+from sky.utils import annotations, context, context_utils
 
 context_utils.hijack_sys_attrs()  # as the server's uvicorn process does
 if patched:
@@ -64,6 +80,7 @@ if patched:
 
     sky_patches.apply()
 from sky.adaptors import kubernetes as k8s
+from sky.provision.kubernetes import utils as kube_utils
 
 d = tempfile.mkdtemp()
 files = {}
@@ -84,26 +101,62 @@ for name, host, token in (
                     }
                 ],
                 "users": [{"name": "u", "user": {"token": token}}],
-                "contexts": [{"name": "X", "context": {"cluster": "c", "user": "u"}}],
-                "current-context": "X",
+                "contexts": [
+                    {
+                        "name": "X",
+                        "context": {
+                            "cluster": "c",
+                            "user": "u",
+                            "namespace": f"X-{name}",
+                        },
+                    },
+                    {"name": f"ctx-{name}", "context": {"cluster": "c", "user": "u"}},
+                ],
+                "current-context": f"ctx-{name}",
             },
             f,
         )
     files[name] = path
 
 
-async def request(path):
+async def in_request(path, fn, *args):
     context.initialize()
     context.get().override_envs({"KUBECONFIG": path})
-    api = await asyncio.to_thread(k8s.core_api, "X")
-    return api.api_client.configuration.host
+    return await asyncio.to_thread(fn, *args)
 
 
 async def main():
-    a = await request(files["a"])
-    b = await request(files["b"])
-    both = await asyncio.gather(request(files["a"]), request(files["b"]))
-    print(json.dumps({"sequential": [a, b], "concurrent": list(both)}))
+    host = lambda: k8s.core_api("X").api_client.configuration.host
+    if mode == "paths":
+        out = {
+            "current": [
+                await in_request(
+                    files[n], kube_utils.get_current_kube_config_context_name
+                )
+                for n in "ab"
+            ],
+            "namespace": [
+                await in_request(
+                    files[n], kube_utils.get_kube_config_context_namespace, "X"
+                )
+                for n in "ab"
+            ],
+        }
+        annotations.clear_request_level_cache()
+        out["after_clear"] = [
+            kube_utils.get_current_kube_config_context_name.cache_info().currsize,
+            kube_utils.get_kube_config_context_namespace.cache_info().currsize,
+        ]
+        return out
+    # Cold first: both requests race to build the client for context X.
+    concurrent = await asyncio.gather(
+        in_request(files["a"], host), in_request(files["b"], host)
+    )
+    sequential = [
+        await in_request(files["a"], host),
+        await in_request(files["b"], host),
+    ]
+    return {"concurrent": list(concurrent), "sequential": sequential}
 
 
-asyncio.run(main())
+print(json.dumps(asyncio.run(main())))

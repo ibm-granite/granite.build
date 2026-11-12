@@ -84,6 +84,9 @@ Limits:
   `sky_patches` plugin reports this). Elsewhere the credentials would be silently ignored.
 - **Not for managed jobs.** `Skypilot_managed` refuses `kube_configs`: its jobs controller is shared by all
   of your managed jobs and keeps the credentials it's provisioned with.
+- **No `SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS`.** `kube_configs` is refused while it's set: SkyPilot's
+  periodic client refresh rebuilds a client from whatever `KUBECONFIG` the refreshing thread sees, which can be
+  the server's own.
 - **Background server work** (e.g. the API server's periodic status refresh) uses the server's own
   environment, so it doesn't see these contexts; gbserver's own requests do.
 - **No `remote_identity: LOCAL_CREDENTIALS`.** It's refused for `kube_configs` environments (in the

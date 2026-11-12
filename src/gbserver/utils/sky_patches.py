@@ -550,6 +550,7 @@ def _kubeconfig_keyed(cached: Any) -> Callable:
     wrapper.cache_clear = keyed.cache_clear  # type: ignore[attr-defined]
     wrapper.cache_info = keyed.cache_info  # type: ignore[attr-defined]
     wrapper.cache_parameters = keyed.cache_parameters  # type: ignore[attr-defined]
+    wrapper.gbserver_kubeconfig_keyed = True  # type: ignore[attr-defined]
     annotations._register_functions_need_reload_cache(
         wrapper
     )  # pylint: disable=protected-access
@@ -590,6 +591,25 @@ def _rebind(cached: Any, replacement: Callable) -> None:
     )
 
 
+def import_kube_modules() -> None:
+    """Import every SkyPilot Kubernetes module, so each request cache is registered.
+
+    Caches register when their module is imported; one in a module imported
+    lazily (after ``apply()``) would otherwise stay unkeyed.
+    """
+    import pkgutil
+
+    import sky.provision.kubernetes as kube_provision
+
+    names = ["sky.adaptors.kubernetes", "sky.clouds.kubernetes", "sky.clouds.ssh"]
+    names += [
+        f"{kube_provision.__name__}.{m.name}"
+        for m in pkgutil.iter_modules(kube_provision.__path__)
+    ]
+    for name in names:
+        importlib.import_module(name)
+
+
 def kube_request_caches() -> list:
     """SkyPilot's request-scoped caches in Kubernetes modules, as registered."""
     found = []
@@ -616,9 +636,7 @@ def _patch_kube_caches_by_kubeconfig() -> None:
     kubeconfig, carried per request, and two instances may define the same
     context name with different credentials (see :func:`_kubeconfig_keyed`).
     """
-    # Import the modules that define them, so every cache is registered.
-    importlib.import_module("sky.adaptors.kubernetes")
-    importlib.import_module("sky.provision.kubernetes.utils")
+    import_kube_modules()
     for cached in kube_request_caches():
         _rebind(cached, _kubeconfig_keyed(cached))
 
