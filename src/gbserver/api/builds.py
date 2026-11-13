@@ -47,6 +47,7 @@ from gbserver.api.utils import (
 )
 from gbserver.buildrunner.validation import BuildValidation
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
+from gbserver.spaces.db_space import is_db_uri
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
@@ -476,6 +477,13 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
             )
 
     _confirm_build_archive_within_limits(req.build_archive)
+    if req.space_uri and is_db_uri(req.space_uri):
+        # db:// names a registered space's snapshot; that goes through
+        # space_name, whose membership is checked, not a raw URI.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="space_uri may not be a db:// URI; use space_name",
+        )
 
     errors = BuildValidation.validate_build_archive(
         build_archive=req.build_archive,

@@ -471,7 +471,8 @@ class EnvironmentFilesConfig:
         entries leave this empty: it is filled per request by
         ``resolve_environment``, which derives it from the public space's config
         repo (see ``get_supported_env_for_files_uri``), yielding a
-        ``git+ssh://…@<config-branch>#subdirectory=environments/<env>`` asset URI.
+        ``git+ssh://…@<config-branch>#subdirectory=environments/<env>`` asset URI
+        (or a ``file://`` one when the public space is served from the database).
         Per-deployment (dev/staging/prod) differences come "for free" from the
         public space config, so there is no separately-set value; the endpoints
         return 503 when the URI can't be derived (rather than guess).
@@ -522,10 +523,44 @@ ENVIRONMENT_FILES_REGISTRY: Dict[str, EnvironmentFilesConfig] = {
 _DERIVED_ENV_FOR_FILES_URI_CACHE: Dict[str, str] = {}
 
 
+def _db_public_space_env_for_files_uri() -> Optional[str]:
+    """``environments/<env>`` of the registered public space's stored snapshot.
+
+    PUBLIC_SPACE_GIT_URI names the public space's git repo, but its gb_spaces
+    row may serve it from the database (``db://spaces/...``); then git must not
+    be reached. Returns None when the row is absent, git-backed, or can't be
+    read (derive from git as before), "" (-> 503) when its snapshot can't be
+    unpacked.
+    """
+    # Function-local imports: storage and db_space import this module.
+    from gbserver.spaces.db_space import get_space_config_uri, is_db_uri
+    from gbserver.storage.singleton_storage import get_admin_storage
+    from gbserver.utils.logger import get_logger
+
+    try:
+        row = get_admin_storage().space_storage.get_by_name(PUBLIC_SPACE_NAME)
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        get_logger(__name__).warning("failed to read the public space row: %s", e)
+        return None
+    if row is None or not is_db_uri(row.get_space_uri()):
+        return None
+    try:
+        # Not cached: a refreshed snapshot unpacks to a new directory.
+        return f"{get_space_config_uri(row)}/environments/{SUPPORTED_ENV_FOR_FILES}"
+    except ValueError as e:
+        get_logger(__name__).warning(
+            "failed to unpack the public space's stored snapshot: %s", e
+        )
+        return ""
+
+
 def get_supported_env_for_files_uri() -> str:
     """Derive the supported environment's environment.yaml asset URI.
 
-    Converts ``PUBLIC_SPACE_GIT_URI`` (the public space config repo) into a
+    When the registered public space is db-backed, this is the
+    ``file://…/environments/<env>`` of its unpacked snapshot, and git is not
+    reached. Otherwise it converts ``PUBLIC_SPACE_GIT_URI`` (the public space
+    config repo) into a
     ``git+ssh://…[@<config-branch>]#subdirectory=environments/<env>`` asset URI
     via ``GitURI.get_gb_space_config_uri`` (the same conversion the build path
     uses) and appends the env subdirectory. There is no override; the URI is
@@ -540,6 +575,9 @@ def get_supported_env_for_files_uri() -> str:
     ``GBSERVER_GITHUB_TOKEN`` from this module. See the cache note above for what
     is / isn't memoized.
     """
+    db_uri = _db_public_space_env_for_files_uri()
+    if db_uri is not None:
+        return db_uri
     if not PUBLIC_SPACE_GIT_URI:
         return ""
     cached = _DERIVED_ENV_FOR_FILES_URI_CACHE.get(PUBLIC_SPACE_GIT_URI)
@@ -693,6 +731,9 @@ DEFAULT_BUILDWATCHER_COMMITTER_EMAIL = os.getenv(
 MAX_PR_CREATION_TRIES = int(
     os.getenv(ENV_VAR_PREFIX + "_MAX_PR_CREATION_TRIES", "100"), base=10
 )
+PR_CREATION_RETRY_INTERVAL = float(
+    os.getenv(ENV_VAR_PREFIX + "_PR_CREATION_RETRY_INTERVAL", "5")
+)
 FETCH_CLOUD_LOGS_MAX_RETRIES = int(
     os.getenv(ENV_VAR_PREFIX + "_FETCH_CLOUD_LOGS_MAX_RETRIES", "10"), base=10
 )
@@ -725,6 +766,16 @@ GITHUB_API_MAX_RETRIES = int(
 )
 GITHUB_API_RETRY_BASE_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_GITHUB_API_RETRY_BASE_DELAY", "1.0")
+)
+# Per build run, git/GitHub interactions that are not needed to run the build
+# (the build's PR and the messages posted to it) give up after this many
+# consecutive failures; the rest of the run skips them. Each such interaction,
+# its own retries included, is bounded by the deadline (seconds).
+BUILD_GIT_MAX_CONSECUTIVE_FAILURES = int(
+    os.getenv(ENV_VAR_PREFIX + "_BUILD_GIT_MAX_CONSECUTIVE_FAILURES", "3"), base=10
+)
+BUILD_GIT_OPERATION_DEADLINE = float(
+    os.getenv(ENV_VAR_PREFIX + "_BUILD_GIT_OPERATION_DEADLINE", "120")
 )
 GITHUB_API_RETRY_MAX_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_GITHUB_API_RETRY_MAX_DELAY", "60.0")

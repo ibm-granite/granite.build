@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel
 
 from gbserver.spaces.user_spaces_list import user_spaces_list
+from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import (
     ENV_VAR_IBM_SEC_MAN_API_KEY,
     ENV_VAR_IBM_SEC_MAN_ENDPOINT,
@@ -120,17 +121,17 @@ class _IbmSpaceSecretAdmin:
 _space_secret_manager_cache: dict = {}
 
 
-def _build_space_secret_manager(space_uri: str):
-    """Build a SpaceSecretManager from a space's space.yaml.
+def _build_space_secret_manager(space: StoredSpace):
+    """Build the SpaceSecretManager a space's space.yaml configures.
 
-    Pulls the space into a temporary directory (cleaned up on return) only to read
-    space.yaml; the resulting manager reads from its own configured location
-    (env vars / a configured secrets dir), not from the pulled copy.
+    space.yaml is read from where the space is served (a db:// snapshot, or a
+    temporary pull cleaned up on return); the manager matches on the space's
+    git repo and reads secrets from its own configured location, not the copy.
     """
     from gbserver.spaces.local_secrets_isolation import load_space_config
     from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 
-    space_config = load_space_config(space_uri)
+    space_config = load_space_config(space.get_space_uri())
 
     SpaceSecretManager.load_spacesecretmanagers()
     # space_name is space.yaml's name, not the registered name: standalone
@@ -138,7 +139,7 @@ def _build_space_secret_manager(space_uri: str):
     # local manager keys its per-space directory on this.
     return SpaceSecretManager.get_spacesecretmanager(
         secret_manager_type=space_config.secret_manager.type,
-        uri=space_uri,
+        uri=space.git_repo_uri,
         space_name=space_config.name,
         **space_config.secret_manager.config,
     )
@@ -160,11 +161,11 @@ def _get_space_secret_admin(space: dict):
             raise Exception("Secret group is unavailable")
         return _IbmSpaceSecretAdmin(admin, group)
 
-    space_uri = space["git_repo_uri"]
-    cache_key = (space.get("name", ""), space_uri)
+    stored = StoredSpace.model_validate(space)  # extra keys (is_admin) ignored
+    cache_key = (stored.name, stored.get_space_uri())
     manager = _space_secret_manager_cache.get(cache_key)
     if manager is None:
-        manager = _build_space_secret_manager(space_uri)
+        manager = _build_space_secret_manager(stored)
         _space_secret_manager_cache[cache_key] = manager
     return _SpaceSecretAdmin(manager, space.get("name", ""))
 

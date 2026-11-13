@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+
+# Copyright LLM.build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""`gbserver space-snapshot` stores only the branch head (no history), rewrites
+space.yaml's assets base_uri to db://, and records the normalized source."""
+
+import io
+import subprocess
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Dict
+
+import pytest
+import yaml
+from click.testing import CliRunner
+
+import gbserver.commands.command_space_snapshot as cmd
+import gbserver.spaces.db_space as db_space
+from gbserver.storage.stored_space import StoredSpace
+
+SPACE_YAML = """\
+name: x
+# the assets repo
+base_uris:
+  - git+ssh://github.example.com/org/assets.git@gbspace-config
+secret_manager:
+  type: env
+  config: {}
+"""
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _repo(path: Path, files: Dict[str, str], origin: str, branch: str) -> str:
+    path.mkdir()
+    _git(path, "init", "-q", "-b", branch)
+    _git(path, "config", "user.email", "t@example.com")
+    _git(path, "config", "user.name", "t")
+    _git(path, "config", "commit.gpgsign", "false")
+    _git(path, "remote", "add", "origin", origin)
+    (path / "old.txt").write_text("from history\n")
+    _git(path, "add", "-A")
+    _git(path, "commit", "-q", "-m", "old")
+    _git(path, "rm", "-q", "old.txt")
+    for name, text in files.items():
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_text(text)
+    _git(path, "add", "-A")
+    _git(path, "commit", "-q", "-m", "head")
+    (path / "untracked.txt").write_text("not committed\n")
+    return _git(path, "rev-parse", "HEAD")
+
+
+class _FakeSpaceStorage:
+    def __init__(self):
+        self.rows: Dict[str, StoredSpace] = {}
+
+    def get_by_name(self, name):
+        return self.rows.get(name)
+
+    def get_by_uuid(self, _):
+        return list(self.rows.values())
+
+    def add(self, row):
+        self.rows[row.name] = row
+
+    def update(self, row, create_if_not_exist=False):
+        assert row.name in self.rows
+        self.rows[row.name] = row
+
+
+@pytest.fixture(scope="module")
+def repos(tmp_path_factory):
+    """The space and assets checkouts; read-only, so built once per module."""
+    root = tmp_path_factory.mktemp("repos")
+    space_sha = _repo(
+        root / "space",
+        {"space.yaml": SPACE_YAML, "environments/e/environment.yaml": "type: bash\n"},
+        "git@github.example.com:org/gbspace-x.git",
+        "gbspace-config",
+    )
+    assets_sha = _repo(
+        root / "assets",
+        {
+            "steps/echo/step.yaml": "name: echo\n",
+            "templates/t/template.yaml": "name: t\n",
+            "docs/guide.md": "# guide\n",
+            "images/diagram.png": "png\n",
+            "README.md": "assets\n",
+        },
+        "https://github.example.com/org/assets.git",
+        "gbspace-config",
+    )
+    _repo(
+        root / "other",
+        {"a.txt": "a\n"},
+        "https://github.example.com/org/other.git",
+        "gbspace-config",
+    )
+    return SimpleNamespace(tmp=root, space_sha=space_sha, assets_sha=assets_sha)
+
+
+@pytest.fixture
+def env(repos, tmp_path, monkeypatch):
+    storage = _FakeSpaceStorage()
+    monkeypatch.setattr(db_space, "get_snapshot_cache_root", lambda: tmp_path / "c")
+    monkeypatch.setattr(
+        cmd.singleton_storage,
+        "get_admin_storage",
+        lambda: SimpleNamespace(space_storage=storage),
+    )
+    return SimpleNamespace(storage=storage, **vars(repos))
+
+
+def _names(archive: bytes):
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        return {n for n in zf.namelist() if not n.endswith("/")}
+
+
+def _run(env, *extra):
+    args = [
+        "--space-name",
+        "x",
+        "--space-repo",
+        str(env.tmp / "space"),
+        "--space-ref",
+        "gbspace-config",
+        "--assets-repo",
+        str(env.tmp / "assets"),
+        *extra,
+    ]
+    return CliRunner().invoke(cmd.cli, args, catch_exceptions=False)
+
+
+def test_create_stores_snapshots_and_switches(env):
+    result = _run(env, "--create")
+    assert result.exit_code == 0, result.output
+    row = env.storage.rows["x"]
+    assert row.git_repo_uri == "https://github.example.com/org/gbspace-x"
+    assert row.space_uri == "db://spaces/x"
+
+    assert row.space.source_uri == "https://github.example.com/org/gbspace-x"
+    assert row.space.source_ref == "gbspace-config"
+    assert row.space.source_commit == env.space_sha
+    assert _names(row.space.load_archive()) == {
+        "space.yaml",
+        "environments/e/environment.yaml",
+    }  # no history (old.txt), no .git, no untracked files
+
+    assert row.assets.source_uri == "https://github.example.com/org/assets"
+    assert row.assets.source_ref == "gbspace-config"  # from the base_uri's @ref
+    assert row.assets.source_commit == env.assets_sha
+    # Default --assets-path: steps/ and templates/ only (no docs, images, README).
+    assert _names(row.assets.load_archive()) == {
+        "steps/echo/step.yaml",
+        "templates/t/template.yaml",
+    }
+
+    with zipfile.ZipFile(io.BytesIO(row.space.load_archive())) as zf:
+        stored_yaml = zf.read("space.yaml").decode()
+    assert yaml.safe_load(stored_yaml)["base_uris"] == ["db://spaces/x/assets"]
+    assert "# the assets repo" in stored_yaml  # rewritten in place
+
+
+def test_missing_row_requires_create(env):
+    result = CliRunner().invoke(
+        cmd.cli, ["--space-name", "x", "--space-repo", str(env.tmp / "space")]
+    )
+    assert result.exit_code != 0
+    assert "--create" in result.output
+
+
+def test_no_switch_keeps_git_uri(env):
+    env.storage.rows["x"] = StoredSpace(
+        name="x", git_repo_uri="https://github.example.com/org/gbspace-x"
+    )
+    result = _run(env, "--no-switch")
+    assert result.exit_code == 0, result.output
+    row = env.storage.rows["x"]
+    assert row.git_repo_uri == "https://github.example.com/org/gbspace-x"
+    assert row.space_uri is None  # stored, not served
+    assert row.space.source_commit == env.space_sha
+
+
+def test_dry_run_stores_nothing(env):
+    result = _run(env, "--create", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert env.storage.rows == {}
+
+
+def test_assets_repo_not_in_base_uris_is_refused(env):
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(env.tmp / "space"),
+            "--space-ref",
+            "gbspace-config",
+            "--assets-repo",
+            str(env.tmp / "other"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "no space.yaml base_uris entry" in result.output
+
+
+@pytest.mark.parametrize(
+    "uri, expected",
+    [
+        ("git+ssh://h/o/r.git@b", ("git+ssh://h/o/r.git", "b")),
+        ("git+ssh://h/o/r.git@b#subdirectory=s", ("git+ssh://h/o/r.git", "b")),
+        ("https://h/o/r", ("https://h/o/r", None)),
+        ("git@h:o/r.git", ("git@h:o/r.git", None)),
+        ("git@h:o/r.git@v2#subdirectory=s", ("git@h:o/r.git", "v2")),
+        ("git+ssh://h/o/r.git@release/1.0", ("git+ssh://h/o/r.git", "release/1.0")),
+        ("git@h:o/r.git@feat/x#subdirectory=s", ("git@h:o/r.git", "feat/x")),
+    ],
+)
+def test_split_ref(uri, expected):
+    assert cmd._split_ref(uri) == expected
+
+
+def test_clone_url_maps_git_ssh():
+    assert cmd._clone_url("git+ssh://h/o/r.git") == "ssh://git@h/o/r.git"
+    assert cmd._clone_url("https://h/o/r") == "https://h/o/r"
+
+
+def test_create_no_switch_keeps_git(env):
+    result = _run(env, "--create", "--no-switch")
+    assert result.exit_code == 0, result.output
+    row = env.storage.rows["x"]
+    assert row.git_repo_uri == "https://github.example.com/org/gbspace-x"
+    assert row.space_uri is None
+    assert row.space.source_commit == env.space_sha
+
+
+def test_assets_without_ref_uses_default_branch(env, tmp_path, monkeypatch):
+    """No @ref in base_uris: snapshot the default branch, not the config one."""
+    space_dir = tmp_path / "space-noref"
+    _repo(
+        space_dir,
+        {"space.yaml": SPACE_YAML.replace("@gbspace-config", "")},
+        "git@github.example.com:org/gbspace-x.git",
+        "gbspace-config",
+    )
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(space_dir),
+            "--space-ref",
+            "gbspace-config",
+            "--assets-repo",
+            str(env.tmp / "assets"),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert env.storage.rows["x"].assets.source_commit == env.assets_sha
+
+
+def test_token_header_scoped_to_ghe_host(monkeypatch):
+    seen = {}
+
+    def fake_run(args, cwd=None, env=None, **_):
+        seen.update(env)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(cmd, "GBSERVER_GITHUB_TOKEN", "tok")
+    monkeypatch.setattr(cmd.subprocess, "run", fake_run)
+    cmd._git(["status"])
+    assert seen["GIT_CONFIG_KEY_0"] == (
+        f"http.https://{cmd.DEFAULT_GH_DOMAIN}/.extraHeader"
+    )
+
+
+def test_snapshot_from_another_repo_is_refused(env):
+    """git_repo_uri is the identity; a snapshot of a different repo is refused."""
+    env.storage.rows["x"] = StoredSpace(
+        name="x", git_repo_uri="https://github.example.com/org/other-space"
+    )
+    result = _run(env)
+    assert result.exit_code != 0
+    assert "is not space 'x'" in result.output
+    assert env.storage.rows["x"].space is None
+
+
+def test_existing_row_in_another_form_is_accepted(env):
+    """The same repo in git+ssh form is the same identity; it is left as stored."""
+    uri = "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
+    env.storage.rows["x"] = StoredSpace(name="x", git_repo_uri=uri)
+    result = _run(env)
+    assert result.exit_code == 0, result.output
+    assert env.storage.rows["x"].git_repo_uri == uri
+    assert env.storage.rows["x"].space_uri == "db://spaces/x"
+
+
+def test_assets_path_override(env):
+    result = _run(env, "--create", "--assets-path", "steps", "--assets-path", "nope")
+    assert result.exit_code == 0, result.output
+    assert "nope not found" in result.output
+    assert _names(env.storage.rows["x"].assets.load_archive()) == {
+        "steps/echo/step.yaml"
+    }
+
+
+def test_local_branch_behind_origin_uses_origin(env, tmp_path):
+    """A stale local branch is not snapshotted; origin/<ref> is, with a warning."""
+    clone = tmp_path / "space-clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(env.tmp / "space"), str(clone)], check=True
+    )
+    _git(clone, "config", "user.email", "t@example.com")
+    _git(clone, "config", "user.name", "t")
+    _git(clone, "config", "commit.gpgsign", "false")
+    _git(
+        clone, "remote", "set-url", "origin", "git@github.example.com:org/gbspace-x.git"
+    )
+    _git(clone, "reset", "-q", "--hard", "HEAD~1")  # local behind origin
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(clone),
+            "--space-ref",
+            "gbspace-config",
+            "--assets-repo",
+            str(env.tmp / "assets"),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert "differs from origin/gbspace-config" in result.output
+    assert env.storage.rows["x"].space.source_commit == env.space_sha
+
+
+def test_missing_default_space_branch_falls_back(env, tmp_path):
+    """Without the deployment's config branch, the default branch is used."""
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(env.tmp / "space"),
+            "--assets-repo",
+            str(env.tmp / "assets"),
+        ],
+        catch_exceptions=False,
+    )
+    # The test repo has only gbspace-config; the standalone default is main.
+    assert result.exit_code == 0, result.output
+    assert "using its default branch" in result.output
+    assert env.storage.rows["x"].space.source_commit == env.space_sha
+
+
+def test_assets_paths_follow_subdirectory(env, tmp_path):
+    """--assets-path is relative to the assets base_uri's #subdirectory."""
+    sub_assets = tmp_path / "sub-assets"
+    _repo(
+        sub_assets,
+        {"gb/steps/echo/step.yaml": "name: echo\n", "steps/other/step.yaml": "x\n"},
+        "https://github.example.com/org/assets.git",
+        "gbspace-config",
+    )
+    space_dir = tmp_path / "space-sub"
+    _repo(
+        space_dir,
+        {
+            "space.yaml": SPACE_YAML.replace(
+                "@gbspace-config", "@gbspace-config#subdirectory=gb"
+            )
+        },
+        "git@github.example.com:org/gbspace-x.git",
+        "gbspace-config",
+    )
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(space_dir),
+            "--space-ref",
+            "gbspace-config",
+            "--assets-repo",
+            str(sub_assets),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert _names(env.storage.rows["x"].assets.load_archive()) == {
+        "gb/steps/echo/step.yaml"
+    }

@@ -32,7 +32,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Self, Union
 
-from gbcommon.uri.git import GitURI
 from gbcommon.uri.uri import URI
 from gbcommon.uri.utils import get_artifact_type
 from gbserver.build.build import Build
@@ -51,6 +50,7 @@ from gbserver.buildrunner.buildlogger import (
 )
 from gbserver.github.myghapi import MyGHApi
 from gbserver.metrics.metrics_client import push_metrics
+from gbserver.spaces.db_space import create_space, portable_uri
 from gbserver.storage.artifact_registration import (
     ArtifactRegistration,
     ArtifactRegistrationStatus,
@@ -89,6 +89,7 @@ from gbserver.types.constants import (
 )
 from gbserver.types.status import STATUS_TO_ICON, Status
 from gbserver.utils.archive import extract_archive
+from gbserver.utils.git_retry import end_build_git_run, get_build_git_breaker
 from gbserver.utils.logger import get_logger
 from gbserver.utils.unwrap_errors import escape_for_one_record, format_failure_reason
 from gbserver.utils.utils import get_build_status_link
@@ -240,6 +241,8 @@ class BuildRunner(AbstractBuildRunner):
                 raise ValueError("Storage of build failed without error.")
             logger.info("Build successfuly stored build: %s", build_id)
 
+        # Each run of the build tries the optional git interactions afresh.
+        end_build_git_run(build_id)
         try:
             while True:
                 # A stop()/stop_and_fail() that arrived before this thread got here
@@ -306,6 +309,8 @@ class BuildRunner(AbstractBuildRunner):
         except Exception as e:
             logger.error("build execution failed for build ID %s", build_id)
             raise e
+        finally:
+            end_build_git_run(build_id)
 
     def __prepare_retry(self: Self) -> Optional[StoredBuild]:
         """If the finished build is eligible for retry, reset it in place for another attempt.
@@ -369,16 +374,21 @@ class BuildRunner(AbstractBuildRunner):
         owner, repo, pr_id = self.stored_build.get_pr_info()
         if not pr_id:
             return
-        try:
-            myapi = MyGHApi(token=self.gh_token, owner=owner, repo=repo)
-            build_config = self.stored_build.get_build_config()
+
+        def post() -> None:
+            max_retries = self.stored_build.get_build_config().retries.max_retries
             body = (
                 f"Build failed (attempt {self.stored_build.retry_count} of "
-                f"{build_config.retries.max_retries}). Automatically retrying."
+                f"{max_retries}). Automatically retrying."
             )
-            myapi.update_issue_comment(body=body, pr_id=pr_id)
-        except Exception as e:
-            logger.warning("Failed to post retry comment on PR %s: %s", pr_id, e)
+            MyGHApi(token=self.gh_token, owner=owner, repo=repo).update_issue_comment(
+                body=body, pr_id=pr_id
+            )
+
+        # Optional; never raises, so it can't abort the retry.
+        get_build_git_breaker(self.stored_build.uuid).call(
+            f"post the retry comment on PR {pr_id}", post
+        )
 
     async def __async_run_build(self) -> None:
         """Run the build: set up the workspace, extract the archive, and run all
@@ -603,11 +613,7 @@ class BuildRunner(AbstractBuildRunner):
             stored_space = self.storage.space_storage.get_by_name(space_name)
             if stored_space is None:
                 raise ValueError(f"Space {space_name} not found in space storage")
-            s_uri = GitURI.get_gb_space_config_uri(
-                uri=stored_space.git_repo_uri, token=self.gh_token
-            )
-            logger.info("for the space name %s using the URI: %s", space_name, s_uri)
-            space = Space(uri=s_uri, username=username)
+            space = create_space(stored_space, username=username, token=self.gh_token)
         return space
 
     def __is_build_cancelled(self) -> bool:
@@ -1164,7 +1170,8 @@ Download : {download_msg}
         if env_asset is None:
             logger.warning("the environment_asset is None")
         else:
-            environment_uri = env_asset.uristr
+            # Persisted and read by the REST server: never a runner-local path.
+            environment_uri = portable_uri(env_asset.uristr)
         stored_target = StoredTargetRun(
             uuid=target_id,
             build_id=build_id,

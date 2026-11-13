@@ -821,3 +821,19 @@ def test_list_build_tags_excludes_other_spaces_for_non_admin():
         _set_alice_access(manager)
         tags = list_build_tags(_fake_request(ALICE, f"{ALICE}@example.com"))
     assert tags == ["alpha"]
+
+
+def test_validate_build_rejects_db_space_uri():
+    """db:// names a registered space's snapshot; only space_name (membership
+    checked) may reach it."""
+    with (
+        _patched_storage(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        _NO_OP_VALIDATION,
+    ):
+        with pytest.raises(HTTPException) as exc:
+            validate_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _validate_req(ATTACKER, space_uri="db://spaces/private-team"),
+            )
+        assert exc.value.status_code == 400
