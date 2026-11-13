@@ -211,13 +211,24 @@ async def test_lsf_binds_the_path_under_the_download_dir():
 # ── shell paths ──────────────────────────────────────────────────────────────
 
 
-def _stub_hf(tmp_path, creates):
-    """A stub `hf` that records its argv and makes ``--local-dir/<creates>``."""
+# What each CLI generation prints for `hf version`. huggingface_hub < 1.0 parses a
+# repeated --include as nargs="*" without append (only the LAST flag survives), so the
+# scripts must pass both patterns after one --include there; 1.x needs one per flag.
+_HF_V1 = "version=1.33.0"
+_HF_V0 = "huggingface_hub version: 0.36.2"
+
+
+def _stub_hf(tmp_path, creates, version=_HF_V1):
+    """A stub `hf` that records its argv and makes ``--local-dir/<creates>``.
+
+    ``hf version`` prints ``version`` and records nothing, like the real CLI.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir()
     hf = bindir / "hf"
     hf.write_text(
         "#!/bin/sh\n"
+        f'[ "$1" = version ] && {{ echo "{version}"; exit 0; }}\n'
         'printf "%s\\n" "$@" > "$HF_ARGV"\n'
         'while [ $# -gt 0 ]; do [ "$1" = --local-dir ] && dir="$2"; shift; done\n'
         f'[ -z "{creates}" ] || mkdir -p "$dir/{creates}"\n'
@@ -226,10 +237,10 @@ def _stub_hf(tmp_path, creates):
     return bindir
 
 
-def _run(tmp_path, script, creates):
+def _run(tmp_path, script, creates, version=_HF_V1):
     env = {
         **os.environ,
-        "PATH": f"{_stub_hf(tmp_path, creates)}:{os.environ['PATH']}",
+        "PATH": f"{_stub_hf(tmp_path, creates, version)}:{os.environ['PATH']}",
         "HF_ARGV": str(tmp_path / "argv"),
         "GB_HFPULL_LOCK_TIMEOUT": "5",
         "LLMB_LSF_LAUNCH_ID": "test",
@@ -261,6 +272,31 @@ def test_inline_line_includes_only_the_path(tmp_path):
     assert argv[argv.index("--include") + 1] == _SUB
     assert argv.count("--include") == 2
     assert f"{_SUB}/*" in argv
+
+
+def test_inline_line_passes_both_patterns_to_one_include_on_hf_0x(tmp_path):
+    """On huggingface_hub < 1.0 a second --include would replace the first."""
+    cmd = _inline_hf_download_cmd(
+        {
+            "repo": "org/repo",
+            "path": str(tmp_path / "dest"),
+            "revision": "main",
+            "type": "dataset",
+            "path_in_repo": _SUB,
+        }
+    )
+    proc, argv = _run(tmp_path, cmd, _SUB, version=_HF_V0)
+    assert proc.returncode == 0, proc.stderr
+    assert argv.count("--include") == 1
+    i = argv.index("--include")
+    assert argv[i + 1 : i + 3] == [_SUB, f"{_SUB}/*"]
+
+
+def test_inline_line_without_a_path_has_no_include(tmp_path):
+    cmd = _inline_hf_download_cmd(
+        {"repo": "org/repo", "path": str(tmp_path / "dest"), "path_in_repo": ""}
+    )
+    assert "--include" not in cmd and "hf version" not in cmd
 
 
 def _render(text, path_in_repo):
@@ -346,6 +382,19 @@ def test_hfpull_script_includes_only_the_path(tmp_path, script):
         _SUB,
         f"{_SUB}/*",
     ]
+    assert (dest / _SUB).is_dir()
+
+
+@_SCRIPTS
+def test_hfpull_script_passes_both_patterns_to_one_include_on_hf_0x(tmp_path, script):
+    """On huggingface_hub < 1.0 a second --include would replace the first, and a
+    file-scoped path_in_repo then downloaded nothing (the 'matched nothing' failure)."""
+    dest = tmp_path / "dest"
+    proc, argv = _run(tmp_path, _pull_slice(script, _SUB, dest), _SUB, version=_HF_V0)
+    assert proc.returncode == 0, proc.stderr
+    assert argv.count("--include") == 1
+    i = argv.index("--include")
+    assert argv[i + 1 : i + 3] == [_SUB, f"{_SUB}/*"]
     assert (dest / _SUB).is_dir()
 
 
