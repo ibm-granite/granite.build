@@ -25,6 +25,7 @@ scripts, and the skypilot inline download line.
 
 import asyncio
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -35,7 +36,7 @@ from jinja2 import Environment
 
 import gbserver
 from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
-from gbcommon.uri.hf import HfType, HfURI, hf_path_patterns
+from gbcommon.uri.hf import HfType, HfURI, _hfpull_lock_path, hf_path_patterns
 from gbserver.asset.hfstore import Hfstore
 from gbserver.environment.skypilot import _inline_hf_download_cmd
 
@@ -125,6 +126,29 @@ def test_local_pull_binds_the_path(tmp_path):
     assert bound == tmp_path / "d" / _SUB
 
 
+def test_pull_evicted_before_the_path_lands_rewaits(tmp_path):
+    """Losing the lock before the path is downloaded is a re-wait, not a miss.
+
+    A peer that reclaims our lock is still writing the tree, so the path may not
+    be there yet. The pull must re-wait and retry (the #320 design), not report
+    that the path matched nothing.
+    """
+    dest = tmp_path / "d"
+    calls = []
+
+    def fake_download(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            # A peer reclaims our lock before the path has landed.
+            shutil.rmtree(_hfpull_lock_path(dest), ignore_errors=True)
+            return
+        (Path(kw["local_dir"]) / _SUB).mkdir(parents=True)
+
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        assert HfURI.parse(_URI).pull(dest) is True
+    assert len(calls) == 2
+
+
 # ── hfpull step configs and bindings ─────────────────────────────────────────
 
 
@@ -134,6 +158,13 @@ def test_hfpull_step_config_carries_the_path():
     assert cfg["path"] == "/cache/x"
     whole = Hfstore.build_hfpull_step_config(HfURI.parse("hf:///org/m"), "/c")
     assert whole["path_in_repo"] == ""
+
+
+def test_hfpull_step_config_has_no_path_for_a_bucket():
+    """A bucket is bound at dest (local_path), so the shell steps get no filter."""
+    uri = HfURI.parse("hf:///buckets/org/b/some/dir")
+    cfg = Hfstore.build_hfpull_step_config(uri, "/cache/x")
+    assert cfg["path_in_repo"] == ""
 
 
 def _hfstore():
@@ -184,6 +215,17 @@ async def test_skypilot_inline_pull_carries_the_path(skypilot_env):
     assert step is None
     assert binding["_hfpull"]["path_in_repo"] == _SUB
     assert binding["binding"]["path"].endswith(f"/main/{_SUB}")
+
+
+@pytest.mark.asyncio
+async def test_skypilot_inline_bucket_pull_has_no_path(skypilot_env):
+    binding, _ = await skypilot_env.pullasset_hfstore(
+        uri=HfURI.parse("hf:///buckets/org/b/some/dir"),
+        assetstore=_hfstore(),
+        storeload_config=_storeload(inline=True),
+    )
+    assert binding["_hfpull"]["path_in_repo"] == ""
+    assert binding["binding"]["path"] == binding["_hfpull"]["path"]
 
 
 @pytest.mark.asyncio
@@ -257,10 +299,28 @@ def test_inline_line_includes_only_the_path(tmp_path):
             "path_in_repo": f"/{_SUB}/",
         }
     )
-    _, argv = _run(tmp_path, cmd, _SUB)
+    proc, argv = _run(tmp_path, cmd, _SUB)
+    assert proc.returncode == 0, proc.stderr
     assert argv[argv.index("--include") + 1] == _SUB
     assert argv.count("--include") == 2
     assert f"{_SUB}/*" in argv
+
+
+def test_inline_line_fails_when_the_path_matches_nothing(tmp_path):
+    cmd = _inline_hf_download_cmd(
+        {
+            "repo": "org/repo",
+            "path": str(tmp_path / "dest"),
+            "revision": "main",
+            "type": "dataset",
+            "path_in_repo": _SUB,
+        }
+    )
+    # Run without `set -e`, so only the explicit exit can stop the setup.
+    proc, _ = _run(tmp_path, f"{cmd}\necho setup-continued", "")
+    assert proc.returncode != 0
+    assert "matched nothing" in proc.stderr
+    assert "setup-continued" not in proc.stdout
 
 
 def _render(text, path_in_repo):
