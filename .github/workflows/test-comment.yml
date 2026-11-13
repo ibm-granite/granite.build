@@ -47,11 +47,11 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: refs/pull/${{ github.event.issue.number }}/merge
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -87,11 +87,11 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: refs/pull/${{ github.event.issue.number }}/merge
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -102,7 +102,7 @@ jobs:
       # Same preload as ci.yml, restore only: this workflow runs PR code with
       # main's cache scope, so saving here would let a PR poison main's entry.
       - name: Restore cached Docker images
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
@@ -118,11 +118,11 @@ jobs:
     needs: trigger-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: refs/pull/${{ github.event.issue.number }}/merge
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
@@ -133,7 +133,7 @@ jobs:
 
       # Same preload, restore only (see the test job).
       - name: Restore cached Docker images
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}

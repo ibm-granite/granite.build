@@ -23,9 +23,9 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -61,12 +61,12 @@ jobs:
     if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # No Node version is pinned anywhere in the repo (no .nvmrc/.node-version, no
       # engines field), so this is a fresh choice: 22 is the active LTS, and 20 went
       # end-of-life in April 2026.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
           cache: yarn
@@ -96,9 +96,9 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -110,7 +110,7 @@ jobs:
       # registry. Only pushes to main save; PRs, forks included, restore main's.
       - name: Restore cached Docker images
         id: docker-images-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload Docker image cache
         if: matrix.python-version == '3.12' && github.event_name == 'push' && steps.docker-images-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ci-docker-images
           key: ${{ steps.docker-images-cache.outputs.cache-primary-key }}
@@ -138,9 +138,9 @@ jobs:
     if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
@@ -153,7 +153,7 @@ jobs:
       # Same preload as the test job; covers the Dockerfile's FROM image.
       - name: Restore cached Docker images
         id: docker-images-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
