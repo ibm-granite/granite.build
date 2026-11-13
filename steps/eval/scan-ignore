@@ -10,3 +10,12 @@ CVE-2026-112398
 CVE-2026-112403
 CVE-2026-112900
 CVE-2026-96639
+# mcpmark's vendored MCPMark harness hard-pins litellm==1.80.0 (chosen
+# against the nemoskills/tbench resolution camps; see extras.sh), and the
+# harness-pinned npx MCP-server versions carry npm's tar 6.2.1 transitively.
+# Both are upstream constraints: lifting them needs a validated harness
+# uplift, not a version bump on our side. Tracked for the MCPMark refresh.
+CVE-2026-35030
+CVE-2026-37004
+CVE-2026-49468
+CVE-2026-59873
