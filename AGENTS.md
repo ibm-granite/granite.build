@@ -214,4 +214,5 @@ A floating chat widget (rendered globally by `ClientShell`) backed by a hand-rol
 - Three environments: dev, staging, prod — each with its own IBM Container Registry namespace (`us.icr.io/cil15-shared-registry/gb-{dev,staging,prod}`)
 - Kubernetes deployments managed via Helm charts in `k8s/chart/`
 - CI via GitHub Actions (`.github/workflows/`)
+- Workflows pin each action to a full commit SHA with the release in a comment (`uses: actions/checkout@<40-char sha> # v5.1.0`). Dependabot (`.github/dependabot.yml`) updates the SHA and the comment together. Use the same form in new workflows
 - Image tags derived from git commit SHA (`commit-<hash>`)

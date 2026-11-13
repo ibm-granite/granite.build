@@ -7,10 +7,15 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # One pull request per week for all action updates.
+    # One pull request per week for all minor and patch updates. Each major
+    # upgrade comes as its own pull request, so a breaking change can be
+    # traced to one action.
     groups:
       github-actions:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
     commit-message:
       prefix: ci
