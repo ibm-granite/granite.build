@@ -61,6 +61,16 @@ class NodeLock:
             return None
         return f
 
+    def try_acquire(self) -> bool:
+        """Takes the lock without waiting; False when another holder has it.
+        The port-scan pattern (try the next resource, never block): a caller
+        that finds every key held gives up loudly instead of queueing."""
+        held = self._try()
+        if held is None:
+            return False
+        self._held = held
+        return True
+
     def acquire(self) -> float:
         """Blocks until held; returns the seconds waited."""
         start = last_log = time.monotonic()

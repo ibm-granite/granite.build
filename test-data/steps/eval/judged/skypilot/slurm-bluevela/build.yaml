@@ -1,0 +1,58 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-judged-test
+  targets:
+    judged-test:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        # The model checkpoint as a real HF artifact: the launcher queues an
+        # hfpull step for it (public model, no token) and stages the download;
+        # the step then serves the binding path -- the artifact flow the
+        # env://-only fixtures never exercise.
+        model:
+          uri: "hf:///ibm-granite/granite-4.2-3b"
+          type: model
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/judged
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "gdpval"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-judged:ce003c94"
+            # The staged HF artifact path (its basename is not the
+            # model name, so pin the name vLLM advertises).
+            model_path: "{{ bindings.model.binding.path }}"
+            served_model_name: "granite-4.2-3b"
+            # judge_model=self grades with the served model -- the key-less
+            # smoke path -- so no judge endpoint and no EVAL_JUDGE_API_KEY;
+            # scoring then needs the server, so the run is phase all in one
+            # job (the split score phase is the site-specific external-judge
+            # shape a public fixture cannot name, which is also why this test
+            # covers only the GPU image).
+            options: "judge_model=self"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "judged"
+            run_name: "buildtest"
+            # Smoke knob: first N tasks.
+            limit: "2"
+            workers: "4"
+            phase: "all"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
+            # gdpval runs its stirrup agents in enroot sandboxes: the shared
+            # cache (tau-proven) also gets ENROOT_TEMP_PATH mkdir'd by the
+            # step script, which the empty default skips entirely.
+            # gdpval runs its stirrup agents in enroot sandboxes: the cache is
+            # workdir-relative (per-build); empty would skip the sandbox setup.
+            sandbox_cache: "enroot-cache"
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "gpu-mid"
+                accelerators: "H200:1"
+                memory: 256

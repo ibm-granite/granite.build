@@ -1,0 +1,21 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_tbench.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). A real model run of
+# terminal-bench-2.1 (granite-4.2-3b served by vLLM in the job, small LIMIT), proving
+# the Terminal-Bench harness inside the family image, the enroot-sandboxed task containers, and the results.json.
+targets:
+- tbench-test
+target_expectations:
+- target_name: tbench-test
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: terminal-bench-2.1
+      phase: all
+    step_uri: space://steps/eval/tbench
+space_uri: ../../space
+tests:
+- runner
+simulate_step_failure: false
+timeout_minutes: 60

@@ -25,7 +25,10 @@ pinned by commit/sha256 and baked into the image by the owning family's extras.s
 
     python scripts/prefetch_datasets.py --hf-home /path/to/hf-cache [--benchmark gpqa ...]
 
-Gated datasets (gpqa, hle, ...) need HF_TOKEN with access granted.
+Gated datasets (gpqa, hle, officeqa, ...) need HF_TOKEN with access granted.
+Entries that carry an allow_patterns list fetch only those files, matching what
+the family's adapter downloads at run start (a warm cache must hold at least
+that much, or an air-gapped job cannot complete the same fetch).
 """
 
 from __future__ import annotations
@@ -36,11 +39,17 @@ import re
 import sys
 from pathlib import Path
 
-# benchmark id -> (HF dataset repo, pinned revision, family)
-DATASETS: dict[str, tuple[str, str, str]] = {
+# benchmark id -> (HF dataset repo, pinned revision, family[, allow_patterns]);
+# the optional allow_patterns restricts the fetch, as described in the docstring.
+DATASETS: dict[str, tuple[str, str, str] | tuple[str, str, str, tuple[str, ...]]] = {
     "hmmt-feb25": (
         "MathArena/hmmt_feb_2025",
         "6fdc4277120810ff75aa22d2d5489b91f7a262a1",
+        "nemoskills",
+    ),
+    "aime26": (
+        "MathArena/aime_2026",
+        "d61f486805306e6e6b5913504c07763a99e1b112",
         "nemoskills",
     ),
     "gpqa": (
@@ -63,6 +72,16 @@ DATASETS: dict[str, tuple[str, str, str]] = {
         "4510f6a6aa27c43fad7b43da2c59602a86e88480",
         "nemoskills",
     ),
+    "human-eval": (
+        "openai/openai_humaneval",
+        "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544",
+        "nemoskills",
+    ),
+    "mbpp": (
+        "google-research-datasets/mbpp",
+        "4bb6404fdc6cacfda99d4ac4205087b89d32030c",
+        "nemoskills",
+    ),
     "hle": ("cais/hle", "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29", "nemoskills"),
     "omniscience": (
         "ArtificialAnalysis/AA-Omniscience-Public",
@@ -79,14 +98,29 @@ DATASETS: dict[str, tuple[str, str, str]] = {
         "9a77ef56b717057ade24ceab4d273712a0b4f19e",
         "nemoskills",
     ),
+    "browsecomp-plus": (
+        "Tevatron/browsecomp-plus",
+        "144cff8e35b5eaef7e526346aa60774a9deb941f",
+        "nemoskills",
+    ),
     "wmt24pp": (
         "google/wmt24pp",
         "fd7405c06494bc66a57b25f55d217a72f96e60dc",
         "nemoskills",
     ),
+    "flores200": (
+        "openlanguagedata/flores_plus",
+        "1147e2dc59f37fbb5c22fd8478770de02cd399f9",
+        "nemoskills",
+    ),
     "mmlu-prox-lite": (
         "li-lab/MMLU-ProX-Lite",
         "e82aafb9460529687d3c7e51b401d8dd1dd309dd",
+        "lmeval",
+    ),
+    "include-44": (
+        "CohereLabs/include-base-44",
+        "d2e1f6015f67a43c02a9a68db98e2298e2d6a660",
         "lmeval",
     ),
     "terminal-bench-2.1": (
@@ -125,6 +159,37 @@ DATASETS: dict[str, tuple[str, str, str]] = {
         "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
         "swebench",
     ),
+    # Both officeqa benchmarks read the same snapshot (the two question CSVs,
+    # the parsed Treasury Bulletin corpus and the license files — exactly what
+    # the adapter's ALLOW_PATTERNS fetches), so either entry warms the other.
+    # The ~4 GB of PDFs and the LFS zips are deliberately excluded. Gated
+    # (CC-BY-SA-4.0 click-through): HF_TOKEN needs the terms accepted.
+    "officeqa-pro": (
+        "databricks/OfficeQA",
+        "763a8366abf2a3605c381d53586d844dc60fa756",
+        "officeqa",
+        (
+            "officeqa_pro.csv",
+            "officeqa_full.csv",
+            "treasury_bulletins_parsed/jsons/*.json",
+            "LICENSE-APACHE",
+            "LICENSE-CC-BY-SA",
+            "NOTICE",
+        ),
+    ),
+    "officeqa-full": (
+        "databricks/OfficeQA",
+        "763a8366abf2a3605c381d53586d844dc60fa756",
+        "officeqa",
+        (
+            "officeqa_pro.csv",
+            "officeqa_full.csv",
+            "treasury_bulletins_parsed/jsons/*.json",
+            "LICENSE-APACHE",
+            "LICENSE-CC-BY-SA",
+            "NOTICE",
+        ),
+    ),
 }
 
 # The shared core lives in src/core/; each family's modules in <family>/src/.
@@ -134,7 +199,8 @@ ROOT = Path(__file__).resolve().parent.parent
 def check_pins() -> list[str]:
     """Every (repo, revision) above must appear verbatim in the family's source."""
     problems = []
-    for bench, (repo, rev, fam) in DATASETS.items():
+    for bench, entry in DATASETS.items():
+        repo, rev, fam = entry[0], entry[1], entry[2]
         text = "\n".join(
             p.read_text()
             for p in (ROOT / fam / "src").rglob("*.py")
@@ -186,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.error(f"unknown benchmark(s) {unknown}; known: {sorted(DATASETS)}")
     if args.list:
         for b in chosen:
-            repo, rev, fam = DATASETS[b]
+            repo, rev, fam = DATASETS[b][:3]
             print(f"{b:24s} {fam:11s} {repo}@{rev[:12]}")
         return 0
     if not args.hf_home:
@@ -199,13 +265,16 @@ def main(argv: list[str] | None = None) -> int:
     args.hf_home.mkdir(parents=True, exist_ok=True)
     failed = []
     for b in chosen:
-        repo, rev, _ = DATASETS[b]
+        entry = DATASETS[b]
+        repo, rev = entry[0], entry[1]
+        patterns = entry[3] if len(entry) > 3 else None
         try:
             path = snapshot_download(
                 repo_id=repo,
                 repo_type="dataset",
                 revision=rev,
                 token=os.environ.get("HF_TOKEN"),
+                allow_patterns=patterns,
             )
             print(f"ok    {b:24s} {repo}@{rev[:12]} -> {path}")
         except Exception as e:  # noqa: BLE001 - report every dataset, then fail once

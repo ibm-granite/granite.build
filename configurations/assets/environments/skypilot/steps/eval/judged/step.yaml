@@ -35,7 +35,7 @@ version: 0.1.0
 #
 # THE JUDGE is a paid OpenAI-compatible endpoint (default aws/claude-sonnet-5 on IBM
 # LiteLLM; some benchmarks use their own published judge panel — see each benchmark's
-# recipe docs). Its key must reach the score job as $GRANITE_EVALS_JUDGE_API_KEY;
+# recipe docs). Its key must reach the score job as $EVAL_JUDGE_API_KEY;
 # `options: judge_model=self` judges with the served model instead where supported
 # (key-less smoke runs; results say judge_is_self). Judge calls go through
 # granite-evals' spend meter ($GRANITE_EVALS_SPEND_LEDGER / $GRANITE_EVALS_SPEND_BUDGET_USD,
@@ -60,11 +60,11 @@ config:
   model_path: ""
   # Name the model is served under; empty = basename of model_path.
   served_model_name: ""
-  # Full output dir as given; relative resolves against $GB_BUILD_WORKDIR. Empty
-  # (the recipes' form): output_root composes it as
-  # $output_root/$run_name/$benchmark, run_name empty = the model_path basename
-  # (like served_model_name). With neither output_dir nor output_root set the
-  # run fails fast.
+  # Full output dir as given. Empty (the recipes' form): output_root composes
+  # it as $output_root/$run_name/$benchmark, run_name empty = the model_path
+  # basename (like served_model_name). Relative values -- output_dir itself or
+  # an output_root so composed -- resolve against $GB_BUILD_WORKDIR. With
+  # neither output_dir nor output_root set the run fails fast.
   output_dir: ""
   output_root: ""
   run_name: ""
@@ -99,10 +99,24 @@ config:
   tensor_parallel_size: "1"
   gpu_memory_utilization: "0.9"
   max_model_len: ""
+  # vLLM tool-call and reasoning parsers; "auto" detects them from the
+  # checkpoint (its chat template / shipped *_parser.py), "" disables one.
+  tool_call_parser: "auto"
+  reasoning_parser: "auto"
+  # Space-separated extra `vllm serve` arguments, each passed as --vllm-arg
+  # (e.g. "--enable-prefix-caching --max-num-seqs=64"). Values containing
+  # spaces are not supported, as in `options`.
+  vllm_args: ""
+  # An existing OpenAI-compatible endpoint (e.g. http://host:8000/v1): skips
+  # starting vLLM in the job; served_model_name must name the model there.
+  base_url: ""
+  # Seed for the benchmark's own sampling (shuffles, subsets).
+  seed: "0"
   # Where a sandboxed benchmark's agent image (python:3.13-bookworm by default, for
   # gdpval) is imported to as squashfs; on a shared filesystem, every job after the
   # first reuses it. Only gdpval, mcpatlas and profbench in this family sandbox; set
   # this for those, leave empty (skips the setup below) for the rest.
+  # A relative path resolves against $GB_BUILD_WORKDIR (per-build).
   sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
   hf_home: ""
@@ -176,9 +190,13 @@ environment_configs:
 
             {% if config.sandbox_cache %}
             # Sandboxes: enroot inside this job's container. Image squashfs files go to
-            # the shared cache; the per-sandbox rootfs goes to node-local scratch.
+            # the cache; the per-sandbox rootfs goes to node-local scratch. A relative
+            # cache path resolves against $GB_BUILD_WORKDIR (the output_dir rule), so
+            # no step needs a cluster-specific absolute path.
             export GRANITE_EVALS_SANDBOX=enroot
-            export GRANITE_EVALS_ENROOT_CACHE="{{ config.sandbox_cache }}"
+            SANDBOX_CACHE="{{ config.sandbox_cache }}"
+            case "$SANDBOX_CACHE" in /*) ;; *) SANDBOX_CACHE="${GB_BUILD_WORKDIR:-$PWD}/$SANDBOX_CACHE" ;; esac
+            export GRANITE_EVALS_ENROOT_CACHE="$SANDBOX_CACHE"
             SCRATCH="${TMPDIR:-/tmp}/granite-$$"
             export ENROOT_DATA_PATH="$SCRATCH/enroot-data" ENROOT_CACHE_PATH="$SCRATCH/enroot-cache" ENROOT_RUNTIME_PATH="$SCRATCH/enroot-run" ENROOT_TEMP_PATH="$SCRATCH/enroot-tmp"
             mkdir -p "$GRANITE_EVALS_ENROOT_CACHE" "$ENROOT_DATA_PATH" "$ENROOT_CACHE_PATH" "$ENROOT_RUNTIME_PATH" "$ENROOT_TEMP_PATH"
@@ -194,6 +212,8 @@ environment_configs:
 
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+            VLLM_ARGS=()
+            for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 
             granite-evals run "$BENCHMARK" \
               --model "{{ config.model_path }}" \
@@ -208,6 +228,11 @@ environment_configs:
               --gpu-memory-utilization "{{ config.gpu_memory_utilization }}" \
               --phase "{{ config.phase }}" \
               {% if config.max_model_len %}--max-model-len {{ config.max_model_len }}{% endif %} \
+              --tool-call-parser "{{ config.tool_call_parser }}" \
+              --reasoning-parser "{{ config.reasoning_parser }}" \
+              {% if config.base_url %}--base-url "{{ config.base_url }}"{% endif %} \
+              --seed {{ config.seed }} \
+              "${VLLM_ARGS[@]}" \
               "${OPTS[@]}" \
               2>&1 | tee "$OUTPUT_DIR/granite.log"
             if [ "{{ config.phase }}" = generate ]; then

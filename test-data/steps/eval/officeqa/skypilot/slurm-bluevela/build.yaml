@@ -1,0 +1,120 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-officeqa-test
+  # The recipes' shape on a synthetic dataset: generate on the family's GPU
+  # image (the model answers from the synthetic gold-page contexts), score on
+  # its CPU image, bound by the granite_generation artifact -- one build test
+  # covers both images with no HF gate and no token.
+  targets:
+    officeqa-generate:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        # The model checkpoint as a real HF artifact: the launcher queues an
+        # hfpull step for it (public model, no token) and stages the download;
+        # the step then serves the binding path -- the artifact flow the
+        # env://-only fixtures never exercise.
+        model:
+          uri: "hf:///ibm-granite/granite-4.2-3b"
+          type: model
+        data:
+          uri: "hf:///datasets/ibm-granite/officeqa-buildtest-synthetic"
+          type: dataset
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/officeqa
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "officeqa-pro"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa:ce003c94"
+            # The staged HF artifact path (its basename is not the
+            # model name, so pin the name vLLM advertises).
+            model_path: "{{ bindings.model.binding.path }}"
+            served_model_name: "granite-4.2-3b"
+            options: ""
+            # The synthetic dataset (invented questions + parsed pages, hosted on
+            # the HF Hub; the repo copy in test-data/ is the source of truth):
+            # a trusted local root, so the pinned gated fetch and HF_TOKEN are
+            # bypassed while every other path runs for real.
+            # The synthetic dataset as a real HF artifact (same layout the
+            # trusted local root expects; hosted at
+            # ibm-granite/officeqa-buildtest-synthetic).
+            dataset: "{{ bindings.data.binding.path }}"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "officeqa"
+            run_name: "buildtest"
+            limit: "2"
+            workers: "2"
+            phase: "generate"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "gpu-mid"
+                accelerators: "H200:1"
+                memory: 256
+    officeqa-score:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        # The same model artifact the generate target declares: a target only
+        # resolves bindings for inputs it declares itself (the granite4-350m
+        # recipes' per-target pattern), and the score phase's consistency
+        # check compares this run's model string against the generation
+        # record's. The second pull is a shared-cache hit.
+        model:
+          uri: "hf:///ibm-granite/granite-4.2-3b"
+          type: model
+        data:
+          uri: "hf:///datasets/ibm-granite/officeqa-buildtest-synthetic"
+          type: dataset
+        generation:
+          binding: officeqa-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/officeqa
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "officeqa-pro"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-officeqa-cpu:ce003c94"
+            # Must match the generate target's expression exactly: the score
+            # phase checks the generation record's model against this run's
+            # (results.py read_generation), and the binding path is what
+            # generate recorded. The score target declares the same model
+            # input, so it resolves the identical staged path (the second pull
+            # hits the shared assetstore cache).
+            model_path: "{{ bindings.model.binding.path }}"
+            options: ""
+            # Same synthetic dataset and output dir: the score phase reads
+            # the generation.json the generate phase wrote there, and the
+            # questions/gold answers from the CSVs.
+            # The synthetic dataset as a real HF artifact (same layout the
+            # trusted local root expects; hosted at
+            # ibm-granite/officeqa-buildtest-synthetic).
+            dataset: "{{ bindings.data.binding.path }}"
+            # The generate target's output dir, followed from the artifact:
+            # target-runs get distinct workdirs, so take the dirname of the
+            # bound generation.json -- the one path guaranteed to be where
+            # generate wrote it.
+            output_dir: "{{ bindings.generation.binding.path.rsplit('/', 1)[0] }}"
+            limit: "2"
+            workers: "2"
+            phase: "score"
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "cpu"
+                memory: 32
+                cpus: 8
+              sbatch_options:
+                constraint: null

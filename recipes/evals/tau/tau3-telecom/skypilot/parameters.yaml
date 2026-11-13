@@ -21,8 +21,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-tau:de4d8818"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-tau-cpu:de4d8818"
+IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-tau:ce003c94"
+IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-tau-cpu:ce003c94"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
@@ -32,7 +32,7 @@ OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Paid APIs (user simulator; this domain scores rule-based) ──────────
-# The generate target declares GRANITE_EVALS_USER_API_KEY: the user simulator
+# The generate target declares EVAL_USER_API_KEY: the user simulator
 # (default aws/claude-sonnet-5) runs there. LLM judging exists only for the tau
 # NL domains (retail, banking_knowledge); telecom grades with the harness's own
 # DB/action/communicate evaluators, so the score target declares no judge

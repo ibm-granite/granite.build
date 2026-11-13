@@ -1,0 +1,33 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_swebench.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). The recipes' shape:
+# swebench-verified generates on the family's GPU image and scores on its CPU image,
+# bound by the granite_generation artifact, so one build test covers both
+# images.
+targets:
+- swebench-generate
+- swebench-score
+target_expectations:
+- target_name: swebench-generate
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: swebench-verified
+      phase: generate
+    step_uri: space://steps/eval/swebench
+- target_name: swebench-score
+  step_count: 2
+  input_artifact_count: 2
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: swebench-verified
+      phase: score
+      image: us.icr.io/cil15-shared-registry/gb-step-eval-swebench-cpu:ce003c94
+    step_uri: space://steps/eval/swebench
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+- runner
+simulate_step_failure: false
+timeout_minutes: 150

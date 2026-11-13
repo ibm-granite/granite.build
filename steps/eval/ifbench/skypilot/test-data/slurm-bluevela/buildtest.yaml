@@ -1,0 +1,33 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_ifbench.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). The recipes' shape:
+# ifbench generates on the family's GPU image and scores on its CPU image,
+# bound by the granite_generation artifact, so one build test covers both
+# images.
+targets:
+- ifbench-generate
+- ifbench-score
+target_expectations:
+- target_name: ifbench-generate
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: ifbench
+      phase: generate
+    step_uri: space://steps/eval/ifbench
+- target_name: ifbench-score
+  step_count: 2
+  input_artifact_count: 2
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: ifbench
+      phase: score
+      image: us.icr.io/cil15-shared-registry/gb-step-eval-ifbench-cpu:ce003c94
+    step_uri: space://steps/eval/ifbench
+space_uri: ../../space
+tests:
+- runner
+simulate_step_failure: false
+timeout_minutes: 75

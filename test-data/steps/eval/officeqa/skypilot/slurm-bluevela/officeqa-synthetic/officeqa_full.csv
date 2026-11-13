@@ -1,0 +1,3 @@
+uid,question,answer,source_docs,source_files,difficulty
+synth-full-q1,"What is the projected budget surplus for fiscal year 2027?","123.4 billion dollars","https://example.invalid/synth-bulletin-1.txt?page=0","synth-bulletin-1.txt","medium"
+synth-full-q2,"By how much does the projected surplus decline in FY2028?","73.4 billion dollars","https://example.invalid/synth-bulletin-1.txt?page=1","synth-bulletin-1.txt","hard"

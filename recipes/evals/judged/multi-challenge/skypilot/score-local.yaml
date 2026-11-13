@@ -6,7 +6,7 @@ granite.build:
   # output). Each run scores a fresh copy, so the source is never changed. The model, limit and
   # repeats come from generation.json itself, since the score phase must match them. JUDGE_TAG
   # names this judge's grades (items/*/*/judgment-<tag>.json, results-<tag>.json). Needs the
-  # GRANITE_EVALS_JUDGE_API_KEY gb secret. Shares parameters.yaml with build.yaml.
+  # EVAL_JUDGE_API_KEY gb secret. Shares parameters.yaml with build.yaml.
   targets:
     multi-challenge-score:
       environment_uri: "space://environments/docker"
@@ -24,7 +24,7 @@ granite.build:
             docker:
               secrets:
                 secret_names_to_use_as_env_variable:
-                  - env_name: GRANITE_EVALS_JUDGE_API_KEY
+                  - env_name: EVAL_JUDGE_API_KEY
             compute_config:
               num_cpus_per_node: $${SCORE_CPUS}
               total_memory_per_node: "$${SCORE_MEMORY}Gi"

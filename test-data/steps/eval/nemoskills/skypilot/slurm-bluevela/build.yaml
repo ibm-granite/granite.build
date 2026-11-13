@@ -1,0 +1,79 @@
+granite.build:
+  name: skypilot-slurm-bluevela-eval-nemoskills-test
+  # The recipes' shape: generate on the family's GPU image, score on its CPU
+  # image, bound by the granite_generation artifact -- one build test covers
+  # both images.
+  targets:
+    nemoskills-generate:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/nemoskills
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "math-500"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: "answers=gold"
+            # Relative: composes and then resolves against the per-run
+            # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
+            output_root: "nemoskills"
+            run_name: "buildtest"
+            limit: "5"
+            workers: "8"
+            phase: "generate"
+            # Empty = the image's node-local default: the pinned dataset
+            # download lands per job (hermetic; no shared-FS path to name).
+            hf_home: ""
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+# Gold mode serves no model, so even the generate target (on the
+            # GPU image) runs on the cpu partition.
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "cpu"
+                memory: 32
+                cpus: 8
+              sbatch_options:
+                constraint: null
+    nemoskills-score:
+      environment_uri: space://environments/skypilot/slurm/bluevela
+      inputs:
+        generation:
+          binding: nemoskills-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/nemoskills
+          config:
+            poll_interval_seconds: 5
+            log_retrieval_interval_seconds: 30
+            benchmark: "math-500"
+            image: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:ce003c94"
+            model_path: "ibm-granite/granite-4.2-3b"
+            options: "answers=gold"
+            # The generate target's output dir, followed from the artifact:
+            # target-runs get distinct workdirs, so take the dirname of the
+            # bound generation.json -- the one path guaranteed to be where
+            # generate wrote it.
+            output_dir: "{{ bindings.generation.binding.path.rsplit('/', 1)[0] }}"
+            limit: "5"
+            workers: "4"
+            phase: "score"
+            sandbox_cache: ""
+            launcher_config:
+              resources:
+                cluster: "bluevela"
+                zone: "cpu"
+                memory: 32
+                cpus: 8
+              sbatch_options:
+                constraint: null

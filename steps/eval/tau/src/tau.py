@@ -430,7 +430,7 @@ class Tau3(Benchmark):
             kwargs["max_tokens"] = self.opt(f"{role}_max_tokens", 0)
         if model == SELF:
             return Endpoint(f"hosted_vllm/{served}", {**kwargs, "api_base": base_url, "api_key": "EMPTY"}, served, True)
-        key_env = self.opt(f"{role}_api_key_env", f"GRANITE_EVALS_{role.upper()}_API_KEY")
+        key_env = self.opt(f"{role}_api_key_env", f"EVAL_{role.upper()}_API_KEY")
         key = os.environ.get(key_env, "")
         if not called:
             given = self.config.options.get(f"{role}_base_url")

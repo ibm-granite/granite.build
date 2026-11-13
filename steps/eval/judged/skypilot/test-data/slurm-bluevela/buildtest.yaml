@@ -1,0 +1,23 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_judged.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). gdpval runs end to
+# end with judge_model=self -- the key-less smoke path that grades with the
+# served model -- on the family's GPU image (phase all: scoring needs the
+# server when the judge is the served model).
+targets:
+- judged-test
+target_expectations:
+- target_name: judged-test
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: gdpval
+      phase: all
+      options: judge_model=self
+    step_uri: space://steps/eval/judged
+space_uri: ../../space
+tests:
+- runner
+simulate_step_failure: false
+timeout_minutes: 60
