@@ -1,0 +1,16 @@
+# Dependabot version updates. Only GitHub Actions for now: the workflows pin
+# each action to a commit SHA with the release in a comment, and Dependabot
+# updates both together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One pull request per week for all action updates.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
