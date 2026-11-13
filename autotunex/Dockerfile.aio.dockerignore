@@ -1,7 +1,10 @@
 # Build context for autotunex/Dockerfile.aio, which builds from the REPOSITORY
 # ROOT. BuildKit reads this file in place of the root .dockerignore (which serves
 # the gbserver image and excludes autotunex/ and frontend/). It is an allowlist:
-# everything is out unless re-included below.
+# everything is out unless re-included below, so nothing new at the TOP LEVEL can
+# drift into the image. Inside the re-included trees, untracked files still enter
+# the context, so the patterns at the end keep out the known junk. Anything else
+# untracked there goes in.
 *
 
 # AutoTuneX itself, and the supervisor/Caddy/entrypoint files of this image.
@@ -11,8 +14,9 @@
 !autotunex/docker/aio
 
 # granite.build: what gbserver, its dashboard build (make build-frontend) and its
-# editable installs read. .git carries the version tags setuptools_scm stamps
-# the version from.
+# editable installs read; docs/ for the dashboard chat's search_docs tool. .git
+# carries the version tags setuptools_scm stamps the version from; it is
+# bind-mounted, never copied into a layer.
 !pyproject.toml
 !README.md
 !Makefile
@@ -22,11 +26,18 @@
 !configurations
 !steps
 !frontend
+!docs
 
-# Never: caches, local env files, build outputs, local dev certificates.
+# Never: caches, local env files, build outputs, logs, coverage data, local dev
+# certificates.
 **/__pycache__
 **/*.pyc
 **/*.egg-info
+**/dist
+**/*.log
+**/.coverage
+**/.tox
+steps/**/space
 **/.mypy_cache
 **/.pytest_cache
 **/.ruff_cache

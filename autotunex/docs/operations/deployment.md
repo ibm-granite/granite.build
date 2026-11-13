@@ -293,7 +293,13 @@ installed from the copied tree, so an image built from a commit runs the gbserve
 in that commit. The checkout must carry granite.build's `v*` version tags:
 setuptools_scm stamps the version from them, and without one the build stops rather
 than ship an `llmb` CLI whose version check fails every job launch. The same check
-fails a build from a git worktree, whose `.git` is a file.
+fails a build from a git worktree, whose `.git` is a file. For a checkout that
+cannot reach a tag (a worktree, a shallow clone), pass the version instead:
+`--build-arg GB_VERSION=X.Y.Z` stamps it and skips the check. `.git` is only
+bind-mounted into the steps that stamp the version, so a commit that does not touch
+`frontend/` reuses the cached dashboard build, and the image carries no `.git`.
+The image also ships granite.build's `docs/`, which the dashboard chat's
+`search_docs` tool reads.
 `PUBLIC_AUTOTUNEX_API_URL` (empty by default, meaning same-origin) matters only if
 the API is fronted elsewhere. `INSTALL_AUTOTUNE_CORE=1` additionally installs the
 `autotune` training core that the `local` backend needs, from the vendored
@@ -327,7 +333,9 @@ installs granite.build from the checkout being built (the `llmb` CLI, and the
 the vendored `src/fm-tune` at its torch-free base (the catalog imports; no
 Ray/torch, so no in-process training). It is CPU-only — `DEVICE=cuda` with
 `JOB_BACKEND=llmb` stops the build, since training happens on the granite.build
-side — and like the AIO image it needs granite.build's `v*` tags in the checkout.
+side — and like the AIO image it needs granite.build's `v*` tags in the checkout,
+or `--build-arg GB_VERSION=X.Y.Z`. granite.build and AutoTuneX are resolved in
+one `pip install`.
 
 ```bash
 docker build -f autotunex/Dockerfile --build-arg JOB_BACKEND=llmb -t autotunex:gb .
@@ -369,7 +377,9 @@ root:
 Edit the jobs when this change merges: until then all three fail.
 
 The pipeline's checkout must include tags: a tag-less or shallow clone fails the
-first build at the version check, by design.
+first build at the version check, by design. A pipeline that cannot fetch tags
+passes the version instead, `--opt build-arg:GB_VERSION=X.Y.Z`, which also makes
+the stamped version deterministic.
 
 ## Security
 

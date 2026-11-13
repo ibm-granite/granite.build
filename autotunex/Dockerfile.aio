@@ -21,6 +21,8 @@
 # commit. Build from the repository root; autotunex/Dockerfile.aio.dockerignore
 # sets what enters the context:
 #   docker build -f autotunex/Dockerfile.aio -t autotunex-aio:local .
+# From a git worktree or a shallow clone, which reach no v* tag, pass the version:
+# --build-arg GB_VERSION=0.3.10 (see the py-builder stage).
 # AutoTuneX submits builds to the co-located gbserver through the `llmb` CLI
 # (job_backend=llmb, GB_ENVIRONMENT=standalone).
 #
@@ -56,35 +58,23 @@ RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
 # Output: /app/ux/build
 
 # -----------------------------------------------------------------------------
-# Stage 2 — granite.build from THIS checkout, with its dashboard UI built
+# Stage 2 — granite.build's dashboard UI, from THIS checkout
+#
+# Only frontend/ and the Makefile enter this stage, so a commit that does not
+# touch frontend/ reuses the cached yarn install and `next build`.
 # -----------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-slim AS gb-builder
+FROM node:${NODE_VERSION}-slim AS dashboard
 
-# git: the version check below (and setuptools_scm in py-builder, which copies this
-# tree). make + rsync: the repo's own `make build-frontend` recipe, run as-is.
+# make + rsync: the repo's own `make build-frontend` recipe, run as-is. Its
+# `$(shell git …)` variables are expanded lazily and the recipe uses none of
+# them, so this stage needs neither git nor .git.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates make rsync \
+    && apt-get install -y --no-install-recommends ca-certificates make rsync \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/granite.build
-COPY pyproject.toml README.md Makefile ./
-COPY .git/ ./.git/
-COPY src/ ./src/
-COPY test/ ./test/
-COPY configurations/ ./configurations/
-COPY steps/ ./steps/
+COPY Makefile ./
 COPY frontend/ ./frontend/
-
-# granite.build versions itself with setuptools_scm, from the nearest v* tag
-# (v0.3.9 → 0.3.10.devN). With none reachable it is stamped below the llmb CLI's
-# supported floor, and the CLI's version check then EXITS NONZERO before running
-# `build start` — breaking every job launch from AutoTuneX. Fail the build here
-# instead. A git worktree fails too: its .git is a file pointing outside the
-# build context.
-RUN git describe --tags --match 'v[0-9]*' >/dev/null 2>&1 \
-    || { echo "FATAL: no v* version tag is reachable in this checkout (or it is a git worktree)." >&2; \
-         echo "       Build from a full clone with tags." >&2; \
-         exit 1; }
 
 # `make build-frontend` builds the Next.js dashboard and stages its static export
 # where gbserver serves it from (src/gbserver/static/ui/, which git does not
@@ -110,19 +100,28 @@ RUN corepack enable \
          echo "FATAL: loopback API base URL baked into the dashboard bundle" >&2; \
          echo "       check for a frontend/apps/*/.env*.local in the build context" >&2; \
          exit 1; \
-       fi \
-    # Drop the frontend build artifacts once the export is staged — node_modules
-    # and the .next cache are hundreds of MB that must not reach later stages.
-    && rm -rf frontend/node_modules frontend/apps/*/node_modules frontend/packages/*/node_modules \
-         frontend/apps/*/.next frontend/apps/*/out
+       fi
+# Output: /opt/granite.build/src/gbserver/static/ui — the only path later stages copy.
 
 # -----------------------------------------------------------------------------
 # Stage 3 — build three isolated virtualenvs (conflicting pins across services)
+#
+# Every pip call here uses a cache mount: the granite.build tree changes with
+# every commit, so these layers rerun often, and the cache keeps the reruns from
+# downloading the dependency trees again. It is a mount, so it never lands in a
+# layer.
 # -----------------------------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim AS py-builder
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# granite.build versions itself with setuptools_scm, from the nearest v* tag
+# (v0.3.9 → 0.3.10.devN). GB_VERSION skips the tag check below and stamps the
+# version given, for checkouts that cannot reach a tag (worktrees, shallow CI
+# clones). An empty value is ignored by setuptools_scm, so the ENV is safe to set
+# unconditionally.
+ARG GB_VERSION=""
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_GRANITE_BUILD=${GB_VERSION}
 
 # Opt-in: also install the autotune training core (see venv 1 below).
 # 0/false (default) → lean image; 1/true → adds granite.build (from the copied
@@ -163,8 +162,38 @@ RUN apt-get update \
 # backend, and set AUTOTUNEX_JOB_BACKEND=local at run time to use it.
 COPY autotunex/pyproject.toml autotunex/README.md /build/autotunex/
 COPY autotunex/src /build/autotunex/src
-COPY --from=gb-builder /opt/granite.build /opt/granite.build
-RUN python -m venv /opt/venv/autotunex \
+
+# granite.build from THIS checkout: what its editable installs and gbserver read
+# (docs/ for the dashboard chat's search_docs tool), plus the dashboard export.
+WORKDIR /opt/granite.build
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+COPY test/ ./test/
+COPY configurations/ ./configurations/
+COPY steps/ ./steps/
+COPY docs/ ./docs/
+COPY --from=dashboard /opt/granite.build/src/gbserver/static/ui ./src/gbserver/static/ui
+WORKDIR /
+
+# .git is bind-mounted into each RUN that stamps the version, never copied: a
+# copy would put it in a layer, and make every commit, fetch or rebase invalidate
+# everything after it.
+#
+# With no v* tag reachable the version is stamped below the llmb CLI's supported
+# floor, and the CLI's version check then EXITS NONZERO before running
+# `build start` — breaking every job launch from AutoTuneX. Fail the build here
+# instead. A git worktree fails too: its .git is a file pointing outside the
+# build context.
+RUN --mount=type=bind,source=.git,target=/opt/granite.build/.git \
+    [ -n "$GB_VERSION" ] || git -C /opt/granite.build describe --tags --match 'v[0-9]*' >/dev/null 2>&1 \
+    || { echo "FATAL: no v* version tag is reachable in this checkout (or it is a git worktree)." >&2; \
+         echo "       Build from a full clone with tags, or pass the version:" >&2; \
+         echo "       --build-arg GB_VERSION=X.Y.Z." >&2; \
+         exit 1; }
+
+RUN --mount=type=bind,source=.git,target=/opt/granite.build/.git \
+    --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv/autotunex \
     && /opt/venv/autotunex/bin/pip install --upgrade pip \
     && case "$INSTALL_AUTOTUNE_CORE" in \
          1|true|TRUE|yes|on) GB_PKG="-e /opt/granite.build" ;; \
@@ -202,13 +231,16 @@ RUN python -m venv /opt/venv/autotunex \
 # __init__ logs its connection line and only then connects, and tenacity retries
 # the failure 10x, nested, per table, so gbserver appears to hang silently for
 # tens of minutes instead of reporting a missing driver.
-RUN python -m venv /opt/venv/gb \
+RUN --mount=type=bind,source=.git,target=/opt/granite.build/.git \
+    --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv/gb \
     && /opt/venv/gb/bin/pip install --upgrade pip \
     && /opt/venv/gb/bin/pip install -e "/opt/granite.build[standalone]" psycopg2-binary
 
 # The version is already stamped into the editable installs' dist-info, so nothing
-# at run time needs the git history; leaving .git would publish the builder's
-# config, remotes, branches, reflogs and worktree paths in the runtime image.
+# at run time needs the git history. .git was only ever bind-mounted, but a builder
+# can leave the empty mount point behind; remove it so the runtime image carries
+# no .git at all.
 RUN rm -rf /opt/granite.build/.git
 
 # --- venv 3: api-bridge (synchronous MySQL/Postgres write-path) -----------------
@@ -220,7 +252,8 @@ RUN rm -rf /opt/granite.build/.git
 # is already spent in this image, where venv 2 installs psycopg2-binary. The
 # `[binary]` wheel bundles libpq, so again no apt package in the runtime stage.
 # Quoted so the shell does not glob `[postgres]`.
-RUN python -m venv /opt/venv/apibridge \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv/apibridge \
     && /opt/venv/apibridge/bin/pip install --upgrade pip \
     && /opt/venv/apibridge/bin/pip install "/build/autotunex/src/api-bridge[postgres]"
 

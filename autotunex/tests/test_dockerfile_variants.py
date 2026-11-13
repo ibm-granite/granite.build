@@ -283,8 +283,11 @@ def test_the_local_backend_keeps_todays_defaults_and_needs_no_granite_build() ->
     assert "AUTOTUNEX_JOB_BACKEND=local" in body
     assert "AUTOTUNEX_AUTO_CREATE_SCHEMA=true" in body
     assert 'AUTOTUNEX_EXTRAS=""' in body
-    # Referencing gb-wheel would make every CPU build need .git and its version tags.
-    assert "gb-wheel" not in body
+    assert 'GB_WHEEL=""' in body
+    # Referencing gb-wheel from a stage `local` builds would make every CPU build
+    # need .git and its version tags. The runtime stage is shared, so it counts too.
+    assert "gb-wheel" not in _instructions(body)
+    assert "gb-wheel" not in _instructions(_stage_body(_dockerfile(), "runtime"))
 
 
 def test_the_llmb_backend_bakes_what_dockerfile_gb_baked() -> None:
@@ -297,42 +300,53 @@ def test_the_llmb_backend_bakes_what_dockerfile_gb_baked() -> None:
     assert "FM_TUNE_EXTRAS=none" in body
 
 
-def test_the_llmb_backend_refuses_the_cuda_base_before_installing_anything() -> None:
+def test_the_llmb_backend_refuses_the_cuda_base_before_doing_anything_else() -> None:
     # llmb trains on the granite.build side; a CUDA llmb image is ~10 GB of dead weight.
     body = _instructions(_stage_body(_dockerfile(), "backend-llmb"))
-    guard = body.index('[ "$FM_TUNE_EXTRAS" = "core" ]')
+    guard = body.index("FM_TUNE_EXTRAS")
 
     assert guard < body.index("apt-get")
-    assert guard < body.index("pip install")
+    assert guard < body.index("--from=gb-wheel")
 
 
 def test_the_llmb_backend_installs_granite_build_from_this_checkout() -> None:
-    body = _stage_body(_dockerfile(), "backend-llmb")
+    body = _instructions(_stage_body(_dockerfile(), "backend-llmb"))
 
-    assert "from=gb-wheel" in body
+    assert "--from=gb-wheel" in body
     assert "git+https" not in _dockerfile()
     assert not (_DOCKERFILE.parent / "Dockerfile.gb").exists()
 
 
-def test_the_granite_build_wheel_requires_a_version_tag() -> None:
+def test_granite_build_and_autotunex_are_resolved_in_one_pip_call() -> None:
+    # The llmb backend copies the wheel in and names it in GB_WHEEL; the runtime
+    # installs it beside AutoTuneX, so pip resolves both pin sets together.
+    llmb = _instructions(_stage_body(_dockerfile(), "backend-llmb"))
+    copy = next(line for line in llmb.splitlines() if "--from=gb-wheel" in line)
+    wheel_dir = copy.split()[-1]
+    gb_wheel = re.search(r'GB_WHEEL="([^"]*)"', llmb)
+
+    assert gb_wheel is not None and gb_wheel.group(1).startswith(wheel_dir)
+
+    runtime = _instructions(_stage_body(_dockerfile(), "runtime"))
+    install = next(run for run in runtime.split("\nRUN ") if "AUTOTUNEX_EXTRAS" in run)
+    assert "$GB_WHEEL" in install
+    assert '"$GB_WHEEL"' not in install, "quoting GB_WHEEL stops the shell expanding its glob"
+
+
+def test_the_per_commit_install_reuses_a_pip_cache() -> None:
+    # The wheel's version changes with every commit, so this layer reruns often.
+    runtime = _instructions(_stage_body(_dockerfile(), "runtime"))
+    install = next(run for run in runtime.split("\nRUN ") if "$GB_WHEEL" in run)
+
+    assert "--mount=type=cache,target=/root/.cache/pip" in install
+    assert "--no-cache-dir" not in install
+
+
+def test_the_granite_build_wheel_requires_a_version_tag_or_an_explicit_version() -> None:
     # Without a v* tag setuptools_scm stamps a version below the llmb CLI's floor,
     # and every `llmb build start` exits 1 at run time instead of here.
     body = _instructions(_stage_body(_dockerfile(), "gb-wheel"))
 
-    assert body.index("git describe --tags --match 'v[0-9]*'") < body.index("pip wheel")
-
-
-def test_the_runtime_installs_autotunex_with_the_backends_extras() -> None:
-    body = _instructions(_stage_body(_dockerfile(), "runtime"))
-
-    assert 'pip install --no-cache-dir ".${AUTOTUNEX_EXTRAS}"' in body
-    assert "pip check" in body
-
-
-def test_the_llmb_backend_installs_fm_tune_without_extras() -> None:
-    body = _instructions(_stage_body(_dockerfile(), "runtime"))
-
-    assert (
-        'if [ "$FM_TUNE_EXTRAS" = "none" ]; '
-        "then pip install --no-cache-dir ./src/fm-tune; exit 0; fi" in body
-    )
+    assert body.index("git describe") < body.index("pip wheel")
+    assert 'ARG GB_VERSION=""' in body
+    assert "=${GB_VERSION}" in body

@@ -14,6 +14,7 @@ only as a failed toolchain build.
 from __future__ import annotations
 
 import fnmatch
+import re
 import tomllib
 from pathlib import Path
 
@@ -49,6 +50,27 @@ def _copy_sources(content: str) -> list[str]:
     return sources
 
 
+def _bind_sources(content: str) -> list[str]:
+    """Return every context-relative source of a ``RUN --mount=type=bind`` (``from=`` excluded)."""
+    sources: list[str] = []
+    for mount in re.findall(r"--mount=(\S+)", content):
+        options = dict(option.split("=", 1) for option in mount.split(","))
+        if options.get("type") == "bind" and "from" not in options:
+            sources.append(options["source"])
+    return sources
+
+
+def _runs(stage: str) -> list[str]:
+    """Return each ``RUN`` in ``stage`` as one string, continuation lines included."""
+    return _instructions(stage).split("\nRUN ")[1:]
+
+
+def _scm_pretend_env() -> str:
+    """Return the variable setuptools_scm reads a pretend version for granite.build from."""
+    name = tomllib.loads(_text(_REPO / "pyproject.toml"))["project"]["name"]
+    return "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + re.sub(r"[-_.]+", "_", name).upper()
+
+
 def _ignore_rules(dockerfile: Path) -> list[str]:
     """Return the non-comment rules of the ignore file BuildKit pairs with ``dockerfile``."""
     lines = _text(dockerfile.with_name(dockerfile.name + ".dockerignore")).splitlines()
@@ -82,17 +104,34 @@ def test_each_dockerfile_has_an_allowlist_ignore_file() -> None:
         assert _ignore_rules(dockerfile)[0] == "*", f"{dockerfile.name}: start from `*`"
 
 
-def test_every_copy_source_exists_at_the_repo_root() -> None:
+def test_every_copy_and_bind_source_exists_at_the_repo_root() -> None:
     for dockerfile in (_DOCKERFILE, _AIO):
-        for source in _copy_sources(_text(dockerfile)):
+        content = _text(dockerfile)
+        for source in _copy_sources(content) + _bind_sources(content):
             assert (_REPO / source).exists(), f"{dockerfile.name}: {source} is not in the repo"
 
 
-def test_every_copy_source_survives_the_ignore_file() -> None:
+def test_every_copy_and_bind_source_survives_the_ignore_file() -> None:
     for dockerfile in (_DOCKERFILE, _AIO):
         rules = _ignore_rules(dockerfile)
-        for source in _copy_sources(_text(dockerfile)):
+        content = _text(dockerfile)
+        for source in _copy_sources(content) + _bind_sources(content):
             assert _in_context(source, rules), f"{dockerfile.name}: the ignore file drops {source}"
+
+
+def test_known_junk_inside_the_allowlisted_trees_stays_out() -> None:
+    # Untracked files under a re-included tree enter the context, and granite.build's
+    # `"*"` package data would ship them in the wheel.
+    for dockerfile in (_DOCKERFILE, _AIO):
+        rules = _ignore_rules(dockerfile)
+        for junk in (
+            "src/gbserver/dist/granite_build-0.0.0.tar.gz",
+            "test/run.log",
+            "src/.coverage",
+            "test/.tox/py312",
+        ):
+            assert not _in_context(junk, rules), f"{dockerfile.name}: {junk} would be sent"
+    assert not _in_context("steps/train/fm-tune/bash/space/space.yaml", _ignore_rules(_AIO))
 
 
 def test_local_env_files_never_enter_the_context() -> None:
@@ -132,15 +171,59 @@ def test_the_aio_context_keeps_frontend_build_outputs_and_local_env_out() -> Non
     assert _in_context("frontend/apps/standalone/package.json", rules)
 
 
-def test_the_aio_runtime_does_not_ship_the_builders_git_directory() -> None:
-    # The version is stamped into dist-info by the editable installs; .git would
-    # publish the builder's config, remotes, branches and reflogs.
-    body = _instructions(_stage_body(_text(_AIO), "py-builder"))
-    installs = [i for i in range(len(body)) if body.startswith("pip install -e", i)]
-    last = max(i for i in installs if "/opt/granite.build" in body[i : i + 80])
+def test_no_dockerfile_copies_git_into_a_layer() -> None:
+    # A copied .git would publish the builder's config, remotes and reflogs, and make
+    # every commit, fetch or rebase invalidate every layer after it.
+    for dockerfile in (_DOCKERFILE, _AIO):
+        sources = _copy_sources(_text(dockerfile))
+        assert not [s for s in sources if s.rstrip("/") == ".git"], dockerfile.name
 
-    assert "rm -rf /opt/granite.build/.git" in body
-    assert body.index("rm -rf /opt/granite.build/.git") > last
+
+def test_every_granite_build_install_can_read_the_version_tags() -> None:
+    # setuptools_scm stamps the version at build time; without .git (or GB_VERSION)
+    # it falls back to 0.0.0, below the llmb CLI's floor.
+    stages = [
+        (_DOCKERFILE, _stage_body(_text(_DOCKERFILE), "gb-wheel"), "pip wheel"),
+        (_AIO, _stage_body(_text(_AIO), "py-builder"), "/opt/granite.build"),
+    ]
+    for dockerfile, stage, marker in stages:
+        builds = [run for run in _runs(stage) if marker in run and "pip" in run]
+        assert builds, f"{dockerfile.name}: no granite.build install found"
+        for run in builds:
+            assert "source=.git" in run, f"{dockerfile.name}: a granite.build install has no .git"
+
+
+def test_the_aio_runtime_does_not_ship_a_git_directory() -> None:
+    # .git is only bind-mounted, but a builder can leave the empty mount point behind.
+    runs = _runs(_stage_body(_text(_AIO), "py-builder"))
+    last_mount = max(i for i, run in enumerate(runs) if "source=.git" in run)
+
+    assert any("rm -rf /opt/granite.build/.git" in run for run in runs[last_mount + 1 :])
+
+
+def test_gb_version_stands_in_for_a_missing_tag() -> None:
+    # Worktrees and shallow CI clones reach no v* tag; GB_VERSION is their way through.
+    stages = [
+        (_DOCKERFILE, _stage_body(_text(_DOCKERFILE), "gb-wheel")),
+        (_AIO, _stage_body(_text(_AIO), "py-builder")),
+    ]
+    for dockerfile, stage in stages:
+        body = _instructions(stage)
+        assert 'ARG GB_VERSION=""' in body, dockerfile.name
+        assert f"ENV {_scm_pretend_env()}=${{GB_VERSION}}" in body, dockerfile.name
+        check = next(run for run in _runs(stage) if "git" in run and "describe" in run)
+        assert "$GB_VERSION" in check, f"{dockerfile.name}: GB_VERSION does not skip the tag check"
+        assert "exit 1" in check, f"{dockerfile.name}: a missing tag no longer fails the build"
+
+
+def test_the_aio_pip_installs_reuse_a_pip_cache() -> None:
+    # The granite.build tree changes with every commit, so these layers rerun often.
+    stage = _stage_body(_text(_AIO), "py-builder")
+
+    assert "PIP_NO_CACHE_DIR" not in _instructions(stage)
+    for run in _runs(stage):
+        if "pip install" in run:
+            assert "--mount=type=cache,target=/root/.cache/pip" in run, run.splitlines()[0]
 
 
 def test_the_aio_image_does_not_clone_granite_build() -> None:
@@ -152,7 +235,7 @@ def test_the_aio_image_does_not_clone_granite_build() -> None:
 
 
 def test_the_aio_dashboard_is_built_by_the_repos_own_recipe() -> None:
-    body = _instructions(_stage_body(_text(_AIO), "gb-builder"))
+    body = _instructions(_stage_body(_text(_AIO), "dashboard"))
 
     assert "make build-frontend" in body
     assert "yarn build" not in body
@@ -160,10 +243,18 @@ def test_the_aio_dashboard_is_built_by_the_repos_own_recipe() -> None:
     assert body.index("rm -f frontend/.env*.local") < body.index("make build-frontend")
 
 
-def test_the_aio_image_requires_a_version_tag() -> None:
-    body = _instructions(_stage_body(_text(_AIO), "gb-builder"))
+def test_the_aio_dashboard_rebuilds_only_when_its_inputs_change() -> None:
+    # Anything else copied in (above all .git) would rerun yarn install and
+    # `next build` for commits that never touched frontend/.
+    stage = _stage_body(_text(_AIO), "dashboard")
 
-    assert "git describe --tags --match 'v[0-9]*'" in body
+    assert sorted(_copy_sources(stage) + _bind_sources(stage)) == ["Makefile", "frontend/"]
+
+
+def test_the_aio_image_ships_the_docs_search_docs_reads() -> None:
+    # dashboard_tools._docs_root() resolves docs/ beside src/ in the editable install.
+    assert "docs/" in _copy_sources(_stage_body(_text(_AIO), "py-builder"))
+    assert _in_context("docs/README.md", _ignore_rules(_AIO))
 
 
 def test_the_aio_image_carries_one_granite_build() -> None:
@@ -172,7 +263,7 @@ def test_the_aio_image_carries_one_granite_build() -> None:
     instructions = _instructions(_text(_AIO))
 
     assert "granite-build" not in instructions
-    assert 'GB_PKG="-e /opt/granite.build"' in _stage_body(_text(_AIO), "py-builder")
+    assert "-e /opt/granite.build" in _stage_body(_text(_AIO), "py-builder")
 
 
 def test_autotunex_pulls_no_dependency_from_a_url() -> None:

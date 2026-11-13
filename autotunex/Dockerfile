@@ -13,6 +13,9 @@
 #   docker build -f autotunex/Dockerfile -t autotunex:cuda --build-arg DEVICE=cuda .    # CUDA + [full]
 #   docker build -f autotunex/Dockerfile -t autotunex:gb --build-arg JOB_BACKEND=llmb . # llmb backend
 #
+# An llmb build from a git worktree or a shallow clone has no reachable v* tag;
+# pass the version instead: --build-arg GB_VERSION=0.3.10 (see the gb-wheel stage).
+#
 # DEVICE names one of the two base stages below, not an image reference —
 # override CUDA_KERNEL_BASE for that. The value vocabulary (cpu|cuda) matches
 # fm-tune's own runtime override, FMTUNE_DEVICE=cuda|mps|cpu, on purpose.
@@ -63,8 +66,18 @@ RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
 # reachable v* tag it is stamped below the llmb CLI's supported floor, and every
 # `llmb build start` from AutoTuneX then exits 1 — so fail the build here. A git
 # worktree fails too: its .git is a file pointing outside the build context.
+#
+# GB_VERSION skips that check and stamps the version given, for checkouts that
+# cannot reach a tag (worktrees, shallow CI clones). An empty value is ignored by
+# setuptools_scm, so the ENV is safe to set unconditionally.
+#
+# .git is bind-mounted into the one RUN that reads it rather than copied: a copy
+# would put it in a layer, and make every commit, fetch or rebase invalidate the
+# layers after it.
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS gb-wheel
+ARG GB_VERSION=""
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_GRANITE_BUILD=${GB_VERSION}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
@@ -72,14 +85,15 @@ RUN apt-get update \
 
 WORKDIR /gb
 COPY pyproject.toml README.md ./
-COPY .git/ ./.git/
 COPY src/ ./src/
 COPY test/ ./test/
 COPY configurations/ ./configurations/
-RUN git describe --tags --match 'v[0-9]*' >/dev/null 2>&1 \
+RUN --mount=type=bind,source=.git,target=/gb/.git \
+    { [ -n "$GB_VERSION" ] || git describe --tags --match 'v[0-9]*' >/dev/null 2>&1; } \
       || { echo "FATAL: no v* version tag is reachable in this checkout (or it is a git worktree)." >&2; \
            echo "       granite.build would be stamped below the llmb CLI's version floor, and" >&2; \
-           echo "       every job launch would exit 1. Build from a full clone with tags." >&2; \
+           echo "       every job launch would exit 1. Build from a full clone with tags, or" >&2; \
+           echo "       pass the version: --build-arg GB_VERSION=X.Y.Z." >&2; \
            exit 1; } \
     && pip wheel --no-cache-dir --no-deps --wheel-dir /wheels .
 
@@ -115,13 +129,15 @@ ENV FM_TUNE_EXTRAS=full
 FROM ${DEVICE} AS backend-local
 ENV AUTOTUNEX_JOB_BACKEND=local \
     AUTOTUNEX_AUTO_CREATE_SCHEMA=true \
-    AUTOTUNEX_EXTRAS=""
+    AUTOTUNEX_EXTRAS="" \
+    GB_WHEEL=""
 
 # ---------------------------------------------------------------------------
 # Stage 2d — backend: llmb. Submits builds to an external granite.build server
-# and trains nothing here, so it installs granite.build from this checkout (the
-# llmb CLI, and the gbcli package live build logs read), AutoTuneX's mysql + mcp
-# extras, and fm-tune at its torch-free base (FM_TUNE_EXTRAS=none).
+# and trains nothing here, so it brings in the granite.build wheel from this
+# checkout (the llmb CLI, and the gbcli package live build logs read) for the
+# runtime stage to install together with AutoTuneX's mysql + mcp extras, and
+# fm-tune at its torch-free base (FM_TUNE_EXTRAS=none).
 #
 # AUTO_CREATE_SCHEMA stays false and TRAINER_REF oss-main, as Dockerfile.gb had
 # them: this is the image deployments run, against a migrated database.
@@ -135,13 +151,13 @@ RUN [ "$FM_TUNE_EXTRAS" = "core" ] \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-RUN --mount=type=bind,from=gb-wheel,source=/wheels,target=/wheels \
-    pip install --no-cache-dir /wheels/*
+COPY --from=gb-wheel /wheels/ /tmp/gb-wheels/
 ENV AUTOTUNEX_JOB_BACKEND=llmb \
     AUTOTUNEX_AUTO_CREATE_SCHEMA=false \
     AUTOTUNEX_JOB_TRAINER_REF=oss-main \
     AUTOTUNEX_EXTRAS="[mysql,mcp]" \
-    FM_TUNE_EXTRAS=none
+    FM_TUNE_EXTRAS=none \
+    GB_WHEEL="/tmp/gb-wheels/*"
 
 # ---------------------------------------------------------------------------
 # Stage 3 — runtime: the AutoTuneX API, serving the SPA in-process. `FROM
@@ -159,13 +175,17 @@ WORKDIR /app
 # Install AutoTuneX + its exactly-pinned deps, plus the backend's extras
 # (AUTOTUNEX_EXTRAS: none for `local`, mysql + mcp for `llmb`). Every dependency
 # ships a cp312 manylinux wheel, so no compiler/build-essential layer is needed.
-# For `llmb`, granite.build was installed first, by its own stage, so the two
-# were not resolved together: `pip check` fails the build if AutoTuneX's pins
-# broke granite.build's.
+# For `llmb`, GB_WHEEL names the granite.build wheel the backend stage copied in,
+# so pip resolves granite.build and AutoTuneX in one call; for `local` it is
+# empty. Left unquoted on purpose so the shell expands its glob.
+#
+# The wheel's version changes with every commit, so this layer reruns often; the
+# pip cache mount keeps the reruns from downloading the dependency tree again.
+# It is a mount, so the cache never lands in the image.
 COPY autotunex/pyproject.toml autotunex/README.md ./
 COPY autotunex/src/ ./src/
-RUN pip install --no-cache-dir ".${AUTOTUNEX_EXTRAS}" \
-    && if [ "$AUTOTUNEX_JOB_BACKEND" = "llmb" ]; then pip check; fi
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install ".${AUTOTUNEX_EXTRAS}" $GB_WHEEL
 
 # Install the vendored autotune core (src/fm-tune). WHICH extras arrive is set by
 # the base stage: `core` on CPU — the lean training stack the default `local` job
