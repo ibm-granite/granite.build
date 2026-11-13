@@ -13,7 +13,8 @@ Tests are driven through the **Makefile** (which wraps `pytest`) and, for build-
 | `make venv` | Standalone venv (`[standalone,thirdparty,dev]`, no IBM Artifactory). Used by the quick/extended suites and the SkyPilot PR workflow (`skypilot-pr.yml`). |
 | `make ibm-venv` | IBM venv (`[all,dev]`); needs `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`. Used by the `ibm-quick-tests`/`ibm-extended-tests` suites and `cicd-pr-test`/`cicd-merge-test`. |
 
-Both build into the single `.venv`, so building one replaces the other. The build records
+Both build into the single `.venv`, so building one replaces the other. Both also register the git pre-commit hooks
+(`pre-commit install`) when run in a git checkout; see [CONTRIBUTING.md](../../CONTRIBUTING.md#pre-commit-hooks). The build records
 the flavor in `.venv/.flavor`, and the IBM test targets (`ibm-quick-tests`, `ibm-extended-tests`,
 `test-pr`, `test-merge`) refuse to run if it is not `ibm` (a venv built before this file existed
 only gets a warning). The old names

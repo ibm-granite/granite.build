@@ -23,6 +23,8 @@ make ibm-venv    # IBM: [all,dev]; requires ARTIFACTORY_USER and ARTIFACTORY_API
 source .venv/bin/activate
 ```
 
+Both venv targets also run `pre-commit install` (when the directory is a git checkout), registering the hooks from `.pre-commit-config.yaml`: black, isort and gitleaks run on staged files at `git commit`. If a hook modifies files the commit is aborted; `git add` the modified files and commit again. Do not bypass the hooks with `--no-verify`. See `CONTRIBUTING.md` ("Pre-commit hooks").
+
 ### Running Tests
 `pytest -s test` runs the suite (requires `GBTEST_SPS_IBMCLOUD_API_KEY` for secret retrieval); narrow with the usual `test/dir`, `file.py`, or `file.py::Class::method` args. The non-obvious make targets:
 ```shell

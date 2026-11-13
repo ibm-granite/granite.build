@@ -167,13 +167,14 @@ all = [
 ]
 # Development tools
 dev = [
-    "black",
-    "coverage",
-    # Pin below 9 to match the pre-commit-pinned isort (rev 8.0.0) and
-    # contributors' local installs. Unpinned, CI resolves to isort 9.0.1, whose
-    # reordering breaks the repo-wide `isort --check .` lint on files committed
+    # black and isort are pinned to the exact versions of the pre-commit hooks in
+    # .pre-commit-config.yaml so that `make format`, CI and the git hook all format
+    # identically. Bump them together, in one PR. Unpinned, CI resolved to isort 9.0.1,
+    # whose reordering breaks the repo-wide `isort --check .` lint on files committed
     # under 8.x -- failing every PR while local/pre-commit pass (#337).
-    "isort<9",
+    "black==26.10.1",
+    "coverage",
+    "isort==8.0.1",
     "mypy",
     "pre-commit",
     "psutil",
@@ -266,7 +267,9 @@ target-version = ["py311"]
 # See the isort note above: exclude the vendored autotunex/ and granite-evals
 # subtrees from repo-wide black so their upstream formatting is not reflowed
 # (AutoTuneX PR #297).
-extend-exclude = '''
+# force-exclude (not extend-exclude) so the exclusion also applies to files passed
+# explicitly on the command line, as pre-commit does.
+force-exclude = '''
 /autotunex/
 |/steps/eval/src/
 |/steps/eval/[^/]+/src/

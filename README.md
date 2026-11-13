@@ -440,7 +440,7 @@ bash scripts/demo-slurm.sh
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, code style, and pull request guidelines. This project follows the [Contributor Covenant v2.1](CODE_OF_CONDUCT.md). To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, code style, [pre-commit hooks](CONTRIBUTING.md#pre-commit-hooks) (installed automatically by `make venv`), and pull request guidelines. This project follows the [Contributor Covenant v2.1](CODE_OF_CONDUCT.md). To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
 ## License
 
