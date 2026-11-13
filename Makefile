@@ -592,6 +592,7 @@ lint:
 	source $(VENVDIR)/bin/activate && \
 		isort --check . && \
 		black --check . && \
+		python scripts/check_license_headers.py && \
 		pylint src/gbserver/ && \
 		pylint src/gbcli/ && \
 		pylint src/gbcommon/ && \
