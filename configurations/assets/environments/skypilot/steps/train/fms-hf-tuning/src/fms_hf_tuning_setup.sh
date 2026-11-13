@@ -3,7 +3,7 @@
 #
 # Setup-phase sanity check for the fms-hf-tuning step (baked into the image at
 # /opt/fms-hf-tuning/). Everything is preinstalled, so this only proves the image
-# is the one the step expects before any GPU time: the step's scripts and
+# is the one the step expects before training starts: the step's scripts and
 # accelerate configs are there and its venv imports the whole stack, flash-attn
 # included (upstream turns use_flash_attn on by default).
 #

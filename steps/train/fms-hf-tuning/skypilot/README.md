@@ -133,7 +133,7 @@ in the lock: PyPI has only the sdist, which takes hours to compile. The `abiTRUE
 build matches torch 2.8's `_GLIBCXX_USE_CXX11_ABI` (True). fms-hf-tuning turns
 `use_flash_attn` on by default.
 
-The image is 8.5 GB locally (4.7 GB compressed on quay; measured on `fms-v3.2.2-2`).
+The image is 8.5 GB locally (4.7 GB compressed on quay; measured on `fms-v3.2.2-5`).
 `.dockerignore` keeps local `__pycache__` out of `COPY src/` (the first test build
 shipped it).
 
@@ -250,7 +250,7 @@ the payload runs.
   2026-11-06.
 - `-3` left `modular_lightglue.py` unpatched. transformers never imports that file,
   so `-3` is not exploitable through it, but `-4` patches it too. The `-3` tag was
-  **deleted from quay** on 2026-11-10; `-4` is the only published tag.
+  **deleted from quay** on 2026-11-10. `-4` and `-5` are published.
 
 `fms-v3.2.2-4` (manifest
 `sha256:2d4e803ece50d4f6bb62570035eb7715857cbb66280e086af111e3b9e48165cd`, published
@@ -275,9 +275,20 @@ Scan results:
 
 Both build tests passed again on `-4` (results below).
 
-#### Reviewed false positive: PYSEC-2026-2290 / CVE-2026-5241 in `fms-v3.2.2-3` and `-4`
+`fms-v3.2.2-5` (manifest
+`sha256:953d0d30c813691857e379fae5f54bf4b672e3e57d4380df1d309e5188f6f750`, published
+2026-11-13) is on the same lock, base and patch as `-4`. It carries the PR #667
+review fixes in `src/`: in `fms_hf_tuning_job.py`, a mapping only where the field
+takes one, `exp_metadata` as JSON text, and the new owned keys; in
+`fms_hf_tuning_run.sh`, the `tensor_count` metadata and the refusal of an
+`output_path` that overlaps a bound dataset. It was checked inside the built image as
+`-4` was, with every `src/` file byte-identical to the source. trivy 0.76.2: 0
+CRITICAL / 7 HIGH, the same findings as `-4`. The aws build test passed on `-5`
+(below).
 
-quay's Critical on `fms-v3.2.2-3` and `fms-v3.2.2-4` is a reviewed false positive.
+#### Reviewed false positive: PYSEC-2026-2290 / CVE-2026-5241 in `fms-v3.2.2-3` to `-5`
+
+quay's Critical on `fms-v3.2.2-3`, `-4` and `-5` is a reviewed false positive.
 Keep this record until fms-hf-tuning allows transformers 5
 (foundation-model-stack/fms-hf-tuning#687) and the image moves to a fixed release.
 
@@ -288,22 +299,20 @@ Keep this record until fms-hf-tuning allows transformers 5
 | Why it is reported | Clair and trivy match on the installed package's name and version. The patch edits source files in that package and leaves its version metadata at 4.55.4, so every advisory for 4.55.4 is still listed |
 | Vulnerable code | `models/lightglue/configuration_lightglue.py`: the nested `AutoConfig.from_pretrained(..., trust_remote_code=self.trust_remote_code)` for a keypoint detector type outside `CONFIG_MAPPING`; `models/lightglue/modeling_lightglue.py`: `from_config(..., trust_remote_code=config.trust_remote_code)`. `models/lightglue/modular_lightglue.py` holds both lines too; it is never imported (transformers' lazy loader skips `modular_*` files) |
 | Remediation | `patches/lightglue_no_remote_code.py`, a backport of huggingface/transformers 676559d5 ("[LightGlue] Remove remote code execution", #45122), applied by the Dockerfile right after the hashed install. It patches the two runtime files and, from `-4`, `modular_lightglue.py`, as upstream does. It fails the image build if any target is not found exactly once |
-| Evidence | (1) Inside the published images, no `trust_remote_code` pass-through remains in the two runtime files (`-3`), or in any LightGlue source file (`-4`). (2) `test/test_lightglue_patch.py` loads a crafted LightGlue repo the way fms-hf-tuning loads `base_model` (`AutoModelForCausalLM.from_pretrained`, no `trust_remote_code`), against a copy of the real 4.55.4: the repo's Python runs unpatched, and does not run patched |
+| Evidence | (1) Inside the published images, no `trust_remote_code` pass-through remains in the two runtime files (`-3`), or in any LightGlue source file (`-4`, `-5`). (2) `test/test_lightglue_patch.py` loads a crafted LightGlue repo the way fms-hf-tuning loads `base_model` (`AutoModelForCausalLM.from_pretrained`, no `trust_remote_code`), against a copy of the real 4.55.4: the repo's Python runs unpatched, and does not run patched |
 | Scope | Only this advisory. The other transformers, torch and fsspec findings are real and unpatched, held back by fms-hf-tuning's caps (the tables above) |
 | Re-check on | any change to `requirements.lock`, the base image, or the patch. A transformers bump that moves the target lines fails the build. A move to transformers 5.x removes the patch and this record |
-| Reviewed | 2026-11-06, for `fms-v3.2.2-3` (`sha256:fc696a40d415559b3752981b169ac1dbf8f01fc192f2e8dd44f55f7e3e04d414`); 2026-11-10, for `fms-v3.2.2-4` (`sha256:2d4e803ece50d4f6bb62570035eb7715857cbb66280e086af111e3b9e48165cd`) |
+| Reviewed | 2026-11-06, for `fms-v3.2.2-3` (`sha256:fc696a40d415559b3752981b169ac1dbf8f01fc192f2e8dd44f55f7e3e04d414`); 2026-11-10, for `fms-v3.2.2-4` (`sha256:2d4e803ece50d4f6bb62570035eb7715857cbb66280e086af111e3b9e48165cd`); 2026-11-13, for `fms-v3.2.2-5` (`sha256:953d0d30c813691857e379fae5f54bf4b672e3e57d4380df1d309e5188f6f750`) |
 
 ### Bumping IMAGE_VERSION
 
-`IMAGE_VERSION` is stable (`fms-v3.2.2-4`), not the git SHA: BlueVela caches a
+`IMAGE_VERSION` is stable (`fms-v3.2.2-5`), not the git SHA: BlueVela caches a
 `.sqsh` per tag. Bump the suffix when the Dockerfile, `requirements.lock` or `src/`
 changes; the prefix with the fms-hf-tuning pin (for example `fms-v3.3.0-1`).
 A change to comments only needs no bump: the published image keeps the old comment
-text and the step runs the same (hf-peft-sft's rule, #626). The review fixes after
-`-4` changed only comments in `src/fms_hf_tuning_run.sh` and the Dockerfile, so the
-image stays `-4`. A local `make image` then no longer matches the published tag,
-and under podman `make test` warns until the next bump; `TEST_PUBLISHED=true` skips
-that comparison. After
+text and the step runs the same (hf-peft-sft's rule, #626). A local `make image`
+then no longer matches the published tag, and under podman `make test` warns until
+the next bump; `TEST_PUBLISHED=true` skips that comparison. After
 editing `requirements.in`, run `make lock` and commit both files. On an fms-hf-tuning
 bump, re-run the CPU venv tests first: they catch parser and `train()` drift.
 
@@ -316,7 +325,7 @@ public), then:
 
 ```bash
 make -C steps/train/fms-hf-tuning/skypilot image publish-image
-sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-4
+sh steps/scripts/registry-tag-status.sh quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-5
 ```
 
 `present` means it pulls anonymously. `make publish-step` refuses until the image
@@ -389,6 +398,13 @@ published, and need `PYTEST_ADDOPTS=-s` (two launches in one pytest process).
 |---|---|---|
 | `test/aws` (A10G:1) | `full` (none / ddp), `alora` (alora / ddp) | image pull, inline `hf download`, full fine-tuning with flash-attn on Ampere, aLoRA, the chat handler on HF-id data |
 | `test/slurm-bluevela` (H200:2, `ibm`) | `lora-fsdp` (lora / fsdp, bound `dataset`), `full-fsdp` (none / fsdp, `data_config`) | Pyxis + `.sqsh`, FSDP1 saving a non-empty adapter, `data_config` reading a bound input, ClearML offline |
+
+**aws result on `fms-v3.2.2-5`** (build `bffe21f8`, 2026-11-13): passed in 6m57s, both
+targets on g5.xlarge, loss to about 1.62 as on `-4`. The new `tensor_count` metadata
+was recorded: 272 for `full` (SmolLM2-135M-Instruct's full model) and 182 for the
+`alora` adapter. No clusters or EC2 instances were left. BlueVela was not re-run on
+`-5`: the `-5` changes are in the job builder and the run script, which this run and
+the unit tests cover.
 
 **BlueVela result on `fms-v3.2.2-4`** (build `a4190905`, 2026-11-10): passed in 34m48s,
 about 11 minutes of it waiting in the SLURM queue. The `-4` `.sqsh` was already in

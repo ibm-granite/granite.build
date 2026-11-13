@@ -124,6 +124,16 @@ for p in "$out_dir" "$stage"; do
     fail "output path ${p} overlaps the base_model ${base_model}; replacing it would delete the input. Point output_path at a different directory."
   fi
 done
+# The bound dataset. dataset_name (an HF id) arrives in --data-path too, but is
+# no local path; data_config's data_paths are not checked here.
+if [ -n "$data_path" ] && [ -e "$data_path" ]; then
+  data_phys="$(physical "$data_path")"
+  for p in "$out_dir" "$stage"; do
+    if overlaps "$(physical "$p")" "$data_phys"; then
+      fail "output path ${p} overlaps the dataset ${data_path}; replacing it would delete the input. Point output_path at a different directory."
+    fi
+  done
+fi
 scratch_phys="$(physical "$scratch")"
 for p in "$out_dir" "$stage"; do
   if overlaps "$(physical "$p")" "$scratch_phys"; then
@@ -192,8 +202,9 @@ fi
 # --- check, swap, register -------------------------------------------------------
 post="$("$py" "${home}/fms_hf_tuning_job.py" check-output "$stage" "$peft_method" --base-model-id "$base_model_id")" \
   || fail "the saved output did not pass the check; nothing registered."
-fms_v=unknown tf_v=unknown
+fms_v=unknown tf_v=unknown tensors=unknown
 while read -r tag a b; do
+  if [ "$tag" = fms-hf-tuning-output: ] && [ "$a" = ok ] && [ -n "$b" ]; then tensors="$b"; fi
   if [ "$tag" = fms-hf-tuning-versions: ] && [ -n "$b" ]; then fms_v="$a" tf_v="$b"; fi
 done <<<"$post"
 rm -rf "$out_dir"
@@ -201,6 +212,7 @@ mv "$stage" "$out_dir"
 rm -rf "$scratch"
 echo "GB_STEP_METADATA_KEY:peft_method GB_STEP_METADATA_VALUE:${peft_method}"
 echo "GB_STEP_METADATA_KEY:distributed GB_STEP_METADATA_VALUE:${distributed}"
+echo "GB_STEP_METADATA_KEY:tensor_count GB_STEP_METADATA_VALUE:${tensors}"
 echo "GB_STEP_METADATA_KEY:fms_hf_tuning_version GB_STEP_METADATA_VALUE:${fms_v}"
 echo "GB_STEP_METADATA_KEY:transformers_version GB_STEP_METADATA_VALUE:${tf_v}"
 # Last line: GB_ is the prefix space://monitors/skypilot matches.
