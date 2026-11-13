@@ -16,7 +16,7 @@
 
 Runs the REAL script with a clean env, both directions: it must refuse a bad
 staged binding with a one-line `nemo-rl:` reason, and stay silent on a valid one.
-Config-only checks (algorithm, config_name, output, num_nodes) are render-time
+Config-only checks (algorithm, config_name, output) are render-time
 `raise_error`s in the template, tested in test_nemo_rl_step_render.py.
 """
 

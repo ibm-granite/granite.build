@@ -50,6 +50,7 @@ from typing import (
 
 if TYPE_CHECKING:
     from gbserver.resilience.retry_handler import RetryHandler, RetryStrategy
+    from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 
 from pydantic import Field
 
@@ -1151,6 +1152,32 @@ class Environment(ABC):
             if name.startswith("LLMB_")
         }
         return declared | twins
+
+    def validate_launch_config(  # pylint: disable=unused-argument
+        self: Self,
+        step_env_config: "StepEnvironmentTypeConfig",
+        launcher_config: Dict,
+        config: Dict,
+    ) -> None:
+        """Check a step's filled launch configs at step creation.
+
+        ``TargetStepRun.__init__`` calls this right after the strict launcher
+        fill, so an error fails the step "on creation", before anything is
+        launched or provisioned. An environment that resolves launch settings a
+        step can constrain overrides it; this default refuses the constraint
+        rather than ignore it.
+
+        :param step_env_config: The step's environment config for this env.
+        :param launcher_config: The filled launcher block ``config``.
+        :param config: The filled step config (step and build layers).
+        :raises ValueError: If the step sets ``single_node``, which this
+            environment does not enforce.
+        """
+        if getattr(step_env_config, "single_node", False):
+            raise ValueError(
+                f"The step sets single_node, but the {self.type} environment does "
+                "not enforce it; only the SkyPilot environments do."
+            )
 
     def launch(
         self: Self,

@@ -35,8 +35,9 @@ config:
     clearml_project: ""
     clearml_task_name: ""
   compute_config:
-    # Single node only (validated). GPUs are requested by the build through
-    # launcher_config.resources.accelerators; the step reads the count from
+    # Single node only: environment_configs.Skypilot.single_node makes gbserver
+    # refuse any other num_nodes at step creation. GPUs are requested by the build
+    # through launcher_config.resources.accelerators; the step reads the count from
     # $SKYPILOT_NUM_GPUS_PER_NODE.
     num_nodes: 1
 
@@ -64,6 +65,9 @@ outputs:
 
 environment_configs:
   Skypilot:
+    # gbserver refuses, at step creation, a build whose resolved num_nodes is not 1
+    # (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
     default_launcher: openinstruct_sft
     launchers:
       openinstruct_sft:
@@ -84,7 +88,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound, lc) -%}
+            {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir", "dataset_cache_mode", "no_push_to_hub", "no_try_launch_beaker_eval_jobs", "no_try_auto_save_to_beaker"] -%}
             {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
             {%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
@@ -92,14 +96,6 @@ environment_configs:
             {%- if not bound and not c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: no training data: bind the `dataset` input or set openinstruct_sft_config.dataset_mixer_list.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output is required; it names the target's model output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {#- One node as gbserver's int(value) reads it: a whole float (YAML 1.0), or a
-                string of an optional sign and digits ("01", " 1", "+1"). -#}
-            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else ((v | string | trim).lstrip("+").isdigit() and (v | string | trim | int) == 1)) else "" }}{% endmacro -%}
-            {%- if not one(cc.num_nodes) %}{{ raise_error("openinstruct-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
-            {#- gbserver also reads num_nodes from the launcher block, which this step sets
-                none of and users cannot change, and from the build's launcher_config (lc),
-                where the last layer wins. -#}
-            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("openinstruct-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- set res = lc.get("resources") or {} -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
@@ -125,7 +121,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.openinstruct_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
+            {{- validate(c, "dataset" in b, config.get("launcher_config") or {}) }}
             bash /opt/openinstruct-sft/openinstruct_sft_guard.sh \
               --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
@@ -138,7 +134,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound, lc) -%}
+            {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir", "dataset_cache_mode", "no_push_to_hub", "no_try_launch_beaker_eval_jobs", "no_try_auto_save_to_beaker"] -%}
             {%- if c.dataset_mixer_list is not mapping %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list must map an HF dataset id to a fraction or count, e.g. {allenai/tulu-3-sft-personas-algebra: 1.0}.") }}{% endif -%}
             {%- if c.dataset_mixer_list_splits is string or c.dataset_mixer_list_splits is not iterable or not c.dataset_mixer_list_splits %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.dataset_mixer_list_splits must be a non-empty list of split names, e.g. [train].") }}{% endif -%}
@@ -146,14 +142,6 @@ environment_configs:
             {%- if not bound and not c.dataset_mixer_list %}{{ raise_error("openinstruct-sft: no training data: bind the `dataset` input or set openinstruct_sft_config.dataset_mixer_list.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output is required; it names the target's model output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {#- One node as gbserver's int(value) reads it: a whole float (YAML 1.0), or a
-                string of an optional sign and digits ("01", " 1", "+1"). -#}
-            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else ((v | string | trim).lstrip("+").isdigit() and (v | string | trim | int) == 1)) else "" }}{% endmacro -%}
-            {%- if not one(cc.num_nodes) %}{{ raise_error("openinstruct-sft: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
-            {#- gbserver also reads num_nodes from the launcher block, which this step sets
-                none of and users cannot change, and from the build's launcher_config (lc),
-                where the last layer wins. -#}
-            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("openinstruct-sft: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- set res = lc.get("resources") or {} -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("openinstruct-sft: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type). compute_config.num_gpus_per_node is not a SkyPilot GPU request.") }}{% endif -%}
             {%- if "/" in (c.deepspeed_config | string) %}{{ raise_error("openinstruct-sft: openinstruct_sft_config.deepspeed_config must be a file name under the image's configs/ds_configs/, got '" ~ c.deepspeed_config ~ "'.") }}{% endif -%}
@@ -179,7 +167,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.openinstruct_sft_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
+            {{- validate(c, "dataset" in b, config.get("launcher_config") or {}) }}
             {%- set ce = c.clearml_enabled | string | lower %}
             {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
             bash /opt/openinstruct-sft/openinstruct_sft_guard.sh \

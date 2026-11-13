@@ -231,8 +231,10 @@ To train on your own data, bind a `dataset` and name its Hydra key:
 
 ## Notes and limitations
 
-- **Single-node only (iteration 1).** `num_nodes` must be `1`; any other value fails
-  the build when the step is created, before a node is provisioned. Multi-node Ray
+- **Single-node only (iteration 1).** The step sets `single_node: true`: a resolved
+  `num_nodes` other than 1 (of `compute_config`, the step's launcher config and
+  `launcher_config`, the last one set wins) fails the build when the step is created,
+  before a node is provisioned. Multi-node Ray
   launch is a separate iteration.
 - **Config errors fail before provisioning.** A missing `algorithm`, `config_name` or
   `output`, or an `output` name with whitespace or a double quote, fails the build

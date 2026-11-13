@@ -24,6 +24,7 @@ import pytest
 
 from gbserver.build.targetsteprun import TargetStepRun
 from gbserver.types.buildevent import EntityRunMetadata
+from gbserver.types.status import Status
 from gbserver.types.stepconfig import (
     StepEnvironmentTypeConfig,
     StepLauncherConfig,
@@ -125,6 +126,54 @@ class TestTargetStepRunLauncherOverride:
 
         # 'trl-finetune' sorts before 'trl-finetune-cpu', so gpu image is the fallback
         assert targetstep.launcher.config["image"] == _GPU_IMAGE
+
+
+class TestTargetStepRunValidatesLaunchConfig:
+    """Step-declared launch constraints (single_node) are checked against the
+    filled configs at step creation, so a bad request fails "on creation"
+    before anything is launched."""
+
+    @staticmethod
+    def _create(targetstep, event_q=None):
+        with patch.object(
+            TargetStepRun, "get_runmetadata", return_value=_FAKE_METADATA
+        ):
+            return TargetStepRun(
+                target=MagicMock(),
+                targetstep=targetstep,
+                targetrun_id="test-targetrun-id",
+                event_q=event_q or asyncio.Queue(),
+            )
+
+    def test_hook_gets_the_filled_launcher_config_and_config(self, tmp_path):
+        targetstep = _make_targetstep_mock("trl-finetune-cpu", tmp_path)
+        run = self._create(targetstep)
+
+        hook = targetstep.environment.validate_launch_config
+        hook.assert_called_once()
+        step_env_config, launcher_config, config = hook.call_args.args
+        assert step_env_config is targetstep.step_environment_config
+        assert launcher_config == {"image": _CPU_IMAGE, "command": "python3 run.py"}
+        assert launcher_config is run.full_config["launcher_config"]
+        assert config is run.full_config["config"]
+
+    def test_hook_error_fails_step_creation(self, tmp_path):
+        targetstep = _make_targetstep_mock("trl-finetune-cpu", tmp_path)
+        targetstep.environment.validate_launch_config.side_effect = ValueError(
+            "num_nodes resolved to 2"
+        )
+        event_q = asyncio.Queue()
+
+        with pytest.raises(ValueError, match="failed on creation") as exc:
+            self._create(targetstep, event_q)
+
+        assert "num_nodes resolved to 2" in str(exc.value.__cause__)
+        events = []
+        while not event_q.empty():
+            events.append(event_q.get_nowait())
+        assert any(
+            getattr(e.payload, "status", None) == Status.FAILED for e in events
+        ), events
 
 
 class TestTargetStepRunMonitorConfigTemplating:
