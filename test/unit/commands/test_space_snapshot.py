@@ -99,7 +99,13 @@ def repos(tmp_path_factory):
     )
     assets_sha = _repo(
         root / "assets",
-        {"steps/echo/step.yaml": "name: echo\n"},
+        {
+            "steps/echo/step.yaml": "name: echo\n",
+            "templates/t/template.yaml": "name: t\n",
+            "docs/guide.md": "# guide\n",
+            "images/diagram.png": "png\n",
+            "README.md": "assets\n",
+        },
         "https://github.example.com/org/assets.git",
         "gbspace-config",
     )
@@ -162,7 +168,11 @@ def test_create_stores_snapshots_and_switches(env):
     assert row.assets.source_uri == "https://github.example.com/org/assets"
     assert row.assets.source_ref == "gbspace-config"  # from the base_uri's @ref
     assert row.assets.source_commit == env.assets_sha
-    assert _names(row.assets.load_archive()) == {"steps/echo/step.yaml"}
+    # Default --assets-path: steps/ and templates/ only (no docs, images, README).
+    assert _names(row.assets.load_archive()) == {
+        "steps/echo/step.yaml",
+        "templates/t/template.yaml",
+    }
 
     with zipfile.ZipFile(io.BytesIO(row.space.load_archive())) as zf:
         stored_yaml = zf.read("space.yaml").decode()
@@ -305,3 +315,12 @@ def test_existing_row_in_another_form_is_accepted(env):
     assert result.exit_code == 0, result.output
     assert env.storage.rows["x"].git_repo_uri == uri
     assert env.storage.rows["x"].space_uri == "db://spaces/x"
+
+
+def test_assets_path_override(env):
+    result = _run(env, "--create", "--assets-path", "steps", "--assets-path", "nope")
+    assert result.exit_code == 0, result.output
+    assert "nope not found" in result.output
+    assert _names(env.storage.rows["x"].assets.load_archive()) == {
+        "steps/echo/step.yaml"
+    }

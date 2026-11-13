@@ -59,6 +59,10 @@ logger = get_logger(__name__)
 
 SPACE_YAML = "space.yaml"
 
+# What builds resolve from the assets repo. Docs, images and other binaries
+# stay out: they don't compress and every gb_spaces read loads the archive.
+DEFAULT_ASSETS_PATHS = ("steps", "templates")
+
 
 @dataclass
 class _Source:
@@ -142,10 +146,32 @@ def _clone_url(url: str) -> str:
     return url
 
 
-def _snapshot(source: _Source) -> Tuple[bytes, str]:
+def _archive(repo_dir: Path, sha: str, paths: Optional[Tuple[str, ...]]) -> bytes:
+    """``git archive`` of the tree at ``sha``, limited to ``paths`` if given.
+
+    Paths absent from the tree are skipped with a warning.
+    """
+    if not paths:
+        return _git(["archive", "--format=zip", sha], cwd=repo_dir)
+    present = [
+        p
+        for p in paths
+        if _git(["ls-tree", "--name-only", sha, "--", p], cwd=repo_dir).strip()
+    ]
+    for missing in sorted(set(paths) - set(present)):
+        click.echo(f"warning: {missing} not found at {sha[:12]}; skipped", err=True)
+    if not present:
+        raise click.ClickException(f"none of {list(paths)} found at {sha[:12]}")
+    return _git(["archive", "--format=zip", sha, "--", *present], cwd=repo_dir)
+
+
+def _snapshot(
+    source: _Source, paths: Optional[Tuple[str, ...]] = None
+) -> Tuple[bytes, str]:
     """Return (zip of the tree at source.ref, commit sha). No history included.
 
     ``git archive`` emits only the committed tree: no .git, no untracked files.
+    ``paths`` limits it to those top-level paths.
     """
     if Path(source.location).is_dir():
         repo_dir = Path(source.location)
@@ -168,7 +194,7 @@ def _snapshot(source: _Source) -> Tuple[bytes, str]:
                 f"ref {source.ref!r} not found in {repo_dir} ({', '.join(candidates)})"
             )
         sha = commit.decode().strip()
-        return _git(["archive", "--format=zip", sha], cwd=repo_dir), sha
+        return _archive(repo_dir, sha, paths), sha
     with tempfile.TemporaryDirectory() as tmp:
         clone_dir = Path(tmp) / "repo"
         branch = [f"--branch={source.ref}"] if source.ref else []
@@ -190,7 +216,7 @@ def _snapshot(source: _Source) -> Tuple[bytes, str]:
                 .strip()
             )
         sha = _git(["rev-parse", "HEAD"], cwd=clone_dir).decode().strip()
-        return _git(["archive", "--format=zip", sha], cwd=clone_dir), sha
+        return _archive(clone_dir, sha, paths), sha
 
 
 def _check_size(data: bytes, label: str) -> None:
@@ -308,6 +334,14 @@ def _rewrite_assets_base_uris(
     help="Branch to snapshot (default: the base_uris entry's @ref).",
 )
 @click.option("--assets-source-uri", default=None, help="As --space-source-uri.")
+@click.option(
+    "--assets-path",
+    "assets_paths",
+    multiple=True,
+    default=DEFAULT_ASSETS_PATHS,
+    show_default=True,
+    help="Path in the assets repo to include; repeatable.",
+)
 @click.option("--no-assets", is_flag=True, help="Snapshot only the space repo.")
 @click.option(
     "--switch/--no-switch",
@@ -335,6 +369,7 @@ def cli(
     assets_repo: Optional[str],
     assets_ref: Optional[str],
     assets_source_uri: Optional[str],
+    assets_paths: Tuple[str, ...],
     no_assets: bool,
     switch: bool,
     create: bool,
@@ -425,7 +460,7 @@ def cli(
         click.echo(
             f"assets: {assets_src.location} @ {assets_src.ref or 'default branch'}"
         )
-        assets_zip, assets_sha = _snapshot(assets_src)
+        assets_zip, assets_sha = _snapshot(assets_src, assets_paths)
         _check_size(assets_zip, "assets")
         space_yaml, rewrites = _rewrite_assets_base_uris(
             space_yaml, assets_src.source_uri, make_db_uri(space_name, ASSETS_SLOT)

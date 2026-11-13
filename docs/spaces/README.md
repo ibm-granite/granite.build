@@ -181,7 +181,9 @@ gbserver space-snapshot --space-name public --space-repo ../gbspace-public --ass
 
 The command stores only the files at the head of the space config branch (default: the
 deployment's config branch, e.g. `gbspace-config`) and of the assets branch named in `space.yaml`
-(its `@<ref>`). No git history, `.git` directory, or untracked files are kept. It then:
+(its `@<ref>`). No git history, `.git` directory, or untracked files are kept. From the assets
+repo it takes only `steps/` and `templates/` (`--assets-path` to change), leaving out docs, images
+and other files builds don't resolve. It then:
 
 - sets the row's `space_uri` to `db://spaces/<name>`, so the space is loaded from the snapshot
   (pass `--no-switch` to store the snapshot and leave `space_uri` as it is);
