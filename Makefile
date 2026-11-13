@@ -734,7 +734,8 @@ ibm-venv:
 dev-venv cicd-venv: ibm-venv
 standalone-venv demo-venv g4os-skypilot-venv: venv
 
-# Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras) and records its flavor.
+# Builds $(VENVDIR) from VENV_INSTALL_TARGET (pip extras), registers the git
+# pre-commit hook, and records its flavor.
 # VENV_USE_ARTIFACTORY=1 checks for and configures the IBM Artifactory index
 # (needed by the [ibm] extras).
 # The install steps are chained with && so any failure fails the target (pip runs
@@ -747,13 +748,21 @@ $(VENVDIR): pyproject.toml
 	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf
 	if [ -n "$(VENV_USE_ARTIFACTORY)" ]; then \
-		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; \
+		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; : hashicorpignore; \
 	fi
 	source $(VENVDIR)/bin/activate &&			\
 	${PIP} install --upgrade pip &&		\
 	${PIP} install -e '$(VENV_INSTALL_TARGET)'
 	@test -x $(VENVDIR)/bin/gbserver ||					\
 		{ echo "venv install failed: $(VENVDIR)/bin/gbserver missing" >&2; exit 1; }
+	@# Register the git pre-commit hook (.pre-commit-config.yaml). Best effort: skipped
+	@# unless this directory is itself a git checkout (.git is a file in worktrees), so an
+	@# unpacked tarball inside another repo does not hook that repo. A failure (e.g.
+	@# core.hooksPath set) only warns.
+	@if [ -e .git ]; then \
+		$(VENVDIR)/bin/pre-commit install || \
+			echo "WARNING: 'pre-commit install' failed; see CONTRIBUTING.md (Pre-commit hooks)" >&2; \
+	fi
 	echo '$(if $(VENV_USE_ARTIFACTORY),ibm,standalone)' > $(VENV_FLAVOR_FILE)
 
 gbcli:

@@ -23,7 +23,7 @@ Thank you for your interest in contributing to Granite.Build! This guide covers 
    make venv
    ```
 
-   This installs the project in editable mode with the standalone, third-party (SkyPilot, Kubernetes, Docker) and development dependencies. IBM developers who need the IBM-only dependencies use `make ibm-venv` instead (requires `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`). `make venv` needs no IBM Artifactory access, but it does download from PyPI.
+   This installs the project in editable mode with the standalone, third-party (SkyPilot, Kubernetes, Docker) and development dependencies, and registers the git [pre-commit hooks](#pre-commit-hooks). IBM developers who need the IBM-only dependencies use `make ibm-venv` instead (requires `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY`). `make venv` needs no IBM Artifactory access, but it does download from PyPI.
 
 3. Activate the virtual environment:
 
@@ -81,12 +81,38 @@ make format       # isort + black on all files
 make lint         # isort --check + black --check + pylint + mypy
 ```
 
+### Pre-commit hooks
+
+[`.pre-commit-config.yaml`](.pre-commit-config.yaml) defines hooks that run on every `git commit`: **black**, **isort** (`--profile black`) and **gitleaks** (secret scanning). `make venv` / `make ibm-venv` install the `pre-commit` tool and run `pre-commit install` for you. The first commit downloads and builds the hook environments, so it needs network access and is slower than later ones.
+
+If you created your environment another way, or the hooks are not firing, register them manually:
+
+```bash
+pre-commit install
+```
+
+To run the hooks against the whole tree:
+
+```bash
+pre-commit run --all-files
+```
+
+Hook versions are pinned by `rev` in `.pre-commit-config.yaml`; change them deliberately in their own PR rather than running `pre-commit autoupdate`. When bumping black or isort, change the matching `black==` / `isort==` pins in the `dev` extra of `pyproject.toml` in the same PR, so `make format`, CI and the hook all use one version.
+
+The installed git hook runs `.venv/bin/python3` by absolute path, so it works without activating the venv. If `.venv` is later deleted or a `make venv` rebuild fails part-way, commits fail with "`pre-commit` not found" until the venv is rebuilt (`make venv`) or the hook is removed (`pre-commit uninstall`, from an environment that has it).
+
+If a hook reformats files (the output says "files were modified by this hook"), the commit is aborted but the fixes are already written to your working tree. Review them with `git diff`, then `git add` the modified files and run the same `git commit` again. Always re-stage before retrying: committing again with the fixes left unstaged can make pre-commit print "Stashed changes conflicted with hook auto-fixes... Rolling back fixes", which is resolved the same way (`git add` the files, then commit). Please do not bypass the hooks with `--no-verify`.
+
+The gitleaks hook only scans your staged changes. The "Secret scan" workflow ([`.github/workflows/gitleaks.yml`](.github/workflows/gitleaks.yml)) also runs gitleaks over the full git history on every pull request, so a secret that slips past the local hook still fails CI. If a real secret is found, rotate or revoke it: deleting it from the PR does not undo the exposure. If the finding is a placeholder or public value, add its fingerprint to [`.gitleaksignore`](.gitleaksignore) as `<path>:<rule>:<line>`, **without** a leading commit hash (pull requests are squash-merged, so the hash would not survive the merge), with a comment explaining why it is safe. See the header of that file for details.
+
+When bumping the gitleaks version, change the `rev` in `.pre-commit-config.yaml` and `GITLEAKS_VERSION` / `GITLEAKS_SHA256` in `gitleaks.yml` together; CI fails if the two versions differ.
+
 ## Pull Request Process
 
-1. Create a feature branch from `dev`:
+1. Create a feature branch from `main`:
 
    ```bash
-   git checkout -b my-feature dev
+   git checkout -b my-feature main
    ```
 
 2. Make your changes. Write tests for new functionality.
@@ -110,7 +136,7 @@ make lint         # isort --check + black --check + pylint + mypy
    git commit -m "feat: add support for new environment backend"
    ```
 
-6. Push to your fork and open a pull request against `dev`.
+6. Push to your fork and open a pull request against `main`.
 
 ## Commit Messages
 

@@ -38,7 +38,7 @@ files=()
 while IFS= read -r -d '' x; do
     files+=("${x}")
 done < "${difflist}"
-# To format against `dev` instead, change `main...HEAD` above.
+# To format against another base branch, change `main...HEAD` above.
 
 if [[ "${#files[@]}" -eq 0 ]]; then
     echo "no changed files vs main; nothing to format"
@@ -59,12 +59,15 @@ do
     fi
     if [[ "${x}" = *.py ]]; then
         # Honour the repo-wide formatter exclusions. isort's `extend_skip_glob`
-        # and black's `extend-exclude` (both set for autotunex/ in the root
-        # pyproject.toml) are applied while WALKING a directory — naming a file
-        # explicitly, as this script does, bypasses them and reformats the file
-        # anyway. autotunex/ is ruff-formatted at line-length 100 with its own CI,
-        # so running repo-root black over it reflows ~260 files that are not the
-        # author's to change. Skip those paths here instead.
+        # and black's `force-exclude` (both set for autotunex/ and the vendored
+        # steps/eval trees in the root pyproject.toml) apply to explicitly named
+        # files only because isort is run with --filter-files below and black uses
+        # force-exclude rather than extend-exclude; without those, naming a file
+        # explicitly, as this script does, bypasses them and reformats the file.
+        # autotunex/ is ruff-formatted at line-length 100 with its own CI, so
+        # running repo-root black over it reflows ~260 files that are not the
+        # author's to change. Skip it here as well so the output says so instead of
+        # listing it as "Formatting file".
         if [[ "${x}" = autotunex/* ]]; then
             echo "skip excluded path (own formatter/CI): ${x}"
             continue
@@ -73,7 +76,7 @@ do
         echo -e "\033[0;36m Formatting file: \033[0m\033[0;32m${x}\033[0m"
         # Check both formatters: an unchecked failure here also exits 0 overall,
         # which is the same silent-success problem one level down.
-        if ! isort --profile black "${x}"; then
+        if ! isort --profile black --filter-files "${x}"; then
             echo "ERROR: isort failed on ${x}" >&2
             exit 1
         fi
