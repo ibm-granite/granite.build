@@ -33,9 +33,9 @@ jobs:
         # python-version: ["3.11", "3.12"]
         python-version: ["3.12"] # Only run 1 python since HF rate limit may be failing us
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -46,7 +46,7 @@ jobs:
       # Same preload as ci.yml, restore-only: reuse main's cached images
       # instead of pulling from a rate-limited registry mid-test.
       - name: Restore cached Docker images
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ci-docker-images
           key: ci-docker-images-${{ hashFiles('test-data/ci-docker-images.env') }}
@@ -59,7 +59,7 @@ jobs:
       # them). Non-fatal: a failed pull fails only the test that needs the image.
       - name: Restore cached nightly Docker images
         id: nightly-images-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/nightly-docker-images
           key: nightly-docker-images-${{ hashFiles('test-data/nightly-docker-images.env') }}
@@ -84,7 +84,7 @@ jobs:
       - name: Upload nightly Docker image cache
         if: steps.nightly-images-cache.outputs.cache-hit != 'true' && steps.nightly-images-load.outcome == 'success'
         continue-on-error: true
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/nightly-docker-images
           key: ${{ steps.nightly-images-cache.outputs.cache-primary-key }}
@@ -106,7 +106,7 @@ jobs:
       # The SkyPilot API server logs only here.
       - name: Upload SkyPilot API server log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: skypilot-api-server-log-${{ matrix.python-version }}
           path: ~/.sky/api_server/server.log
