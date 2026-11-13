@@ -20,6 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from gbcommon.uri.uri import URI
 from gbserver.spaces.db_space import get_space_config_uri, is_db_uri, resolve_db_uri
+from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.spaceconfig import SpaceConfig
 from gbserver.utils.logger import get_logger
@@ -116,7 +117,8 @@ def check_local_secrets_collision(
 ) -> None:
     """Refuse to register a space that would share another's local secrets.
 
-    Spaces with the same ``git_repo_uri`` are aliases of one space and may share.
+    Spaces with the same repo (``git_repo_uri``, in any URI form) are aliases of
+    one space and may share.
 
     Args:
         candidate: The space about to be registered (or re-pointed).
@@ -141,7 +143,7 @@ def check_local_secrets_collision(
             " secret_manager.config.secrets_dir"
         )
     for other in registered:
-        if other.git_repo_uri == candidate.git_repo_uri:
+        if same_repo(other.git_repo_uri, candidate.git_repo_uri):
             continue
         if _registered_key(other) == key:
             raise LocalSecretsCollisionError(
