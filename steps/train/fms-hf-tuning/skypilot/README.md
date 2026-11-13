@@ -81,7 +81,13 @@ conversion: a YAML `1e-5` (a string under PyYAML) or `packing: maybe` passes
 through. `coerce_args` runs every value through its argparse action's `type` and
 `choices` exactly as the command line would, refuses unknown keys and lists for
 single-value arguments, and then `parse_dict(..., allow_extra_keys=False)` runs on
-the dataclass keys. It keeps the first action per dest: HfArgumentParser follows a
+the dataclass keys. This runs in `run:` on the node, after `setup:` and before
+`accelerate launch`, not at step creation. A mapping passes only where the
+dataclass field's annotation admits a dict (`mapping_fields`): HfArgumentParser
+types a `Union[dict, str]` field such as `gradient_checkpointing_kwargs` as `str`,
+so the argparse type cannot tell. `exp_metadata` takes a mapping as JSON text,
+because sft_trainer `json.loads()` it and catches only `ValueError` (a dict would
+raise `TypeError` on every rank, after the GPUs are up). It keeps the first action per dest: HfArgumentParser follows a
 default-True bool (such as `use_flash_attn`) with an untyped `--no_<field>`
 store_false twin, so keeping the typed one is what converts `"false"` and refuses
 `"maybe"`. `EXTRA_ARGS` (`peft_method`, `quantization_method`,

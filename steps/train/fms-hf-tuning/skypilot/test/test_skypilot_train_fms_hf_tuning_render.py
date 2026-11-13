@@ -207,6 +207,21 @@ class TestValidation:
     def test_every_owned_key_refused(self, key):
         assert "is set by the step" in _render_error("setup", _ctx(args={key: "x"}))
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "push_to_hub_token",
+            "push_to_hub_model_id",
+            "push_to_hub_organization",
+            "use_cpu",
+            "no_cuda",
+        ],
+    )
+    def test_aliases_of_owned_keys_refused(self, block, key):
+        msg = _render_error(block, _ctx(args={key: "x"}))
+        assert f"args.{key} is set by the step" in msg
+
     def test_bound_dataset_and_dataset_name(self):
         assert "use one" in _render_error("setup", _ctx(bindings=_DS))
 

@@ -129,7 +129,7 @@ All fields live under the step's `config.fms_hf_tuning_config`.
 | `base_model_id` | string | `""` | Adapters only (refused for `none`): a portable base id written into `adapter_config.json` as `base_model_name_or_path`. Empty leaves the node-local staging dir there. |
 | `args` | map | `{}` | Any other fms-hf-tuning argument. See [Passing fms-hf-tuning arguments (args)](#passing-fms-hf-tuning-arguments-args). |
 | `image_id` | string | the step's published image | The step's image, filled in when the step is generated. Override it with another image or, on SLURM, a `.sqsh` path. `docker:` is added when missing. |
-| `clearml_enabled` | string | `auto` | `auto` (on iff `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` are all set in the step env), `true`, or `false`. |
+| `clearml_enabled` | string | `auto` | `auto` (on iff `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` are all set in the step env), `true` (also `on`, `1`), or `false` (also `off`, `0`). |
 | `clearml_project` | string | `""` | ClearML project. Empty means `fms-hf-tuning`. Used only when ClearML is on. |
 | `clearml_task_name` | string | `""` | ClearML task name. Empty means `sft-<peft_method>`. Used only when ClearML is on. |
 
@@ -147,7 +147,9 @@ a message that starts `fms-hf-tuning:`. They are:
 - `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1. `1.0`,
   and a string such as `"01"` that reads as the integer 1, count as 1;
 - no GPU request (neither `launcher_config.resources.accelerators` nor an
-  `instance_type`); `distributed: fsdp` with `accelerators` asking for one GPU;
+  `instance_type`); `distributed: fsdp` with a string `accelerators` asking for one
+  GPU (`"A10G:1"` or `"A10G"`). The dict and list forms (`{H100: 1}`) are not read
+  here; the node refuses them after provisioning;
 - an `args` key that is not a bare name (empty, or with `=`, a leading `-` or
   whitespace), or a step-owned key.
 
@@ -158,10 +160,14 @@ argument `python -m tuning.sft_trainer --help` lists (TRL `SFTConfig` and
 transformers `TrainingArguments` fields, the data and model arguments, LoRA
 fields, tracker and acceleration fields), under the same names. A
 `tuning_config` from an fms-hf-tuning JSON file, or from the K8s
-`space://steps/tuning` step, copies across as is.
+`space://steps/tuning` step, copies across minus the step-owned keys (below):
+such a config usually carries `model_name_or_path`, `training_data_path`,
+`output_dir` and often `peft_method`, which the step refuses.
 
-Before any GPU time, the step checks the merged job against fms-hf-tuning's own
-parser:
+On the node, before training starts (`accelerate launch`), the step checks the
+merged job against fms-hf-tuning's own parser. The node is provisioned by then and
+`setup:` has run, so unlike the config errors above these fail the run, not step
+creation:
 
 - an unknown key (a typo) fails, naming the key;
 - each value is converted as the command line would: `"1e-5"` becomes a float,
@@ -169,7 +175,11 @@ parser:
   value the argument's type or choices reject (`max_steps: 1.5`,
   `packing: maybe`, `lr_scheduler_type: nope`) fails, naming the key;
 - a list for a single-value argument, or an empty list, fails;
-- mappings (for example `gradient_checkpointing_kwargs`) pass through.
+- a mapping passes through where the argument takes one
+  (`gradient_checkpointing_kwargs`, `lr_scheduler_kwargs`, `accelerator_config`,
+  peft's `rank_pattern` and `alpha_pattern`); `exp_metadata` given as a mapping is
+  passed as JSON text, which fms-hf-tuning expects; a mapping for any other
+  argument fails.
 
 **Step defaults** that `args` may override: `save_strategy: "no"` (only the final
 model is registered), `logging_strategy: steps` and `logging_steps: 10` (so the
@@ -177,11 +187,16 @@ model is registered), `logging_strategy: steps` and `logging_steps: 10` (so the
 
 **Step-owned keys**, refused in `args` (use the inputs, `dataset_name`,
 `data_config`, `peft_method`, `distributed`, `output_path` and `clearml_*`
-instead): `model_name_or_path`, `tokenizer_name_or_path`, `output_dir`, `save_model_dir`, `training_data_path`, `validation_data_path`, `data_config_path`, `peft_method`, `quantization_method`, `trackers`, `report_to`, `experiment`, `clearml_project`, `clearml_task`, `run_uri_export_path`, `push_to_hub`, `hub_model_id`, `hub_strategy`, `hub_token`, `hub_private_repo`, `resume_from_checkpoint`, `accelerate_launch_args`, `fsdp`, `fsdp_config`, `deepspeed`, `log_level_replica`, `do_dataprocessing_only`.
+instead): `model_name_or_path`, `tokenizer_name_or_path`, `output_dir`, `save_model_dir`, `training_data_path`, `validation_data_path`, `data_config_path`, `peft_method`, `quantization_method`, `trackers`, `report_to`, `experiment`, `clearml_project`, `clearml_task`, `run_uri_export_path`, `push_to_hub`, `hub_model_id`, `hub_strategy`, `hub_token`, `hub_private_repo`, `push_to_hub_token`, `push_to_hub_model_id`, `push_to_hub_organization`, `resume_from_checkpoint`, `accelerate_launch_args`, `fsdp`, `fsdp_config`, `deepspeed`, `use_cpu`, `no_cuda`, `log_level_replica`, `do_dataprocessing_only`.
 
-`tokenizer_name_or_path` is owned because the tokenizer comes from `base_model`;
-`validation_data_path` because evaluation data goes through `data_config` (its
-`split` field), as in fms-hf-tuning's own rules.
+`tokenizer_name_or_path` is owned because the tokenizer comes from `base_model`.
+`validation_data_path` is owned because this step takes evaluation data only
+through `data_config` (its `split` field); fms-hf-tuning itself also accepts
+`validation_data_path` next to `training_data_path`. The deprecated
+`push_to_hub_token`, `push_to_hub_model_id` and `push_to_hub_organization` are
+owned because transformers copies them into `hub_token` and `hub_model_id`.
+`use_cpu` and its deprecated alias `no_cuda` are owned because they would train
+on the CPU of the GPU node.
 
 **Precision and attention.** fms-hf-tuning loads the model in `torch_dtype`
 (default `bfloat16`) with `use_flash_attn: true` (flash-attention 2). Both GPUs the
@@ -211,9 +226,10 @@ A multi-GPU launch picks a free rendezvous port.
 
 **FSDP and adapters.** peft 0.21 saves an empty LoRA adapter under FSDP1
 (huggingface/peft#3876). This image has peft 0.19.1, which is not affected: a LoRA run
-under this step's FSDP1 config on BlueVela saved 420 LoRA tensors. The step refuses to
-register an adapter with 0 tensors anyway, so a regression would show as a failed
-build, never as an empty artifact.
+under this step's FSDP1 config on BlueVela saved an adapter with 422 tensors (420 LoRA
+tensors plus the resized embeddings, below). The step refuses to register an adapter
+with 0 tensors anyway, so a regression would show as a failed build, never as an
+empty artifact. The count is recorded as the `tensor_count` metadata.
 
 The step fails before training when the container can access fewer GPUs than were
 allocated (on BlueVela SLURM this is ibm-granite/granite.build#604; rerun).
@@ -241,8 +257,8 @@ than the LoRA weights alone.
 | Value | Behaviour |
 |---|---|
 | `auto` (default) | On only when all three of `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` are set in the step env. Otherwise off, with no error. |
-| `true` | Always on. |
-| `false` | Always off, even when credentials are present. |
+| `true` (also `on`, `1`) | Always on. |
+| `false` (also `off`, `0`) | Always off, even when credentials are present. |
 
 Supply the three `CLEARML_API_*` variables through the build's space secrets
 (`config.skypilot.secrets.secret_names_to_use_as_env_variable`).
@@ -275,9 +291,9 @@ The registered directory holds:
 - for `lora` and `alora`, `adapter_config.json`, `adapter_model.safetensors` and the
   tokenizer. aLoRA's config carries the invocation tokens.
 
-The step records the metadata `peft_method`, `distributed`, `fms_hf_tuning_version`
-and `transformers_version`. It refuses to register an output whose weights hold 0
-tensors.
+The step records the metadata `peft_method`, `distributed`, `tensor_count` (the
+tensors in the saved weights), `fms_hf_tuning_version` and `transformers_version`.
+It refuses to register an output whose weights hold 0 tensors.
 
 **Loading an adapter.**
 
@@ -311,8 +327,11 @@ and use the same path in an `env:///` output URI:
 A re-run of the same path replaces the earlier output. The step refuses, before
 training, an `output_path` that exists and is not a directory, one that is non-empty
 with neither `config.json` nor `adapter_config.json` at its root, one that names no
-directory (`/`, `.`, `..`), and one that overlaps the staged `base_model`. The model
-is written to `<output_path>.partial` and moved into place only after the check.
+directory (`/`, `.`, `..`), one that overlaps the staged `base_model` or a bound
+`dataset`, and one that overlaps the step's scratch dir (`fms_hf_tuning_scratch` in
+the workdir, deleted after training). `data_config`'s `data_paths` are not checked.
+The model is written to `<output_path>.partial` and moved into place only after the
+check.
 
 ## Running on SLURM
 

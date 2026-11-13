@@ -12,9 +12,9 @@ Baked into the image at /opt/fms-hf-tuning/ and called by fms_hf_tuning_run.sh:
 fms-hf-tuning reads the job JSON with HfArgumentParser.parse_dict(...,
 allow_extra_keys=True), which ignores a misspelled key and does no type
 conversion (a YAML `1e-5` arrives as the string "1e-5"). `build` closes both
-gaps before any GPU time: each value goes through the argparse action's own
-type and choices, as on the command line, then parse_dict runs with extra keys
-refused. Only `tuning` (fms-hf-tuning) is imported lazily, so the pure helpers
+gaps on the node, before training starts: each value goes through the argparse
+action's own type and choices, as on the command line, then parse_dict runs with
+extra keys refused. Only `tuning` (fms-hf-tuning) is imported lazily, so the pure helpers
 import without it.
 """
 
@@ -22,15 +22,20 @@ from __future__ import annotations
 
 import argparse
 import base64
+import dataclasses
 import json
 import os
 import struct
 import sys
+import types
+import typing
 from importlib import metadata
-from typing import Any, Callable, cast
+from typing import Any, Callable, Collection, cast
 
-# Keys the step sets itself. step-template.yaml's `owned` list is the same set
-# (test_fms_hf_tuning_job.py pins it).
+# Keys the step sets itself, plus the deprecated aliases transformers copies into
+# them (push_to_hub_* into hub_*, no_cuda into use_cpu): use_cpu would train on
+# the CPU of the GPU node. step-template.yaml's `owned` list is the same set
+# (test_skypilot_train_fms_hf_tuning_render.py pins it).
 OWNED = frozenset(
     [
         "model_name_or_path",
@@ -53,11 +58,16 @@ OWNED = frozenset(
         "hub_strategy",
         "hub_token",
         "hub_private_repo",
+        "push_to_hub_token",
+        "push_to_hub_model_id",
+        "push_to_hub_organization",
         "resume_from_checkpoint",
         "accelerate_launch_args",
         "fsdp",
         "fsdp_config",
         "deepspeed",
+        "use_cpu",
+        "no_cuda",
         "log_level_replica",
         "do_dataprocessing_only",
     ]
@@ -68,6 +78,9 @@ OWNED = frozenset(
 EXTRA_ARGS = frozenset(
     ["peft_method", "quantization_method", "exp_metadata", "alora_invocation_string"]
 )
+
+# Arguments upstream reads with json.loads(); a mapping is passed as JSON text.
+JSON_TEXT_ARGS = frozenset(["exp_metadata"])
 
 # Step defaults a user's args may override: no mid-run checkpoints (only the
 # final model is registered), and per-step logging so the `Step:` progress line
@@ -111,24 +124,68 @@ def _convert(act: argparse.Action, key: str, value: Any) -> Any:
     return out
 
 
-def coerce_args(parser: argparse.ArgumentParser, args: dict) -> dict:
+def _admits_dict(hint: Any) -> bool:
+    if hint is dict or typing.get_origin(hint) is dict:
+        return True
+    if typing.get_origin(hint) in (typing.Union, types.UnionType):
+        return any(_admits_dict(a) for a in typing.get_args(hint))
+    return False
+
+
+def mapping_fields(parser: argparse.ArgumentParser) -> frozenset[str]:
+    """The arguments whose dataclass field type admits a dict.
+
+    HfArgumentParser types a Union[dict, str] field (gradient_checkpointing_kwargs,
+    lr_scheduler_kwargs, ...) as str, so the argparse type cannot tell; the
+    dataclass annotation can.
+
+    :param parser: fms-hf-tuning's parser; a plain argparse parser has none.
+    :returns: The field names.
+    """
+    names: set[str] = set()
+    for dc in getattr(parser, "dataclass_types", ()):
+        hints = typing.get_type_hints(dc)
+        names.update(
+            f.name for f in dataclasses.fields(dc) if _admits_dict(hints.get(f.name))
+        )
+    return frozenset(names)
+
+
+def _mapping_value(key: str, value: dict, mappings: Collection[str]) -> Any:
+    """A mapping as is where the field takes one, as JSON text for exp_metadata."""
+    if key in mappings:
+        return value
+    if key in JSON_TEXT_ARGS:
+        return json.dumps(value)
+    raise StepError(f"args.{key} takes a single value, not a mapping.")
+
+
+def coerce_args(
+    parser: argparse.ArgumentParser,
+    args: dict,
+    mappings: Collection[str] | None = None,
+) -> dict:
     """Check every key exists and convert every value with its argparse type.
 
-    Mappings (e.g. gradient_checkpointing_kwargs) and nulls pass through as is;
-    parse_dict takes them directly.
+    A mapping passes through as is where the field takes one (parse_dict takes
+    it directly), and becomes JSON text for exp_metadata; nulls pass through.
 
     :param parser: fms-hf-tuning's parser (or any argparse parser in tests).
     :param args: The user's args.
+    :param mappings: The arguments that take a mapping; None means
+        mapping_fields(parser).
     :returns: The converted args.
-    :raises StepError: On an unknown key, a list for a single-value argument,
-        or a value the argument's type or choices reject.
+    :raises StepError: On an unknown key, a mapping or a list for a
+        single-value argument, or a value the argument's type or choices reject.
     """
+    if mappings is None:
+        mappings = mapping_fields(parser)
     # Keep the first action per dest: a default-True bool is followed by an
     # untyped `--no_<field>` store_false twin with the same dest.
     actions: dict[str, argparse.Action] = {}
     for a in parser._actions:  # pylint: disable=protected-access
         actions.setdefault(a.dest, a)
-    out = {}
+    out: dict[str, Any] = {}
     for key, value in args.items():
         act = actions.get(key)
         if act is None or key == "help":
@@ -136,7 +193,10 @@ def coerce_args(parser: argparse.ArgumentParser, args: dict) -> dict:
                 f"args.{key} is not an fms-hf-tuning argument (check the spelling; "
                 "names are fms-hf-tuning's, e.g. r, lora_alpha, target_modules)."
             )
-        if value is None or isinstance(value, dict) or act.type is None:
+        if isinstance(value, dict):
+            out[key] = _mapping_value(key, value, mappings)
+            continue
+        if value is None or act.type is None:
             out[key] = value
             continue
         many = act.nargs in ("+", "*")

@@ -324,6 +324,8 @@ class TestOutput:
         assert m[-1] == f"GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:{out}"
         assert "GB_STEP_METADATA_KEY:peft_method GB_STEP_METADATA_VALUE:none" in m
         assert "GB_STEP_METADATA_KEY:distributed GB_STEP_METADATA_VALUE:ddp" in m
+        # check-output's count (the fake saves 2), the evidence for peft#3876.
+        assert "GB_STEP_METADATA_KEY:tensor_count GB_STEP_METADATA_VALUE:2" in m
         assert any(
             x.startswith("GB_STEP_METADATA_KEY:fms_hf_tuning_version ") for x in m
         )
@@ -343,7 +345,9 @@ class TestOutput:
         out = node[3] / "model_output"
         cfg = json.loads((out / "adapter_config.json").read_text())
         assert cfg["base_model_name_or_path"] == "org/m"
-        assert _markers(proc)[-1] == f"GB_ARTIFACT_ID:adapter GB_ARTIFACT_PATH:{out}"
+        m = _markers(proc)
+        assert m[-1] == f"GB_ARTIFACT_ID:adapter GB_ARTIFACT_PATH:{out}"
+        assert "GB_STEP_METADATA_KEY:tensor_count GB_STEP_METADATA_VALUE:2" in m
 
     @pytest.mark.parametrize("method", ["none", "lora"])
     def test_empty_output_not_registered(self, node, method):
@@ -389,6 +393,24 @@ class TestOutput:
         link.symlink_to(base)
         proc = _run(node, output_path=str(link))
         assert proc.returncode == 1 and "overlaps the base_model" in proc.stderr
+
+    def test_output_overlapping_bound_dataset_refused(self, node):
+        ds = node[0] / "data" / "ds"  # its parent holds no base_model
+        ds.mkdir(parents=True)
+        # A previous-model lookalike, so the non-model check doesn't refuse first.
+        (ds / "config.json").write_text('{"keep": 1}')
+        for p in (str(ds), str(ds / "sub"), str(ds.parent)):
+            proc = _run(node, data_path=str(ds), output_path=p)
+            assert proc.returncode == 1, p
+            assert "overlaps the dataset" in proc.stderr, p
+            assert not (node[0] / "acc.json").exists()
+        assert (ds / "config.json").read_text() == '{"keep": 1}'
+
+    def test_hf_dataset_id_is_not_a_path(self, node):
+        # dataset_name arrives in --data-path too; one that is no local path
+        # never overlaps, even when it reads like output_path.
+        proc = _run(node, data_path="model_output", output_path="./model_output")
+        assert proc.returncode == 0, proc.stderr
 
     @pytest.mark.parametrize(
         "path", ["./fms_hf_tuning_scratch", "./fms_hf_tuning_scratch/sub"]

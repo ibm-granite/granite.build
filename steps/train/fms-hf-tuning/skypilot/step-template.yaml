@@ -36,7 +36,8 @@ config:
     # missing.
     image_id: "docker:${IMAGE_REF}"
     # ClearML tracking: auto (on iff CLEARML_API_HOST, CLEARML_API_ACCESS_KEY and
-    # CLEARML_API_SECRET_KEY are all set in the step env), true, or false.
+    # CLEARML_API_SECRET_KEY are all set in the step env), true (on, 1), or
+    # false (off, 0).
     clearml_enabled: "auto"
     clearml_project: ""
     clearml_task_name: ""
@@ -93,11 +94,11 @@ environment_configs:
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
             {%- macro validate(c, cc, bound, lc) -%}
-            {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "log_level_replica", "do_dataprocessing_only"] -%}
+            {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "push_to_hub_token", "push_to_hub_model_id", "push_to_hub_organization", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "use_cpu", "no_cuda", "log_level_replica", "do_dataprocessing_only"] -%}
             {%- set res = lc.get("resources") or {} -%}
             {%- if c.peft_method not in ["none", "lora", "alora"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.peft_method must be none, lora or alora, got '" ~ c.peft_method ~ "'.") }}{% endif -%}
             {%- if c.distributed not in ["ddp", "fsdp"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.distributed must be ddp or fsdp, got '" ~ c.distributed ~ "'.") }}{% endif -%}
-            {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
+            {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.clearml_enabled must be auto, true or false (or on/off, 1/0), got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args must be a mapping of fms-hf-tuning argument to value.") }}{% endif -%}
             {%- if c.data_config is not mapping %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.data_config must be a mapping (fms-hf-tuning's data config), or {} to leave it unset.") }}{% endif -%}
             {#- data_config may read any bound input (its data_paths), so a bound
@@ -142,11 +143,11 @@ environment_configs:
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
             {%- macro validate(c, cc, bound, lc) -%}
-            {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "log_level_replica", "do_dataprocessing_only"] -%}
+            {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "push_to_hub_token", "push_to_hub_model_id", "push_to_hub_organization", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "use_cpu", "no_cuda", "log_level_replica", "do_dataprocessing_only"] -%}
             {%- set res = lc.get("resources") or {} -%}
             {%- if c.peft_method not in ["none", "lora", "alora"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.peft_method must be none, lora or alora, got '" ~ c.peft_method ~ "'.") }}{% endif -%}
             {%- if c.distributed not in ["ddp", "fsdp"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.distributed must be ddp or fsdp, got '" ~ c.distributed ~ "'.") }}{% endif -%}
-            {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.clearml_enabled must be auto, true or false, got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
+            {%- if (c.clearml_enabled | string | lower) not in ["auto", "true", "false", "on", "off", "1", "0"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.clearml_enabled must be auto, true or false (or on/off, 1/0), got '" ~ c.clearml_enabled ~ "'.") }}{% endif -%}
             {%- if c.args is not mapping %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.args must be a mapping of fms-hf-tuning argument to value.") }}{% endif -%}
             {%- if c.data_config is not mapping %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.data_config must be a mapping (fms-hf-tuning's data config), or {} to leave it unset.") }}{% endif -%}
             {#- data_config may read any bound input (its data_paths), so a bound

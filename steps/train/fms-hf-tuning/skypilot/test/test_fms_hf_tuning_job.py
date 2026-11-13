@@ -47,7 +47,9 @@ def parser():
     p.add_argument("--target_modules", type=str, nargs="+")
     p.add_argument("--lr_scheduler_type", type=str, choices=["linear", "cosine"])
     p.add_argument("--response_template", type=str)
+    # A Union[dict, str] field, which HfArgumentParser types as str.
     p.add_argument("--gradient_checkpointing_kwargs", type=str)
+    p.add_argument("--exp_metadata", type=str)
     # A default-True bool, as HfArgumentParser adds it: the typed action, then a
     # `--no_<field>` store_false twin with the same dest and no type.
     p.add_argument(
@@ -101,10 +103,31 @@ class TestCoerce:
                 "gradient_checkpointing_kwargs": {"use_reentrant": False},
                 "max_steps": None,
             },
+            mappings={"gradient_checkpointing_kwargs"},
         )
         assert out == {
             "gradient_checkpointing_kwargs": {"use_reentrant": False},
             "max_steps": None,
+        }
+
+    def test_mapping_refused_where_the_field_takes_none(self, parser):
+        # parse_dict does no type check, so a mapping for a str field would
+        # reach training.
+        with pytest.raises(job.StepError) as exc:
+            job.coerce_args(parser, {"response_template": {"a": 1}}, mappings=set())
+        assert "args.response_template takes a single value, not a mapping" in str(
+            exc.value
+        )
+
+    def test_exp_metadata_mapping_becomes_a_json_string(self, parser):
+        # Upstream json.loads() exp_metadata and catches only ValueError, so a
+        # mapping would raise TypeError on every rank after the GPUs are up.
+        out = job.coerce_args(
+            parser, {"exp_metadata": {"gpu": "A100", "n": 2}}, mappings=set()
+        )
+        assert out == {"exp_metadata": '{"gpu": "A100", "n": 2}'}
+        assert job.coerce_args(parser, {"exp_metadata": '{"gpu": "A100"}'}) == {
+            "exp_metadata": '{"gpu": "A100"}'
         }
 
     def test_default_true_bool_is_converted(self, parser):
@@ -203,6 +226,23 @@ class TestMerge:
     @pytest.mark.parametrize("key", sorted(job.OWNED))
     def test_owned_key_refused(self, key):
         with pytest.raises(job.StepError, match="is set by the step"):
+            _merge({key: "x"})
+
+    # transformers 4.55 copies the deprecated push_to_hub_* into hub_token /
+    # hub_model_id (owned) and no_cuda into use_cpu, which would train on the
+    # CPU of the GPU node the step asked for.
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "push_to_hub_token",
+            "push_to_hub_model_id",
+            "push_to_hub_organization",
+            "use_cpu",
+            "no_cuda",
+        ],
+    )
+    def test_aliases_of_owned_keys_refused(self, key):
+        with pytest.raises(job.StepError, match=f"args.{key} is set by the step"):
             _merge({key: "x"})
 
 

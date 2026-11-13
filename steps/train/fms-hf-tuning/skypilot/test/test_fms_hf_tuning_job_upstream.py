@@ -127,6 +127,33 @@ def test_strict_check_refuses(args, needle):
     assert needle in str(exc.value)
 
 
+def test_mapping_fields_are_the_dict_typed_fields():
+    names = job.mapping_fields(get_parser())
+    # Union[dict, str] fields (argparse type str) and plain dict fields.
+    assert {
+        "gradient_checkpointing_kwargs",
+        "lr_scheduler_kwargs",
+        "accelerator_config",
+        "rank_pattern",
+    } <= names
+    assert not {"chat_template", "response_template", "exp_metadata"} & names
+
+
+def test_strict_check_mappings():
+    out = job.strict_check(
+        _job(
+            {
+                "exp_metadata": {"gpu": "A100"},
+                "gradient_checkpointing_kwargs": {"use_reentrant": False},
+            }
+        )
+    )
+    assert json.loads(out["exp_metadata"]) == {"gpu": "A100"}
+    assert out["gradient_checkpointing_kwargs"] == {"use_reentrant": False}
+    with pytest.raises(job.StepError, match="takes a single value, not a mapping"):
+        job.strict_check(_job({"chat_template": {"a": 1}}))
+
+
 def test_default_true_bools_are_converted():
     # A default-True bool also has a `--no_<field>` store_false twin with the
     # same dest; the typed action must be the one used.
