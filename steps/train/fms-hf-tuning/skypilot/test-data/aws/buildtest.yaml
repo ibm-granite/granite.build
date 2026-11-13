@@ -1,0 +1,39 @@
+# YAML spec for test_skypilot_aws_train_fms_hf_tuning.py (found by the test/ <->
+# test-data/ helper, so the pairing holds in both test modes; see steps/README.md).
+targets:
+  - full
+  - alora
+target_expectations:
+  - target_name: full
+    # skypilot/aws pulls hf:// inputs inline; the env:// output queues no push.
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/train/fms-hf-tuning
+        config:
+          fms_hf_tuning_config:
+            peft_method: none
+        metadata_matches:
+          peft_method: "none"
+          distributed: "ddp"
+          fms_hf_tuning_version: "3\\.2\\.2"
+  - target_name: alora
+    step_count: 1
+    input_artifact_count: 1
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/train/fms-hf-tuning
+        config:
+          fms_hf_tuning_config:
+            peft_method: alora
+        metadata_matches:
+          peft_method: "alora"
+          distributed: "ddp"
+          fms_hf_tuning_version: "3\\.2\\.2"
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# Two EC2 cold starts + image pulls + 3-step runs.
+timeout_minutes: 120
