@@ -59,6 +59,15 @@ require_hub_kernels() {
   out=$(HF_HUB_OFFLINE=1 REQUIRED_KERNEL_REPOS="$repo_list" "$pybin" - <<'PY' 2>/dev/null
 import json, os, sys
 from pathlib import Path
+
+# The revision the TRAINER will resolve (hub_kernel_pins.py): the probe must check
+# the cache entry that will actually be read, not the repo's default. Keeps this
+# shell and the Python pin in sync by construction.
+try:
+    from gb_steps_post_training.distillation.hub_kernel_pins import pinned_revision
+except ImportError:
+    def pinned_revision(repo_id):
+        return "main"
 # EXIT 2 MEANS "THE PROBE COULD NOT ASK", and it is kept distinct from exit 1 ("asked, and repos
 # are missing") because conflating the two produced a message that named the wrong fix. See the
 # shell below.
@@ -71,7 +80,7 @@ except Exception as e:
 missing = []
 for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
-        _, path = install_kernel(repo, revision="main", local_files_only=True)
+        _, path = install_kernel(repo, revision=pinned_revision(repo), local_files_only=True)
         json.loads((Path(path) / "metadata.json").read_text())
     except Exception as e:
         missing.append(f"{repo} ({type(e).__name__})")
@@ -126,13 +135,15 @@ MSG
   if [[ "${GOLD_PREFETCH_KERNELS:-0}" == "1" ]]; then
     echo "GOLD_PREFETCH_KERNELS=1: downloading now (needs egress to huggingface.co)..."
     HF_HUB_OFFLINE=0 REQUIRED_KERNEL_REPOS="$repo_list" "$pybin" - <<'PY'
+import os
+from gb_steps_post_training.distillation.hub_kernel_pins import pinned_revision
 import json, os, sys
 from pathlib import Path
 from kernels.utils import install_kernel
 rc = 0
 for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
-        _, path = install_kernel(repo, revision="main")
+        _, path = install_kernel(repo, revision=pinned_revision(repo))
         json.loads((Path(path) / "metadata.json").read_text())
         print("  ok", repo, path)
     except Exception as e:

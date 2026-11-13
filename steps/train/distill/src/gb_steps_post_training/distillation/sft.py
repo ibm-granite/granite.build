@@ -30,7 +30,13 @@ from collections.abc import Callable
 from contextlib import nullcontext
 
 from datasets import Dataset, DatasetDict, IterableDataset, load_dataset
+
+# Hybrid (granitemoehybrid) students resolve mamba-ssm at load time; the default
+# revision's build is incompatible with this transformers. See hub_kernel_pins.py.
+from gb_steps_post_training.distillation.hub_kernel_pins import pin_hub_kernels
 from transformers import AutoTokenizer, GenerationConfig
+
+pin_hub_kernels()
 
 _trl_import_utils = importlib.import_module("trl.import_utils")
 for _attr in ("_mergekit_available", "_vllm_ascend_available"):

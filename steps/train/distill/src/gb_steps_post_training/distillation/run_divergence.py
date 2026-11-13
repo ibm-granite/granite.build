@@ -24,6 +24,11 @@ import sys
 from pathlib import Path
 
 from gb_steps_post_training.distillation import divergence as dv
+from gb_steps_post_training.distillation.hub_kernel_pins import pin_hub_kernels
+
+# Hybrid (granitemoehybrid) students resolve mamba-ssm at load time; the default
+# revision's build is incompatible with this transformers. See hub_kernel_pins.py.
+pin_hub_kernels()
 from gb_steps_post_training.distillation import fast_tokenizer
 
 

@@ -130,6 +130,14 @@ activate_swa_arm()
 # This requires transformers 5.x hub_kernels module; skip on older versions.
 import sys as _sys
 
+# BEFORE any kernel resolves: mamba-ssm's default (version=1 -> the v1 branch)
+# build imports symbols transformers 5.x renamed, so a fresh hybrid-model load
+# dies mid-load. The pin below rewrites the mapping onto v0.0.3, the newest
+# compatible revision. See hub_kernel_pins.py for the measurement.
+from gb_steps_post_training.distillation.hub_kernel_pins import pin_hub_kernels
+
+pin_hub_kernels()
+
 try:
     from transformers.integrations.hub_kernels import (
         lazy_load_kernel as _lazy_load_kernel,

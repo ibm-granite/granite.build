@@ -46,6 +46,16 @@ import tempfile
 import traceback
 from pathlib import Path
 
+# Hybrid (granitemoehybrid) students resolve mamba-ssm at load time; the default
+# revision's build is incompatible with this transformers. See the shared package's
+# hub_kernel_pins.py for the measurement.
+try:
+    from gb_steps_post_training.distillation.hub_kernel_pins import pin_hub_kernels
+
+    pin_hub_kernels()
+except ImportError:  # the shared package is not on PYTHONPATH in this test tree
+    pass
+
 PROBES = ("load-student", "tokenizer", "tokenizer-fit")
 
 # Only the small files. The weights are irrelevant to tokenization.
