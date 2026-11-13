@@ -16,16 +16,16 @@
 
 """Spaces whose definitions are stored in gb_spaces instead of a git repo.
 
-A row with ``git_repo_uri: db://spaces/<name>`` is served from the ``space``
+A row with ``space_uri: db://spaces/<name>`` is served from the ``space``
 snapshot (StoredSpace.space) of row ``<name>`` -- normally itself; another
-name makes it an alias. The snapshot's space.yaml names its assets repo as
+name makes it an alias. Its ``git_repo_uri`` stays the space's git repo. The
+snapshot's space.yaml names its assets repo as
 ``db://spaces/<name>/assets``, served from that row's ``assets`` snapshot.
 Either may carry a ``#subdirectory=`` fragment.
 
 Snapshots are unpacked into a local directory named by content digest and
-served as ``file://``, so no git access is needed. Secret lookup and space
-matching use the snapshot's ``source_uri`` (the repo it was taken from), not
-the local path.
+served as ``file://``, so no git access is needed. Secret lookup, space
+matching and build PRs keep using ``git_repo_uri``, never the local path.
 """
 
 import hashlib
@@ -233,44 +233,18 @@ def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri
 
 def _source_row(stored_space: StoredSpace) -> StoredSpace:
     """The row holding a db-backed space's snapshots (itself, or its alias target)."""
-    name = parse_db_uri(stored_space.git_repo_uri).space_name
+    name = parse_db_uri(stored_space.get_space_uri()).space_name
     return stored_space if name == stored_space.name else _get_row(name)
-
-
-def get_identity_uri(stored_space: StoredSpace) -> str:
-    """The repo a stored space is identified by, without fetching it.
-
-    The snapshot's ``source_uri`` for a db-backed space, else ``git_repo_uri``.
-    Used for secret groups and space matching, which key on the repo.
-    """
-    if not is_db_uri(stored_space.git_repo_uri):
-        return stored_space.git_repo_uri
-    row = _source_row(stored_space)
-    snapshot = _get_snapshot(row, SPACE_SLOT)
-    return snapshot.source_uri or stored_space.git_repo_uri
-
-
-def get_resolved_identity_uri(stored_space: StoredSpace) -> str:
-    """The identity a Space built from this row reports (Space.identity_uri).
-
-    Same as get_identity_uri, except a db-backed row without a recorded source
-    falls back to its unpacked location, as Space does.
-    """
-    if not is_db_uri(stored_space.git_repo_uri):
-        return stored_space.git_repo_uri
-    return resolve_db_uri(
-        stored_space.git_repo_uri, row=_source_row(stored_space)
-    ).identity_uri
 
 
 def get_pr_repo_uri(stored_space: StoredSpace) -> Optional[str]:
     """The ``https://host/owner/repo`` holding a space's build PRs, or None.
 
-    The source repo for a db-backed space, so builds keep their PRs and
-    messages there. None for a local space, or when the repo can't be told.
+    That is git_repo_uri in any form, also for a db-backed space. None for a
+    local space, or when the repo can't be told.
     """
     try:
-        uri = normalize_repo_uri(get_identity_uri(stored_space))
+        uri = normalize_repo_uri(stored_space.git_repo_uri)
     except ValueError as e:
         logger.warning("space %r has no PR repo: %s", stored_space.name, e)
         return None
@@ -284,13 +258,26 @@ def get_space_config_uri(stored_space: StoredSpace, token: Optional[str] = None)
     may still name ``db://`` base_uris, which only Space resolves; callers
     that only read the space's own files need nothing more.
     """
-    if is_db_uri(stored_space.git_repo_uri):
-        return resolve_db_uri(
-            stored_space.git_repo_uri, row=_source_row(stored_space)
-        ).file_uri
+    uri = stored_space.get_space_uri()
+    if is_db_uri(uri):
+        return resolve_db_uri(uri, row=_source_row(stored_space)).file_uri
     if token is None:
-        return GitURI.get_gb_space_config_uri(uri=stored_space.git_repo_uri)
-    return GitURI.get_gb_space_config_uri(uri=stored_space.git_repo_uri, token=token)
+        return GitURI.get_gb_space_config_uri(uri=uri)
+    return GitURI.get_gb_space_config_uri(uri=uri, token=token)
+
+
+def _db_identity_uri(stored_space: StoredSpace) -> Optional[str]:
+    """git_repo_uri as a git-backed load would report it (git+ssh, @ref).
+
+    Token-free: the branch comes from the snapshot instead of a GitHub probe.
+    """
+    snapshot = _source_row(stored_space).space
+    try:
+        return to_config_uri(
+            stored_space.git_repo_uri, snapshot.source_ref if snapshot else None
+        )
+    except ValueError:
+        return None  # not a repo URI; Space falls back to the snapshot source
 
 
 def create_space(
@@ -303,9 +290,16 @@ def create_space(
     # Local import: gbserver.build pulls in the whole build engine.
     from gbserver.build.space import Space
 
-    if is_db_uri(stored_space.git_repo_uri):
-        uri = stored_space.git_repo_uri  # Space resolves db:// itself
-    else:
-        uri = get_space_config_uri(stored_space, token=token)
+    uri = stored_space.get_space_uri()
+    if is_db_uri(uri):
+        # Space resolves db:// itself; it is identified by its git repo.
+        logger.info("space %s is served from %s", stored_space.name, uri)
+        return Space(
+            uri=uri,
+            username=username,
+            force_fetch=force_fetch,
+            identity_uri=_db_identity_uri(stored_space),
+        )
+    uri = get_space_config_uri(stored_space, token=token)
     logger.info("for the space name %s using the URI: %s", stored_space.name, uri)
     return Space(uri=uri, username=username, force_fetch=force_fetch)

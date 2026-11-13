@@ -50,7 +50,7 @@ def get_space_uri_from_space_name(space_name: str) -> Optional[str]:
             storage.get_table_name(),
         )
         return None
-    uri = space.git_repo_uri
+    uri = space.get_space_uri()
     logger.info("Found space %s with uri %s", space_name, uri)
     if is_db_uri(uri):
         return uri  # Space unpacks the stored snapshot itself

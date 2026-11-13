@@ -32,7 +32,6 @@ from gbserver.buildrunner.validation import _same_space_repo
 from gbserver.spaces.db_space import (
     DbUri,
     create_space,
-    get_identity_uri,
     get_space_config_uri,
     make_db_uri,
     parse_db_uri,
@@ -70,7 +69,8 @@ def _snapshot(files: Dict[str, str], source, ref: str = "gbspace-config"):
 def _row(name: str = "x", **kw) -> StoredSpace:
     return StoredSpace(
         name=name,
-        git_repo_uri=kw.pop("git_repo_uri", make_db_uri("x")),
+        git_repo_uri=kw.pop("git_repo_uri", SOURCE),
+        space_uri=kw.pop("space_uri", make_db_uri(name)),
         space=kw.pop("space", _snapshot({"space.yaml": SPACE_YAML}, SOURCE)),
         assets=kw.pop(
             "assets",
@@ -162,14 +162,13 @@ def test_missing_snapshot(rows):
 
 def test_alias_uses_target_row(rows):
     rows["x"] = _row()
-    alias = StoredSpace(name="alias", git_repo_uri=make_db_uri("x"))
-    assert get_identity_uri(alias) == SOURCE
+    alias = StoredSpace(name="alias", git_repo_uri=SOURCE, space_uri=make_db_uri("x"))
     assert get_space_config_uri(alias) == resolve_db_uri("db://spaces/x").file_uri
 
 
 def test_git_backed_unchanged():
     row = StoredSpace(name="g", git_repo_uri=SOURCE)
-    assert get_identity_uri(row) == SOURCE
+    assert row.get_space_uri() == SOURCE
     assert get_space_config_uri(row, token="") == (
         "git+ssh://github.example.com/org/gbspace-x.git"
     )
@@ -195,7 +194,7 @@ def test_create_space_loads_offline(rows, monkeypatch):
     # Secret groups are matched on the source repo, never the local copy.
     assert seen_uris == [space.identity_uri]
     # The space-match check in validation passes for the stored row.
-    assert _same_space_repo(get_identity_uri(rows["x"]), space.identity_uri)
+    assert _same_space_repo(rows["x"].git_repo_uri, space.identity_uri)
     # db://spaces/x/assets became the unpacked assets snapshot.
     assets_uri = resolve_db_uri("db://spaces/x/assets").file_uri
     assert SpaceURI._thread_local.base_uris[:2] == [space.uristr, assets_uri]
@@ -231,7 +230,7 @@ def test_portable_uri_round_trips(rows):
 
 def test_base_uri_may_not_name_another_space(rows):
     """A space.yaml naming another row's snapshot must not get its assets."""
-    rows["other"] = _row(name="other", git_repo_uri=make_db_uri("other"))
+    rows["other"] = _row(name="other")
     yaml_other = SPACE_YAML.replace("db://spaces/x/assets", "db://spaces/other/assets")
     rows["x"] = _row(space=_snapshot({"space.yaml": yaml_other}, SOURCE))
     with pytest.raises(ValueError, match="another space's snapshot"):
@@ -258,9 +257,15 @@ def test_concurrent_finish_is_kept(rows, tmp_path, monkeypatch):
     assert (path / "theirs").is_file()
 
 
-def test_validation_identity_without_source(rows):
-    """A snapshot with no recorded source still matches the Space built from it."""
-    row = _row(space=_snapshot({"space.yaml": SPACE_YAML}, source=None))
+def test_identity_is_git_repo_uri_in_any_form(rows):
+    """Space reports git_repo_uri (its config form), whatever form it is stored in."""
+    row = _row(
+        git_repo_uri="git@github.example.com:org/gbspace-x.git",
+        space=_snapshot({"space.yaml": SPACE_YAML}, source=None),
+    )
     rows["x"] = row
     space = create_space(row)
-    assert _same_space_repo(db_space.get_resolved_identity_uri(row), space.identity_uri)
+    assert space.identity_uri == (
+        "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
+    )
+    assert _same_space_repo(row.git_repo_uri, space.identity_uri)

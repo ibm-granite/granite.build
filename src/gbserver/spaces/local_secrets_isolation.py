@@ -31,13 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from gbcommon.uri.uri import URI
-from gbserver.spaces.db_space import (
-    get_identity_uri,
-    get_space_config_uri,
-    is_db_uri,
-    resolve_db_uri,
-)
-from gbserver.spaces.repo_identity import same_repo
+from gbserver.spaces.db_space import get_space_config_uri, is_db_uri, resolve_db_uri
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.spaceconfig import SpaceConfig
 from gbserver.utils.logger import get_logger
@@ -129,23 +123,12 @@ def _registered_key(space: StoredSpace) -> Optional[str]:
         return None
 
 
-def _same_space(a: StoredSpace, b: StoredSpace) -> bool:
-    """Aliases: same URI, or the same repo (e.g. one row served from its snapshot)."""
-    if a.git_repo_uri == b.git_repo_uri:
-        return True
-    try:
-        return same_repo(get_identity_uri(a), get_identity_uri(b))
-    except ValueError:  # e.g. an alias of a missing row
-        return False
-
-
 def check_local_secrets_collision(
     candidate: StoredSpace, registered: Iterable[StoredSpace]
 ) -> None:
     """Refuse to register a space that would share another's local secrets.
 
-    Spaces with the same ``git_repo_uri`` or repo are aliases of one space and
-    may share.
+    Spaces with the same ``git_repo_uri`` are aliases of one space and may share.
 
     Args:
         candidate: The space about to be registered (or re-pointed).
@@ -170,7 +153,7 @@ def check_local_secrets_collision(
             " secret_manager.config.secrets_dir"
         )
     for other in registered:
-        if _same_space(other, candidate):
+        if other.git_repo_uri == candidate.git_repo_uri:
             continue
         if _registered_key(other) == key:
             raise LocalSecretsCollisionError(

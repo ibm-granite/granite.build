@@ -146,7 +146,8 @@ def test_pr_messages_stop_once_given_up(monkeypatch):
         (
             StoredSpace(
                 name="d",
-                git_repo_uri="db://spaces/d",
+                git_repo_uri="https://github.example.com/o/space",
+                space_uri="db://spaces/d",
                 space=RepoSnapshot(
                     archive="x", source_uri="https://github.example.com/o/space"
                 ),

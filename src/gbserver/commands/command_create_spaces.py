@@ -22,7 +22,6 @@ import click
 import yaml
 from pydantic import BaseModel
 
-from gbserver.spaces.db_space import get_identity_uri, is_db_uri
 from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
 from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage import singleton_storage
@@ -77,49 +76,38 @@ def _check_local_secrets_collisions(storage, spaces: List[StoredSpace]) -> None:
 
 
 def _keep_db_snapshots(storage, spaces: List[StoredSpace]) -> List[StoredSpace]:
-    """Carry registered db-backed rows' snapshots over to the specs re-creating them.
+    """Carry registered rows' space_uri and snapshots over to specs re-creating them.
 
-    A spec whose git URI names the repo a db-backed row was snapshotted from
-    (e.g. the predefined public space, PUBLIC_SPACE_GIT_URI) or which is itself
-    a db:// URI, keeps that row's db:// URI and snapshots. Re-running
-    create-spaces then neither moves the space back to git nor reaches git.
-    Read before --clear/--replace drop the rows.
+    A spec for the same repo (e.g. the predefined public space,
+    PUBLIC_SPACE_GIT_URI) keeps a db-served row's space_uri and snapshots
+    unless it sets its own, so re-running create-spaces neither moves the space
+    back to git nor reaches git. Read before --clear/--replace drop the rows.
 
     Args:
         storage: The admin space storage.
         spaces: The spaces about to be added.
 
     Returns:
-        The specs, with snapshots carried over where they apply.
+        The specs, with space_uri and snapshots carried over where they apply.
     """
     result = []
     for space in spaces:
         existing = storage.get_by_name(space.name)
-        if existing is not None and is_db_uri(existing.git_repo_uri):
-            try:
-                same = is_db_uri(space.git_repo_uri) or same_repo(
-                    get_identity_uri(existing), space.git_repo_uri
-                )
-            except ValueError as e:  # e.g. an alias of a missing row
-                logger.warning("space %s: not keeping its snapshot: %s", space.name, e)
-                same = False
-            if same:
-                logger.info(
-                    "space %s is served from the database (%s); keeping its snapshot",
-                    space.name,
-                    existing.git_repo_uri,
-                )
-                space = space.model_copy(
-                    update={
-                        "git_repo_uri": (
-                            space.git_repo_uri
-                            if is_db_uri(space.git_repo_uri)
-                            else existing.git_repo_uri
-                        ),
-                        "space": space.space or existing.space,
-                        "assets": space.assets or existing.assets,
-                    }
-                )
+        if (
+            existing is not None
+            and existing.space_uri
+            and same_repo(existing.git_repo_uri, space.git_repo_uri)
+        ):
+            logger.info(
+                "space %s is served from %s; keeping it", space.name, existing.space_uri
+            )
+            space = space.model_copy(
+                update={
+                    "space_uri": space.space_uri or existing.space_uri,
+                    "space": space.space or existing.space,
+                    "assets": space.assets or existing.assets,
+                }
+            )
         result.append(space)
     return result
 

@@ -285,13 +285,13 @@ def _upsert_space_alias(space_storage, stored_space) -> None:
     if existing is None:
         space_storage.add(stored_space)
         logger.info("Created '%s' space with URI %s", name, uri)
-    elif is_db_uri(existing.git_repo_uri):
+    elif is_db_uri(existing.space_uri):
         # Served from a stored snapshot (gbserver space-snapshot); re-pointing
         # would silently drop it.
         logger.warning(
             "'%s' space is served from %s; not re-pointing it at %s",
             name,
-            existing.git_repo_uri,
+            existing.space_uri,
             uri,
         )
     elif existing.git_repo_uri != uri:

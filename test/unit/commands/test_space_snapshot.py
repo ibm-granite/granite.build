@@ -148,7 +148,8 @@ def test_create_stores_snapshots_and_switches(env):
     result = _run(env, "--create")
     assert result.exit_code == 0, result.output
     row = env.storage.rows["x"]
-    assert row.git_repo_uri == "db://spaces/x"
+    assert row.git_repo_uri == "https://github.example.com/org/gbspace-x"
+    assert row.space_uri == "db://spaces/x"
 
     assert row.space.source_uri == "https://github.example.com/org/gbspace-x"
     assert row.space.source_ref == "gbspace-config"
@@ -181,10 +182,11 @@ def test_no_switch_keeps_git_uri(env):
     env.storage.rows["x"] = StoredSpace(
         name="x", git_repo_uri="https://github.example.com/org/gbspace-x"
     )
-    result = _run(env, "--no-switch", "--skip-secret-group-check")
+    result = _run(env, "--no-switch")
     assert result.exit_code == 0, result.output
     row = env.storage.rows["x"]
     assert row.git_repo_uri == "https://github.example.com/org/gbspace-x"
+    assert row.space_uri is None  # stored, not served
     assert row.space.source_commit == env.space_sha
 
 
@@ -213,21 +215,6 @@ def test_assets_repo_not_in_base_uris_is_refused(env):
     assert "no space.yaml base_uris entry" in result.output
 
 
-def test_secret_group_change_is_refused(env, monkeypatch):
-    env.storage.rows["x"] = StoredSpace(
-        name="x", git_repo_uri="git+ssh://github.example.com/org/old-name.git"
-    )
-    monkeypatch.setattr(
-        cmd,
-        "_secret_group_names",
-        lambda _yaml, uri: frozenset({"old" if "old-name" in uri else "new"}),
-    )
-    result = _run(env)
-    assert result.exit_code != 0
-    assert "secret groups differ" in result.output
-    assert env.storage.rows["x"].space is None
-
-
 @pytest.mark.parametrize(
     "uri, expected",
     [
@@ -247,28 +234,12 @@ def test_clone_url_maps_git_ssh():
     assert cmd._clone_url("https://h/o/r") == "https://h/o/r"
 
 
-def test_identical_identity_skips_secret_lookup(env, monkeypatch):
-    """Refreshing an https-registered space compares equal strings: no lookup."""
-    env.storage.rows["x"] = StoredSpace(
-        name="x", git_repo_uri="https://github.example.com/org/gbspace-x"
-    )
-
-    def boom(*_):
-        raise AssertionError("secret groups looked up for identical URIs")
-
-    monkeypatch.setattr(cmd, "_secret_group_names", boom)
-    # The branch the git-backed row resolved to, as in a non-standalone env.
-    monkeypatch.setattr(cmd, "SPACE_REPO_CONFIG_BRANCH_NAME", "gbspace-config")
-    result = _run(env)
-    assert result.exit_code == 0, result.output
-    assert env.storage.rows["x"].git_repo_uri == "db://spaces/x"
-
-
 def test_create_no_switch_keeps_git(env):
     result = _run(env, "--create", "--no-switch")
     assert result.exit_code == 0, result.output
     row = env.storage.rows["x"]
     assert row.git_repo_uri == "https://github.example.com/org/gbspace-x"
+    assert row.space_uri is None
     assert row.space.source_commit == env.space_sha
 
 
@@ -313,3 +284,24 @@ def test_token_header_scoped_to_ghe_host(monkeypatch):
     assert seen["GIT_CONFIG_KEY_0"] == (
         f"http.https://{cmd.DEFAULT_GH_DOMAIN}/.extraHeader"
     )
+
+
+def test_snapshot_from_another_repo_is_refused(env):
+    """git_repo_uri is the identity; a snapshot of a different repo is refused."""
+    env.storage.rows["x"] = StoredSpace(
+        name="x", git_repo_uri="https://github.example.com/org/other-space"
+    )
+    result = _run(env)
+    assert result.exit_code != 0
+    assert "is not space 'x'" in result.output
+    assert env.storage.rows["x"].space is None
+
+
+def test_existing_row_in_another_form_is_accepted(env):
+    """The same repo in git+ssh form is the same identity; it is left as stored."""
+    uri = "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
+    env.storage.rows["x"] = StoredSpace(name="x", git_repo_uri=uri)
+    result = _run(env)
+    assert result.exit_code == 0, result.output
+    assert env.storage.rows["x"].git_repo_uri == uri
+    assert env.storage.rows["x"].space_uri == "db://spaces/x"

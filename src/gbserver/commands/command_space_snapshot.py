@@ -16,7 +16,7 @@
 
 """Store a snapshot of a space repo and its assets repo in gb_spaces.
 
-The space is then served from the database (``git_repo_uri:
+The space is then served from the database (``space_uri:
 db://spaces/<name>``) with no git access at build or request time. See
 gbserver.spaces.db_space.
 """
@@ -39,13 +39,12 @@ from gbserver.spaces.db_space import (
     ASSETS_SLOT,
     SNAPSHOT_MAX_ENTRIES,
     SNAPSHOT_MAX_UNCOMPRESSED_BYTES,
-    get_identity_uri,
     is_db_uri,
     make_db_uri,
     parse_db_uri,
 )
 from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
-from gbserver.spaces.repo_identity import normalize_repo_uri, same_repo, to_config_uri
+from gbserver.spaces.repo_identity import normalize_repo_uri, same_repo
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 from gbserver.types.constants import (
@@ -278,72 +277,6 @@ def _rewrite_assets_base_uris(
     return text, rewrites
 
 
-def _secret_group_names(space_yaml: str, uri: str) -> Optional[frozenset]:
-    """Names of the IBM secret groups matching ``uri``; None if not ibmcloud."""
-    data = yaml.safe_load(space_yaml) or {}
-    secret_manager = data.get("secret_manager") or {}
-    if secret_manager.get("type") != "ibmcloud":
-        return None
-    from gbserver.spacesecretmanager.ibmcloudspacesecretmanager import (
-        IbmcloudSpaceSecretManager,
-    )
-
-    manager = IbmcloudSpaceSecretManager(
-        uri=uri, **(secret_manager.get("config") or {})
-    )
-    return frozenset(manager.get_secret_groups().values())
-
-
-def _old_identity_uris(row: StoredSpace) -> Optional[Tuple[str, str]]:
-    """(bare, config-form) URIs secrets matched on before this snapshot."""
-    if is_db_uri(row.git_repo_uri):
-        if row.space is None or not row.space.source_uri:
-            return None
-        return row.space.source_uri, to_config_uri(
-            row.space.source_uri, row.space.source_ref
-        )
-    uri = row.git_repo_uri
-    parsed = urllib.parse.urlparse(uri)
-    if parsed.scheme == "file" or not parsed.scheme and "://" not in uri:
-        return None
-    config_uri = (
-        uri
-        if parsed.scheme == "git+ssh" and "@" in parsed.path
-        else to_config_uri(uri, SPACE_REPO_CONFIG_BRANCH_NAME)
-    )
-    return uri, config_uri
-
-
-def _verify_secret_groups(
-    row: StoredSpace, space_yaml: str, source_uri: str, ref: Optional[str]
-) -> None:
-    """Refuse a snapshot whose identity would resolve different secret groups."""
-    old = _old_identity_uris(row)
-    if old is None:
-        return
-    new = (source_uri, to_config_uri(source_uri, ref))
-    for old_uri, new_uri in zip(old, new):
-        if old_uri == new_uri:
-            continue  # same string, so the same regex matches
-        try:
-            before = _secret_group_names(space_yaml, old_uri)
-        except ImportError as e:
-            raise click.ClickException(
-                f"cannot compare secret groups ({e}); install the IBM Cloud SDK"
-                " or pass --skip-secret-group-check"
-            ) from e
-        if before is None:
-            return
-        after = _secret_group_names(space_yaml, new_uri)
-        if before != after:
-            raise click.ClickException(
-                f"secret groups differ: {old_uri} -> {sorted(before)},"
-                f" {new_uri} -> {sorted(after or [])}."
-                " Use --skip-secret-group-check to override."
-            )
-        click.echo(f"secret groups for {new_uri}: {sorted(after or [])}")
-
-
 @click.command()
 @click.option("--space-name", required=True, help="gb_spaces row to update.")
 @click.option(
@@ -380,8 +313,8 @@ def _verify_secret_groups(
     "--switch/--no-switch",
     default=True,
     show_default=True,
-    help="Point git_repo_uri at the snapshot (db://spaces/<name>). With"
-    " --no-switch the snapshot is stored but the row keeps using git.",
+    help="Serve the space from the snapshot (space_uri: db://spaces/<name>)."
+    " With --no-switch the snapshot is stored and space_uri is left as is.",
 )
 @click.option(
     "--create",
@@ -390,11 +323,6 @@ def _verify_secret_groups(
 )
 @click.option(
     "--lakehouse-namespace", default=None, help="For --create: lakehouse namespace."
-)
-@click.option(
-    "--skip-secret-group-check",
-    is_flag=True,
-    help="Do not compare IBM secret groups before and after the switch.",
 )
 @click.option("--dry-run", is_flag=True, help="Report what would be stored.")
 @pass_environment
@@ -411,14 +339,14 @@ def cli(
     switch: bool,
     create: bool,
     lakehouse_namespace: Optional[str],
-    skip_secret_group_check: bool,
     dry_run: bool,
 ):
     """Snapshot a space repo (and its assets repo) into gb_spaces.
 
     Only the tree at the branch head is stored, no git history. The stored
     space.yaml's base_uris entry for the assets repo is rewritten to
-    db://spaces/<name>/assets.
+    db://spaces/<name>/assets. git_repo_uri, the space's identity, is unchanged:
+    the snapshot must come from that repo.
     """
     storage = singleton_storage.get_admin_storage().space_storage
     row = storage.get_by_name(space_name)
@@ -429,25 +357,19 @@ def cli(
             )
         if space_repo is None:
             raise click.ClickException("--space-repo is required with --create")
+        # git_repo_uri is set from the snapshot source below.
         row = StoredSpace(
-            name=space_name,
-            git_repo_uri=make_db_uri(space_name),
-            lakehouse_namespace=lakehouse_namespace,
+            name=space_name, git_repo_uri="", lakehouse_namespace=lakehouse_namespace
         )
         is_new = True
     else:
         is_new = False
     if space_repo is None:
-        space_repo = get_identity_uri(row)
-        if is_db_uri(space_repo):
-            raise click.ClickException(
-                f"space {space_name!r} has no recorded source; pass --space-repo"
-            )
-    if is_db_uri(row.git_repo_uri) and parse_db_uri(row.git_repo_uri).space_name != (
-        space_name
-    ):
+        space_repo = row.git_repo_uri
+    alias_of = row.space_uri if is_db_uri(row.space_uri) else None
+    if alias_of and parse_db_uri(alias_of).space_name != space_name:
         raise click.ClickException(
-            f"space {space_name!r} is an alias of {row.git_repo_uri}; snapshot"
+            f"space {space_name!r} is an alias of {row.space_uri}; snapshot"
             " that space instead"
         )
 
@@ -455,6 +377,14 @@ def cli(
     space_src = _resolve_source(
         space_repo, space_ref, space_source_uri, SPACE_REPO_CONFIG_BRANCH_NAME
     )
+    if is_new:
+        row.git_repo_uri = space_src.source_uri
+    elif not same_repo(row.git_repo_uri, space_src.source_uri):
+        # git_repo_uri is the identity secrets and PRs key on; keep it true.
+        raise click.ClickException(
+            f"snapshot source {space_src.source_uri} is not space {space_name!r}'s"
+            f" repo {row.git_repo_uri}; pass --space-source-uri if it is a mirror"
+        )
     click.echo(f"space: {space_src.location} @ {space_src.ref}")
     space_zip, space_sha = _snapshot(space_src)
     space_yaml = _read_space_yaml(space_zip)
@@ -524,17 +454,12 @@ def cli(
     )
     space.save_archive(space_zip)
 
-    if switch and not is_new and not skip_secret_group_check:
-        _verify_secret_groups(row, space_yaml, space_src.source_uri, space_src.ref)
-
     updated = row.model_copy(update={"space": space, "assets": assets})
     if switch:
-        updated.git_repo_uri = make_db_uri(space_name)
-    elif is_new:
-        updated.git_repo_uri = space_src.source_uri  # stored, not yet served
+        updated.space_uri = make_db_uri(space_name)
 
     # Same guard create-spaces applies: no two spaces may share local secrets.
-    if is_db_uri(updated.git_repo_uri):
+    if is_db_uri(updated.space_uri):
         check_local_secrets_collision(
             updated,
             [
@@ -545,7 +470,8 @@ def cli(
         )
 
     click.echo(
-        f"space {space_name}: git_repo_uri {row.git_repo_uri} -> {updated.git_repo_uri};"
+        f"space {space_name} ({updated.git_repo_uri}): space_uri"
+        f" {row.get_space_uri()} -> {updated.get_space_uri()};"
         f" space {space_src.source_uri}@{space_sha[:12]} ({len(space_zip)} bytes)"
         + (
             f", assets {assets.source_uri}@{(assets.source_commit or '')[:12]}"

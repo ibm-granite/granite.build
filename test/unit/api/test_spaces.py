@@ -114,7 +114,11 @@ def _snapshotted(name: str) -> StoredSpace:
     assets = RepoSnapshot(source_uri="https://h/o/assets", source_commit="def")
     assets.save_archive(b"zip")
     return StoredSpace(
-        name=name, git_repo_uri=f"db://spaces/{name}", space=space, assets=assets
+        name=name,
+        git_repo_uri="https://h/o/gbspace-a",
+        space_uri=f"db://spaces/{name}",
+        space=space,
+        assets=assets,
     )
 
 

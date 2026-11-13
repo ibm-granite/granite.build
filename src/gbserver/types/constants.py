@@ -538,7 +538,7 @@ def _db_public_space_env_for_files_uri() -> Optional[str]:
 
     try:
         row = get_admin_storage().space_storage.get_by_name(PUBLIC_SPACE_NAME)
-        if row is None or not is_db_uri(row.git_repo_uri):
+        if row is None or not is_db_uri(row.get_space_uri()):
             return None
         # Not cached: a refreshed snapshot unpacks to a new directory.
         return f"{get_space_config_uri(row)}/environments/{SUPPORTED_ENV_FOR_FILES}"

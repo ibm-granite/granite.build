@@ -183,18 +183,3 @@ def test_create_spaces_rejects_collisions_within_and_across_runs(tmp_path):
     _check_local_secrets_collisions(
         _FakeSpaceStorage([_stored("team-a", a)]), [_stored("team-a", c)]
     )
-
-
-def test_same_repo_under_different_uri_forms_allowed(tmp_path):
-    """Rows naming one repo in different forms are aliases, not a collision."""
-    from unittest.mock import patch
-
-    a = _space(tmp_path, "a", "public")
-    with patch(
-        "gbserver.spaces.local_secrets_isolation.get_space_config_uri",
-        lambda _s: a,
-    ):
-        check_local_secrets_collision(
-            _stored("public", "https://github.example.com/o/gbspace-public"),
-            [_stored("alias", "git+ssh://github.example.com/o/gbspace-public.git@b")],
-        )
