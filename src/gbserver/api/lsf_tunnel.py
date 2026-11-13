@@ -109,8 +109,9 @@ async def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str
         # may hit git/HTTP. The DB calls elsewhere in this module run inline
         # (matching the rest of the api/ package) — only the network-bound
         # work goes through to_thread.
+        # _local_uri inside the thread too: it may read and unpack a snapshot.
         env_config, _asset = await asyncio.to_thread(
-            Environment.load_environment_config, _local_uri(environment_uri)
+            lambda: Environment.load_environment_config(_local_uri(environment_uri))
         )
     except Exception as e:
         raise HTTPException(

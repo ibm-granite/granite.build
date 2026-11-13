@@ -163,3 +163,42 @@ def test_load_paths_never_reach_git(no_git, monkeypatch):
     )
     assert admin is not None
     secrets_api._space_secret_manager_cache.clear()
+
+
+def test_create_spaces_clear_refuses_dangling_alias(no_git):
+    """--clear would remove an alias's target: refuse before deleting anything."""
+    _add_db_public(no_git)
+    no_git.add(
+        StoredSpace(
+            name="alias",
+            git_repo_uri=PUBLIC_GIT,
+            space_uri=db_space.make_db_uri(c.PUBLIC_SPACE_NAME),
+        )
+    )
+    spec = StoredSpace(name="alias", git_repo_uri=PUBLIC_GIT)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(create_spaces, "predefined_spaces", [spec])
+        result = CliRunner().invoke(create_spaces.cli, ["--clear"])
+    assert result.exit_code != 0
+    assert "would not exist" in result.output
+    assert {s.name for s in no_git.get_by_uuid(None)} == {"public", "alias"}
+
+
+def test_env_files_storage_error_falls_back_to_git(monkeypatch):
+    """A storage error is not a db-backed space: derive from git as before."""
+    monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", PUBLIC_GIT)
+    monkeypatch.setattr(
+        GitURI,
+        "get_gb_space_config_uri",
+        staticmethod(lambda uri, *a, **k: "git+ssh://github.example.com/o/p.git"),
+    )
+
+    def broken():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("gbserver.storage.singleton_storage.get_admin_storage", broken)
+    c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+    try:
+        assert c.get_supported_env_for_files_uri().startswith("git+ssh://")
+    finally:
+        c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()

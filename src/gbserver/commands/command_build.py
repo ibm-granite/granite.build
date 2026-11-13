@@ -23,11 +23,10 @@ from typing import List, Optional
 
 import click
 
-from gbcommon.uri.git import GitURI
 from gbserver.build import Build
 from gbserver.build.buildrun import BuildRun
 from gbserver.build.space import Space
-from gbserver.spaces.db_space import is_db_uri
+from gbserver.spaces.db_space import create_space
 from gbserver.storage import singleton_storage
 from gbserver.types.buildevent import BuildEvent
 from gbserver.types.constants import truncate
@@ -37,24 +36,6 @@ from gbserver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 LOCAL_BUILD_USER = getpass.getuser() or "none"
-
-
-def get_space_uri_from_space_name(space_name: str) -> Optional[str]:
-    """Get the space config URI given the space name."""
-    storage = singleton_storage.get_admin_storage().space_storage
-    space = storage.get_by_name(space_name)
-    if space is None:
-        logger.error(
-            "Could not find space %s in table %s",
-            space_name,
-            storage.get_table_name(),
-        )
-        return None
-    uri = space.get_space_uri()
-    logger.info("Found space %s with uri %s", space_name, uri)
-    if is_db_uri(uri):
-        return uri  # Space unpacks the stored snapshot itself
-    return GitURI.get_gb_space_config_uri(uri=uri)
 
 
 def get_space(
@@ -76,10 +57,17 @@ def get_space(
                 space_name,
                 space_config_uri,
             )
-        # Supporting only git uris in build management
-        space_config_uri = get_space_uri_from_space_name(space_name=space_name)
-        if space_config_uri is None:
-            return None  # error message already issued.
+        storage = singleton_storage.get_admin_storage().space_storage
+        stored_space = storage.get_by_name(space_name)
+        if stored_space is None:
+            logger.error(
+                "Could not find space %s in table %s",
+                space_name,
+                storage.get_table_name(),
+            )
+            return None
+        # Same as the build runner: git- or db-backed, identified by its repo.
+        return create_space(stored_space, username=username)
     logger.info("Using Space uri %s", space_config_uri)
     assert space_config_uri is not None, "space_config_uri is None"
     space = Space(uri=space_config_uri, username=username)

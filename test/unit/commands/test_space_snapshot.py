@@ -233,6 +233,8 @@ def test_assets_repo_not_in_base_uris_is_refused(env):
         ("https://h/o/r", ("https://h/o/r", None)),
         ("git@h:o/r.git", ("git@h:o/r.git", None)),
         ("git@h:o/r.git@v2#subdirectory=s", ("git@h:o/r.git", "v2")),
+        ("git+ssh://h/o/r.git@release/1.0", ("git+ssh://h/o/r.git", "release/1.0")),
+        ("git@h:o/r.git@feat/x#subdirectory=s", ("git@h:o/r.git", "feat/x")),
     ],
 )
 def test_split_ref(uri, expected):
@@ -323,4 +325,99 @@ def test_assets_path_override(env):
     assert "nope not found" in result.output
     assert _names(env.storage.rows["x"].assets.load_archive()) == {
         "steps/echo/step.yaml"
+    }
+
+
+def test_local_branch_behind_origin_uses_origin(env, tmp_path):
+    """A stale local branch is not snapshotted; origin/<ref> is, with a warning."""
+    clone = tmp_path / "space-clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(env.tmp / "space"), str(clone)], check=True
+    )
+    _git(clone, "config", "user.email", "t@example.com")
+    _git(clone, "config", "user.name", "t")
+    _git(clone, "config", "commit.gpgsign", "false")
+    _git(
+        clone, "remote", "set-url", "origin", "git@github.example.com:org/gbspace-x.git"
+    )
+    _git(clone, "reset", "-q", "--hard", "HEAD~1")  # local behind origin
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(clone),
+            "--space-ref",
+            "gbspace-config",
+            "--assets-repo",
+            str(env.tmp / "assets"),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert "differs from origin/gbspace-config" in result.output
+    assert env.storage.rows["x"].space.source_commit == env.space_sha
+
+
+def test_missing_default_space_branch_falls_back(env, tmp_path):
+    """Without the deployment's config branch, the default branch is used."""
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(env.tmp / "space"),
+            "--assets-repo",
+            str(env.tmp / "assets"),
+        ],
+        catch_exceptions=False,
+    )
+    # The test repo has only gbspace-config; the standalone default is main.
+    assert result.exit_code == 0, result.output
+    assert "using its default branch" in result.output
+    assert env.storage.rows["x"].space.source_commit == env.space_sha
+
+
+def test_assets_paths_follow_subdirectory(env, tmp_path):
+    """--assets-path is relative to the assets base_uri's #subdirectory."""
+    sub_assets = tmp_path / "sub-assets"
+    _repo(
+        sub_assets,
+        {"gb/steps/echo/step.yaml": "name: echo\n", "steps/other/step.yaml": "x\n"},
+        "https://github.example.com/org/assets.git",
+        "gbspace-config",
+    )
+    space_dir = tmp_path / "space-sub"
+    _repo(
+        space_dir,
+        {
+            "space.yaml": SPACE_YAML.replace(
+                "@gbspace-config", "@gbspace-config#subdirectory=gb"
+            )
+        },
+        "git@github.example.com:org/gbspace-x.git",
+        "gbspace-config",
+    )
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(space_dir),
+            "--space-ref",
+            "gbspace-config",
+            "--assets-repo",
+            str(sub_assets),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert _names(env.storage.rows["x"].assets.load_archive()) == {
+        "gb/steps/echo/step.yaml"
     }

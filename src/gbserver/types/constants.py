@@ -528,8 +528,9 @@ def _db_public_space_env_for_files_uri() -> Optional[str]:
 
     PUBLIC_SPACE_GIT_URI names the public space's git repo, but its gb_spaces
     row may serve it from the database (``db://spaces/...``); then git must not
-    be reached. Returns None when the row is absent or git-backed (derive from
-    git as before), "" (-> 503) when the row or its snapshot can't be read.
+    be reached. Returns None when the row is absent, git-backed, or can't be
+    read (derive from git as before), "" (-> 503) when its snapshot can't be
+    unpacked.
     """
     # Function-local imports: storage and db_space import this module.
     from gbserver.spaces.db_space import get_space_config_uri, is_db_uri
@@ -538,13 +539,17 @@ def _db_public_space_env_for_files_uri() -> Optional[str]:
 
     try:
         row = get_admin_storage().space_storage.get_by_name(PUBLIC_SPACE_NAME)
-        if row is None or not is_db_uri(row.get_space_uri()):
-            return None
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        get_logger(__name__).warning("failed to read the public space row: %s", e)
+        return None
+    if row is None or not is_db_uri(row.get_space_uri()):
+        return None
+    try:
         # Not cached: a refreshed snapshot unpacks to a new directory.
         return f"{get_space_config_uri(row)}/environments/{SUPPORTED_ENV_FOR_FILES}"
-    except Exception as e:  # pylint: disable=broad-exception-caught
+    except ValueError as e:
         get_logger(__name__).warning(
-            "failed to read the public space's stored snapshot: %s", e
+            "failed to unpack the public space's stored snapshot: %s", e
         )
         return ""
 

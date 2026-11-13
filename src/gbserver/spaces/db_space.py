@@ -33,6 +33,7 @@ import os
 import shutil
 import tempfile
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Final, Literal, Optional, cast
@@ -40,7 +41,6 @@ from typing import TYPE_CHECKING, Dict, Final, Literal, Optional, cast
 from gbcommon.uri.git import GitURI
 from gbserver.spaces.repo_identity import normalize_repo_uri, to_config_uri
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
-from gbserver.types.constants import DEFAULT_DIR_PERMS
 from gbserver.utils.archive import extract_archive
 from gbserver.utils.logger import get_logger
 
@@ -108,8 +108,25 @@ def parse_db_uri(uri: str) -> DbUri:
 
 
 def get_snapshot_cache_root() -> Path:
-    """Root under which snapshots are unpacked, one dir per archive digest."""
-    return Path(tempfile.gettempdir()) / "gb-db-spaces"
+    """Root under which snapshots are unpacked, one dir per archive digest.
+
+    Per user: a shared, predictable path would let another local user plant a
+    tree for a digest that is computable from the (readable) archive.
+    """
+    return Path(tempfile.gettempdir()) / f"gb-db-spaces-{os.getuid()}"
+
+
+def _private_root() -> Path:
+    """The cache root, created 0700; refused if not ours or writable by others."""
+    root = get_snapshot_cache_root()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = root.stat()
+    if st.st_uid != os.getuid() or st.st_mode & 0o022:
+        raise ValueError(
+            f"refusing snapshot cache {root}: not owned by this user or writable"
+            " by others"
+        )
+    return root
 
 
 def unpack_snapshot(snapshot: RepoSnapshot, label: str) -> Path:
@@ -118,7 +135,7 @@ def unpack_snapshot(snapshot: RepoSnapshot, label: str) -> Path:
     An unchanged snapshot is reused across builds and requests (no per-call
     leak on the rest-server); a refreshed one gets a new dir. Extraction goes
     to a sibling temp dir renamed into place, so readers never see a partial
-    tree.
+    tree. A published tree is never deleted, since a reader may be using it.
 
     Raises:
         ValueError: The snapshot has no archive, or it is not a usable zip.
@@ -126,11 +143,10 @@ def unpack_snapshot(snapshot: RepoSnapshot, label: str) -> Path:
     if not snapshot.archive:
         raise ValueError(f"{label} has no archive")
     digest = hashlib.sha256(snapshot.archive.encode("utf-8")).hexdigest()[:32]
-    root = get_snapshot_cache_root()
+    root = _private_root()
     target = root / digest
     if (target / _COMPLETE_MARKER).is_file():
         return target
-    root.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=f".{digest}-", dir=root))
     try:
         if not extract_archive(
@@ -142,20 +158,21 @@ def unpack_snapshot(snapshot: RepoSnapshot, label: str) -> Path:
         ):
             raise ValueError(f"{label} is not a readable zip archive")
         (tmp / _COMPLETE_MARKER).touch()
-        if (target / _COMPLETE_MARKER).is_file():
-            return target  # a concurrent extraction finished first
-        if target.exists():
-            # Left by an interrupted extraction (no marker).
-            shutil.rmtree(target, ignore_errors=True)
         try:
             os.rename(tmp, target)
+            return target
         except OSError:
-            # A concurrent extraction of the same digest won the rename.
-            if not (target / _COMPLETE_MARKER).is_file():
-                raise
+            pass  # target exists
+        if (target / _COMPLETE_MARKER).is_file():
+            return target  # a concurrent extraction won the rename
+        # A damaged tree (marker gone) may still be in use: leave it, and
+        # serve this extraction from its own sibling.
+        alt = root / f"{digest}-{uuid.uuid4().hex[:8]}"
+        os.rename(tmp, alt)
+        logger.warning("%s: %s is damaged; unpacked to %s", label, target, alt)
+        return alt
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    return target
 
 
 def _get_row(space_name: str) -> StoredSpace:

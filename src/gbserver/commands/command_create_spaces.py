@@ -22,6 +22,7 @@ import click
 import yaml
 from pydantic import BaseModel
 
+from gbserver.spaces.db_space import is_db_uri, parse_db_uri
 from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
 from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage import singleton_storage
@@ -51,7 +52,30 @@ predefined_spaces = [
 ]
 
 
-def _check_local_secrets_collisions(storage, spaces: List[StoredSpace]) -> None:
+def _check_alias_targets(storage, spaces: List[StoredSpace], clear: bool) -> None:
+    """Refuse db:// aliases whose target row would not exist afterwards.
+
+    Raises:
+        click.ClickException: An alias names a row that is neither registered
+            and kept (not removed by --clear) nor among the spaces being added.
+    """
+    names = {s.name for s in spaces}
+    for space in spaces:
+        if not is_db_uri(space.space_uri):
+            continue
+        target = parse_db_uri(cast(str, space.space_uri)).space_name
+        if target == space.name or target in names:
+            continue
+        if clear or storage.get_by_name(target) is None:
+            raise click.ClickException(
+                f"space {space.name} is served from {space.space_uri}, but"
+                f" {target} would not exist; add it to the spaces to create"
+            )
+
+
+def _check_local_secrets_collisions(
+    storage, spaces: List[StoredSpace], clear: bool = False
+) -> None:
     """Refuse spaces that would share another space's default local secrets.
 
     Each space is checked against the spaces that stay registered (minus any
@@ -65,11 +89,15 @@ def _check_local_secrets_collisions(storage, spaces: List[StoredSpace]) -> None:
         LocalSecretsCollisionError: See check_local_secrets_collision().
     """
     names = {s.name for s in spaces}
-    accepted = [
-        s
-        for s in cast(List[StoredSpace], storage.get_by_uuid(None) or [])
-        if s.name not in names
-    ]
+    accepted = (
+        []
+        if clear
+        else [
+            s
+            for s in cast(List[StoredSpace], storage.get_by_uuid(None) or [])
+            if s.name not in names
+        ]
+    )
     for space in spaces:
         check_local_secrets_collision(space, accepted)
         accepted.append(space)
@@ -174,6 +202,10 @@ def cli(
     logger.info("Working on spaces in Lakehouse %s environment", LAKEHOUSE_ENVIRONMENT)
     storage = singleton_storage.get_admin_storage().space_storage
     spaces_to_create = _keep_db_snapshots(storage, spaces_to_create)
+    # Before --clear/--replace delete anything: a refusal must not leave the
+    # table emptied, and aliases' target rows must still be readable.
+    _check_alias_targets(storage, spaces_to_create, clear)
+    _check_local_secrets_collisions(storage, spaces_to_create, clear)
     if clear:
         if force or LAKEHOUSE_ENVIRONMENT.lower() != "prod":
             logger.info("Deleting the space table")
@@ -192,8 +224,6 @@ def cli(
                 storage.delete(record.uuid)
             else:
                 logger.info("Skipped clearing of pre-existing space %s", space.name)
-
-    _check_local_secrets_collisions(storage, spaces_to_create)
 
     logger.info("Create all the spaces")
     storage.add(spaces_to_create)

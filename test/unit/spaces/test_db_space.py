@@ -269,3 +269,23 @@ def test_identity_is_git_repo_uri_in_any_form(rows):
         "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
     )
     assert _same_space_repo(row.git_repo_uri, space.identity_uri)
+
+
+def test_damaged_tree_in_use_is_not_deleted(rows, tmp_path):
+    """A tree that lost its marker is left alone; a sibling copy is served."""
+    rows["x"] = _row()
+    path = Path(resolve_db_uri("db://spaces/x").file_uri[len("file://") :])
+    (path / ".gb-snapshot-complete").unlink()  # still has space.yaml: in use
+    other = Path(resolve_db_uri("db://spaces/x").file_uri[len("file://") :])
+    assert other != path
+    assert (path / "space.yaml").is_file() and (other / "space.yaml").is_file()
+
+
+def test_cache_root_must_be_private(rows, tmp_path, monkeypatch):
+    rows["x"] = _row()
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o777)
+    shared.chmod(0o777)
+    monkeypatch.setattr(db_space, "get_snapshot_cache_root", lambda: shared)
+    with pytest.raises(ValueError, match="refusing snapshot cache"):
+        resolve_db_uri("db://spaces/x")

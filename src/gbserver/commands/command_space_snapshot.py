@@ -71,6 +71,9 @@ class _Source:
     location: str  # local checkout dir, or a clonable URL
     ref: Optional[str]  # None: the repo's default branch
     source_uri: str  # normalized https://host/owner/repo (or file://)
+    # ref is only the deployment default: fall back to the default branch if
+    # the repo lacks it, as git-backed loading does.
+    ref_is_default: bool = False
 
 
 def _git(args: List[str], cwd: Optional[Path] = None) -> bytes:
@@ -94,19 +97,29 @@ def _git(args: List[str], cwd: Optional[Path] = None) -> bytes:
 
 
 def _split_ref(uri: str) -> Tuple[str, Optional[str]]:
-    """Split a pip-style ``...repo.git@ref[#frag]`` into (uri-without-ref, ref).
+    """Split a pip-style ``...owner/repo.git@ref[#frag]`` into (uri-without-ref, ref).
 
-    The fragment is dropped. Works for URLs and the scp form alike: a ref is an
-    ``@`` in the last path segment (userinfo ``git@`` never is).
+    The fragment is dropped. Works for URLs and the scp form alike. The ref
+    starts at an ``@`` in the repo segment and may itself contain ``/``.
     """
     base = uri.partition("#")[0]
-    head, slash, last = base.rpartition("/")
-    if not slash:
+    if "://" in base:
+        scheme_end = base.index("://") + 3
+        slash = base.find("/", scheme_end)
+        start = slash if slash >= 0 else len(base)
+    else:
+        start = base.find(":") + 1  # scp form host:path (0 when no ':')
+    prefix, path = base[:start], base[start:]
+    segments = path.split("/")
+    non_empty = [i for i, seg in enumerate(segments) if seg]
+    if len(non_empty) < 2 or "@" not in segments[non_empty[1]]:
         return base, None
-    name, at, ref = last.rpartition("@")
-    if not at or not name or not ref:
+    i = non_empty[1]
+    name, _, ref_head = segments[i].partition("@")
+    ref = "/".join([ref_head, *segments[i + 1 :]])
+    if not name or not ref_head:
         return base, None
-    return f"{head}/{name}", ref
+    return prefix + "/".join([*segments[:i], name]), ref
 
 
 def _resolve_source(
@@ -128,12 +141,14 @@ def _resolve_source(
             location=str(local.resolve()),
             ref=ref or default_ref,
             source_uri=normalize_repo_uri(source_uri),
+            ref_is_default=not ref and default_ref is not None,
         )
     url, url_ref = _split_ref(repo)
     return _Source(
         location=url,
         ref=ref or url_ref or default_ref,
         source_uri=normalize_repo_uri(source_uri or url),
+        ref_is_default=not (ref or url_ref) and default_ref is not None,
     )
 
 
@@ -165,6 +180,48 @@ def _archive(repo_dir: Path, sha: str, paths: Optional[Tuple[str, ...]]) -> byte
     return _git(["archive", "--format=zip", sha, "--", *present], cwd=repo_dir)
 
 
+def _rev(repo_dir: Path, rev: str) -> Optional[str]:
+    try:
+        out = _git(
+            ["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], cwd=repo_dir
+        )
+    except click.ClickException:
+        return None
+    return out.decode().strip() or None
+
+
+def _local_commit(repo_dir: Path, source: _Source) -> str:
+    """The commit to snapshot from a local checkout (no fetch is done).
+
+    ``origin/<ref>`` wins over a local ``<ref>``: the snapshot should match the
+    remote branch, not unpushed or stale local work, which is warned about.
+    """
+    if source.ref:
+        remote = _rev(repo_dir, f"origin/{source.ref}")
+        local = _rev(repo_dir, source.ref)
+        if remote and local and remote != local:
+            click.echo(
+                f"warning: local {source.ref} ({local[:12]}) differs from"
+                f" origin/{source.ref}; snapshotting origin/{source.ref}"
+                f" ({remote[:12]}). Fetch first if origin is behind.",
+                err=True,
+            )
+        if remote or local:
+            return remote or local  # type: ignore[return-value]
+        if not source.ref_is_default:
+            raise click.ClickException(f"ref {source.ref!r} not found in {repo_dir}")
+        click.echo(
+            f"warning: no {source.ref} branch in {repo_dir}; using its default"
+            " branch",
+            err=True,
+        )
+        source.ref = None
+    head = _rev(repo_dir, "origin/HEAD") or _rev(repo_dir, "HEAD")
+    if head is None:
+        raise click.ClickException(f"no commit found in {repo_dir}")
+    return head
+
+
 def _snapshot(
     source: _Source, paths: Optional[Tuple[str, ...]] = None
 ) -> Tuple[bytes, str]:
@@ -175,40 +232,37 @@ def _snapshot(
     """
     if Path(source.location).is_dir():
         repo_dir = Path(source.location)
-        candidates = (
-            (source.ref, f"origin/{source.ref}")
-            if source.ref
-            else ("origin/HEAD", "HEAD")
-        )
-        for candidate in candidates:
-            try:
-                commit = _git(
-                    ["rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
-                    cwd=repo_dir,
-                )
-                break
-            except click.ClickException:
-                continue
-        else:
-            raise click.ClickException(
-                f"ref {source.ref!r} not found in {repo_dir} ({', '.join(candidates)})"
-            )
-        sha = commit.decode().strip()
+        sha = _local_commit(repo_dir, source)
         return _archive(repo_dir, sha, paths), sha
     with tempfile.TemporaryDirectory() as tmp:
         clone_dir = Path(tmp) / "repo"
-        branch = [f"--branch={source.ref}"] if source.ref else []
-        _git(
-            [
-                "clone",
-                "--quiet",
-                "--depth=1",
-                "--single-branch",
-                *branch,
-                _clone_url(source.location),
-                str(clone_dir),
-            ]
-        )
+
+        def clone(ref: Optional[str]) -> None:
+            branch = [f"--branch={ref}"] if ref else []
+            _git(
+                [
+                    "clone",
+                    "--quiet",
+                    "--depth=1",
+                    "--single-branch",
+                    *branch,
+                    _clone_url(source.location),
+                    str(clone_dir),
+                ]
+            )
+
+        try:
+            clone(source.ref)
+        except click.ClickException:
+            if not (source.ref and source.ref_is_default):
+                raise
+            click.echo(
+                f"warning: no {source.ref} branch in {source.location}; using its"
+                " default branch",
+                err=True,
+            )
+            source.ref = None
+            clone(None)
         if source.ref is None:
             source.ref = (
                 _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=clone_dir)
@@ -460,7 +514,20 @@ def cli(
         click.echo(
             f"assets: {assets_src.location} @ {assets_src.ref or 'default branch'}"
         )
-        assets_zip, assets_sha = _snapshot(assets_src, assets_paths)
+        # Paths are relative to the base_uri's #subdirectory, if it has one.
+        subdirs = sorted(
+            {
+                urllib.parse.parse_qs(b.partition("#")[2])
+                .get("subdirectory", [""])[0]
+                .strip("/")
+                for b in remote
+                if same_repo(b, assets_src.source_uri)
+            }
+        )
+        archive_paths = tuple(
+            f"{sd}/{p}" if sd else p for sd in subdirs for p in assets_paths
+        )
+        assets_zip, assets_sha = _snapshot(assets_src, archive_paths)
         _check_size(assets_zip, "assets")
         space_yaml, rewrites = _rewrite_assets_base_uris(
             space_yaml, assets_src.source_uri, make_db_uri(space_name, ASSETS_SLOT)

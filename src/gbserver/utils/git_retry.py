@@ -445,7 +445,9 @@ def get_build_git_breaker(build_id: str) -> GitAccessBreaker:
     """The breaker for the current run of ``build_id`` (created on first use)."""
     with _breakers_lock:
         breaker = _breakers.get(build_id)
-        if breaker is None:
+        if breaker is not None:
+            _breakers.move_to_end(build_id)  # evict least recently used
+        else:
             breaker = _breakers[build_id] = GitAccessBreaker(f"build {build_id}")
             while len(_breakers) > _MAX_BREAKERS:
                 _breakers.popitem(last=False)
