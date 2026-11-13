@@ -16,7 +16,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+
+from .sage_eval_steps import one_script
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 ENVS = REPO_ROOT / "configurations/assets/environments/skypilot"
@@ -31,21 +32,9 @@ EXPERIMENT = "exp-ckpt_1000"
 SALAD = "safety-eval/salad-bench/export-1000/base_set-result.json"
 
 
-def _strings(node):
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for v in node.values():
-            yield from _strings(v)
-    elif isinstance(node, list):
-        for v in node:
-            yield from _strings(v)
-
-
 def _search_block(step: str) -> str:
     """The step's run-script lines from the first results search to the emit's `fi`."""
-    cfg = yaml.safe_load((ENVS / step / "step.yaml").read_text())
-    (run,) = [s for s in _strings(cfg) if "GB_ARTIFACT_ID:sage_eval_results" in s]
+    run = one_script(ENVS / step / "step.yaml", "GB_ARTIFACT_ID:sage_eval_results")
     lines = run.splitlines()
     start = next(i for i, l in enumerate(lines) if "RESULT_FILE=$(find" in l)
     emit = next(i for i, l in enumerate(lines) if 'if [ -n "$RESULT_FILE" ]' in l)

@@ -107,6 +107,13 @@ environment_configs:
             # Run generation — patched oe-eval exits after saving predictions.jsonl
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
               2>&1 | tee /tmp/${EVAL_NAME}-generate.log
+            # The pipeline's own status is tee's; fail the step with the eval's, so a
+            # predictions file left by an earlier run does not pass the check below.
+            rc=${PIPESTATUS[0]}
+            if [[ $rc -ne 0 ]]; then
+              echo "[$(date)] FAILED: ${EVAL_NAME} generation (exit code: ${rc})"
+              exit $rc
+            fi
 
             # Verify predictions were saved
             PRED_FILE=$(find "$OUTPUT_PATH" -name "*predictions.jsonl" -print -quit)

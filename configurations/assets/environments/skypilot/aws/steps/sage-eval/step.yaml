@@ -65,6 +65,8 @@ environment_configs:
             SKYPILOT_DOCKER_SERVER: "022767362696.dkr.ecr.us-east-2.amazonaws.com"
           run: |
             set -e
+            # pipefail: the eval pipeline below takes the eval script's exit status.
+            set -o pipefail
             echo "=== Sage Evaluation on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -151,13 +153,20 @@ environment_configs:
                 /workspace/bigcode-evaluation-harness/bigcode_eval/tasks/multiple.py
             fi
 
-            # Run the evaluation script
+            # The fallback search below matches only files newer than this marker.
+            # It is touched before the eval: tee writes /tmp/sage-eval.log until the
+            # eval ends, so no file the eval writes is newer than the log.
+            EVAL_START_MARKER="$TMPDIR/sage-eval.start"
+            touch "$EVAL_START_MARKER"
+
+            # Run the evaluation script. Under set -e and pipefail a non-zero exit
+            # from the script stops the step here.
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} 2>&1 | tee /tmp/sage-eval.log
 
             # Emit artifact for gbserver
             RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
             if [ -z "$RESULT_FILE" ]; then
-              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
+              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer "$EVAL_START_MARKER" -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
               echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"
