@@ -1,4 +1,4 @@
-# Copyright IBM Corp. 2024-2026
+# Copyright Granite.Build Authors
 # SPDX-License-Identifier: Apache-2.0
 """Pure, in-process static analysis of a reward function's source.
 

@@ -102,6 +102,37 @@ compatible with the project Apache 2.0 license.
 - **IBM-only extras** (dmf-lib, aspera==v1.1.6, ibm_cloud_sdk_core, ibm_secrets_manager_sdk): Require IBM Artifactory; not for OSS use. Note: aspera==v1.1.6 is IBM-internal, distinct from public aspera 0.10.5 (BUSL-1.1).
 - **getdaft replaced with daft**: getdaft was a deprecated stub with no declared license; daft is Apache-2.0.
 
+## JavaScript Dependencies (NOTICE review, 2026-11-12)
+
+Two JavaScript frontends ship as built bundles:
+
+- `frontend/` (yarn, `frontend/yarn.lock`): a Next.js static export, copied into
+  `src/gbserver/static/ui/` and shipped with gbserver.
+- `autotunex/src/ux/` (npm, `autotunex/src/ux/package-lock.json`): a SvelteKit app,
+  built into the AutoTuneX image.
+
+**NOTICE:** No JavaScript dependency ships a NOTICE file. Every package installed from
+both lockfiles was checked, so NOTICE has no JavaScript entries. Apache License
+Section 4(d) only requires carrying a dependency's own NOTICE file, and none exists.
+
+Runtime dependencies with licenses worth knowing about. This list leaves out MIT, ISC,
+BSD, Apache-2.0, 0BSD and Unlicense.
+
+| Package | Version | License | Where | Notes |
+|---|---|---|---|---|
+| elkjs | 0.11.1 | EPL-2.0 | `frontend/` | Bundled (lineage graph layout). EPL-2.0 requires telling recipients where to get the source. |
+| jszip | 3.10.1 | MIT OR GPL-3.0-or-later | `frontend/` | Used under MIT. |
+| dompurify | 3.4.7 (`frontend/`); 3.2.7, 3.4.13 (`autotunex/src/ux/`) | MPL-2.0 OR Apache-2.0 | both | Used under Apache-2.0. |
+| @ibm/plex, @ibm/plex-* fonts | 6.4.1, 1.1.0 | OFL-1.1 | both | Pulled in by Carbon. No font files are in the `frontend/` export; `autotunex/src/ux/` not verified. |
+| combine-errors | 3.0.3 | MIT (per its README; no `license` field) | `autotunex/src/ux/` | Only reached through `tus-js-client`, which the app does not import. |
+| sharp/libvips, caniuse-lite | | LGPL-3.0-or-later, CC-BY-4.0 | `frontend/` | Dependencies of `next` used at build time or server-side; not in the static export. |
+
+**Open gap:** the minified bundles keep no license text. The `frontend/` export has no
+license comments and no LICENSE file. MIT/BSD/ISC/Apache-2.0 require the copyright and
+license text to go with redistributed copies, and EPL-2.0 also requires a source pointer.
+The plan is a third-party licenses file generated at build time and shipped next to each
+bundle, together with the automated license check (#672, section C).
+
 ## License Compatibility Reference
 
 | License                 | Compatible? | Notes |
@@ -119,5 +150,5 @@ compatible with the project Apache 2.0 license.
 
 ## Source File License Notes
 
-- src/gbserver/utils/logger.py contains # (C) Copyright IBM Corp. 2024. followed by Apache 2.0 text. Valid Apache 2.0 header; not proprietary.
+- Project source files carry the Apache-2.0 header with the holder "Granite.Build Authors" (convention and check: "License headers" in CONTRIBUTING.md). Files ported from third-party projects keep their upstream notices.
 - No source files contain proprietary, confidential, or All Rights Reserved headers.

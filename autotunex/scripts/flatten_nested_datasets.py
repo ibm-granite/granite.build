@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright IBM Corp. 2024-2026
+# Copyright Granite.Build Authors
 # SPDX-License-Identifier: Apache-2.0
 """Flatten legacy nested dataset directories to the current flat layout.
 

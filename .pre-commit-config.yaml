@@ -12,3 +12,12 @@ repos:
     rev: v8.30.0
     hooks:
       - id: gitleaks
+  - repo: local
+    hooks:
+      - id: license-headers
+        name: license headers (Apache-2.0, Granite.Build Authors)
+        # Inserts any missing header and fails so the change can be reviewed and
+        # staged, like black. CI runs the same script in check-only mode.
+        entry: python3 scripts/check_license_headers.py --fix
+        language: system
+        types: [text]

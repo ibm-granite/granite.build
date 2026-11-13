@@ -40,6 +40,9 @@ jobs:
       - name: Check formatting (black)
         run: black --check .
 
+      - name: Check license headers
+        run: python scripts/check_license_headers.py
+
       - name: Lint (pylint)
         run: |
           pylint src/gbserver/

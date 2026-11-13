@@ -1,4 +1,4 @@
-# Copyright IBM Corp. 2024-2026
+# Copyright Granite.Build Authors
 # SPDX-License-Identifier: Apache-2.0
 """ChatService — orchestrates the agent loop, thread memory, and SSE event shaping.
 
