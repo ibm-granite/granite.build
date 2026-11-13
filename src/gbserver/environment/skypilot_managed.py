@@ -95,6 +95,16 @@ class Skypilot_managed(Environment):
             secrets=secrets,
             **kwargs,
         )
+        if (self.config.config if self.config else {}).get("kube_configs"):
+            # The jobs controller is shared by all of the user's managed jobs,
+            # and gets its kubeconfig uploaded when provisioned: an instance's
+            # secret credentials would stay on it for other spaces' jobs.
+            raise ValueError(
+                f"environment '{self.config.name if self.config else ''}': "
+                "kube_configs is not supported for Skypilot_managed (the shared "
+                "jobs controller would keep the credentials); use the Skypilot "
+                "environment type"
+            )
 
     def _get_cloud(self: Self) -> str:
         if self.config is None:
