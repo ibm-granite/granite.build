@@ -1,0 +1,117 @@
+# EXAMPLE site file for the recipes under recipes/distill/. Every value is fake.
+#
+# Copy it to a private location (a private repo, or ~/.granite.build/local-env/),
+# fill in your site's values, and never commit the real one: it names your
+# hosts, users, accounts and paths. Secrets are named here, never given.
+#
+# One file serves both uses:
+#   scripts/setup-local-space.sh \
+#     --template recipes/distill/environments/skypilot-slurm.template.yaml \
+#     --site <your-site.yaml> --name <env-name>
+# renders the environment from the "Environment" keys and sets ENVIRONMENT_URI
+# below to it, and
+#   gb build start -f recipes/distill/<recipe>/build.yaml --parameters-path <your-site.yaml>
+# hands every key to the recipe. A --param KEY=VALUE still overrides any of them.
+#
+# URIs keep the full-URI convention: env:///abs/path for a path on the cluster's
+# shared filesystem, hf://org/name for a Hugging Face repo.
+
+# ─── Environment: identity and scheduler ─────────────────────────────
+# The rendered environment's `name`.
+ENV_NAME: "slurm-example"
+# SkyPilot cluster name (infra=slurm/<CLUSTER>); also the SSH Host alias and the cluster_configs key.
+CLUSTER: "example-cluster"
+# The GPU partition: the environment's default zone, and what GPU targets run on.
+GPU_PARTITION: "gpu"
+# The CPU-only partition: HF I/O steps, the image-cache import job and CPU-only targets.
+CPU_PARTITION: "cpu"
+# #SBATCH --constraint pinning jobs to one GPU node type; "" leaves the directive out.
+GPU_CONSTRAINT: "a100"
+# SLURM account (association) the jobs are billed to.
+SLURM_ACCOUNT: "my-account"
+# Env-wide SLURM QOS, accepted on GPU_PARTITION.
+SLURM_QOS: "normal"
+# QOS for jobs on CPU_PARTITION.
+CPU_QOS: "cpu"
+# QOS for jobs on EVAL_PARTITION, when that partition refuses SLURM_QOS (a
+# preemptible partition often admits only its own). "" uses SLURM_QOS there.
+EVAL_QOS: ""
+
+# ─── Environment: filesystems ────────────────────────────────────────
+# Shared root of the per-run build workdirs (GB_BUILD_WORKDIR hangs off it).
+SHARED_WORKDIR: "/shared/gb/builds/"
+# SkyPilot's cluster workdir; an ancestor of SHARED_WORKDIR, bind-mounted into containers.
+CLUSTER_WORKDIR: "/shared/gb"
+# SkyPilot runtime dir, on storage every login node shares ($HOME expands remotely).
+CLUSTER_TMPDIR: "$HOME/skypilot-tmp"
+# Extra identity bind mounts into step containers: container_path, host_path, mode.
+CONTAINER_MOUNTS:
+  - container_path: "/shared"
+    host_path: "/shared"
+    mode: "rw"
+# Shared directory holding the imported .sqsh container images.
+IMAGE_CACHE_SHARE_PATH: "/shared/gb/image-cache"
+# Hugging Face cache for hf:// pulls, on shared storage.
+HF_CACHE_PATH: "/shared/gb/hfcache/"
+
+# ─── Environment: SSH to the login nodes ─────────────────────────────
+# Interchangeable login nodes; gbserver picks one per launch and fails over.
+LOGIN_HOSTS:
+  - "login1.example.org"
+  - "login2.example.org"
+# The user the jobs are submitted as.
+SSH_USER: "my-user"
+# NAME of the space secret holding that user's SSH private key (not the key).
+SSH_KEY_SECRET: "MY_CLUSTER_SSH_KEY"
+
+# ─── Recipes: where they run ─────────────────────────────────────────
+# The environment every target runs in; setup-local-space.sh rewrites this line.
+ENVIRONMENT_URI: "space://environments/skypilot-local/slurm-example"
+# Shared root every recipe output path hangs off.
+WORKDIR_ROOT: "/shared/distill"
+
+# ─── Recipes: models and data ────────────────────────────────────────
+# The teacher model.
+TEACHER_MODEL_URI: "env:///shared/models/teacher"
+# The student model training starts from.
+STUDENT_MODEL_URI: "env:///shared/models/student"
+# The training dataset: a directory of raw SFT splits (or, with DATASET_SPLITS
+# empty, one .jsonl file). Rows may be `messages` or `conversations`.
+DATASET_URI: "env:///shared/datasets/sft"
+# The split files under DATASET_URI, mixed in proportion to their sizes by the
+# recipes' `sources` target. The list order seeds the mixture, so keep it fixed.
+# [] uses DATASET_URI itself as the only source.
+DATASET_SPLITS:
+  - "general/general.jsonl"
+  - "tools/tools.jsonl"
+  - "rag/rag.jsonl"
+# A small dataset for the plumbing smoke runs.
+SMOKE_DATASET_URI: "env:///shared/datasets/smoke.jsonl"
+# The chat template applied to the training data.
+CHAT_TEMPLATE_URI: "env:///shared/chat_templates/chat_template.jinja"
+
+# ─── Recipes: compute ────────────────────────────────────────────────
+# Accelerator model for training targets (recipes append ":<count>").
+GPU_ACCELERATOR: "A100"
+# Accelerator model for eval targets (recipes append ":<count>").
+EVAL_ACCELERATOR: "A100"
+# NCCL_IB_HCA for multi-node training; "" lets NCCL pick, "^=a,b" excludes HCAs.
+NCCL_IB_HCA: "^=ib-storage0"
+
+# ─── Recipes: evaluation ─────────────────────────────────────────────
+# Partition for eval targets (short, idempotent, retryable: a preemptible one suits).
+EVAL_PARTITION: "gpu-preemptible"
+# Partition for the CPU-only result exporters.
+EXPORT_PARTITION: "cpu"
+# Registry (host/namespace) holding the sage and BFCL eval images.
+EVAL_IMAGE_REGISTRY: "registry.example.org/my-team"
+# Raw sage eval output root.
+SAGE_OUTPUT_DIR: "/shared/evals/sage"
+# Exported sage CSV root.
+SAGE_RESULTS_DIR: "/shared/evals/sage/results"
+# Raw BFCL eval output root.
+BFCL_OUTPUT_DIR: "/shared/evals/bfcl"
+# Exported BFCL CSV root.
+BFCL_RESULTS_DIR: "/shared/evals/bfcl/results"
+# URL of a running BigCodeBench execution server (bcb-server).
+OE_EVAL_BCB_API_URL: "http://bcb.example.org:7860/evaluate/"

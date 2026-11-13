@@ -286,6 +286,14 @@ The same layout groups steps by category: `steps/eval/eval-example/skypilot` is 
 `eval-example` step in the `eval` category (`STEP_PATH = eval/eval-example`, URI
 `space://steps/eval/eval-example`).
 
+Nesting can go a level deeper to group a collection inside a category:
+`steps/train/distill/logit-distill/skypilot` is the `logit-distill` step of the
+distillation collection in the `train` category (`STEP_PATH = train/distill/logit-distill`,
+URI `space://steps/train/distill/logit-distill`), and its Makefile includes
+`../../../../common.mk`. The leaf (`logit-distill`) is still the step's type identity, so
+choose a leaf that reads on its own: it is what cluster job names and the environment's
+per-step `config.steps.<leaf>` overrides see.
+
 The resolver binds that URI by **longest matching prefix**: the step name is the
 longest `steps/`-relative prefix of the URI whose directory holds a `step.yaml`, and
 the remainder is a contained sub-asset. So `space://steps/distill/foo` binds to the

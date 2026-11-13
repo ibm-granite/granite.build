@@ -1,0 +1,174 @@
+name: hf-export
+version: 1.0.0
+# Packages ONE checkpoint-N of an HF Trainer / accelerate run (SFT, distillation,
+# anything that writes checkpoint-N/ directories) into a self-contained, downloadable
+# HuggingFace model directory. Generic: it reads only the checkpoint tree, so any
+# recipe can use it, whatever trained the model.
+#
+# WHY THIS STEP EXISTS, given the trainer already writes safetensors. With a ZeRO-3
+# accelerate config that sets zero3_save_16bit_model: true (or no DeepSpeed at all),
+# every checkpoint-N/ already contains HF-native model.safetensors AT ITS ROOT, beside
+# any DeepSpeed global_step*/ shard tree. This is NOT a weight converter — nothing here runs zero_to_fp32.py; that
+# tree is pruned, not converted. The step has exactly four jobs, each of which exists
+# because the trainer cannot do it:
+#
+#   SELECT    which checkpoint-N is the release. The trainer saves every save_steps and
+#             has no notion of "the one we ship" — eval may well pick an earlier one.
+#   PRUNE     the DeepSpeed global_step*/ tree, optimizer, scheduler and RNG state.
+#             ~4.7G -> ~679M measured upstream. That is resume state, not model, and
+#             publishing it invites someone to resume from a release.
+#   NORMALISE padding_side. A trainer that generates (e.g. on-policy distillation) sets
+#             'left'; correct for a trainer, wrong for a published model, where left
+#             padding silently corrupts batched non-generative use. Also strips
+#             local_files_only / is_local, load-time kwargs transformers persisted into
+#             tokenizer_config.json by mistake.
+#   ASSERT    that the result actually loads, offline, and optionally that its token ids
+#             still agree with a reference tokenizer.
+#
+# It deliberately does NOT graft a tokenizer from elsewhere: if the trainer's tokenizer
+# disagrees with the corpus the run trained on, that is a defect to fail on, not to paper
+# over at packaging time — which is what the expected_tokenizer input is for.
+type: data_processing
+config:
+  # ─── Export ───────────────────────────────────────────────────────────────────
+  export_config:
+    # The trainer's output directory and the expected tokenizer are target INPUTS, not
+    # config keys — see `inputs:` below.
+
+    # Where the packaged model is written. Relative resolves against $GB_BUILD_WORKDIR.
+    dest: "hf_model"
+
+    # Which checkpoint of the `train_output` input to publish: a NAME, not a path. Empty means the HIGHEST STEP NUMBER, which is not the
+    # same as newest mtime: a resumed run rewrites older checkpoints' mtimes, so mtime
+    # ordering can pick a checkpoint that is behind. Set explicitly (e.g.
+    # "checkpoint-500") to publish a specific one — for instance when eval preferred an
+    # earlier checkpoint over the last.
+    checkpoint: ""
+
+    # right | left | keep.
+    #   right  publish-correct, and the reason this step exists. The default.
+    #   left   only if knowingly publishing a generation-only artifact.
+    #   keep   copy the trainer's value verbatim — for reproducing an existing release
+    #          byte-for-byte, or for diagnosing whether padding_side is the culprit.
+    # Whichever is chosen, the change (or its absence) is recorded in
+    # export_manifest.json, so a published model can be traced back to what was done.
+    padding_side: "right"
+
+    # Refuse, or drop-and-record, files in the checkpoint this step does not recognise.
+    # false (refuse) is the default ON PURPOSE: the keep list is explicit, so a future
+    # transformers or TRL release that starts writing a new file would otherwise have it
+    # silently published in a directory users download. A failure here means "someone
+    # must classify this file" — a one-line change, not an incident.
+    allow_unknown: false
+
+    # keep | default-off. Not a training-data policy (e.g. distill/corpus-prep's
+    # think_policy, which decides whether reasoning traces stay in the data). This key
+    # touches no data: it decides
+    # what generation prompt a consumer gets from
+    # apply_chat_template(..., add_generation_prompt=True).
+    #   keep         copy chat_template.jinja verbatim. The DEFAULT, because which prompt
+    #                a published model hands out is a decision about the artifact, and
+    #                this step's job is to make it explicit and recorded, not to make it.
+    #   default-off  for Granite-style chat templates with an enable_thinking switch:
+    #                flip the default to '<|im_start|>assistant\n<think></think>' instead
+    #                of '<|im_start|>assistant\n<think>\n'. The right value for a model
+    #                trained on data with NO think traces, whose weights were never
+    #                conditioned on the newline the reasoning prompt ends with.
+    chat_template_thinking: "keep"
+
+    # Load the exported directory with AutoConfig/AutoTokenizer before declaring success.
+    # Costs seconds; catches an export missing a file it needs. Rendered as an explicit
+    # --verify / --no-verify pair so turning it off reads as a decision in the command
+    # line a run actually executed.
+    verify: true
+
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The TRAINER'S output_dir — the parent containing checkpoint-25/, checkpoint-50/, …
+    # — not a single checkpoint. Which one is published is export_config.checkpoint.
+    train_output:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # A tokenizer directory the export's tokenizer must agree with, token id for token
+    # id — the tokenizer the run trained with (in a distillation recipe,
+    # distill/tokenizer-align's `retagged_student`). This is the check that
+    # catches a checkpoint trained against a different tokenizer than the recipe
+    # believes, which no amount of "does it load" can detect. Unbound skips it.
+    expected_tokenizer:
+      type: model
+      accept: [uri, binding]
+
+# Declared for EVERY artifact this step emits. An undeclared output makes the buildrun
+# resolver drop the NEWARTIFACT event, and the target then completes with no output AND no
+# error, so the next step fails later on an input that was never wired.
+outputs:
+  required:
+    hf_model:
+      type: model
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+      - slurm
+    default_launcher: export
+    launchers:
+      export:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # This step's own image (Dockerfile next to this file), filled in by
+          # `make space` / `make publish-step`.
+          image_id: "docker:${IMAGE_REF}"
+          # CPU-only BY DESIGN. If this step ever appears to need a GPU, something has
+          # been misdiagnosed. cpus/memory come from the build.yaml like every other
+          # ported step, rather than being pinned here.
+          resources: {}
+          envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/hf-export
+            VIRTUAL_ENV: /opt/hf-export/.venv
+            HF_HUB_OFFLINE: "1"
+          run: |
+            echo "=== hf-export on $(hostname) ==="
+
+            # The inputs used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("train_output_dir", "expect_tokenizer_from") if config.export_config[key] is defined %}
+            echo "hf-export: FATAL: export_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
+
+            # The script and its resume gate are baked into this step's image under
+            # HF_EXPORT_HOME; nothing is cloned or mounted. `python` is the image venv's,
+            # first on PATH.
+            HOME_DIR="${HF_EXPORT_HOME:?HF_EXPORT_HOME is set by the image}"
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+
+            # Absolutise before the marker: the monitor hands this path to the env:// store,
+            # possibly from another host, and a relative env: URI is rejected at config load.
+            DEST="{{ config.export_config.dest }}"
+            case "$DEST" in /*) ;; *) DEST="$WORK/$DEST" ;; esac
+
+            python "$HOME_DIR/export_hf_model.py" \
+              --train-output-dir "{{ bindings.train_output.binding.path }}" \
+              --dest "$DEST" \
+              --checkpoint "{{ config.export_config.checkpoint }}" \
+              --padding-side "{{ config.export_config.padding_side }}" \
+              --chat-template-thinking "{{ config.export_config.chat_template_thinking }}" \
+              {% if config.export_config.allow_unknown %}--allow-unknown{% else %}--no-allow-unknown{% endif %} \
+              {% if config.export_config.verify %}--verify{% else %}--no-verify{% endif %} \
+              --expect-tokenizer-from "{{ bindings.expected_tokenizer.binding.path if bindings.expected_tokenizer is defined else "" }}"
+
+            echo "GB_ARTIFACT_ID:hf_model GB_ARTIFACT_PATH:${DEST}"
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot

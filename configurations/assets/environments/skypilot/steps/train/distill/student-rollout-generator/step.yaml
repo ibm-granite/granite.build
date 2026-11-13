@@ -1,0 +1,397 @@
+name: student-rollout-generator
+version: 1.0.0
+# Serve a model under vLLM as a long-lived SERVICE, and publish its URL so a
+# training target can reach it.
+#
+# WHY THIS EXISTS. On-policy GOLD needs vLLM serving the student while trainers
+# train against it. distill-gold can already do that by carving the LAST N nodes
+# out of its own allocation, which is what the reference launcher does — but that
+# shape has three problems the launcher solves in bash and a step cannot: the
+# server's address is only known at run time, the trainer must wait on the
+# server's /health before starting, and nothing tears the server down afterwards.
+#
+# Splitting the server into its own target dissolves all three. The address
+# travels as a mem:// binding; a consumer target does not dispatch until every
+# input binding resolves, so publishing the URL only after /health passes makes
+# the dependency graph itself the health gate; and a teardown target gated on the
+# trainer's checkpoint downs the cluster.
+#
+# The trainer pushes updated student weights to the server over NCCL, not HTTP
+# (the reference launcher's VLLM_NCCL_COORDINATOR_PORT), so a separate target means
+# a NCCL process group spanning two allocations. LSF build 9973e766 (the since-retired
+# gold-onpolicy-smoke recipe) showed that works: all 362 parameter tensors synced
+# across the two allocations, and the teardown target ended the server. It has not
+# yet run on SLURM.
+#
+# Division of labour, as in distill-gold: SkyPilot's LSF provisioner owns bsub,
+# enroot and the node topology; deps AND the server code (now
+# gb_steps_post_training.distillation.run_vllm_serve) come from the shared GPU
+# image, same baked-in source every GPU distillation step uses — see
+# steps/train/distill/src/VENDORED.md.
+type: SERVICE
+config:
+  # No code_config: run_vllm_serve.py is baked into the shared GPU image
+  # (steps/train/distill/images/gpu/Dockerfile COPYs steps/train/distill/src/, pinned
+  # a5d59bc45524a8d75706e20d44ae1a254f273f23), same as distill-gold, rather than
+  # cloned at job-launch time. This step is single-node (a SERVICE, not a
+  # multi-node training job), so there was never a clone-guard race to avoid here
+  # either way — baking it in just drops the clone's network round-trip from
+  # every server bring-up.
+  vllm_config:
+    # ── Code and model ──────────────────────────────────────────────────────
+    # The model to serve is the `model` target input — see `inputs:` below.
+    # ── Serving ─────────────────────────────────────────────────────────────
+    # The reference launcher's VLLM_API_PORT.
+    port: 8001
+    # vLLM's --max-model-len. Must be >= the trainer's max_length, or a prompt the
+    # trainer accepts is one the server refuses mid-run.
+    max_model_len: 16384
+    gpu_memory_utilization: 0.9
+    tensor_parallel_size: 1
+    # Empty => one rank per GPU on this node, from the allocation rather than from
+    # a parameter, so it always describes the node it got.
+    data_parallel_size: ""
+    # ── Bring-up ────────────────────────────────────────────────────────────
+    # How long to wait for /health before giving up. The reference launcher allows
+    # 1800s: a cold multi-GB load plus CUDA graph capture is minutes, and on a
+    # shared filesystem the first read is the slow one.
+    health_timeout_seconds: 1800
+    health_poll_seconds: 10
+    # Ceiling on how long this SERVICE will hold its allocation once healthy.
+    # 0 (default) = no ceiling: hold until the teardown target downs the cluster,
+    # which is the behaviour every existing recipe relies on for multi-hour runs.
+    #
+    # Set it when a leak would be expensive. Teardown targets are gated on the
+    # CONSUMER's output artifact (`binding: <train>.checkpoint`), which a failed
+    # consumer never emits, and gbserver's schema has no on-failure semantics — so
+    # a crashed trainer strands this server. LSF SERVICE clusters never autostop
+    # either (skypilot.py:1817 passes autostop=None for the SSH/HPC clouds), so
+    # nothing underneath reclaims it. Build d77546a9 held 8 H100s that way until
+    # they were downed by hand. This is the backstop, not the normal path.
+    max_lifetime_seconds: 0
+    # A file on a filesystem the trainer's nodes share, whose appearance means the
+    # trainer failed. EMPTY (default) = off, and nothing below renders. Set it to the
+    # same path as logit-distill's rollout_stop_file: that step's rank 0 writes it,
+    # atomically, when the trainer exits non-zero, with the trainer's GB_TARGETRUN_ID
+    # and a reason line. While serving, this step checks for it every
+    # stop_poll_seconds; when it appears the server is stopped and the target FAILS
+    # with the file's contents, instead of holding the allocation until
+    # max_lifetime_seconds because the teardown target, gated on the trainer's
+    # checkpoint, will never run. A file left by an earlier attempt is removed before
+    # the URL is published, so it is never acted on. A successful run never writes it,
+    # so a normal teardown is unchanged.
+    stop_file: ""
+    # How often the hold loop checks for stop_file. Only consulted when it is set.
+    stop_poll_seconds: 30
+
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads it as {{ bindings.model.binding.path }}. allow_unknown stays true
+# so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The model to serve. For on-policy GOLD this is the STUDENT, not the teacher:
+    # the student generates and the teacher scores those generations, so serving
+    # the teacher here would be a different algorithm that still runs.
+    model:
+      type: model
+      accept: [uri, binding]
+outputs:
+  optional:
+    # The URL, as a mem:// binding. mem:// and NOT env://: env:// would run the
+    # value through filesystem-path normalisation and mangle http://host:8001 to
+    # /http:/host:8001, which is the bug recipes/granite4-350m/lsf/bcb-server
+    # still demonstrates.
+    vllm_url:
+      type: dataset
+    # For the teardown target: LSF SERVICE clusters never autostop and never get a
+    # terminal-status cleanup, so without this the allocation leaks.
+    cluster_name:
+      type: dataset
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+      - slurm
+    default_launcher: vllm
+    launchers:
+      vllm:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:ec82c1d9"
+          resources: {}
+          envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
+            # From the reference launcher, which is the only configuration that has
+            # served this model successfully.
+            VLLM_ATTENTION_BACKEND: FLASH_ATTN
+            PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+            OMP_NUM_THREADS: "8"
+          run: |
+            set -u
+
+            # The model used to be a config key. A recipe that still sets it would
+            # otherwise be ignored silently, so refuse it.
+            {% if config.vllm_config.model_path is defined %}
+            echo "student-rollout-generator: FATAL: vllm_config.model_path is no longer read; bind the target input 'model' instead (see this step's README)" >&2
+            exit 1
+            {% endif %}
+            # The generation floor used to be set here too, as a server-side env var that
+            # the baked run_vllm_serve.py never read. It now travels with every request:
+            # set logit-distill's gold_config.min_completion_length, which the trainer sends
+            # as min_tokens. Refused rather than ignored, so a recipe that still sets it
+            # does not believe it has a floor it may not have.
+            {% if config.vllm_config.min_completion_length is defined %}
+            echo "student-rollout-generator: FATAL: vllm_config.min_completion_length is no longer read; set logit-distill's gold_config.min_completion_length instead, which the trainer sends with every vLLM request (see this step's README)" >&2
+            exit 1
+            {% endif %}
+
+            # The image's venv is not on PATH by default; the dispatcher runs this
+            # with `bash <file>` (non-login), so this export sticks.
+            PYBIN="python"
+
+            # Source: baked into the shared GPU image, no clone. Both paths are
+            # fixed by steps/train/distill/images/gpu/Dockerfile's own COPY/ENV lines.
+            CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
+            # PYTHONPATH=/opt/distill/src is already set by the image
+            # itself; nothing to export here.
+
+            # GPU allocation check (ibm-granite/granite.build#604). On Slurm 25.11.x an
+            # --overlap job step -- SkyPilot's container keeper is one -- can be granted
+            # fewer of the job's GPUs than the job holds (SchedMD bug 24862, fixed in
+            # 26.05.3), and the container keeps the keeper's device set. Ranks past the
+            # visible count would then bind a GPU another rank already holds and fail
+            # later, far from the cause. Refuse here instead. `nvidia-smi -L` lists what
+            # the container's device cgroup grants and ignores CUDA_VISIBLE_DEVICES; a
+            # failed or missing nvidia-smi (0 listed) proves nothing, so only an
+            # undercount it reports is refused. Nothing is rewritten or worked around:
+            # the check holds whether the fix lands in Slurm or in SkyPilot.
+            GPU_WANT="${SKYPILOT_NUM_GPUS_PER_NODE:-0}"
+            case $GPU_WANT in ''|*[!0-9]*) GPU_WANT=0 ;; esac
+            GPU_SEEN="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
+            case $GPU_SEEN in ''|*[!0-9]*) GPU_SEEN=0 ;; esac
+            GPU_DEVS="$(ls /dev/nvidia[0-9]* 2>/dev/null | tr '\n' ' ' || true)"
+            echo "student-rollout-generator: gpu check: allocated=$GPU_WANT visible=$GPU_SEEN CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}' SLURM_JOB_GPUS='${SLURM_JOB_GPUS:-}' SLURM_STEP_GPUS='${SLURM_STEP_GPUS:-}' devices='$GPU_DEVS'"
+            if [ "$GPU_SEEN" -ge 1 ] && [ "$GPU_SEEN" -lt "$GPU_WANT" ]; then
+              echo "student-rollout-generator: FATAL: $GPU_WANT GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but this container can access only $GPU_SEEN (nvidia-smi -L). On SLURM this is ibm-granite/granite.build#604; rerun, or report the node." >&2
+              exit 1
+            fi
+
+            # SKYPILOT_NUM_GPUS_PER_NODE is what SkyPilot sets on every backend.
+            # NUM_GPUS_PER_NODE is not set by anything; reading only it made a
+            # 1-GPU server start 8 data-parallel ranks and crash in vLLM's
+            # CUDA_VISIBLE_DEVICES split.
+            GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:-${NUM_GPUS_PER_NODE:-8}}"
+            PORT="{{ config.vllm_config.port }}"
+            DP="{{ config.vllm_config.data_parallel_size }}"
+            [ -n "$DP" ] || DP="$GPUS"
+
+            # vLLM binds an AF_UNIX socket at $VLLM_RPC_BASE_PATH/<uuid4>, and
+            # defaults it to TMPDIR. AF_UNIX paths are capped at 108 bytes and
+            # ZeroMQ refuses anything over 107 — the reference launcher measured a
+            # default TMPDIR yielding 111, failing AFTER the engine had started
+            # loading. Keep this short and per-job.
+            export VLLM_RPC_BASE_PATH="/tmp/vllm-${USER:-gb}-${SKYPILOT_INTERNAL_JOB_ID:-nojob}"
+            export TMPDIR="$VLLM_RPC_BASE_PATH"
+            mkdir -p "$VLLM_RPC_BASE_PATH"
+
+            # Surface the SkyPilot cluster name for the teardown target, in the
+            # shipped monitor's generic ARTIFACT_STATE form so this step needs no
+            # scrape rule of its own. GB_SKYPILOT_CLUSTER_NAME is injected by
+            # launch_skypilot. Its OWN log line, separate from the URL marker
+            # below: get_events_from_log_line reassigns log_line after a matching
+            # config, so two markers must never share a line.
+            echo "GB_ARTIFACT_ID:cluster_name GB_ARTIFACT_STATE:${GB_SKYPILOT_CLUSTER_NAME:-unknown}"
+
+            # The address to advertise. A hostname is not enough: the consumer is
+            # in a DIFFERENT allocation, so this must resolve from there. Prefer
+            # the IP, resolved the way distill-gold resolves MASTER_ADDR (/etc/hosts,
+            # then getent), because that is the validated path on this cluster.
+            HOST="$(hostname)"
+            ADDR="$(grep -w "$HOST" /etc/hosts 2>/dev/null | awk '{print $1; exit}')"
+            if [ -z "$ADDR" ]; then
+              ADDR="$(getent ahostsv4 "$HOST" 2>/dev/null | awk '{print $1; exit}')"
+            fi
+            [ -n "$ADDR" ] || ADDR="$HOST"
+            echo "student-rollout-generator: serving on $ADDR:$PORT ($DP-way data parallel over $GPUS GPU(s))"
+
+            # Background, NOT exec: the URL must be published only once the server
+            # answers /health, and an exec'd process cannot echo afterwards.
+            # Publishing on start instead would defeat the whole design — the
+            # trainer would dispatch and race a multi-minute model load.
+            "$PYBIN" -m gb_steps_post_training.distillation.run_vllm_serve \
+              --port "$PORT" \
+              --model "{{ bindings.model.binding.path }}" \
+              --gpu-memory-utilization {{ config.vllm_config.gpu_memory_utilization }} \
+              --tensor-parallel-size {{ config.vllm_config.tensor_parallel_size }} \
+              --data-parallel-size "$DP" \
+              --log_level warning \
+              --max-model-len {{ config.vllm_config.max_model_len }} &
+            SERVER_PID=$!
+
+            # Wait for readiness, with a death check. Unlike the reference
+            # launcher, whose pid was a local blaunch rather than the remote
+            # python, SERVER_PID here is a direct child — so `kill -0` is
+            # authoritative and no log-scraping heuristic is needed.
+            DEADLINE=$(( $(date +%s) + {{ config.vllm_config.health_timeout_seconds }} ))
+            while :; do
+              if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+                # `|| RC=$?`, not `; RC=$?`: the launcher runs this block under
+                # `set -eu`, so a bare failing wait would exit before the report.
+                RC=0; wait "$SERVER_PID" || RC=$?
+                echo "student-rollout-generator: FATAL: server exited with $RC before becoming healthy" >&2
+                exit 1
+              fi
+              if "$PYBIN" -c "
+            import sys, urllib.request
+            try:
+                urllib.request.urlopen('http://127.0.0.1:$PORT/health/', timeout=5)
+            except Exception:
+                sys.exit(1)
+            " 2>/dev/null; then
+                break
+              fi
+              if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+                echo "student-rollout-generator: FATAL: not healthy after {{ config.vllm_config.health_timeout_seconds }}s" >&2
+                kill "$SERVER_PID" 2>/dev/null || true
+                exit 1
+              fi
+              sleep {{ config.vllm_config.health_poll_seconds }}
+            done
+
+            # Healthy. Publishing the URL now is what makes the dependency graph
+            # the health gate: the consumer target cannot dispatch until this
+            # binding resolves. Matched by the shipped skypilot monitor's generic
+            # ARTIFACT_STATE rule, so this step needs no scrape config of its own.
+            {%- if config.vllm_config.stop_file | default("") | string | trim %}
+            # A stop file already here was left by an earlier attempt's trainer; no
+            # trainer of this attempt can have started, since none can dispatch before
+            # the URL below is published.
+            STOP_FILE="{{ config.vllm_config.stop_file | string | trim }}"
+            if [ -e "$STOP_FILE" ]; then
+              echo "student-rollout-generator: removing the stale stop file $STOP_FILE: $(awk 'NF{printf "%s%s", s, $0; s="; "}' "$STOP_FILE" 2>/dev/null || true)"
+              rm -f "$STOP_FILE"
+            fi
+            {%- endif %}
+            echo "student-rollout-generator: healthy after $(( $(date +%s) - (DEADLINE - {{ config.vllm_config.health_timeout_seconds }}) ))s"
+            echo "GB_ARTIFACT_ID:vllm_url GB_ARTIFACT_STATE:http://${ADDR}:${PORT}"
+
+            # Hold the allocation for the server's lifetime. It never returns on
+            # its own; the teardown target is what normally ends it.
+            #
+            # Every way out of this section exits non-zero, so a server that dies
+            # before the teardown target ends it -- idle kill, OOM, crash, the cap
+            # below -- leaves its target FAILED. That matters on a build retry:
+            # gbserver reuses SUCCESS targets of the same build, and a dead server
+            # recorded as SUCCESS would hand the retried trainer a dead URL. A
+            # normal teardown is NOT decided here: launch_skypilot_teardown records
+            # the cluster as intentionally torn down before downing it, and the
+            # monitor then ends this target SUCCESS whatever the job's status.
+            #
+            # MAX_LIFETIME > 0 arms a watchdog so a stranded server (consumer
+            # crashed => teardown never eligible) releases its node instead of
+            # holding it indefinitely. The watchdog is killed on the normal path,
+            # so it costs a sleeping subshell and nothing else.
+            MAX_LIFETIME={{ config.vllm_config.max_lifetime_seconds }}
+            REAPED_FLAG="$(mktemp -u)"
+            WATCHDOG_PID=""
+            {%- if config.vllm_config.stop_file | default("") | string | trim %}
+            STOPPED_FLAG="$(mktemp -u)"
+            STOP_WATCH_PID=""
+            {%- endif %}
+            # A signal to this script cannot be told apart from a teardown's, so the
+            # trap keeps the status a signal-killed shell reports (128 + signo), says
+            # why, and takes the server and watchdog down with it.
+            on_signal() {
+              echo "student-rollout-generator: FATAL: received $1 while serving; stopping the vLLM server. Unless the teardown target sent it, this target fails." >&2
+              [ -z "$WATCHDOG_PID" ] || kill "$WATCHDOG_PID" 2>/dev/null || true
+              {%- if config.vllm_config.stop_file | default("") | string | trim %}
+              [ -z "$STOP_WATCH_PID" ] || kill "$STOP_WATCH_PID" 2>/dev/null || true
+              {%- endif %}
+              kill "$SERVER_PID" 2>/dev/null || true
+              exit "$2"
+            }
+            trap 'on_signal SIGTERM 143' TERM
+            trap 'on_signal SIGINT 130' INT
+            echo "student-rollout-generator: holding the allocation until the teardown target ends it"
+            if [ "$MAX_LIFETIME" -gt 0 ]; then
+              echo "student-rollout-generator: lifetime cap ${MAX_LIFETIME}s armed"
+              (
+                sleep "$MAX_LIFETIME"
+                if kill -0 "$SERVER_PID" 2>/dev/null; then
+                  : > "$REAPED_FLAG"
+                  kill "$SERVER_PID" 2>/dev/null || true
+                fi
+              ) &
+              WATCHDOG_PID=$!
+            fi
+            {%- if config.vllm_config.stop_file | default("") | string | trim %}
+            # The trainer's failure signal. Like the watchdog, a background poller that
+            # only kills the server, so the wait below stays the one place this script
+            # waits; its flag tells the outcome apart afterwards.
+            echo "student-rollout-generator: stopping if the trainer writes $STOP_FILE (checked every {{ config.vllm_config.stop_poll_seconds }}s)"
+            (
+              while kill -0 "$SERVER_PID" 2>/dev/null; do
+                if [ -e "$STOP_FILE" ]; then
+                  awk 'NF{printf "%s%s", s, $0; s="; "}' "$STOP_FILE" > "$STOPPED_FLAG" 2>/dev/null || : > "$STOPPED_FLAG"
+                  kill "$SERVER_PID" 2>/dev/null || true
+                  break
+                fi
+                sleep {{ config.vllm_config.stop_poll_seconds }}
+              done
+            ) &
+            STOP_WATCH_PID=$!
+            {%- endif %}
+            RC=0; wait "$SERVER_PID" || RC=$?
+            [ -z "$WATCHDOG_PID" ] || kill "$WATCHDOG_PID" 2>/dev/null || true
+            {%- if config.vllm_config.stop_file | default("") | string | trim %}
+            kill "$STOP_WATCH_PID" 2>/dev/null || true
+            if [ -f "$STOPPED_FLAG" ]; then
+              STOP_REASON="$(cat "$STOPPED_FLAG")"
+              rm -f "$STOPPED_FLAG" "$REAPED_FLAG"
+              echo "student-rollout-generator: FATAL: the trainer failed (${STOP_REASON:-no reason given}); stopping the rollout server" >&2
+              exit 1
+            fi
+            {%- endif %}
+            if [ -f "$REAPED_FLAG" ]; then
+              rm -f "$REAPED_FLAG"
+              echo "student-rollout-generator: FATAL: lifetime cap of ${MAX_LIFETIME}s reached; releasing the allocation. Nothing tore this server down in time — check whether the consumer target failed." >&2
+              exit 1
+            fi
+            # vLLM exits 0 on a SIGTERM aimed at it, so even a clean exit is a
+            # failure here: nothing but the teardown target should end this server.
+            echo "student-rollout-generator: FATAL: the vLLM server exited (rc=$RC) before the teardown target ended it" >&2
+            [ "$RC" -ne 0 ] || RC=1
+            exit "$RC"
+    monitors:
+      skypilot_monitor:
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"
+          log_retrieval:
+            # PERIODIC, not the service default startup_window. A window has to be
+            # guessed, and once it closes the scrape never fires again — so a cold
+            # load slower than the guess means the URL binding never publishes and
+            # the consumer target never dispatches, with no error anywhere. This
+            # server's load time depends on model size and shared-filesystem
+            # weather, which is exactly what cannot be guessed.
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(15) }}"
+          # extra_event_configs, NOT event_configs: resolve_monitor_config rejects
+          # an overlay that sets event_configs on a ref, because lists replace
+          # wholesale and doing so would drop the referenced monitor's generic
+          # artifact rules — the very rules both markers above rely on.
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              # Its own line, shared with no artifact marker.
+              line_regex: "student-rollout-generator: healthy after .+"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"

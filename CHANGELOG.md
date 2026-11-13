@@ -78,10 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The `misc` step category is now `aux` (#671).** The byoc step moves from
-  `space://steps/misc/byoc` to `space://steps/aux/byoc`; its source is now `steps/aux/byoc/` and
+  `space://steps/aux/byoc` to `space://steps/aux/byoc`; its source is now `steps/aux/byoc/` and
   its published copy is `configurations/assets/environments/skypilot/steps/aux/byoc/`. The
   in-repo recipes, build tests and docs are updated. **Breaking:** a build.yaml outside this repo
-  that uses `space://steps/misc/byoc` must switch to the new URI; the old one is not kept as an
+  that uses `space://steps/aux/byoc` must switch to the new URI; the old one is not kept as an
   alias. Environment overrides keyed `steps.byoc:` still apply, because they match only the last
   part of the step URI.
 - **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
@@ -203,6 +203,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Step drawer timestamps (#470).** `parseTimestamp` reads a zoneless ISO timestamp as
   UTC, so displayed times shift for users outside UTC.
 
+- **The distillation steps moved to `steps/train/distill/` and were renamed so each name
+  says what the step does.** Breaking: every `space://steps/distill/<step>` URI shipped in
+  v0.3.8 is gone. Config, inputs and outputs are unchanged, so migrating a recipe means
+  changing its `step_uri` to the new name below; the shipped recipes use the new URIs. Resume markers keep
+  their recorded step names, so outputs written before the move are still skipped, not redone.
+
+  | Was | Now `space://steps/train/distill/…` |
+  |---|---|
+  | `distill/corpus-sources` | `data-mixture` |
+  | `distill/corpus-prep` | `data-prep` |
+  | `distill/corpus-pin-check` | `data-validate` |
+  | `distill/tokenizer-align` | `tokenizer-align` |
+  | `distill/sft` | `student-sft` |
+  | `distill/gold` | `logit-distill` (GOLD, ULD, AKL, DistiLLM-2-style objectives) |
+  | `distill/logit-precompute` | `teacher-logits` |
+  | `distill/vllm-server` | `student-rollout-generator` |
+  | `distill/eval` | `teacher-divergence` (not to be confused with the `steps/eval/` category) |
+  | `distill/gen-smoke` | `repetition-check` |
+  | `distill/probe` | `preflight-check` |
+
+  The shared Accelerate/DeepSpeed launch config moved inside the GPU image from
+  `steps/distill-gold-train/configs/` to `configs/`; recipes that set `DS_CONFIG` use
+  `configs/deepspeed/accelerate_deepspeed_zero3.yaml`.
+- **`hf-export` moved to `steps/aux/hf-export` with its own image.** Breaking:
+  `space://steps/distill/hf-export` is now `space://steps/aux/hf-export`. Config, inputs
+  (`train_output`, `expected_tokenizer`) and the `hf_model` output are unchanged, and an
+  export made by the old step is recognised and skipped, not redone. The step no longer runs
+  on the distillation CPU image: it has its own CPU image, `gb-step-hf-export` (no torch), and
+  imports nothing from the distillation collection, so any recipe that trains with HF Trainer
+  or accelerate can use it.
+- **The distill GPU steps refuse a GPU undercount instead of rewriting
+  `CUDA_VISIBLE_DEVICES` (#604).** `gold`, `sft`, `logit-precompute`, `eval`, `vllm-server`
+  and `gen-smoke` compare `SKYPILOT_NUM_GPUS_PER_NODE` with `nvidia-smi -L` and fail fast,
+  naming #604, when the container can access fewer GPUs than were allocated, as hf-peft-sft
+  does.
+
 - **Published steps declare named inputs and read them from bindings (#453).** Every
   `step.yaml` under `configurations/assets/` now has an `inputs:` block. A target that
   doesn't bind a required input now fails build validation before anything is queued.
@@ -310,6 +346,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The AWS `openinstruct-sft` also declares an optional `model` input, but its
   `sft_config.model_path` is **not** deprecated: it is the Hugging Face id the trainer
   downloads when `model` is not bound, so it stays as a real default with no warning.
+
+### Removed
+
+- **The LSF and single-pair distillation recipes (#664).** Replaced by
+  [`recipes/distill/`](recipes/distill/README.md): one `distill` pipeline with off-policy,
+  ramp and on-policy λ modes (`LMBDA_MODE`) and a `smoke.yaml` layer, plus `distill-eval`
+  for benchmarking existing exports. LSF is being decommissioned, so the LSF recipes are
+  deleted rather than migrated. Removed, with their unit tests:
+  - `recipes/granite4-gold-distillation/` (all of it: `distill-gold`, `distill-pipeline-smoke`,
+    `distill-sft-gold`, `gold-blend-smoke`, `gold-onpolicy-smoke`, `gold-onpolicy-full-smoke`,
+    `gold-smoke`, `gold-sweep-100`, `gold-sweep-smoke`);
+  - `recipes/granite4-350m/lsf/distill-{probe,smoke,stage1,stage1-v2,onpolicy-v2,checkpoint-eval}`;
+  - `recipes/granite4-350m/slurm/distill`.
 
 ### Fixed
 

@@ -33,7 +33,16 @@ import yaml
 from gbserver.utils.template import fill_template
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-LSF = REPO_ROOT / "configurations/assets/environments/skypilot/lsf/ibm-bluevela/steps"
+SKYPILOT = REPO_ROOT / "configurations/assets/environments/skypilot"
+LSF = SKYPILOT / "lsf/ibm-bluevela/steps"
+# The evals are shared by every SkyPilot env (#664); the openinstruct steps are LSF's.
+SHARED = SKYPILOT / "steps"
+
+
+def _step_yaml(step: str) -> pathlib.Path:
+    shared = SHARED / step / "step.yaml"
+    return shared if shared.is_file() else LSF / step / "step.yaml"
+
 
 # (step, config section, config key, input, binding field, shell variable)
 CASES = [
@@ -61,7 +70,7 @@ IDS = [f"{c[0]}:{c[3]}" for c in CASES]
 
 
 def _render(step, section, key, value, bindings):
-    raw = yaml.safe_load((LSF / step / "step.yaml").read_text(encoding="utf-8"))
+    raw = yaml.safe_load(_step_yaml(step).read_text(encoding="utf-8"))
     (launcher,) = raw["environment_configs"]["Skypilot"]["launchers"].values()
     config = dict(raw["config"])
     config[section] = dict(config[section], **{key: value})
@@ -83,7 +92,7 @@ def _assigned(rendered, var):
 
 @pytest.mark.parametrize("step,section,key,inp,field,var", CASES, ids=IDS)
 def test_the_input_is_declared_optional(step, section, key, inp, field, var):
-    raw = yaml.safe_load((LSF / step / "step.yaml").read_text(encoding="utf-8"))
+    raw = yaml.safe_load(_step_yaml(step).read_text(encoding="utf-8"))
     assert inp in raw["inputs"]["optional"]
     assert raw["inputs"]["allow_unknown"] is True
 

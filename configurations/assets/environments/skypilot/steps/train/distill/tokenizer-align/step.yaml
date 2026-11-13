@@ -1,0 +1,207 @@
+name: tokenizer-align
+version: 1.0.0
+# Tokenizer alignment: make a raw Granite base student able to speak the teacher's
+# ChatML, and emit the tokenizer artifacts every later distillation step reads.
+#
+# WHY THIS STEP EXISTS. A Granite directory's tokenizer_config.json declares
+# `tokenizer_class: "GPT2Tokenizer"`. AutoTokenizer honours that and builds THAT
+# class, which rebuilds its backend from vocab+merges and installs a plain
+# ByteLevel(use_regex=True) — discarding whatever pre_tokenizer tokenizer.json
+# stored. Nothing errors, and the result still reports is_fast=True: CLASS IDENTITY
+# is the mechanism here, not fast-versus-slow. The 4.1 base student is where this
+# bites: its pre_tokenizer is Sequence[Split(regex), ByteLevel] and the override
+# discards that Split. Deleting the key is NOT sufficient either — with a
+# config.json present, `model_type: granite` resolves through TOKENIZER_MAPPING_NAMES
+# to GPT2Tokenizer anyway — so build_overlay PINS it to PreTrainedTokenizerFast.
+#
+# WHAT THE PIN DOES NOT DO. It stops the class lookup from replacing the rule stored
+# in tokenizer.json. It does NOT decide whether that stored rule is the one the model
+# was TRAINED with. For the 4.1/4.2 family it is, which is why the pin is the whole
+# fix for this pairing. For granite-5.0-20b-sft it is not: that directory's stored
+# Sequence[Split(regex), ByteLevel(use_regex=False)] is vestigial, and the model's own
+# likelihood prefers the imposed plain ByteLevel by 17.0–19.8% of TOTAL NLL over 512
+# documents, so pinning alone would hand a trainer a segmentation the model never saw.
+# A teacher like that needs the pin PLUS a pre_tokenizer transplant, and which rule it
+# was trained with is a MEASUREMENT, not a reading of its files — rank candidates on
+# TOTAL NLL, never PPL/token, which is not comparable across two rules that emit
+# different token counts.
+#
+# Division of labour, which is what keeps this step small: the shared distillation
+# package does the work (build_overlay, retag_student, align_state, masking). This
+# step delivers that package, resolves paths, and forwards eight flags.
+#
+# Deps, the shared package and run-align.sh are all baked into the shared CPU image under
+# $DISTILL_HOME (/opt/distill); nothing is cloned or mounted at launch. The baked commit is
+# recorded as step metadata.
+type: data_processing
+config:
+  # ─── Alignment ────────────────────────────────────────────────────────────────
+  # Small and flat, unlike distill-gold's: there is no dataclass on the other side.
+  # run-align.sh takes nine flags and forwards them to entrypoints whose own
+  # surfaces are equally small, so the flag-drift problem that forced distill-gold
+  # to render a YAML file does not exist here. Flags stay flags.
+  align_config:
+    # The teacher and student models are target INPUTS, not config keys — see
+    # `inputs:` below.
+    #
+    # Where the three outputs are written, as out_dir/{teacher_overlay,
+    # student_overlay,retagged_student}. Relative values are resolved against
+    # $GB_BUILD_WORKDIR. The three are NOT separately configurable: that derivation
+    # is also what the GB_ARTIFACT_PATH lines are built from, and a second place to
+    # configure it would be a second place for declared and written paths to differ.
+    out_dir: "align"
+    # Default chat template path. EMPTY on purpose: the images carry no model-specific
+    # template, since which template is right depends on the model family and users bring
+    # their own. Supply one by binding the optional `chat_template` input below (a
+    # fileset URI/binding the environment mounts at launch). With neither, run-align.sh
+    # passes --no-chat-template and warns loudly: the student then carries NO template
+    # and GOLD training cannot build assistant masks from it. A template WITHOUT
+    # {% generation %} markers is worse than none -- it makes assistant_masks all-zero,
+    # which raises inside the trainer rather than here.
+    chat_template: ""
+    # copy | symlink | hardlink. `copy` is the only one safe across filesystems; the
+    # others exist because a teacher tokenizer.json is 7MB and an overlay sharing
+    # inodes with a read-only model store is cheap. Never symlink an overlay a later
+    # step might write to.
+    copy_mode: "copy"
+    # Whether the TEACHER's tokenizer, and the retagged student's, must speak ChatML.
+    #
+    # Upstream hard-codes this true and it is correct for the reference pair, because
+    # granite-4.2 IS a ChatML family. It is a knob because the markup family is a
+    # property of the PAIR, not of alignment. granite 4.0 and 4.1 carry
+    # <|start_of_role|> / <|end_of_role|> and no <|im_start|> anywhere in
+    # added_tokens_decoder, so a granite-4.1 teacher fails stage [1/4] under the
+    # upstream default — the run does not start, and the message is about ChatML
+    # rather than about the pair.
+    #
+    # Set false ONLY together with a chat_template of the same family. False with the
+    # default ChatML template is the worst of both: alignment succeeds and the teacher
+    # then scores a prompt format it has never seen. The marker itself is still
+    # checked in that case — stage [4/4] derives the masking contract from the
+    # installed template and fails if it cannot.
+    require_chatml: true
+    # Run verify() on every artifact, plus the post-condition on the retagged
+    # student (which asserts ChatML markers only when require_chatml is true; the
+    # pre_tokenizer half runs either way). Defaults true and should stay true:
+    # verify() is what catches a
+    # resolved backend that disagrees with tokenizer.json — the entire failure mode
+    # this step exists to prevent — and it is four cheap encoding probes.
+    verify: true
+    # Resolve and report what would be written, without writing it. Checks a
+    # recipe's paths before spending a teacher-sized copy.
+    dry_run: false
+
+# ALL THREE artifacts are declared. An undeclared output makes the buildrun resolver
+# drop the NEWARTIFACT event, and the target then completes with no output AND no
+# error — a silent failure that costs a full training run. Their consumers:
+#   retagged_student -> distill-gold's model_name_or_path, and the tokenizer
+#                       distill-corpus-prep tokenizes with.
+#   teacher_overlay  -> the teacher tokenizer for the eval steps, kept separate from
+#                       the teacher MODEL path on purpose.
+#   student_overlay  -> distill-corpus-prep's trustworthy comparison point when it
+#                       asserts one-tokenizer-per-run. Not consumed by the retag.
+#
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The 4.2 30B teacher, as a DIRECTORY (not an HF repo id: the teacher for this
+    # pairing is not publicly fetchable, and a repo id would put a network fetch
+    # inside the step). Its tokenizer is the one the student is retagged ONTO.
+    teacher:
+      type: model
+      accept: [uri, binding]
+    # The RAW 4.1 3B base student — the PRE-retag directory. This is the one
+    # directory in the pipeline that genuinely mis-segments, which is exactly why it
+    # is this step's input rather than anything downstream's.
+    student:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # A chat template file. Unbound => align_config.chat_template.
+    chat_template:
+      type: fileset
+      accept: [uri, binding]
+outputs:
+  required:
+    retagged_student:
+      type: model
+    teacher_overlay:
+      type: model
+    student_overlay:
+      type: model
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+      - slurm
+    default_launcher: align
+    launchers:
+      align:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/cpu:ec82c1d9"
+          # NO GPU is needed: this loads two tokenizers and one embedding matrix on
+          # CPU. Node count and any accelerators come from the build.yaml
+          # (compute_config / launcher_config.resources) so one step serves both a
+          # smoke run and the reference run.
+          resources: {}
+          envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
+            # The image is built offline on purpose; keep it that way at run time so
+            # a missing local file fails here rather than silently fetching.
+            HF_HUB_OFFLINE: "1"
+          run: |
+            echo "=== tokenizer-align on $(hostname) ==="
+
+            # The models used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("teacher_model", "student_model") if config.align_config[key] is defined %}
+            echo "tokenizer-align: FATAL: align_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
+
+            # --- distill source: baked into the image, nothing cloned or mounted ---
+            # DISTILL_HOME, the venv (VIRTUAL_ENV) and PYTHONPATH are all set by the image's
+            # own ENV lines. The interpreter is asked of uv rather than hardcoded.
+            PYBIN="python"
+            CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
+            echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:a5d59bc45524a8d75706e20d44ae1a254f273f23"
+            # --- distill source: END ---
+
+            # Absolutise before anything prints a marker: the monitor hands these
+            # paths to the env:// store, possibly from another host, so a relative
+            # path would be resolved against the wrong directory.
+            OUT_DIR="{{ config.align_config.out_dir }}"
+            case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
+
+            # Bound input wins; otherwise align_config.chat_template (empty by default).
+            CHAT_TEMPLATE="{% if bindings.chat_template is defined %}{{ bindings.chat_template.binding.path }}{% else %}{{ config.align_config.chat_template }}{% endif %}"
+
+            PYBIN="$PYBIN" bash "$DISTILL_HOME/steps/tokenizer-align/run-align.sh" \
+              --teacher-model "{{ bindings.teacher.binding.path }}" \
+              --student-model "{{ bindings.student.binding.path }}" \
+              --out-dir "$OUT_DIR" \
+              --chat-template "$CHAT_TEMPLATE" \
+              --copy-mode "{{ config.align_config.copy_mode }}" \
+              {% if config.align_config.require_chatml %}--require-chatml{% else %}--no-require-chatml{% endif %} \
+              {% if config.align_config.verify %}--verify{% else %}--no-verify{% endif %} \
+              {% if config.align_config.dry_run %}--dry-run{% else %}--no-dry-run{% endif %}
+    monitors:
+      # The shipped monitor library as-is. Inherits the standard artifact convention
+      # (GB_ARTIFACT_ID / GB_ARTIFACT_PATH, with binding) and the default poll and
+      # log-retrieval profile; a build.yaml's poll_interval_seconds flows through the
+      # monitor's own `| default(...)`.
+      skypilot_monitor:
+        ref: space://monitors/skypilot

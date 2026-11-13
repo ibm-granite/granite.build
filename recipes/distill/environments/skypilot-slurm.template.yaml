@@ -1,0 +1,235 @@
+# SkyPilot-on-SLURM environment TEMPLATE for the recipes under recipes/distill/.
+#
+# This file is not an environment and is not in any space. Every site-specific
+# value is a placeholder filled from a private site file that never enters this
+# repo; recipes/distill/site.example.yaml lists every key with a fake value.
+# Render it into a usable environment with:
+#
+#   scripts/setup-local-space.sh \
+#     --template recipes/distill/environments/skypilot-slurm.template.yaml \
+#     --site <site.yaml> --name <env-name>
+#
+# which writes the rendered environment into a standalone space (or, with
+# --out DIR, a private repo backing a shared gbserver) and sets ENVIRONMENT_URI
+# in the site file to it. Pass the same site file to the recipes:
+#
+#   gb build start -f recipes/distill/<recipe>/build.yaml --parameters-path <site.yaml>
+#
+# Syntax: the gb CLI's build.yaml parameter syntax, rendered under
+# StrictUndefined, so a key missing from the site file is an error. A value is
+# two dollar signs and the key in braces; a block (a loop over a site list, an
+# if) is a Jinja statement between less-than-percent and percent-greater-than.
+# Values are substituted as plain YAML scalars. gbserver's own Jinja templates
+# (double braces, brace-percent) are left as they are.
+#
+# Everything SLURM-specific (partitions, account, QOS, constraint, sbatch
+# options) lives here, so the recipes only use the generic SkyPilot launcher
+# keys (cluster, zone, accelerators, memory).
+name: $${ENV_NAME}
+type: Skypilot
+subtype: slurm
+config:
+  default_cloud: slurm
+  # SLURM has no cluster autostop; gbserver forces idle_minutes_to_autostop=None
+  # on this cloud regardless, so this is purely documentation.
+  idle_minutes_to_autostop: 0
+  # `cluster` is composed into infra=slurm/<cluster>; `zone` maps to the SLURM
+  # partition (--partition), here the site's default GPU partition. Both are
+  # env-wide defaults — a build/step can override `zone` without repeating
+  # `cluster`, see docs/environments/skypilot-slurm.md#cluster--zone.
+  cluster: $${CLUSTER}
+  zone: $${GPU_PARTITION}
+  # A shared GPU partition can be heavily contended. gbserver's own bounded
+  # provisioning retry (_provision_with_retry in skypilot.py) is the actual
+  # retry-until-up equivalent here — sky.launch itself is never called with
+  # retry_until_up by gbserver, so that SkyPilot CLI flag has no effect through
+  # this path. Raise both knobs well past the defaults (4 attempts / 30s-capped
+  # backoff) so a launch keeps retrying through transient
+  # ResourcesUnavailableError for much longer before giving up, trading a slower
+  # failure for a much better chance of catching a freed GPU on a saturated
+  # partition.
+  retry:
+    max_retries: 20
+    provision_backoff_max: 180
+  # The auto-queued HF I/O steps need no GPU, so send them to the CPU partition
+  # (keyed by step-type slug; a build can still override). A GPU-less I/O job has
+  # no business being pinned to the constrained GPU subset, so they also drop the
+  # GPU constraint below: `null` removes the directive, where "" would emit a
+  # bare `--constraint=`. With an empty GPU_CONSTRAINT there is nothing to drop.
+  steps:
+    hfpull:
+      zone: $${CPU_PARTITION}
+<%- if GPU_CONSTRAINT %>
+      launcher_config: { sbatch_options: { constraint: null } }
+<%- endif %>
+    hfpush:
+      zone: $${CPU_PARTITION}
+<%- if GPU_CONSTRAINT %>
+      launcher_config: { sbatch_options: { constraint: null } }
+<%- endif %>
+<%- if GPU_CONSTRAINT %>
+  # Pin every job to the GPU nodes matching this constraint (#SBATCH
+  # --constraint=...). A step requesting GPUs must then ask for the matching
+  # model (gpu_model), or clear this per build with
+  # config.launcher_config.sbatch_options.constraint: null. Set GPU_CONSTRAINT
+  # to "" in the site file to leave the directive out entirely. See
+  # docs/environments/skypilot-slurm.md#sbatch_options--slurm-sbatch-directives.
+  sbatch_options:
+    constraint: $${GPU_CONSTRAINT}
+<%- endif %>
+  # Import each container image once into a shared .sqsh and launch from that, instead
+  # of Pyxis importing it inside every job (tens of minutes per launch for a
+  # multi-GB image, with the GPU idle). share_path must be on storage every
+  # compute node sees; an LSF environment's enroot share_path on the same
+  # filesystem can be reused (same directory, file names and lock file). The
+  # import job is CPU-only, so it runs on the CPU partition with its QOS. See
+  # docs/environments/skypilot-slurm.md#slurm_image_cache--shared-sqsh-image-cache.
+  slurm_image_cache:
+    share_path: $${IMAGE_CACHE_SHARE_PATH}
+    partition: $${CPU_PARTITION}
+    sbatch_options:
+      account: $${SLURM_ACCOUNT}
+      qos: $${CPU_QOS}
+  # Opt in to the generated Pyxis GPU sbatch directives (--gpus-per-node plus
+  # the NVIDIA_* export list). They work around cluster specifics (a submit
+  # filter that reinterprets a bare --gres as a request for a different GPU
+  # model; driver libs under /usr/lib/x86_64-linux-gnu), so generation is off
+  # by default and only clusters like that enable it. See
+  # skypilot.py:_pyxis_gpu_sbatch_directives.
+  slurm_gpu_sbatch_directives: true
+  # Env-level shared filesystem root for per-run build workdirs. gbserver derives
+  # ${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/ from this and
+  # exports it as GB_BUILD_WORKDIR.
+  shared_workdir: $${SHARED_WORKDIR}
+
+  # Inline SLURM cluster SSH reachability. gbserver materializes this into
+  # ~/.slurm/config at launch so SkyPilot's SLURM provisioner can reach the
+  # cluster. If a ~/.slurm/config already exists on the host with an entry for
+  # this cluster, remove it first — gbserver refuses to overwrite foreign
+  # entries (refuse-on-conflict).
+  #
+  # MULTIPLE LOGIN NODES: `HostName` lists interchangeable candidate login
+  # hostnames under one `Host` block: gbserver picks one at random per launch
+  # and fails over to the next on a transient SSH control-plane error. List
+  # only login nodes that share the scheduler and the SLURM client install, so
+  # any of them can drive the control plane.
+  #
+  # The login nodes and the user come from the private site file, so the
+  # rendered environment holds them in the clear. The SSH private key is real
+  # auth material and stays a secret: define the secret SSH_KEY_SECRET names in
+  # the space that runs this environment (see
+  # docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs).
+  cluster_ssh_configs:
+    slurm:
+      - Host: $${CLUSTER}
+        HostName:
+<%- for host in LOGIN_HOSTS %>
+          - $${host}
+<%- endfor %>
+        User: $${SSH_USER}
+        # SkyPilot's SLURM driver (SlurmClient / sky/adaptors/slurm.py) builds its
+        # own ssh invocation from Python args (ssh_private_key -> `-i`,
+        # IdentitiesOnly -> `-o`) and never passes `-F <config>` to the real ssh
+        # subprocess for control-plane calls (partition/job queries), so it cannot
+        # pick up an IdentityAgent directive from the materialized config, and an
+        # agent-held key does not work for this cloud. A real on-disk private key
+        # is the only identity SlurmClient can use.
+        #
+        # The key is NOT a path in this file: `IdentityKey` names a secret holding the key
+        # contents, and gbserver writes it to a 0600 file and points IdentityFile at that
+        # file when it materializes ~/.slurm/config. That keeps this environment free of any
+        # machine-specific path. See
+        # docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs.
+        IdentityKey: $${SSH_KEY_SECRET}
+        # Offer ONLY that key. Without it ssh also offers every key in the agent, and a
+        # login node may drop the connection with "Too many authentication failures"
+        # before the right one is tried. (Not valid together with IdentityStepCert.)
+        IdentitiesOnly: "yes"
+
+  # Inline SLURM behavioral config. gbserver deep-merges this into the API
+  # server's ~/.sky/config.yaml at launch (see merge_cloud_config).
+  cloud_config:
+    slurm:
+      cluster_configs:
+        $${CLUSTER}:                                        # must match `cluster:` above
+          # SkyPilot `workdir` set to an ancestor of `shared_workdir`. The SLURM
+          # backend bind-mounts only home + ccache + workdir, so a containerized
+          # step's $GB_BUILD_WORKDIR only exists inside the container if it falls
+          # under this path. See
+          # docs/environments/skypilot-slurm.md#workdir-containerized-steps.
+          workdir: $${CLUSTER_WORKDIR}
+          # SkyPilot's per-cluster runtime dir (skylet state, jobs database) lives
+          # under tmpdir and must sit on storage shared by ALL login nodes behind
+          # the HostName candidates: a node-local path gives each login node its
+          # own divergent skylet state. A shared $HOME works (SkyPilot expands
+          # $VARs with the remote login user's environment). A compute-node-only
+          # path does not: it does not exist on the login nodes.
+          tmpdir: $${CLUSTER_TMPDIR}
+          # The SLURM backend bind-mounts only $HOME, ccache and `workdir` into the
+          # container, so anything else a step reads or writes on the shared filesystem
+          # is invisible inside it. Mount the shared filesystem tree(s) the inputs live
+          # on, identity (container path == host path) so a path means the same thing
+          # inside and outside the container. Overlap with `workdir` above is
+          # harmless — nested bind mounts of the same underlying filesystem coexist.
+          container_mounts:
+<%- for mount in CONTAINER_MOUNTS %>
+            $${mount.container_path}:
+              host_path: $${mount.host_path}
+              mode: $${mount.mode}
+<%- endfor %>
+          # The CPU-only lane. A cluster's submission filter may refuse a job with
+          # no GPUs on a GPU partition, so CPU-only targets set `zone` to the CPU
+          # partition and get its QOS here rather than the env-wide one below.
+          partition_configs:
+            $${CPU_PARTITION}:
+              sbatch_options:
+                qos: $${CPU_QOS}
+          # The eval lane. A preemptible partition often admits only its own QOS
+          # (`AllowQos` in `scontrol show partition`), and SkyPilot merges sbatch
+          # options global < cluster < partition, so this overrides the env-wide
+          # QOS on that partition alone. EVAL_QOS "" adds nothing, and so does an
+          # EVAL_PARTITION that is the GPU or CPU partition, whose QOS is already set.
+<%- if EVAL_QOS and EVAL_PARTITION != GPU_PARTITION and EVAL_PARTITION != CPU_PARTITION %>
+            $${EVAL_PARTITION}:
+              sbatch_options:
+                qos: $${EVAL_QOS}
+<%- endif %>
+      # Env-wide #SBATCH defaults, forwarded verbatim to sbatch (keys without the
+      # leading --). `account` is the SLURM association of the user the jobs run
+      # as (`sacctmgr show associations user=<user>`). `qos` must be one the
+      # cluster's submission filter accepts on the GPU partition.
+      #
+      # GPU directives (`gpus-per-node`, pyxis driver-injection `export`) are
+      # NOT set here: gbserver generates them per-step from the step's own
+      # resources.accelerators + image_id (Skypilot._pyxis_gpu_sbatch_directives
+      # in src/gbserver/environment/skypilot.py) rather than a static
+      # per-environment value, so a step requesting a different GPU count or
+      # type is never silently miscounted. See issue #510. Generation is
+      # opt-in via `slurm_gpu_sbatch_directives: true` above (sibling of
+      # `cluster`/`zone`) — clear it, or set it to false, if the cluster's
+      # Pyxis/driver setup needs something different.
+      sbatch_options:
+        account: $${SLURM_ACCOUNT}
+        qos: $${SLURM_QOS}
+        # NODE EXCLUSIONS: the SLURM way to steer clear of known-bad hosts is
+        # `exclude` (comma-separated hostnames, passed through sbatch_options
+        # unprotected), e.g.:
+        # exclude: "node-a,node-b"
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          # On shared storage, not /tmp: a compute node's /tmp is per-node, so an
+          # hf:// input pulled there would be invisible to the training node.
+          cache_path: $${HF_CACHE_PATH}
+    push:
+      - mode: default
+        config: {}
+  - store_uri: space://assetstores/s3/
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}

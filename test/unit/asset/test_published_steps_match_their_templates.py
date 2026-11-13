@@ -42,6 +42,7 @@ the template, and in the vllm-server case it was not).
 """
 
 import pathlib
+import subprocess
 
 import pytest
 
@@ -57,8 +58,8 @@ def _pairs():
     step is covered without being added anywhere.
     """
     found = []
-    # `**`, not `*/*`: a nested step (steps/distill/gold/skypilot) is published at
-    # steps/distill/gold, and a one-level glob silently skipped all twelve of them.
+    # `**`, not `*/*`: a nested step (steps/train/distill/logit-distill/skypilot) is published at
+    # steps/train/distill/logit-distill, and a one-level glob silently skipped all twelve of them.
     for template in sorted(STEPS_DIR.glob("**/step-template.yaml")):
         name = template.parent.parent.relative_to(STEPS_DIR).as_posix()
         env = template.parent.name
@@ -76,21 +77,41 @@ def test_there_is_something_to_check():
     assert PAIRS, "no step-template.yaml / published step.yaml pairs found on disk"
 
 
+def _image_ref(template):
+    """The ${IMAGE_REF} publish-step substitutes, asked of the step's own Makefile.
+
+    Asked of make rather than re-derived here, so the value is the one publish-step
+    actually renders (REGISTRY, IMAGE_NAME and IMAGE_VERSION come from the step's
+    Makefile and common.mk). None when make is unavailable or prints nothing.
+    """
+    step_dir = template.parent
+    try:
+        out = subprocess.run(
+            ["make", "-s", "-f", "Makefile", "-f", "-", "print-image-ref"],
+            input="print-image-ref:\n\t@echo $(IMAGE_REF)\n",
+            cwd=step_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out or None
+
+
 @pytest.mark.parametrize("name,env,template,asset", PAIRS)
 def test_the_published_asset_matches_its_template(name, env, template, asset):
     template_text = template.read_text(encoding="utf-8")
     asset_text = asset.read_text(encoding="utf-8")
 
-    # publish-step substitutes ${IMAGE_REF} from the step's Makefile. No step that is
-    # both templated that way and published exists today (steps/eval/eval-example uses it and is
-    # not published), so the comparison is a plain one. If that changes, this test has
-    # to learn the substitution rather than start failing for a legitimate difference
-    # -- hence an explicit, self-explaining skip rather than silence.
+    # publish-step substitutes ${IMAGE_REF} from the step's Makefile (common.mk's
+    # render-step-template), so compare against the template as publish-step renders it.
     if "${IMAGE_REF}" in template_text:
-        pytest.skip(
-            f"{name} templates ${{IMAGE_REF}}; teach this test the substitution that "
-            "publish-step applies before comparing"
-        )
+        ref = _image_ref(template)
+        if ref is None:
+            pytest.skip(f"{name}: could not ask the step's Makefile for IMAGE_REF")
+        template_text = template_text.replace("${IMAGE_REF}", ref)
 
     assert asset_text == template_text, (
         f"{name} ({env}): the published asset and its authoring template have "

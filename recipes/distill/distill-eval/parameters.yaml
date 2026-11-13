@@ -1,0 +1,240 @@
+# distill-eval -- the knobs of an eval-only build, and nothing about the site.
+#
+# Every host, path, partition, accelerator model and registry comes from the site
+# file (recipes/distill/site.example.yaml lists every key); a key here may not also
+# be defined there. The eval settings below are recipes/distill/distill's, value for
+# value (the tests hold them equal), so a rung evaluated here is configured as one
+# evaluated inside a distill build.
+#
+# Values arrive from --param as STRINGS (the CLI does no YAML parsing of them).
+
+# ─── Run identification ───────────────────────────────────────────────
+# The experiment name when EXPERIMENT is empty. Set per run.
+RUN_NAME: "distill-eval"
+
+# ─── The models ───────────────────────────────────────────────────────
+# REQUIRED: "<rung>=<uri>,<rung>=<uri>". The rung is the model's numeric column in
+# the tables (ckpt_<rung>), normally the training step it was exported at; the URI
+# is a full one (env:///abs/path/export-1000, hf://org/name). Empty fails the
+# render.
+EXPORTS: ""
+
+# ─── Which evals ──────────────────────────────────────────────────────
+# Each rung's evals named outright: "<rung>:<eval>,<eval>;<rung>:<eval>", names as
+# in EVAL_CATALOG plus "bfcl". Replaces SCREEN_EVALS / FULL_EVAL_RUNGS (setting
+# both fails the render); a rung it does not name gets nothing, which also fails.
+# This is how a re-run of failed evals is spelled.
+EVALS: ""
+
+# ─── Fresh outputs ────────────────────────────────────────────────────
+# Appended to the experiment name ("<EXPERIMENT>-<RERUN_TAG>-ckpt_<rung>"), and so to
+# every output directory, CSV and artifact URI. Empty: none. SET IT for any model
+# set that has been evaluated before under this experiment name -- a re-run that
+# re-declares a URI another build registered is refused by gbserver, the target
+# still reports SUCCESS, and nothing downstream of it dispatches. A timestamp
+# (rerun-20261110_1430) is the usual choice. Letters, digits, '.', '_', '-' only.
+RERUN_TAG: ""
+
+# ─── Retries ──────────────────────────────────────────────────────────
+# Above distill's 3: evals run on the site's EVAL_PARTITION, which may preempt
+# them, and a preempted eval is simply run again. Targets that succeeded are
+# reused, not re-run.
+MAX_RETRIES: 5
+
+# ─── Monitoring ───────────────────────────────────────────────────────
+POLL_INTERVAL_SECONDS: 30
+LOG_RETRIEVAL_INTERVAL_SECONDS: 120
+EVAL_STATUS_POLL_INTERVAL_SECONDS: 120
+
+# ─── Resources ────────────────────────────────────────────────────────
+EXPORT_MEMORY: 64
+EVAL_MEMORY: 256
+
+# ══ BENCHMARK EVALS PER RUNG (off by default) ═════════════════════════
+# Every rung runs SCREEN_EVALS; a rung in FULL_EVAL_RUNGS runs every eval in
+# EVAL_CATEGORIES instead. Names are EVAL_CATALOG names plus "bfcl"; an unknown name
+# or a rung not in EXPORTS fails the render. Both empty (and EVALS empty): the
+# render fails, as a build with no evals would do nothing.
+# A full battery is ~27 one-GPU targets and ~4 GPU-h per rung; screening a handful
+# of axes on every rung and the full battery on the last is the usual protocol.
+SCREEN_EVALS: ""
+FULL_EVAL_RUNGS: ""
+EVAL_CATEGORIES: "code,general,math,safety,multilingual,bfcl"
+# The namespace eval results hang off. Empty uses RUN_NAME. Shared trees: two runs
+# with one EXPERIMENT write their CSVs on top of one another.
+EXPERIMENT: ""
+# The benchmark harness's own settings, NOT the training budget: they must match
+# what any baseline row was measured at, or the comparison is invalid.
+SAGE_BATCH_SIZE: 10
+SAGE_MAX_LENGTH: 4096
+SAGE_NUM_GPUS: 1
+# The sage exporter's row-assembly stack; it decides which metrics become rows.
+EXPORT_STACK: "granite4-instruct"
+# Image names (repository:tag) under the site's EVAL_IMAGE_REGISTRY.
+SAGE_EXPORT_IMAGE: "sage-py311:0.025"
+BFCL_IMAGE: "bfcl-py311:0.02"
+# all: the same breadth as a full battery, so a row means what the baseline's does.
+BFCL_TEST_CATEGORIES: "all"
+BFCL_EVAL_NAME: "bfclv3"
+# The harness's model HANDLER, which selects the prompt format -- not the run name.
+BFCL_MODEL_ID: "ibm-granite/granite-4"
+BFCL_NUM_GPUS: 1
+BFCL_GPU_MEMORY_UTILIZATION: "0.5"
+# Row filter for the BFCL CSV; empty keeps every row.
+BFCL_FILTER: ""
+
+# The sage evals, as data: build.yaml's loop emits rung x eval. Per entry: name
+# (target eval-<name>-ck<N>), category (EVAL_CATEGORIES), gb_script, image
+# (repository:tag under EVAL_IMAGE_REGISTRY), output_subpath (where the script
+# writes, under the experiment dir), optional batch_size / max_length / extra_env,
+# and needs_bcb_url, which adds the site's OE_EVAL_BCB_API_URL to extra_env (a
+# bcb-server must be up for olmes-bigcodebench).
+EVAL_CATALOG:
+  # ─── Code (9) ───
+  - name: olmes-cruxeval
+    category: code
+    gb_script: code_olmes_cruxeval_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "code/olmes-instruct/cruxeval_output"
+  - name: olmes-bigcodebench
+    category: code
+    gb_script: code_olmes_bigcodebench_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "code/olmes-instruct/bigcodebench::tulu"
+    needs_bcb_url: true
+  - name: evalplus-humaneval
+    category: code
+    gb_script: code_evalplus_humaneval_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/evalplus/humaneval
+  - name: evalplus-mbpp
+    category: code
+    gb_script: code_evalplus_mbpp_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/evalplus/mbpp
+  # MultiPL-E: one script, the language through the environment, at max_length 512.
+  - name: multiple-sh
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/sh
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "sh", MAX_LENGTH: "512"}
+  - name: multiple-cpp
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/cpp
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "cpp", MAX_LENGTH: "512"}
+  - name: multiple-java
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/java
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "java", MAX_LENGTH: "512"}
+  - name: multiple-js
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/js
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "js", MAX_LENGTH: "512"}
+  - name: multiple-rs
+    category: code
+    gb_script: code_multiple_slim.sh
+    image: sage-py311-code:0.025
+    output_subpath: code/multiple/rs
+    max_length: 512
+    extra_env: {MULTIPLE_LANG: "rs", MAX_LENGTH: "512"}
+  # ─── General (5) ───
+  - name: olmes-agi-eval
+    category: general
+    gb_script: general_olmes_agi_eval_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/agi_eval_english:0shot_cot::tulu3"
+  - name: olmes-bbh
+    category: general
+    gb_script: general_olmes_bbh_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/bbh:cot-v1::tulu"
+  - name: olmes-mmlu-pro
+    category: general
+    gb_script: general_olmes_mmlu_pro_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/mmlu_pro:cot::none"
+  - name: olmes-ifeval
+    category: general
+    gb_script: general_olmes_ifeval_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/ifeval::tulu"
+    batch_size: 30
+  - name: olmes-mmlu-mc
+    category: general
+    gb_script: general_olmes_mmlu_mc_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "general/olmes-instruct/mmlu:mc::tulu"
+  # ─── Math (5) ───
+  - name: olmes-deepmind-math
+    category: math
+    gb_script: math_olmes_deepmind_math_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/deepmind_math:0shot_cot::tulu3"
+  - name: olmes-gpqa
+    category: math
+    gb_script: math_olmes_gpqa_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gpqa:0shot_cot::llama3.1"
+  - name: olmes-gsm8k
+    category: math
+    gb_script: math_olmes_gsm8k_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gsm8k::tulu"
+  - name: olmes-gsm-symbolic
+    category: math
+    gb_script: math_olmes_gsm_symbolic_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/gsm_symbolic::tulu"
+  - name: olmes-minerva-math
+    category: math
+    gb_script: math_olmes_minerva_math_slim.sh
+    image: sage-py311-olmes:0.025
+    output_subpath: "math/olmes-instruct/minerva_math::llama3.1"
+  # ─── Safety (2) ───
+  - name: attaq
+    category: safety
+    gb_script: safety_attaq_slim.sh
+    image: sage-py311-safety:0.025
+    output_subpath: safety/attaq
+  - name: salad-bench
+    category: safety
+    gb_script: safety_salad_bench_slim.sh
+    image: sage-py311-safety:0.025
+    output_subpath: safety/salad_bench
+  # ─── Multilingual (5) ───
+  - name: global-mmlu
+    category: multilingual
+    gb_script: multilingual_global_mmlu_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: multilingual/global_mmlu
+  - name: mgsm
+    category: multilingual
+    gb_script: multilingual_mgsm_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: multilingual/mgsm
+  - name: include-ar-de-es-fr
+    category: multilingual
+    gb_script: multilingual_include_arabic_german_spanish_french_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: "multilingual/include-5shot/arabic_german_spanish_french"
+  - name: include-hi-bn-ta-te
+    category: multilingual
+    gb_script: multilingual_include_hindi_bengali_tamil_telugu_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: "multilingual/include-5shot/hindi_bengali_tamil_telugu"
+  - name: include-it-ja-ko-nl-pt-zh
+    category: multilingual
+    gb_script: multilingual_include_italian_japanese_korean_dutch_portuguese_chinese_slim.sh
+    image: sage-py311-multilingual:0.025
+    output_subpath: "multilingual/include-5shot/italian_japanese_korean_dutch_portuguese_chinese"

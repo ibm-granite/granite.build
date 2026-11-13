@@ -30,7 +30,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[4]
 ENVIRONMENTS = REPO_ROOT / "configurations/assets/environments"
 STEPS = [
-    ENVIRONMENTS / "skypilot/lsf/ibm-bluevela/steps/sage-eval/step.yaml",
+    ENVIRONMENTS / "skypilot/steps/sage-eval/step.yaml",
     ENVIRONMENTS / "skypilot/aws/steps/sage-eval/step.yaml",
     ENVIRONMENTS / "skypilot/aws/steps/sage-eval-code-grouped/step.yaml",
 ]
@@ -38,7 +38,7 @@ STEPS = [
 OTHER_TMPDIR_STEPS = {
     # Sets TMPDIR to its own VLLM_RPC_BASE_PATH, /tmp/vllm-<user>-<LSF job id>.
     ENVIRONMENTS
-    / "skypilot/steps/distill/vllm-server/step.yaml": "short by construction",
+    / "skypilot/steps/train/distill/student-rollout-generator/step.yaml": "short by construction",
 }
 # Where steps live: environment assets, the builtin steps, and the samples.
 STEP_ROOTS = [ENVIRONMENTS, REPO_ROOT / "src/gbserver/builtins", REPO_ROOT / "samples"]

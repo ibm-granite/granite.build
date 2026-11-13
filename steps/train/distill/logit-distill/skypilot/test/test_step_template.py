@@ -1,0 +1,2057 @@
+"""Contract tests for step-template.yaml.
+
+The launcher's ``run:`` block is a ~100-line shell script carrying runtime Jinja.
+Nothing else validates it before a cluster does, and its failures are expensive:
+a shell syntax error costs a queue slot, and a missing rank guard costs N
+duplicate artifact registrations on a multi-node run.
+
+These tests read the template directly (not the rendered Space), so they hold
+whether or not ``make space`` has been run.
+"""
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+from gold_trainer_state import write_trainer_state
+
+_STEP = Path(__file__).resolve().parent.parent / "step-template.yaml"
+
+
+def _bindings(vllm_url=""):
+    """The `bindings` a target binding the required inputs renders with."""
+    bindings = {
+        "student": {"binding": {"path": "/models/student"}},
+        "teacher": {"binding": {"path": "/models/teacher"}},
+        "corpus": {"binding": {"path": "/data/corpus/train.jsonl"}},
+    }
+    if vllm_url:
+        bindings["vllm"] = {"binding": {"state": vllm_url}}
+    return bindings
+
+
+@pytest.fixture(scope="module")
+def step():
+    return yaml.safe_load(_STEP.read_text())
+
+
+@pytest.fixture(scope="module")
+def launcher(step):
+    return step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"]
+
+
+@pytest.fixture(scope="module")
+def run_script(launcher):
+    return launcher["run"]
+
+
+def _as_shell(script):
+    """Approximate what fill_objtemplate leaves behind, for a syntax check."""
+    script = re.sub(r"\{%.*?%\}", "", script, flags=re.S)
+    return re.sub(r"\{\{.*?\}\}", "X", script, flags=re.S)
+
+
+class TestRunScriptIsValidShell:
+    def test_bash_accepts_the_rendered_script(self, run_script):
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=_as_shell(run_script),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_container_venv_comes_from_the_image_not_the_script(self, run_script):
+        """The image sets VIRTUAL_ENV and puts its bin on PATH; the script asks uv for the
+        interpreter and hardcodes no venv path."""
+        assert 'PYBIN="python"' in run_script
+        assert 'export PATH="$VIRTUAL_ENV/bin:$PATH"' in run_script
+        assert "/stage/" not in run_script
+
+    def test_no_login_shell_anywhere(self, run_script):
+        """A login shell re-runs /etc/profile and drops the venv from PATH."""
+        assert "bash -lc" not in run_script
+        assert "#!/bin/bash -l" not in run_script
+
+
+class TestRankHandling:
+    """accelerate owns per-process rank; SkyPilot's vars are node-level.
+
+    NODE_RANK is read from SKYPILOT_NODE_RANK (SkyPilot's own generic var,
+    confirmed present on both the lsf and slurm subtypes), not from RANK
+    (LSF-only) -- see the step's header comment.
+    """
+
+    def test_topology_is_snapshotted_from_skypilot_generic_vars(self, run_script):
+        for var in (
+            "SKYPILOT_NODE_RANK",
+            "SKYPILOT_NUM_NODES",
+            "SKYPILOT_NUM_GPUS_PER_NODE",
+            "SKYPILOT_NODE_IPS",
+        ):
+            assert f"${{{var}" in run_script
+
+    def test_master_addr_is_required_not_defaulted(self, run_script):
+        """A silently-wrong master address hangs NCCL init until the timeout, so
+        fail loudly instead of substituting a default."""
+        assert "${SKYPILOT_NODE_IPS:?" in run_script
+
+    def test_accelerate_receives_the_snapshotted_topology(self, run_script):
+        for flag in (
+            "--machine_rank",
+            "--main_process_ip",
+            "--main_process_port",
+            "--num_machines",
+            "--num_processes",
+        ):
+            assert flag in run_script
+
+
+class TestRankZeroGuards:
+    """The executor streams every node into one driver log.
+
+    So anything that must happen once per RUN, rather than once per NODE, has to
+    be guarded — an unguarded artifact marker registers N checkpoints.
+    """
+
+    def test_artifact_marker_is_guarded(self, run_script):
+        # The FINAL marker, pinned by its trailing space: "GB_ARTIFACT_ID:checkpoint"
+        # is a prefix of the watcher's "checkpoint_${step}" id, whose own guarding is
+        # covered by TestPerCheckpointArtifacts (it sits in a function that only
+        # rank-0-guarded code calls, so a position test would not show it).
+        marker = 'echo "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:'
+        assert marker in run_script
+        guard = run_script.rindex('if [ "$NODE_RANK" = "0" ]; then')
+        assert guard < run_script.index(marker)
+
+    def test_commit_metadata_is_guarded(self, run_script):
+        # Anchored on the FULL key rather than the bare GB_STEP_METADATA_KEY prefix, in
+        # case a future addition reuses it. The trainer's commit is now recorded by the
+        # shared source-delivery region's own distill_code_commit echo (kd_sandbox_commit
+        # no longer exists as a separate concept: there is only one checkout now), and
+        # that region's own guard is asserted directly by
+        # TestDistillSourceDelivery.test_the_region_runs_above_the_rank_split.
+        marker = "GB_STEP_METADATA_KEY:distill_code_commit"
+        assert marker in run_script
+
+    def test_config_echo_is_guarded(self, run_script):
+        """Printing the config N times would bury the run's real output."""
+        before = run_script[: run_script.index('cat "$CFG"')]
+        assert '[ "$NODE_RANK" = "0" ]' in before
+
+
+class TestIdentityComesFromTheAllocation:
+    def test_config_name_uses_the_runtime_node_count(self, run_script):
+        """Not a build parameter: the checkpoint path must not be able to claim a
+        topology the run did not have."""
+        assert (
+            'CONFIG_NAME="{{ config.gold_config.run_name }}_node${NODES}"' in run_script
+        )
+
+    def test_checkpoint_dir_is_under_the_build_workdir(self, run_script):
+        """Per-build and publishable, unlike the launcher's hardcoded path."""
+        assert (
+            'CKPT_DIR="${GB_BUILD_WORKDIR:-$PWD}/checkpoints/${CONFIG_NAME}"'
+            in run_script
+        )
+
+
+class TestOnPolicyForwardCompatibility:
+    """The vLLM/trainer split is a step-level branch, needing no fork change."""
+
+    def test_last_nodes_serve(self, run_script):
+        assert "TRAINER_NODES=$(( NODES - VLLM_SERVERS ))" in run_script
+        assert '[ "$NODE_RANK" -ge "$TRAINER_NODES" ]' in run_script
+
+    def test_trainer_process_count_excludes_server_nodes(self, run_script):
+        assert "--num_processes $(( TRAINER_NODES * GPUS ))" in run_script
+        assert '--num_machines "$TRAINER_NODES"' in run_script
+
+    def test_use_vllm_is_stated_in_both_directions(self, run_script):
+        """Driven by the same vllm_num_servers as every other on-policy key.
+
+        gold.py defaults --use_vllm to False and custom_gold_trainer.py branches on
+        it, so a template emitting the flag only negatively leaves an on-policy run
+        generating locally while its allocated server sits idle — build d77546a9 did
+        exactly that. Asserted here as the unrendered expression, because this suite
+        reads the template rather than a render;
+        test/unit/builtins/steps/test_distill_gold.py renders both branches.
+        """
+        assert (
+            "--use_vllm={{ 'True' if config.gold_config.vllm_num_servers "
+            "| int > 0 else 'False' }}" in run_script
+        )
+
+
+class TestStepDeclaration:
+    def test_is_a_training_step_publishing_a_model(self, step):
+        assert step["type"] == "training"
+        assert step["outputs"]["optional"]["checkpoint"]["type"] == "model"
+
+    def test_restricted_to_lsf_and_slurm(self, step):
+        """The topology this step reads (SKYPILOT_NODE_RANK & co.) is SkyPilot's
+        own generic set, confirmed present on both subtypes -- so one step
+        serves both. Still excludes aws/kubernetes: the image is an SM90 build
+        that cannot run on A100, and those subtypes aren't validated for this
+        step yet."""
+        assert step["environment_configs"]["Skypilot"]["subtypes"] == ["lsf", "slurm"]
+
+    def test_no_setup_phase(self, launcher):
+        """The trainer comes from /proj, so there is nothing to clone or install —
+        and a setup phase would be one more thing to fail per node."""
+        assert "setup" not in launcher
+
+    def test_resources_are_left_to_the_build(self, launcher):
+        """One step serves the smoke and reference runs."""
+        assert launcher["resources"] == {}
+
+    def test_renderer_is_baked_into_the_image_not_mounted(self, launcher):
+        assert "file_mounts" not in launcher
+        assert (_STEP.parent / "src" / "render_gold_config.py").is_file()
+
+    def test_nccl_timeout_env_is_present(self, launcher):
+        """The 30B teacher forward plus ZeRO-3 collectives outlast the default
+        watchdog on a healthy run, so the timeout must be set explicitly. Its
+        value is templated — see TestDistributedDiagnostics."""
+        for key in (
+            "TORCH_NCCL_TIMEOUT_MS",
+            "NCCL_TIMEOUT",
+            "TORCH_NCCL_ENABLE_MONITORING",
+        ):
+            assert key in launcher["envs"]
+
+    def test_monitor_uses_periodic_retrieval(self, step):
+        """The default on_completion surfaces nothing until a multi-hour run ends."""
+        monitor = step["environment_configs"]["Skypilot"]["monitors"][
+            "skypilot_monitor"
+        ]
+        assert monitor["ref"] == "space://monitors/skypilot"
+        assert "periodic" in monitor["config"]["log_retrieval"]["mode"]
+
+    def test_defaults_that_break_granite_are_correct(self, step):
+        gold = step["config"]["gold_config"]
+        assert gold["use_liger_fused_jsd"] is False
+        assert gold["response_template"] == "<|im_start|>assistant"
+        assert gold["lmbda"] == 0.0
+        assert gold["vllm_num_servers"] == 0
+
+    def test_model_and_data_are_required_inputs(self, step):
+        """Silently distilling the wrong model is worse than failing to start."""
+        assert set(step["inputs"]["required"]) == {"student", "teacher", "corpus"}
+        gold = step["config"]["gold_config"]
+        for key in ("model_name_or_path", "teacher_model_name_or_path", "dataset_name"):
+            assert key not in gold
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "model_name_or_path",
+            "teacher_model_name_or_path",
+            "dataset_name",
+            "vllm_server_url",
+        ],
+    )
+    def test_a_retired_config_key_is_refused(self, step, key):
+        """A recipe still setting an old key would otherwise be ignored silently."""
+        from jinja2 import Template
+
+        script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+            "run"
+        ]
+        config = dict(step["config"])
+        config["gold_config"] = dict(config["gold_config"], **{key: "/old"})
+        rendered = Template(script).render(config=config, bindings=_bindings())
+        assert f"gold_config.{key} is no longer read" in rendered
+
+
+class TestRendererInvocation:
+    """Every gold_config field must actually reach the renderer."""
+
+    # Every gold_config key goes to exactly one of three places, and a key that
+    # reaches NONE of them is configuration that does nothing — which reads as a
+    # working knob to the next person who tunes it. The partition is asserted
+    # rather than described so that adding a key forces a decision about which
+    # kind it is.
+    #
+    # 1. STEP_ONLY — consumed by the run block or the launcher env. The nccl_*
+    #    knobs configure NCCL through the environment and have no place in the
+    #    trainer's config file; the rest name paths the step itself resolves.
+    STEP_ONLY = {
+        # Same shape of key: the residency preflight runs in the run block,
+        # before the renderer is even called, so `--check-weight-residency` would be a flag
+        # render_gold_config.py has no reason to know about and CustomGOLDConfig would
+        # reject. That these two are wired, switchable and overridable is asserted by
+        # test_weight_residency_contract.py, which owns them across all three steps that
+        # carry the preflight -- so exempting them here hides nothing.
+        "check_weight_residency",
+        "allow_offline_weights",
+        "ds_config",
+        "run_name",
+        "nccl_debug",
+        "nccl_debug_subsys",
+        "nccl_timeout_ms",
+        "nccl_enable_monitoring",
+        "nccl_ib_hca",
+    }
+    # 2. TRAINER_CLI_ONLY — handed to gold.py on its command line, NOT written
+    #    into the rendered config. That mirrors the one launcher that has actually
+    #    run on-policy: TRL's parse_args_and_config rejects unknown top-level keys,
+    #    so putting these in the config file would bet on them being accepted
+    #    config-file keys rather than merely accepted CLI flags.
+    TRAINER_CLI_ONLY = {
+        "vllm_mode": "--vllm_mode",
+        "vllm_sync_frequency": "--vllm_sync_frequency",
+    }
+
+    # 3. Everything else reaches render_gold_config.py as --kebab-case.
+
+    def test_all_renderer_flags_are_passed(self, run_script, step):
+        for key in step["config"]["gold_config"]:
+            if key in self.STEP_ONLY or key in self.TRAINER_CLI_ONLY:
+                continue
+            flag = "--" + key.replace("_", "-")
+            assert flag in run_script, f"{key} never reaches the renderer"
+
+    def test_trainer_cli_only_keys_reach_gold_py(self, run_script, step):
+        """They bypass the renderer, so nothing else would catch them going
+        nowhere — and a silently dropped vllm_mode is an on-policy run that
+        cannot find its server."""
+        for key, flag in self.TRAINER_CLI_ONLY.items():
+            assert key in step["config"]["gold_config"], f"{key} is not a config key"
+            assert flag in run_script, f"{key} never reaches gold.py"
+            # And they must NOT be sent to the renderer, which would emit them
+            # into the config file and risk the rejection described above.
+            assert (
+                "--" + key.replace("_", "-") not in run_script
+            ), f"{key} is also passed to the renderer"
+
+    def test_renderer_is_run_with_the_container_interpreter(self, run_script):
+        """So the config is dumped by the same PyYAML the trainer parses with --
+        the synced venv's python, not a baked image path."""
+        assert (
+            '"$PYBIN" "$DISTILL_HOME/steps/logit-distill/render_gold_config.py"'
+            in run_script
+        )
+
+    def test_total_nodes_is_passed_from_the_allocation(self, run_script):
+        assert '--total-nodes "$NODES"' in run_script
+
+
+class TestDistributedDiagnostics:
+    """A hang must produce an error, not silence.
+
+    The first 2-node run reached the training loop and then stalled on step 0 for
+    an hour with no output, because the step copied the reference launcher's
+    TORCH_NCCL_ENABLE_MONITORING=0 — which disables the thread that aborts a
+    stalled collective. The allocation was held the whole time and nothing was
+    learned from it.
+    """
+
+    def test_monitoring_defaults_on(self, step):
+        """Deliberately diverging from the reference launcher: an abort with a
+        named collective beats an indefinite hang."""
+        assert step["config"]["gold_config"]["nccl_enable_monitoring"] is True
+
+    def test_monitoring_is_templated_not_hardcoded(self, launcher):
+        env = launcher["envs"]["TORCH_NCCL_ENABLE_MONITORING"]
+        assert "{{" in env and "nccl_enable_monitoring" in env
+        assert '"1"' in env and '"0"' in env, "must render 1/0, not True/False"
+
+    def test_timeout_is_templated(self, launcher):
+        for key in ("TORCH_NCCL_TIMEOUT_MS", "NCCL_TIMEOUT"):
+            assert "nccl_timeout_ms" in launcher["envs"][key]
+
+    def test_nccl_debug_is_available_and_off_by_default(self, step, launcher):
+        """Off by default (very verbose), but reachable without editing the step —
+        it is the only way to distinguish an IB path from a silent TCP fallback."""
+        assert step["config"]["gold_config"]["nccl_debug"] == ""
+        assert "nccl_debug" in launcher["envs"]["NCCL_DEBUG"]
+
+    def test_reference_timeout_default_is_preserved(self, step):
+        """A healthy 30B teacher forward is slow; the production default must stay
+        generous even though debug builds lower it."""
+        assert step["config"]["gold_config"]["nccl_timeout_ms"] == 3600000
+
+
+class TestMasterAddressIsAnIp:
+    """accelerate is given an IP, matching the reference launcher.
+
+    SKYPILOT_NODE_IPS is SkyPilot's own node-IP list (confirmed newline-joined,
+    rank-ordered, in SkyPilot's own task_codegen.py), so its first entry is
+    already an IP on both the lsf and slurm subtypes -- unlike LSF's own
+    MASTER_ADDR, which is a short hostname. No /etc/hosts/getent resolution is
+    needed as a result.
+    """
+
+    def test_master_is_derived_from_skypilot_node_ips(self, run_script):
+        assert "MADDR=\"$(printf '%s\\n' \"${SKYPILOT_NODE_IPS:?" in run_script
+        assert run_script.index("MADDR=") < run_script.index("--main_process_ip")
+
+    def test_accelerate_receives_the_resolved_address(self, run_script):
+        assert '--main_process_ip "$MIP"' in run_script
+
+
+class TestExternalVllmServer:
+    """The on-policy path where the server is a separate target, reached by URL.
+
+    NOT YET RUN ON A CLUSTER. Everything here is a contract test; the open
+    question is whether the trainer's NCCL weight-sync group can span two LSF
+    allocations, which no test can answer.
+    """
+
+    def test_the_url_is_an_optional_mem_input(self, step):
+        assert set(step["inputs"]["optional"]) == {"vllm"}
+        assert step["inputs"]["optional"]["vllm"]["accept"] == ["binding"]
+        gold = step["config"]["gold_config"]
+        assert "vllm_server_url" not in gold
+        assert gold["vllm_mode"] == "server"
+        assert gold["vllm_sync_frequency"] == 1
+
+    def test_all_nodes_train_when_the_server_is_external(self, run_script):
+        """No node is taken away from the trainer, because the server is not in
+        this allocation. Getting this wrong wastes a node silently."""
+        assert 'TRAINER_NODES="$NODES"' in run_script
+
+    def test_the_in_allocation_split_is_still_present(self, run_script):
+        """The external path is additive; the reference launcher's role split must
+        remain reachable when no URL is given."""
+        assert "TRAINER_NODES=$(( NODES - VLLM_SERVERS ))" in run_script
+        assert "gb_steps_post_training.distillation.run_vllm_serve" in run_script
+
+    def test_the_address_reaches_gold_py(self, run_script):
+        for flag in ("--vllm_server_host", "--vllm_server_port", "--vllm_mode"):
+            assert flag in run_script
+        assert "$VLLM_ARGS" in run_script
+
+    def test_the_url_is_parsed_at_run_time_not_templated(self, run_script):
+        """The address is only known at run time — it arrives through a mem://
+        binding — so it must be split in shell, not by Jinja."""
+        assert "bindings.vllm.binding.state" in run_script
+        assert 'VLLM_URL="{{ vllm_server_url }}"' in run_script
+        assert "_hostport" in run_script
+
+    @pytest.mark.parametrize(
+        "url,host,port",
+        [
+            ("http://host-42:8001", "host-42", "8001"),
+            ("http://10.0.0.7:8001", "10.0.0.7", "8001"),
+            # A trailing path is what an OpenAI-compatible base URL looks like.
+            ("http://host-42:8001/v1", "host-42", "8001"),
+            # No port: fall back to the reference launcher's 8001 rather than
+            # handing the trainer an empty port that fails at connect time.
+            ("http://host-42", "host-42", "8001"),
+            ("https://host-42:9000", "host-42", "9000"),
+        ],
+    )
+    def test_url_parsing_actually_works(self, run_script, url, host, port):
+        """Runs the real parsing lines rather than pattern-matching them, because
+        a wrong host here is a connection error minutes into an allocated run.
+        """
+        lines = _as_shell(run_script).splitlines()
+        start = next(i for i, l in enumerate(lines) if "_hostport=" in l)
+        # The first `esac` AFTER the function, not the first in the file. The shared
+        # source-delivery region carries a case/esac inside its GIT_ASKPASS heredoc and
+        # sits above this function, so scanning from zero selected that one -- making
+        # lines[start:end + 1] EMPTY and every parametrization below compare an empty
+        # stdout against the expected host. It failed loudly here, but the same slice
+        # bug in a test that asserted something weaker would have gone on passing while
+        # testing nothing at all.
+        end = next(i for i, l in enumerate(lines) if i > start and "esac" in l)
+        snippet = "\n".join(lines[start : end + 1]).replace(
+            "${VLLM_URL#*://}", "${URL#*://}"
+        )
+
+        result = subprocess.run(
+            ["bash", "-c", f'URL="{url}"\n{snippet}\necho "$VLLM_HOST $VLLM_PORT"'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"{host} {port}"
+
+    def test_an_unparseable_url_fails_loudly(self, run_script):
+        """Rather than launching a trainer that cannot reach anything."""
+        assert "could not parse a host out of vllm_server_url" in run_script
+
+
+class TestDistillSourceDelivery:
+    """No code_config here, unlike the other six ported steps: the trainer is baked
+    into the shared GPU image (steps/train/distill/images/gpu/Dockerfile COPYs
+    steps/train/distill/src/), not cloned at job-launch time. distill-gold is the one
+    ported step that runs multi-node, where a runtime clone needs its own
+    rank-0-clones/others-wait guard against a real race (measured on build
+    7e9995b3) -- baking the source in sidesteps that race entirely instead of
+    guarding it.
+    """
+
+    def test_no_code_config_remains(self, step):
+        """code_config (and the separate, older kd_code_dir it replaced) are both
+        gone: this step's trainer source has no runtime delivery mechanism to
+        configure at all."""
+        assert "code_config" not in step["config"]
+        assert "kd_code_dir" not in step["config"]["gold_config"]
+        assert "deliver_distill_source" not in step["config"]["gold_config"]
+
+    def test_code_dir_and_pybin_are_static(self, run_script):
+        """Both paths are fixed by steps/train/distill/images/gpu/Dockerfile's own COPY/ENV
+        lines, not resolved from a config field or a clone destination."""
+        assert (
+            'CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"' in run_script
+        )
+        assert 'PYBIN="python"' in run_script
+
+    def test_no_clone_or_runtime_venv_sync_remains(self, run_script):
+        """A clone or a uv sync reappearing here would mean this step regressed
+        back to runtime source delivery, defeating the point of baking the GPU
+        image."""
+        assert "git clone" not in run_script
+        assert "uv sync" not in run_script
+        assert "UV_PROJECT_ENVIRONMENT" not in run_script
+
+    def test_the_region_runs_above_the_rank_split(self, run_script):
+        """The static CODE_DIR/PYBIN assignment (and its metadata echoes) sits
+        above the rank-0 guard: every node needs PYBIN/PATH set before training
+        starts, same position the old source-delivery region held."""
+        assert run_script.index('CODE_DIR="${DISTILL_HOME') < run_script.index(
+            'if [ "$NODE_RANK" = "0" ]; then'
+        )
+        assert "GB_STEP_METADATA_KEY:distill_code_source" in run_script
+        assert "GB_STEP_METADATA_KEY:distill_code_commit" in run_script
+
+    def test_pythonpath_reaches_the_renderer(self, run_script):
+        """The renderer imports gb_steps_post_training, so PYTHONPATH (set by the
+        image itself, not exported here) must already be in effect before the
+        invocation -- there is just nothing to export in this script any more."""
+        assert 'export PYTHONPATH="$CODE_DIR/src' not in run_script
+        assert (
+            '"$PYBIN" "$DISTILL_HOME/steps/logit-distill/render_gold_config.py"'
+            in run_script
+        )
+
+    def test_trainer_runs_as_a_module_from_the_delivered_source(self, run_script):
+        """gold.py's imports are package-qualified now (gb_steps_post_training.distillation),
+        so it must be launched with accelerate's -m/--module flag from $CODE_DIR, not as a
+        bare script path into a separate checkout."""
+        assert "accelerate launch" in run_script
+        launch_idx = run_script.index("accelerate launch")
+        module_idx = run_script.index(
+            "-m gb_steps_post_training.distillation.gold", launch_idx
+        )
+        assert module_idx > launch_idx
+        assert "KD_CODE_DIR" not in run_script
+
+
+class TestTrainerFlagsReachTheRenderer:
+    """The keys are useless if the run block does not pass them, and
+    test_all_renderer_flags_are_passed only checks the flag STRING exists. These
+    check each one is wired to its own config key rather than to a neighbour's —
+    a copy-paste that sends --lmbda-init the ramp start step would pass that test."""
+
+    @pytest.mark.parametrize(
+        "flag,key",
+        [
+            ("--lmbda-schedule", "lmbda_schedule"),
+            ("--lmbda-init", "lmbda_init"),
+            ("--min-completion-length", "min_completion_length"),
+            ("--data-seed", "data_seed"),
+            ("--adam-beta2", "adam_beta2"),
+            ("--train-sampling-strategy", "train_sampling_strategy"),
+            ("--lmbda-ramp-start-step", "lmbda_ramp_start_step"),
+            ("--lmbda-ramp-steps", "lmbda_ramp_steps"),
+            ("--stop-at-step", "stop_at_step"),
+        ],
+    )
+    def test_each_flag_reads_its_own_key(self, run_script, flag, key):
+        pattern = re.compile(
+            re.escape(flag)
+            + r'\s+"?\{\{\s*config\.gold_config\.'
+            + re.escape(key)
+            + r"\b"
+        )
+        assert pattern.search(run_script), f"{flag} is not wired to {key}"
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "lmbda_schedule",
+            "lmbda_init",
+            "min_completion_length",
+            "data_seed",
+            "adam_beta2",
+            "train_sampling_strategy",
+            "lmbda_ramp_start_step",
+            "lmbda_ramp_steps",
+            "stop_at_step",
+        ],
+    )
+    def test_each_new_flag_carries_a_default(self, run_script, key):
+        """These keys postdate the granite4-gold recipes' test-data build.yamls, which
+        do not set them. Without `| default(...)` the template renders an empty
+        argument and the renderer fails on a build that used to work."""
+        assert re.search(
+            r"config\.gold_config\." + re.escape(key) + r"\s*\|\s*default\(",
+            run_script,
+        ), f"{key} is templated without a default"
+
+
+class TestPerCheckpointArtifacts:
+    """The opt-in mid-run checkpoint watcher.
+
+    Added for a since-retired 350m checkpoint-eval recipe, and used by recipes/distill/
+    distill, which export and evaluate checkpoint N while the run is still training, and
+    modelled on the watcher openinstruct-rl already carried.
+
+    Two contracts, and both are the kind that fail silently:
+
+    * OFF BY DEFAULT. Every other recipe using this step binds exactly one artifact,
+      `checkpoint`, emitted when the run ends. If the watcher rendered unconditionally
+      those builds would start seeing artifact ids they declare no outputs for.
+    * RANK 0 ONLY. The executor streams every node's stdout into one driver log, so an
+      unguarded marker registers each checkpoint once per node -- two registrations of
+      one URI on the 2-node reference topology.
+    """
+
+    def test_it_is_off_by_default(self, step):
+        assert step["config"]["emit_checkpoint_artifacts"] is False
+
+    def test_the_watch_interval_has_a_default_and_a_template_default(
+        self, step, run_script
+    ):
+        """A recipe that turns emission on without naming an interval must still
+        render: `| default(60)` is what stops an empty `sleep` argument."""
+        assert int(step["config"]["checkpoint_watch_interval_seconds"]) > 0
+        assert "config.checkpoint_watch_interval_seconds | default(" in run_script
+
+    def test_the_whole_mechanism_is_behind_the_flag(self, run_script):
+        """Both halves -- the watcher setup before the trainer and the final sweep
+        after it -- must be gated, or the default render changes."""
+        blocks = re.findall(
+            r"\{%\s*if config\.emit_checkpoint_artifacts[^%]*%\}", run_script
+        )
+        assert len(blocks) == 2, blocks
+        for marker in ("watch_checkpoints &", "emit_new_checkpoints", "EMITTED_DIR"):
+            assert marker in run_script
+
+    def test_nothing_is_emitted_when_the_flag_is_off(self):
+        """Renders the run block as the server would, with the flag off, and checks the
+        per-checkpoint id is absent while the final one survives. The _as_shell helper
+        STRIPS {% %} blocks rather than evaluating them, so it cannot see this."""
+        from jinja2 import Template
+
+        step = yaml.safe_load(_STEP.read_text())
+        script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+            "run"
+        ]
+        # The step's OWN declared defaults, so this renders the config a recipe that
+        # sets nothing would actually get.
+        config = dict(step["config"])
+
+        off = Template(script).render(config=config, bindings=_bindings())
+        assert "GB_ARTIFACT_ID:checkpoint_" not in off
+        assert "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:" in off
+        assert "watch_checkpoints" not in off
+        assert "EMITTED_DIR" not in off
+
+        config["emit_checkpoint_artifacts"] = True
+        on = Template(script).render(config=config, bindings=_bindings())
+        assert "GB_ARTIFACT_ID:checkpoint_${step}" in on
+        # The final marker survives alongside it.
+        assert "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:" in on
+        # And the interval reached the sleep rather than rendering empty.
+        assert (
+            f'CKPT_WATCH_INTERVAL="{config["checkpoint_watch_interval_seconds"]}"' in on
+        )
+
+    def test_emission_is_rank_guarded(self, run_script):
+        """Both the watcher start and the final sweep sit inside a NODE_RANK test."""
+        start = run_script.index("watch_checkpoints &")
+        guard = run_script.rindex('if [ "$NODE_RANK" = "0" ]', 0, start)
+        assert start - guard < 500, "watcher start is not inside a rank-0 guard"
+        sweep = run_script.index("cleanup_watcher\n  emit_new_checkpoints")
+        guard = run_script.rindex('if [ "$NODE_RANK" = "0" ]', 0, sweep)
+        assert sweep - guard < 500, "final sweep is not inside a rank-0 guard"
+
+    def test_it_globs_the_hf_checkpoint_naming(self, run_script):
+        """HF Trainer writes checkpoint-<N>. The id it emits is checkpoint_<N>, which
+        is what a recipe's outputs must be named -- keep the two in lock-step."""
+        assert 'CKPT_GLOB="checkpoint-"' in run_script
+        assert (
+            "GB_ARTIFACT_ID:checkpoint_${step} GB_ARTIFACT_PATH:${ckpt}" in run_script
+        )
+
+    def test_a_checkpoint_is_only_emitted_once_it_is_complete(self):
+        """Trainer._save_checkpoint writes save_model -> optimizer/scheduler ->
+        rng_state -> trainer_state.json, so requiring the weights, the last tokenizer
+        file AND trainer_state.json brackets the whole write sequence. Without
+        trainer_state.json the sentinels only bracket save_model, and an export that
+        has already allocated a node can open a checkpoint still being written."""
+        rendered = TestTrainDir._render(emit_checkpoint_artifacts=True)
+        sentinels = re.search(r'RESUME_SENTINELS="([^"]+)"', rendered)
+        assert sentinels
+        assert set(sentinels.group(1).split()) == {
+            "tokenizer.json",
+            "trainer_state.json",
+        }
+        rule = rendered[rendered.index("resume_complete() {") :]
+        rule = rule[: rule.index("\n}\n")]
+        assert (
+            '[ -f "$1/model.safetensors" ] || [ -f "$1/model.safetensors.index.json" ]'
+            in rule
+        )
+
+    def test_each_checkpoint_is_emitted_exactly_once(self, run_script):
+        """Markers on disk, not a shell counter: emit_new_checkpoints also runs inside
+        the backgrounded subshell, whose variables never reach the parent."""
+        assert 'marker="$EMITTED_DIR/$base"' in run_script
+        assert '[ -e "$marker" ] && continue' in run_script
+        assert 'touch "$marker"' in run_script
+
+    def test_the_watcher_cannot_outlive_the_script(self, run_script):
+        """An orphaned loop keeps emitting after the trainer has gone. The trap covers
+        every exit path -- success, trainer failure, signal."""
+        rendered = TestTrainDir._render(emit_checkpoint_artifacts=True)
+        assert "trap 'cleanup_watcher; rm -rf \"$EMITTED_DIR\"' EXIT" in rendered
+        assert 'kill "$WATCH_PID"' in run_script
+        assert 'wait "$WATCH_PID"' in run_script
+
+    def test_the_watcher_starts_before_the_trainer_and_sweeps_after_it(
+        self, run_script
+    ):
+        start = run_script.index("watch_checkpoints &")
+        launch = run_script.index("accelerate launch")
+        sweep = run_script.index("cleanup_watcher\n  emit_new_checkpoints")
+        assert start < launch < sweep
+
+    def test_zero_emissions_fails_the_build_loudly(self, run_script):
+        """The alternative failure is silent and expensive: a recipe's checkpoint_<N>
+        outputs are never produced, every export/eval target bound to them stays
+        unready, and the build hangs with nothing to read. Counted from the markers,
+        not from a variable the subshell incremented."""
+        assert 'EMITTED_COUNT="$(find "$EMITTED_DIR"' in run_script
+        assert 'if [ "$EMITTED_COUNT" -eq 0 ]; then' in run_script
+        guard = run_script.index('if [ "$EMITTED_COUNT" -eq 0 ]')
+        assert "exit 1" in run_script[guard : guard + 900]
+
+    def test_the_final_single_checkpoint_artifact_is_untouched(self, run_script):
+        """Unconditional, and after the sweep: it is what every single-checkpoint
+        recipe binds, and it is the one line of the output contract that does not
+        depend on the watcher having worked."""
+        final = run_script.index("GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:")
+        sweep = run_script.index("cleanup_watcher\n  emit_new_checkpoints")
+        assert sweep < final
+
+
+_LAUNCH = "L1"
+_TOKEN = f"{_LAUNCH}::"  # what the block builds with no job or allocation id
+
+
+class TestResumeFromCheckpointDir:
+    """Seeding this run's checkpoint dir from an earlier run's, so gold.py's own
+    auto-resume finds something. GB_BUILD_WORKDIR is new per build and target run,
+    so without this a relaunch always restarts at step 0. A retry_workload relaunch
+    reuses it, so the block also meets what a failed attempt left behind.
+
+    The block is EXECUTED against temporary directories rather than matched as text:
+    what matters is which checkpoints land, how, and when the step refuses.
+    """
+
+    _WORLD = 16  # 2 nodes x 8 GPUs, the recipe's topology
+
+    @staticmethod
+    def _render(_vllm_url="", _gold=None, **overrides):
+        from jinja2 import Template
+
+        step = yaml.safe_load(_STEP.read_text())
+        script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+            "run"
+        ]
+        config = dict(step["config"])
+        config.update(overrides)
+        config["gold_config"] = dict(config["gold_config"], **(_gold or {}))
+        return Template(script).render(config=config, bindings=_bindings(_vllm_url))
+
+    @classmethod
+    def _seed_block(cls, src, vllm_server_url="", **gold):
+        rendered = cls._render(
+            resume_from_checkpoint_dir=str(src), _vllm_url=vllm_server_url, _gold=gold
+        )
+        start = rendered.index('RESUME_SRC="')
+        end = rendered.index("# Rendered per node", start)
+        return rendered[start:end]
+
+    @classmethod
+    def _checkpoint(
+        cls, root, step, complete=True, shards=None, save_steps=500, logging_steps=5
+    ):
+        """A checkpoint-<step> under root with world-size optimizer shards. Complete
+        ones carry a trainer_state.json on the grid save_steps/logging_steps; the
+        defaults are the template's own, so resuming from it rewrites nothing."""
+        ckpt = root / f"checkpoint-{step}"
+        (ckpt / f"global_step{step}").mkdir(parents=True)
+        for name in ["model.safetensors", "tokenizer.json"]:
+            (ckpt / name).write_text(name)
+        if complete:
+            write_trainer_state(ckpt, step, save_steps, logging_steps)
+        for rank in range(cls._WORLD if shards is None else shards):
+            shard = f"bf16_zero_pp_rank_{rank}_mp_rank_00_optim_states.pt"
+            (ckpt / f"global_step{step}" / shard).write_text("x")
+        return ckpt
+
+    def _run(
+        self,
+        tmp_path,
+        src,
+        rank="0",
+        nodes="2",
+        vllm_servers="0",
+        vllm_server_url="",
+        launch_id=_LAUNCH,
+        quick_wait=False,
+        **gold,
+    ):
+        """Run the seeding block as rank `rank` of this attempt (`launch_id`).
+        quick_wait cuts a worker's 900s wait for rank 0 to one 1s poll."""
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        home = tmp_path / "distill-home"
+        (home / "steps").mkdir(parents=True, exist_ok=True)
+        if not (home / "steps" / "logit-distill").exists():
+            (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
+        script = "set -eu\n" + self._seed_block(src, vllm_server_url, **gold)
+        if quick_wait:
+            script = script.replace("-ge 900 ]", "-ge 1 ]").replace(
+                "sleep 5", "sleep 1"
+            )
+        result = subprocess.run(
+            ["bash", "-c", script],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": rank,
+                "NODES": nodes,
+                "GPUS": "8",
+                "VLLM_SERVERS": vllm_servers,
+                "CKPT_DIR": str(dst),
+                "PYBIN": sys.executable,
+                # The block calls $DISTILL_HOME/steps/logit-distill/align_resume_state.py, as in the image.
+                "DISTILL_HOME": str(home),
+                "GB_SKYPILOT_LAUNCH_ID": launch_id,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            cwd=_STEP.parent,
+        )
+        return result, dst
+
+    @staticmethod
+    def _seeded(dst):
+        """The marker's content: this attempt's token once rank 0 is done."""
+        marker = dst / ".resume-seeded"
+        return marker.read_text().strip() if marker.exists() else None
+
+    def test_it_is_off_by_default(self, step):
+        assert step["config"]["resume_from_checkpoint_dir"] == ""
+        assert "RESUME_SRC" not in self._render()
+
+    def test_it_is_not_a_trainer_key(self, step):
+        """A step key, not gold_config: it names a path the step resolves, and the
+        renderer's flag partition would otherwise demand a --resume-... flag."""
+        assert "resume_from_checkpoint_dir" not in step["config"]["gold_config"]
+
+    def test_seeding_happens_before_the_watcher_and_the_trainer(self):
+        rendered = self._render(
+            resume_from_checkpoint_dir="/src", emit_checkpoint_artifacts=True
+        )
+        seeded = rendered.index('printf \'%s\\n\' "$RESUME_TOKEN" > "$RESUME_SEEDED')
+        assert seeded < rendered.index("watch_checkpoints &")
+        assert seeded < rendered.index("accelerate launch")
+
+    def test_the_rendered_block_is_valid_shell(self):
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=self._render(resume_from_checkpoint_dir="/src"),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_complete_checkpoints_are_hardlinked_and_incomplete_skipped(self, tmp_path):
+        src = tmp_path / "src"
+        for step in (500, 1000, 1500):
+            self._checkpoint(src, step)
+        self._checkpoint(src, 2000, complete=False)
+        (src / "train_manifest.json").write_text("{}")
+
+        result, dst = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert sorted(p.name for p in dst.iterdir() if not p.name.startswith(".")) == [
+            "checkpoint-1000",
+            "checkpoint-1500",
+            "checkpoint-500",
+        ]
+        weights = "checkpoint-1500/model.safetensors"
+        assert (dst / weights).stat().st_ino == (src / weights).stat().st_ino
+        # Numeric, not lexical: "checkpoint-500" sorts after "checkpoint-1500".
+        assert "resumes from checkpoint-1500" in result.stdout
+        assert "skipping incomplete checkpoint-2000" in result.stdout
+        assert self._seeded(dst) == _TOKEN
+        assert "GB_STEP_METADATA_KEY:resumed_from" in result.stdout
+
+    def test_the_source_is_left_untouched_when_the_seed_is_deleted(self, tmp_path):
+        """save_total_limit rotation deletes whole checkpoint dirs from this run."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 500)
+        result, dst = self._run(tmp_path, src)
+        assert result.returncode == 0, result.stderr
+        subprocess.run(["rm", "-rf", str(dst / "checkpoint-500")], check=True)
+        assert (src / "checkpoint-500" / "model.safetensors").read_text() == (
+            "model.safetensors"
+        )
+
+    def test_the_resumed_state_takes_this_runs_save_and_logging_steps(self, tmp_path):
+        """HF restores trainer_state.json whole, so without the rewrite the run
+        saves on the source's 1000-step grid, not its own (build 4c758672, A1)."""
+        src = tmp_path / "src"
+        for step in (1000, 2000):
+            # c2000's grid, which A1 resumed from.
+            self._checkpoint(src, step, save_steps=1000, logging_steps=1)
+
+        result, dst = self._run(tmp_path, src, save_steps=250, logging_steps=1)
+
+        assert result.returncode == 0, result.stderr
+        state = json.loads((dst / "checkpoint-2000/trainer_state.json").read_text())
+        assert state["save_steps"] == 250
+        assert state["logging_steps"] == 1
+        assert state["global_step"] == 2000
+        assert "trainer_state.json save_steps 1000 -> 250" in result.stdout
+        # Replaced, not edited: the source keeps its own grid, and the weights
+        # are still a hardlink.
+        source = json.loads((src / "checkpoint-2000/trainer_state.json").read_text())
+        assert source["save_steps"] == 1000
+        weights = "checkpoint-2000/model.safetensors"
+        assert (dst / weights).stat().st_ino == (src / weights).stat().st_ino
+        # Only the checkpoint the trainer resumes from is rewritten.
+        older = json.loads((dst / "checkpoint-1000/trainer_state.json").read_text())
+        assert older["save_steps"] == 1000
+
+    def test_a_checkpoint_already_in_the_run_dir_is_the_one_checked(self, tmp_path):
+        """HF resumes from the highest checkpoint-<N> in the run's dir, which a
+        reused dir can hold above everything seeded. The world-size check is
+        about that one, not the source's highest: here it was written by 32 ranks,
+        so the 16-rank resume is refused. (Fewer shards than ranks is a save cut
+        short, moved aside instead; see the missing-shards test.)"""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 10000, shards=32)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 1
+        assert "checkpoint-10000 holds 32 ZeRO optimizer shards" in result.stderr
+        assert self._seeded(dst) == f"failed:{_TOKEN}"
+
+    def test_lineage_is_the_seed_when_an_earlier_attempt_got_further(self, tmp_path):
+        """A retry_workload relaunch reuses the workdir, so the trainer resumes from
+        the failed attempt's own checkpoint-10000. That one is rewritten; lineage
+        still names the seed it descends from, not a path in this run's workdir."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 10000, save_steps=1000)
+
+        result, _ = self._run(tmp_path, src, save_steps=250)
+
+        assert result.returncode == 0, result.stderr
+        assert "resumes from checkpoint-10000" in result.stdout
+        assert "written by an earlier attempt of this run" in result.stdout
+        assert f"GB_STEP_METADATA_VALUE:{src}/checkpoint-2000\n" in result.stdout
+        rewritten = json.loads(
+            (dst / "checkpoint-10000/trainer_state.json").read_text()
+        )
+        assert rewritten["save_steps"] == 250
+        seeded = json.loads((dst / "checkpoint-2000/trainer_state.json").read_text())
+        assert seeded["save_steps"] == 500
+
+    def test_lineage_skips_a_source_checkpoint_that_was_not_seeded(self, tmp_path):
+        """The source's checkpoint-10000 is incomplete, so it is not the seed even
+        though this run's dir holds a complete checkpoint-10000 of its own."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        self._checkpoint(src, 10000, complete=False)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 10000)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "resumes from checkpoint-10000" in result.stdout
+        assert f"GB_STEP_METADATA_VALUE:{src}/checkpoint-2000\n" in result.stdout
+
+    def test_a_failed_attempts_half_written_checkpoint_is_moved_aside(self, tmp_path):
+        """What a preempted attempt leaves: HF would pick it and fail on every rank,
+        so every automatic retry would too. Renamed out of the checkpoint-<N>
+        pattern, never deleted, and the highest complete one resumed instead."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 2250)
+        self._checkpoint(dst, 2500, complete=False)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "moved incomplete checkpoint-2500 aside" in result.stdout
+        assert "resumes from checkpoint-2250" in result.stdout
+        assert not (dst / "checkpoint-2500").exists()
+        (aside,) = dst.glob("incomplete-checkpoint-2500.*")
+        assert (aside / "model.safetensors").exists()
+        assert self._seeded(dst) == _TOKEN
+
+    def test_a_checkpoint_missing_optimizer_shards_is_moved_aside(self, tmp_path):
+        """A node died mid DeepSpeed save: rank 0's files are there, 7 of 16
+        shards are not. Every attempt of this run shares its topology, so that
+        is an incomplete save, not a topology mismatch."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 2250)
+        self._checkpoint(dst, 2500, shards=9)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "moved incomplete checkpoint-2500 aside" in result.stdout
+        assert "resumes from checkpoint-2250" in result.stdout
+
+    def test_a_seeded_checkpoint_is_not_moved_aside_for_its_shard_count(self, tmp_path):
+        """On a later attempt the move-aside meets the seeded checkpoints again.
+        One whose name is complete in the source carries the source's shard count,
+        not this run's, and is kept rather than logged as incomplete."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000, shards=9)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        self._checkpoint(dst, 2000, shards=9)
+        self._checkpoint(dst, 2250)
+        self._checkpoint(dst, 2500, shards=9)
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "moved incomplete checkpoint-2000" not in result.stdout
+        assert (dst / "checkpoint-2000").is_dir()
+        # Not seeded, so the shard rule still applies to this run's own.
+        assert "moved incomplete checkpoint-2500 aside" in result.stdout
+        assert "resumes from checkpoint-2250" in result.stdout
+
+    def test_sharded_weights_are_complete(self, tmp_path):
+        """save_pretrained's sharded layout has no model.safetensors, only shards
+        and the index it writes after them; such a checkpoint is seeded and
+        resumed, not moved aside."""
+        src = tmp_path / "src"
+        ckpt = self._checkpoint(src, 2000)
+        (ckpt / "model.safetensors").rename(ckpt / "model-00001-of-00002.safetensors")
+        (ckpt / "model.safetensors.index.json").write_text("{}")
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        own = self._checkpoint(dst, 2500)
+        (own / "model.safetensors").rename(own / "model-00001-of-00002.safetensors")
+        (own / "model.safetensors.index.json").write_text("{}")
+
+        result, _ = self._run(tmp_path, src)
+
+        assert result.returncode == 0, result.stderr
+        assert "moved incomplete" not in result.stdout
+        assert "seeded checkpoint-2000" in result.stdout
+        assert "resumes from checkpoint-2500" in result.stdout
+
+    def test_only_hfs_checkpoint_names_are_seeded(self, tmp_path):
+        """get_last_checkpoint loads only checkpoint-<digits>, so nothing else is
+        seeded, emitted or picked; a source holding only such names has nothing to
+        resume from."""
+        src = tmp_path / "src"
+        for name in ("checkpoint-final", "checkpoint-2000-bak", "checkpoint-"):
+            ckpt = self._checkpoint(src, 2000)
+            ckpt.rename(src / name)
+
+        result, dst = self._run(tmp_path, src)
+
+        assert result.returncode == 1
+        assert "no complete checkpoint-*" in result.stderr
+        assert not any(dst.glob("checkpoint-*"))
+
+    def test_a_read_only_source_still_resumes(self, tmp_path):
+        """cp -a copies the source directory's mode, so an archived (555) source
+        leaves a read-only copy; the rewrite still lands, and the mode stays."""
+        src = tmp_path / "src"
+        ckpt = self._checkpoint(src, 2000, save_steps=1000)
+        ckpt.chmod(0o555)
+        try:
+            result, dst = self._run(tmp_path, src, save_steps=250)
+            assert result.returncode == 0, result.stderr
+            seeded = dst / "checkpoint-2000"
+            assert (
+                json.loads((seeded / "trainer_state.json").read_text())["save_steps"]
+                == 250
+            )
+            assert seeded.stat().st_mode & 0o777 == 0o555
+            assert self._seeded(dst) == _TOKEN
+        finally:
+            ckpt.chmod(0o755)
+            if (tmp_path / "run").exists():
+                for d in (tmp_path / "run").rglob("checkpoint-*"):
+                    d.chmod(0o755)
+
+    def test_an_unsubstituted_step_count_fails_loudly(self, tmp_path):
+        """A build parameter left unsubstituted reaches the script, single-quoted,
+        and is named in a FATAL line, rather than tripping `set -u` on the shell
+        side. Rank 0 never marks the seed done, so the workers fail too."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        result, dst = self._run(tmp_path, src, save_steps="${GOLD_SAVE_STEPS}")
+        assert result.returncode == 1
+        assert (
+            "FATAL: save_steps must be a positive integer, got '${GOLD_SAVE_STEPS}'"
+            in (result.stderr)
+        )
+        assert self._seeded(dst) == f"failed:{_TOKEN}"
+
+    def test_matching_steps_leave_the_seeded_state_linked(self, tmp_path):
+        """Nothing to change, nothing replaced: the state stays a hardlink."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 2000)
+        result, dst = self._run(tmp_path, src)
+        assert result.returncode == 0, result.stderr
+        state = "checkpoint-2000/trainer_state.json"
+        assert (dst / state).stat().st_ino == (src / state).stat().st_ino
+        assert "already on this run's grid" in result.stdout
+
+    def test_a_missing_source_fails_loudly(self, tmp_path):
+        result, _ = self._run(tmp_path, tmp_path / "nope")
+        assert result.returncode == 1
+        assert "is not a directory" in result.stderr
+
+    def test_no_complete_checkpoint_fails_rather_than_restarting(self, tmp_path):
+        src = tmp_path / "src"
+        self._checkpoint(src, 500, complete=False)
+        result, dst = self._run(tmp_path, src)
+        assert result.returncode == 1
+        assert "no complete checkpoint-*" in result.stderr
+        assert self._seeded(dst) == f"failed:{_TOKEN}"
+
+    def test_a_different_world_size_is_refused(self, tmp_path):
+        """16 ZeRO shards cannot be loaded by 8 ranks."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 1500)
+        result, dst = self._run(tmp_path, src, nodes="1")
+        assert result.returncode == 1
+        assert "holds 16 ZeRO optimizer shards" in result.stderr
+        assert "trains on 8 ranks" in result.stderr
+        assert self._seeded(dst) == f"failed:{_TOKEN}"
+
+    def test_an_external_server_takes_no_trainer_node(self, tmp_path):
+        """vllm_num_servers 1 with vllm_server_url set is the on-policy recipes'
+        topology: the server is another target's allocation, so all 2 x 8 ranks
+        train and a 16-shard checkpoint resumes. Counting the server against this
+        allocation refused exactly that resume, as 8 ranks (build 9c265991's
+        relaunch)."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 500)
+        result, dst = self._run(
+            tmp_path,
+            src,
+            vllm_servers="1",
+            vllm_server_url="http://10.0.0.1:8001",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "resumes from checkpoint-500" in result.stdout
+        assert self._seeded(dst) == _TOKEN
+
+    def test_an_in_allocation_server_node_is_not_a_trainer_rank(self, tmp_path):
+        """Without a URL, the last vllm_num_servers nodes serve, so 3 nodes with 1
+        server train on 16 ranks and 2 nodes with 1 server on only 8."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 500)
+        result, _ = self._run(tmp_path, src, nodes="3", vllm_servers="1")
+        assert result.returncode == 0, result.stderr
+
+        result, _ = self._run(tmp_path / "split", src, nodes="2", vllm_servers="1")
+        assert result.returncode == 1
+        assert "trains on 8 ranks" in result.stderr
+
+    def test_a_worker_waits_for_rank_zero_and_does_not_seed(self, tmp_path):
+        """Released by this attempt's token, and never seeds itself."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 500)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        dst.mkdir(parents=True)
+        (dst / ".resume-seeded").write_text(f"{_TOKEN}\n")
+        result, _ = self._run(tmp_path, src, rank="1")
+        assert result.returncode == 0, result.stderr
+        assert "resume seed present" in result.stdout
+        assert not (dst / "checkpoint-500").exists()
+
+    @pytest.mark.parametrize("stale", ["", "L0::", "failed:L0::"])
+    def test_a_previous_attempts_marker_does_not_release_a_worker(
+        self, tmp_path, stale
+    ):
+        """A retry_workload relaunch reuses the workdir and finds the failed
+        attempt's marker (or the old empty one). Released by it, a worker would
+        start while rank 0 is still checking and rewriting."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 500)
+        dst = tmp_path / "run" / "checkpoints" / "gold_node2"
+        dst.mkdir(parents=True)
+        (dst / ".resume-seeded").write_text(stale)
+        result, _ = self._run(tmp_path, src, rank="1", quick_wait=True)
+        assert result.returncode == 1
+        assert "did not finish seeding" in result.stderr
+
+    def test_a_worker_stops_at_once_when_rank_zero_fails(self, tmp_path):
+        """Rank 0's EXIT trap marks the failure, so the workers stop now rather
+        than holding the allocation for 900s."""
+        src = tmp_path / "src"
+        self._checkpoint(src, 500, complete=False)
+        rank0, dst = self._run(tmp_path, src)
+        assert rank0.returncode == 1
+        # quick_wait: a broken trap fails here in ~1s ("did not finish seeding"),
+        # not after 900s.
+        worker, _ = self._run(tmp_path, src, rank="1", quick_wait=True)
+        assert worker.returncode == 1
+        assert "rank 0 failed to seed" in worker.stderr
+
+
+class TestNcclIbHcaOverride:
+    """An optional per-run NCCL_IB_HCA, for dropping a flaky IB rail."""
+
+    @staticmethod
+    def _render(value):
+        from jinja2 import Template
+
+        step = yaml.safe_load(_STEP.read_text())
+        script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+            "run"
+        ]
+        config = dict(step["config"])
+        config["gold_config"] = dict(config["gold_config"], nccl_ib_hca=value)
+        return Template(script).render(config=config, bindings=_bindings())
+
+    def test_empty_leaves_the_tuning_file_in_charge(self, step, launcher):
+        assert step["config"]["gold_config"]["nccl_ib_hca"] == ""
+        assert "NCCL_IB_HCA" not in self._render("")
+        # Never a launcher env: an empty value there would enable every HCA.
+        assert "NCCL_IB_HCA" not in launcher["envs"]
+
+    def test_set_is_exported_before_the_trainer(self):
+        rendered = self._render("^=mlx5_1,mlx5_6,mlx5_8")
+        export = rendered.index('export NCCL_IB_HCA="^=mlx5_1,mlx5_6,mlx5_8"')
+        assert export < rendered.index("accelerate launch")
+
+
+class TestResumeEmitSeeded:
+    """resume_emit_seeded=false: seeded rungs are pre-marked, so only checkpoints
+    this run writes are announced. Executed, not matched."""
+
+    @staticmethod
+    def _render(**overrides):
+        from jinja2 import Template
+
+        step = yaml.safe_load(_STEP.read_text())
+        script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+            "run"
+        ]
+        config = dict(step["config"], emit_checkpoint_artifacts=True)
+        config.update(overrides)
+        return Template(script).render(config=config, bindings=_bindings())
+
+    def _emitted(self, tmp_path, emit_seeded, own=()):
+        """Checkpoint ids one watcher sweep emits after the "trainer" writes
+        checkpoint-2000, with 500 and 1500 seeded from the source and `own` left
+        complete by a failed attempt of this run."""
+        src = tmp_path / "src"
+        rendered = self._render(
+            resume_from_checkpoint_dir=str(src), resume_emit_seeded=emit_seeded
+        )
+        # The resume block's helpers, then the watcher setup through the function
+        # definitions, then one sweep.
+        helpers = rendered.index('RESUME_SRC="')
+        helpers_end = rendered.index('if [ "$NODE_RANK" = "0" ]; then', helpers)
+        start = rendered.index('CKPT_GLOB="checkpoint-"')
+        end = rendered.index("watch_checkpoints() {")
+        sentinels = ("model.safetensors", "tokenizer.json", "trainer_state.json")
+        ckpt_dir = tmp_path / "ckpts"
+        for root, steps in ((src, (500, 1500)), (ckpt_dir, (500, 1500, *own))):
+            for step in steps:
+                d = root / f"checkpoint-{step}"
+                d.mkdir(parents=True)
+                for name in sentinels:
+                    (d / name).write_text("x")
+        new = ckpt_dir / "checkpoint-2000"
+        script = (
+            "set -eu\n"
+            + rendered[helpers:helpers_end]
+            + rendered[start:end]
+            + f"mkdir -p {new}\n"
+            + "".join(f"touch {new}/{n}\n" for n in sentinels)
+            + "emit_new_checkpoints\n"
+        )
+        result = subprocess.run(
+            ["bash", "-c", script],
+            env={"PATH": "/usr/bin:/bin", "CKPT_DIR": str(ckpt_dir)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return re.findall(r"GB_ARTIFACT_ID:(checkpoint_\d+)", result.stdout)
+
+    def test_default_re_emits_the_seeded_rungs(self, step, tmp_path):
+        assert step["config"]["resume_emit_seeded"] is True
+        assert sorted(self._emitted(tmp_path, True)) == [
+            "checkpoint_1500",
+            "checkpoint_2000",
+            "checkpoint_500",
+        ]
+
+    def test_off_emits_only_what_this_run_wrote(self, tmp_path):
+        """Seeded rungs pre-marked; the trainer's new one announced."""
+        assert self._emitted(tmp_path, False) == ["checkpoint_2000"]
+
+    def test_off_still_emits_a_failed_attempts_own_checkpoint(self, tmp_path):
+        """A retry_workload relaunch finds the failed attempt's checkpoint-1750,
+        which it may never have emitted (killed between watcher sweeps). It is not
+        in the source, so it is not pre-marked as seeded."""
+        assert sorted(self._emitted(tmp_path, False, own=(1750,))) == [
+            "checkpoint_1750",
+            "checkpoint_2000",
+        ]
+
+    def test_off_renders_nothing_without_a_resume_source(self):
+        assert "not re-emitting seeded" not in self._render(resume_emit_seeded=False)
+
+
+class TestSlurmExecutorEnv:
+    def test_the_stripped_env_is_restored(self, launcher):
+        assert launcher["envs"]["PYTHONPATH"] == "/opt/distill/src"
+        assert launcher["envs"]["VIRTUAL_ENV"] == "/stage/.venv"
+
+
+# The run script as the template rendered it before train_dir existed (f08603fb),
+# keyed by case. A flat file, not a directory: publish-step copies every directory
+# under test/ as a per-cluster build test.
+#
+# The baseline is f08603fb, a commit on this branch, and NOT PR 540's head, on purpose:
+# B2 and the cleanup deliberately changed the script before B4 added train_dir, so a
+# byte-for-byte match with PR 540 is impossible. The goldens are the script as it stood
+# just before the train_dir change, and pin that nothing train_dir (or rollout_stop_file)
+# adds leaks into a render that does not set it. Regenerated since only for changes that
+# legitimately alter the no-train_dir render, each named in its commit: the shared
+# completeness rule in the watcher, and the move-aside's skip for seeded checkpoints.
+_GOLDEN = Path(__file__).resolve().parent / "golden_run_scripts.json"
+
+
+class TestTrainDir:
+    """A stable per-build train_dir: checkpoints that survive a build-level retry,
+    re-emitted on resume, behind a no-progress refusal.
+
+    Text tests pin where things sit; the fragment from TRAIN_DIR through the
+    re-emit is also EXECUTED against fake checkpoints."""
+
+    _TRAIN = "/w/run/b1/train"
+
+    @staticmethod
+    def _render(_vllm_url="", _gold=None, **overrides):
+        from jinja2 import Template
+
+        step = yaml.safe_load(_STEP.read_text())
+        script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+            "run"
+        ]
+        config = dict(step["config"])
+        config.update(overrides)
+        config["gold_config"] = dict(config["gold_config"], **(_gold or {}))
+        return Template(script).render(config=config, bindings=_bindings(_vllm_url))
+
+    def test_defaults_preserve_todays_behaviour(self, step):
+        assert step["config"]["train_dir"] == ""
+        assert step["config"]["require_progress"] is True
+        assert "train_dir" not in step["config"]["gold_config"]
+
+    @pytest.mark.parametrize(
+        "golden,overrides,vllm",
+        [
+            ("defaults", {}, ""),
+            ("emit", {"emit_checkpoint_artifacts": True}, ""),
+            ("resume", {"resume_from_checkpoint_dir": "/src/gold_node2"}, ""),
+            (
+                "resume_emit_unseeded",
+                {
+                    "resume_from_checkpoint_dir": "/src/gold_node2",
+                    "emit_checkpoint_artifacts": True,
+                    "resume_emit_seeded": False,
+                },
+                "",
+            ),
+            (
+                "resume_emit_vllm",
+                {
+                    "resume_from_checkpoint_dir": "/src/gold_node2",
+                    "emit_checkpoint_artifacts": True,
+                },
+                "http://10.0.0.1:8001",
+            ),
+        ],
+    )
+    def test_empty_train_dir_renders_byte_identical(self, golden, overrides, vllm):
+        """The goldens were rendered from the template before train_dir existed
+        (git show f08603fb:step-template.yaml; see _GOLDEN above for the two later,
+        deliberate changes), so a recipe that does not set it runs the script it ran
+        before."""
+        expected = json.loads(_GOLDEN.read_text())[golden]
+        assert self._render(vllm, **overrides) == expected
+        assert self._render(vllm, train_dir="", **overrides) == expected
+        assert self._render(vllm, rollout_stop_file="", **overrides) == expected
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {},
+            {"emit_checkpoint_artifacts": True},
+            {"resume_from_checkpoint_dir": "/src"},
+            {
+                "resume_from_checkpoint_dir": "/src",
+                "emit_checkpoint_artifacts": True,
+                "resume_emit_seeded": False,
+            },
+            {"require_progress": False},
+        ],
+    )
+    def test_bash_accepts_the_rendered_script(self, overrides):
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=self._render(train_dir=self._TRAIN, **overrides),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_ckpt_dir_and_cfg_live_under_train_dir(self):
+        rendered = self._render(train_dir=self._TRAIN + "/")
+        assert f'TRAIN_DIR="{self._TRAIN}/"\nTRAIN_DIR="${{TRAIN_DIR%/}}"' in rendered
+        assert 'CKPT_DIR="$TRAIN_DIR/checkpoints/${CONFIG_NAME}"' in rendered
+        assert 'CFG="$TRAIN_DIR/gold_config_${CONFIG_NAME}.yaml"' in rendered
+        assert "GB_BUILD_WORKDIR:-$PWD}/checkpoints" not in rendered
+
+    def test_the_progress_check_is_rank_zero_after_move_aside_before_accelerate(
+        self,
+    ):
+        rendered = self._render(train_dir=self._TRAIN, emit_checkpoint_artifacts=True)
+        call = rendered.index("steps/logit-distill/progress_check.py")
+        assert '--attempt-id "$ATTEMPT_ID"' in rendered
+        assert 'ATTEMPT_ID="${GB_TARGETRUN_ID:-}"' in rendered
+        rank0 = rendered.rindex('if [ "$NODE_RANK" = "0" ]; then', 0, call)
+        # Inside rank 0's branch: no `else` of that if between the guard and the call.
+        assert "\nelse\n" not in rendered[rank0:call]
+        assert rendered.index("moved incomplete") < call
+        assert call < rendered.index("GB_ARTIFACT_ID:checkpoint_${step}")
+        assert call < rendered.index("accelerate launch")
+
+    def test_require_progress_false_drops_the_check(self):
+        rendered = self._render(train_dir=self._TRAIN, require_progress=False)
+        assert "progress_check.py" not in rendered
+        # The move-aside and the handshake still render.
+        assert "moved incomplete" in rendered
+        assert "failed:$RESUME_TOKEN" in rendered
+
+    def test_the_handshake_renders_with_train_dir_alone(self):
+        rendered = self._render(train_dir=self._TRAIN)
+        assert "RESUME_SRC" not in rendered
+        assert "trap '[" in rendered and "failed:%s" in rendered
+        assert 'if [ "$seed" = "failed:$RESUME_TOKEN" ]; then' in rendered
+
+    def test_the_re_emit_is_rank_zero_ascending_and_before_accelerate(self):
+        rendered = self._render(train_dir=self._TRAIN, emit_checkpoint_artifacts=True)
+        reemit = rendered.index("# ── Re-emit on resume")
+        loop = rendered.index("done | sort -n); do", reemit)
+        guard = rendered.index('if [ "$NODE_RANK" = "0" ]; then', reemit)
+        assert guard < loop
+        assert loop < rendered.index("watch_checkpoints &")
+        assert loop < rendered.index("accelerate launch")
+        # Marked as emitted, so the watcher does not emit it again this attempt.
+        assert 'touch "$EMITTED_DIR/checkpoint-$step"' in rendered[reemit:]
+
+    def test_no_re_emit_without_per_checkpoint_artifacts(self):
+        """Without emit_checkpoint_artifacts no target declares checkpoint_<N>."""
+        rendered = self._render(train_dir=self._TRAIN)
+        assert "GB_ARTIFACT_ID:checkpoint_" not in rendered
+        assert "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:${CKPT_DIR}" in rendered
+
+    # ── executed ────────────────────────────────────────────────────────────
+
+    def _fragment(self, train_dir, **overrides):
+        """The rendered script from TRAIN_DIR through the re-emit, then one watcher
+        sweep: what rank 0 does before the trainer starts."""
+        rendered = self._render(
+            train_dir=str(train_dir), emit_checkpoint_artifacts=True, **overrides
+        )
+        start = rendered.index('TRAIN_DIR="')
+        end = rendered.index("# RANK 0 ONLY, for the same reason")
+        return "set -eu\n" + rendered[start:end] + "emit_new_checkpoints\n"
+
+    @staticmethod
+    def _checkpoint(root, step, complete=True):
+        ckpt = root / f"checkpoint-{step}"
+        ckpt.mkdir(parents=True)
+        for name in ("model.safetensors", "tokenizer.json"):
+            (ckpt / name).write_text(name)
+        if complete:
+            write_trainer_state(ckpt, step, 5, 5)
+        return ckpt
+
+    def _exec(self, tmp_path, train_dir, attempt="tr-1", rank="0", **overrides):
+        home = tmp_path / "distill-home"
+        if not home.exists():
+            (home / "steps").mkdir(parents=True)
+            (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
+        return subprocess.run(
+            ["bash", "-c", self._fragment(train_dir, **overrides)],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": rank,
+                "NODES": "2",
+                "GPUS": "8",
+                "VLLM_SERVERS": "0",
+                "CONFIG_NAME": "gold_node2",
+                "PYBIN": sys.executable,
+                "DISTILL_HOME": str(home),
+                "GB_SKYPILOT_LAUNCH_ID": f"launch-{attempt}",
+                "GB_TARGETRUN_ID": attempt,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            cwd=tmp_path,
+        )
+
+    @staticmethod
+    def _emitted(stdout):
+        return [l for l in stdout.splitlines() if l.startswith("GB_ARTIFACT_ID:")]
+
+    def test_a_retry_re_emits_complete_checkpoints_in_order(self, tmp_path):
+        """5 and 10 complete, 15 half-written: 15 is moved aside before anything is
+        emitted, 5 then 10 are emitted at their paths, and the watcher's sweep does
+        not emit them a second time."""
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        for step in (10, 5):
+            self._checkpoint(ckpts, step)
+        self._checkpoint(ckpts, 15, complete=False)
+
+        result = self._exec(tmp_path, train, save_steps=5)
+
+        assert result.returncode == 0, result.stderr
+        assert self._emitted(result.stdout) == [
+            f"GB_ARTIFACT_ID:checkpoint_5 GB_ARTIFACT_PATH:{ckpts}/checkpoint-5",
+            f"GB_ARTIFACT_ID:checkpoint_10 GB_ARTIFACT_PATH:{ckpts}/checkpoint-10",
+        ]
+        assert not (ckpts / "checkpoint-15").exists()
+        (aside,) = ckpts.glob("incomplete-checkpoint-15.*")
+        out = result.stdout
+        assert out.index("moved incomplete checkpoint-15") < out.index(
+            "GB_ARTIFACT_ID:"
+        )
+        assert "resumes from checkpoint-10" in out
+        assert (ckpts / ".resume-seeded").read_text().strip().startswith("launch-tr-1")
+
+    def test_numeric_not_lexical_order(self, tmp_path):
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        for step in (1500, 500):
+            self._checkpoint(ckpts, step)
+        result = self._exec(tmp_path, train)
+        assert result.returncode == 0, result.stderr
+        ids = [l.split()[0] for l in self._emitted(result.stdout)]
+        assert ids == [
+            "GB_ARTIFACT_ID:checkpoint_500",
+            "GB_ARTIFACT_ID:checkpoint_1500",
+        ]
+
+    def test_a_first_attempt_emits_nothing_and_records_itself(self, tmp_path):
+        train = tmp_path / "train"
+        result = self._exec(tmp_path, train)
+        assert result.returncode == 0, result.stderr
+        assert self._emitted(result.stdout) == []
+        assert "starts from step 0" in result.stdout
+        (record,) = (train / "attempts.jsonl").read_text().splitlines()
+        assert json.loads(record)["attempt"] == "tr-1"
+
+    def test_no_progress_refuses_and_releases_the_workers(self, tmp_path):
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        self._checkpoint(ckpts, 5)
+        assert self._exec(tmp_path, train, attempt="tr-1").returncode == 0
+        # One attempt without progress is let through: it may have been transient.
+        assert self._exec(tmp_path, train, attempt="tr-2").returncode == 0
+
+        result = self._exec(tmp_path, train, attempt="tr-3")
+
+        assert result.returncode == 3
+        assert (
+            "no progress over the last 2 attempts (tr-1, tr-2; still at checkpoint-5)"
+            in result.stderr
+        )
+        # Refused before anything is emitted.
+        assert self._emitted(result.stdout) == []
+        marker = (ckpts / ".resume-seeded").read_text().strip()
+        assert marker == "failed:launch-tr-3::"
+        worker = subprocess.run(
+            [
+                "bash",
+                "-c",
+                self._fragment(train)
+                .replace("-ge 900 ]", "-ge 1 ]")
+                .replace("sleep 5", "sleep 1"),
+            ],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": "1",
+                "NODES": "2",
+                "CONFIG_NAME": "gold_node2",
+                "GB_SKYPILOT_LAUNCH_ID": "launch-tr-3",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        assert worker.returncode == 1
+        assert "rank 0 failed to prepare" in worker.stderr
+
+    def test_a_relaunch_of_the_same_target_run_is_let_through(self, tmp_path):
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        self._checkpoint(ckpts, 5)
+        assert self._exec(tmp_path, train, attempt="tr-1").returncode == 0
+        result = self._exec(tmp_path, train, attempt="tr-1")
+        assert result.returncode == 0, result.stderr
+
+    def test_require_progress_false_trains_anyway(self, tmp_path):
+        train = tmp_path / "train"
+        self._checkpoint(train / "checkpoints" / "gold_node2", 5)
+        for attempt in ("tr-1", "tr-2"):
+            result = self._exec(
+                tmp_path, train, attempt=attempt, require_progress=False
+            )
+            assert result.returncode == 0, result.stderr
+        assert not (train / "attempts.jsonl").exists()
+
+    def test_resume_source_is_ignored_once_train_dir_holds_checkpoints(self, tmp_path):
+        src = tmp_path / "src"
+        self._checkpoint(src, 20)
+        train = tmp_path / "train"
+        ckpts = train / "checkpoints" / "gold_node2"
+        self._checkpoint(ckpts, 5)
+
+        result = self._exec(tmp_path, train, resume_from_checkpoint_dir=str(src))
+
+        assert result.returncode == 0, result.stderr
+        assert (
+            "logit-distill: resume: train_dir already holds checkpoints; "
+            "ignoring resume_from_checkpoint_dir" in result.stdout
+        )
+        assert not (ckpts / "checkpoint-20").exists()
+        assert "GB_STEP_METADATA_KEY:resumed_from" not in result.stdout
+        assert "resumes from checkpoint-5" in result.stdout
+
+    def test_resume_source_seeds_an_empty_train_dir(self, tmp_path):
+        src = tmp_path / "src"
+        self._checkpoint(src, 20)
+        train = tmp_path / "train"
+
+        result = self._exec(tmp_path, train, resume_from_checkpoint_dir=str(src))
+
+        assert result.returncode == 0, result.stderr
+        ckpts = train / "checkpoints" / "gold_node2"
+        assert (ckpts / "checkpoint-20").is_dir()
+        assert f"GB_STEP_METADATA_VALUE:{src}/checkpoint-20" in result.stdout
+        # Measured from the seed: the next attempt must get past 20.
+        assert json.loads((train / "attempts.jsonl").read_text())["start_step"] == 20
+        # The seeded rung reaches its consumers once (resume_emit_seeded default).
+        assert self._emitted(result.stdout) == [
+            f"GB_ARTIFACT_ID:checkpoint_20 GB_ARTIFACT_PATH:{ckpts}/checkpoint-20"
+        ]
+
+    def test_a_missing_resume_source_still_fails_on_an_empty_train_dir(self, tmp_path):
+        result = self._exec(
+            tmp_path, tmp_path / "train", resume_from_checkpoint_dir="/nope"
+        )
+        assert result.returncode == 1
+        assert "is not a directory" in result.stderr
+
+
+class TestRolloutStopFile:
+    """rollout_stop_file: rank 0 writes it when the script exits non-zero, so the
+    rollout server (student-rollout-generator's vllm_config.stop_file, the same path)
+    stops at once instead of holding its allocation until its lifetime cap: the
+    teardown target waits on this target's checkpoint, which a failed trainer never
+    emits."""
+
+    _STOP = "/w/run/b1/rollout.stop"
+
+    @staticmethod
+    def _render(**overrides):
+        return TestTrainDir._render(**overrides)
+
+    def test_off_by_default(self, step):
+        assert step["config"]["rollout_stop_file"] == ""
+        assert "rollout_stop_file" not in step["config"]["gold_config"]
+        assert "ROLLOUT_STOP" not in self._render()
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {},
+            {"emit_checkpoint_artifacts": True},
+            {"train_dir": "/w/t", "emit_checkpoint_artifacts": True},
+            {"resume_from_checkpoint_dir": "/src", "emit_checkpoint_artifacts": True},
+        ],
+    )
+    def test_the_rendered_script_is_valid_shell(self, overrides):
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=self._render(rollout_stop_file=self._STOP, **overrides),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_armed_before_anything_can_fail(self):
+        rendered = self._render(rollout_stop_file=self._STOP)
+        arm = rendered.index("trap 'rollout_stop_on_exit $?' EXIT")
+        assert arm < rendered.index("nvidia-smi -L")
+        assert arm < rendered.index("accelerate launch")
+
+    def _run(self, tmp_path, tail, rank="0", **overrides):
+        """The script from the stop-file block through `tail`, as rank `rank`."""
+        stop = tmp_path / "shared" / "rollout.stop"
+        rendered = self._render(rollout_stop_file=str(stop), **overrides)
+        start = rendered.index('ROLLOUT_STOP_FILE="')
+        end = rendered.index("# --- distill source: baked into", start)
+        script = "set -eu\n" + rendered[start:end] + tail
+        result = subprocess.run(
+            ["bash", "-c", script],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": rank,
+                "GB_TARGETRUN_ID": "tr-9",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        return result, stop
+
+    @pytest.mark.parametrize("tail,code", [("exit 3\n", 3), ("false\n", 1)])
+    def test_rank_zero_writes_it_on_a_non_zero_exit(self, tmp_path, tail, code):
+        result, stop = self._run(tmp_path, tail)
+        assert result.returncode == code
+        assert stop.read_text().splitlines() == [
+            "tr-9",
+            f"logit-distill rank 0 exited with status {code}",
+        ]
+        # Atomic: tmp + mv, nothing left beside it.
+        assert sorted(p.name for p in stop.parent.iterdir()) == ["rollout.stop"]
+
+    def test_not_on_success(self, tmp_path):
+        result, stop = self._run(tmp_path, "exit 0\n")
+        assert result.returncode == 0, result.stderr
+        assert not stop.exists()
+
+    def test_not_on_another_rank(self, tmp_path):
+        result, stop = self._run(tmp_path, "exit 1\n", rank="1")
+        assert result.returncode == 1
+        assert not stop.exists()
+
+    def test_the_later_exit_traps_keep_writing_it(self, tmp_path):
+        """The resume handshake and the checkpoint watcher each replace the EXIT
+        trap on rank 0; both must still write the file, and keep the status."""
+        stop = tmp_path / "shared" / "rollout.stop"
+        train = tmp_path / "train"
+        rendered = self._render(
+            rollout_stop_file=str(stop),
+            train_dir=str(train),
+            emit_checkpoint_artifacts=True,
+            require_progress=False,
+        )
+        head = rendered[
+            rendered.index('ROLLOUT_STOP_FILE="') : rendered.index(
+                "# --- distill source: baked into"
+            )
+        ]
+        start = rendered.index('TRAIN_DIR="')
+        watcher = rendered.index("WATCH_PID=$!", start)
+        end = rendered.index("\nfi\n", watcher) + len("\nfi\n")
+        body = rendered[start:end]
+        home = tmp_path / "distill-home"
+        (home / "steps").mkdir(parents=True)
+        (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "NODE_RANK": "0",
+            "NODES": "2",
+            "GPUS": "8",
+            "VLLM_SERVERS": "0",
+            "CONFIG_NAME": "gold_node2",
+            "PYBIN": sys.executable,
+            "DISTILL_HOME": str(home),
+            "GB_TARGETRUN_ID": "tr-9",
+        }
+
+        def run(script):
+            return subprocess.run(
+                ["bash", "-c", "set -eu\n" + head + script],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+
+        # Failing under the handshake's trap (mid-preparation), then under the
+        # watcher's (after it started).
+        seeding = body.replace('RESUME_HELD=""', 'exit 6\nRESUME_HELD=""', 1)
+        assert seeding != body
+        for label, script in (("seed", seeding), ("watch", body + "exit 6\n")):
+            if stop.exists():
+                stop.unlink()
+            result = run(script)
+            assert result.returncode == 6, (label, result.stderr)
+            assert stop.read_text().splitlines()[0] == "tr-9", label
+        if (train / "checkpoints" / "gold_node2" / ".resume-seeded").exists():
+            (train / "checkpoints" / "gold_node2" / ".resume-seeded").unlink()
+        # A clean pass through both leaves no file.
+        stop.unlink()
+        result = run(body + "exit 0\n")
+        assert result.returncode == 0, result.stderr
+        assert not stop.exists()
+
+
+class TestOneCompletenessRule:
+    """The watcher, the re-emit, the move-aside and the progress check all call a
+    checkpoint complete by one rule: weights (model.safetensors, or the index a
+    sharded save writes after its last shard), tokenizer.json, trainer_state.json."""
+
+    @staticmethod
+    def _sharded(root, step):
+        ckpt = root / f"checkpoint-{step}"
+        ckpt.mkdir(parents=True)
+        for name in (
+            "model-00001-of-00002.safetensors",
+            "model.safetensors.index.json",
+            "tokenizer.json",
+            "trainer_state.json",
+        ):
+            (ckpt / name).write_text("x")
+        return ckpt
+
+    def _sweep(self, tmp_path, **overrides):
+        rendered = TestTrainDir._render(emit_checkpoint_artifacts=True, **overrides)
+        start = rendered.index('CKPT_GLOB="checkpoint-"')
+        end = rendered.index("watch_checkpoints() {")
+        head = ""
+        if "RESUME_SRC=" in rendered:
+            head = rendered[
+                rendered.index('RESUME_SRC="') : rendered.index(
+                    'if [ "$NODE_RANK" = "0" ]; then', rendered.index('RESUME_SRC="')
+                )
+            ]
+        ckpts = tmp_path / "ckpts"
+        self._sharded(ckpts, 500)
+        half = ckpts / "checkpoint-1000"
+        half.mkdir()
+        (half / "model-00001-of-00002.safetensors").write_text("x")
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -eu\n" + head + rendered[start:end] + "emit_new_checkpoints\n",
+            ],
+            env={"PATH": "/usr/bin:/bin", "CKPT_DIR": str(ckpts)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return re.findall(r"GB_ARTIFACT_ID:(checkpoint_\d+)", result.stdout)
+
+    def test_the_watcher_emits_a_sharded_checkpoint(self, tmp_path):
+        assert self._sweep(tmp_path) == ["checkpoint_500"]
+
+    def test_the_watcher_emits_a_sharded_checkpoint_on_resume(self, tmp_path):
+        assert self._sweep(tmp_path, resume_from_checkpoint_dir="/src") == [
+            "checkpoint_500"
+        ]
+
+    def test_the_watcher_calls_the_shared_rule(self):
+        for overrides in (
+            {},
+            {"resume_from_checkpoint_dir": "/src"},
+            {"train_dir": "/t"},
+        ):
+            rendered = TestTrainDir._render(emit_checkpoint_artifacts=True, **overrides)
+            assert rendered.count("resume_complete() {") == 1, overrides
+            body = rendered[rendered.index("emit_new_checkpoints() {") :]
+            body = body[: body.index("\n}\n")]
+            assert 'resume_complete "$ckpt" || continue' in body
+            assert "CKPT_SENTINELS" not in rendered
+
+
+class TestTrainingAlreadyDone:
+    """A retry that resumes from checkpoint-<stop_at_step> (or -<max_steps>) has
+    nothing left to train. _StopAtStepCallback checks in on_step_end, and HF runs a
+    step before it checks should_training_stop, so launching the trainer would
+    train one more step and save an off-ladder checkpoint. Rank 0 skips accelerate
+    instead, still re-emits and emits, and releases the other ranks."""
+
+    def _fragment(self, train_dir, **overrides):
+        """TRAIN_DIR through the re-emit, then the script from the trainer launch
+        guard to its end, with `accelerate` stubbed."""
+        rendered = TestTrainDir._render(
+            train_dir=str(train_dir), emit_checkpoint_artifacts=True, **overrides
+        )
+        start = rendered.index('TRAIN_DIR="')
+        end = rendered.index("# RANK 0 ONLY, for the same reason")
+        launch = rendered.index("# Training already done: see the resume block.")
+        return (
+            "set -eu\n"
+            # The stub trainer records that it ran and saves one more checkpoint.
+            + 'accelerate() {\n  touch "$LAUNCHED"\n'
+            + '  c="$CKPT_DIR/checkpoint-99"; mkdir -p "$c"\n'
+            + "  for f in model.safetensors tokenizer.json trainer_state.json; do"
+            + ' touch "$c/$f"; done\n}\n'
+            + rendered[start:end]
+            + "WATCH_PID=''\n"
+            + rendered[launch:]
+        )
+
+    def _exec(self, tmp_path, train_dir, rank="0", **overrides):
+        home = tmp_path / "distill-home"
+        if not home.exists():
+            (home / "steps").mkdir(parents=True)
+            (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
+        script = self._fragment(train_dir, **overrides)
+        if rank != "0":
+            script = script.replace("-ge 900 ]", "-ge 1 ]").replace(
+                "sleep 5", "sleep 1"
+            )
+        return subprocess.run(
+            ["bash", "-c", script],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "NODE_RANK": rank,
+                "NODES": "2",
+                "GPUS": "8",
+                "VLLM_SERVERS": "0",
+                "TRAINER_NODES": "2",
+                "MIP": "10.0.0.1",
+                "MPORT": "29500",
+                "MADDR": "10.0.0.1",
+                "CODE_DIR": "/opt/distill",
+                "CFG": str(tmp_path / "cfg.yaml"),
+                "VLLM_ARGS": "",
+                "CONFIG_NAME": "gold_node2",
+                "PYBIN": sys.executable,
+                "DISTILL_HOME": str(home),
+                "GB_SKYPILOT_LAUNCH_ID": "launch-tr-1",
+                "GB_TARGETRUN_ID": "tr-1",
+                "LAUNCHED": str(tmp_path / "launched"),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            cwd=tmp_path,
+        )
+
+    def _train(self, tmp_path, *steps):
+        train = tmp_path / "train"
+        for step in steps:
+            TestTrainDir._checkpoint(train / "checkpoints" / "gold_node2", step)
+        return train
+
+    @pytest.mark.parametrize(
+        "gold,top",
+        [
+            ({"stop_at_step": 10}, 10),
+            ({"stop_at_step": 10}, 15),
+            ({"max_steps": 15}, 15),
+        ],
+    )
+    def test_rank_zero_skips_the_trainer_and_still_emits(self, tmp_path, gold, top):
+        train = self._train(tmp_path, 5, top)
+        result = self._exec(tmp_path, train, _gold=dict(gold, save_steps=5))
+        assert result.returncode == 0, result.stderr
+        assert not (tmp_path / "launched").exists(), "the trainer was launched"
+        assert "training is already done; not launching the trainer" in result.stdout
+        ids = re.findall(r"GB_ARTIFACT_ID:(\S+)", result.stdout)
+        assert ids == ["checkpoint_5", f"checkpoint_{top}", "checkpoint"]
+        ckpts = train / "checkpoints" / "gold_node2"
+        assert (ckpts / ".resume-seeded").read_text().strip() == "done:launch-tr-1::"
+
+    def test_below_the_limit_the_trainer_runs(self, tmp_path):
+        train = self._train(tmp_path, 5)
+        result = self._exec(tmp_path, train, _gold={"stop_at_step": 10})
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "launched").exists()
+        assert "already done" not in result.stdout
+        ckpts = train / "checkpoints" / "gold_node2"
+        assert (ckpts / ".resume-seeded").read_text().strip() == "launch-tr-1::"
+
+    def test_a_first_attempt_runs_the_trainer(self, tmp_path):
+        result = self._exec(tmp_path, tmp_path / "train", _gold={"stop_at_step": 10})
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "launched").exists()
+
+    def test_a_worker_exits_cleanly_when_rank_zero_is_done(self, tmp_path):
+        train = self._train(tmp_path, 10)
+        assert self._exec(tmp_path, train, _gold={"stop_at_step": 10}).returncode == 0
+        (tmp_path / "launched").unlink(missing_ok=True)
+        result = self._exec(tmp_path, train, rank="1", _gold={"stop_at_step": 10})
+        assert result.returncode == 0, result.stderr
+        assert "training is already done" in result.stdout
+        assert not (tmp_path / "launched").exists()
+        assert "GB_ARTIFACT_ID:" not in result.stdout
+
+    def test_not_rendered_without_a_limit(self):
+        rendered = TestTrainDir._render(train_dir="/t", emit_checkpoint_artifacts=True)
+        assert "TRAINING_DONE" not in rendered
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_dir": "/t"},
+            {"resume_from_checkpoint_dir": "/src"},
+            {
+                "train_dir": "/t",
+                "rollout_stop_file": "/s",
+                "emit_checkpoint_artifacts": True,
+            },
+        ],
+    )
+    def test_the_rendered_script_is_valid_shell(self, overrides):
+        rendered = TestTrainDir._render(_gold={"stop_at_step": 10}, **overrides)
+        assert "TRAINING_DONE" in rendered
+        result = subprocess.run(
+            ["bash", "-n"], input=rendered, capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr

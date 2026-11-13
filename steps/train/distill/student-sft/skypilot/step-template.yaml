@@ -1,0 +1,387 @@
+name: student-sft
+version: 1.0.0
+# Plain SFT on the distillation corpus, with NO teacher.
+#
+# PRIMARY ROLE: the chat-template WARM-UP stage that runs before distillation. A raw base
+# student has never seen the teacher's chat template or turn markers; this step's checkpoint
+# is what distill-gold-train actually distills from. Skipping straight to distillation on a
+# base model conflates "did not learn the template" with "did not learn from the teacher" in
+# every metric the later steps report.
+#
+# SECONDARY USE, and this one is not a control by default. With precomputed_logits_dir EMPTY
+# this step can also serve as the baseline the distillation arms are measured against: every
+# number an arm reports is a comparison, and without this baseline the honest statement about
+# a distillation run is "it got better at something, possibly just from more training on this
+# data". SET precomputed_logits_dir and the same step becomes forward-KL distillation against
+# a frozen teacher — a different arm wearing this step's name. A recipe that uses it as a
+# control, or sets precomputed_logits_dir, should say so in its own README.
+type: training
+config:
+  # ─── Allocation ───────────────────────────────────────────────────────────────
+  workload:
+    # Overrides HF_HOME for this step only. Empty leaves the launcher's value.
+    hf_home: ""
+    # ASSERTED against the GPUs actually visible in the container, not trusted: a
+    # mismatch between what the recipe asked for and what LSF granted is a run that
+    # trains at a different effective batch size than the config says.
+    gpus_per_node: 8
+    # 1, unlike distill-gold's 2. There is no vLLM server here and no student rollout, so
+    # there is no split-role allocation to size. run-sft.sh REFUSES nodes > 1, because it
+    # gets no host list and a multi-node accelerate launch would have no main_process_ip,
+    # port or machine_rank per node. Lifting that needs the provisioner's RANK/TOTAL_NODES/
+    # MASTER_ADDR fed in exactly as distill-gold does — a deliberate follow-up, not a
+    # default.
+    nodes: 1
+
+  sft_config:
+    # The student and the corpus are target INPUTS, not config keys — see `inputs:` below.
+    #
+    # Refuse to start when the student's weights have been migrated to tape by GPFS. See
+    # src/check_weight_residency.py: metadata only (mmlsattr, else st_blocks arithmetic),
+    # never reads contents, refuses on OFFLINE or on a path it cannot stat, warns and
+    # proceeds when it cannot measure, and treats a hub id as not-a-path rather than as a
+    # finding. precomputed_logits_dir is deliberately NOT checked -- it holds no weight
+    # shards, and the trainer streams it.
+    check_weight_residency: true
+    # Proceed anyway, loudly. For when you know the recall is already under way.
+    allow_offline_weights: false
+
+    # Relative values resolve against $GB_BUILD_WORKDIR.
+    output_dir: "sft"
+
+    # ── The completion boundary, the one place this step is easy to get silently wrong.
+    #
+    # sft.py builds assistant_masks from apply_chat_template's {% generation %} markers and
+    # raises if the resulting mask is all zeros. This is its FALLBACK: a literal string
+    # searched for in the rendered token ids. With distill-tokenizer-align in the pipeline
+    # the markers are present, so the fallback should never be reached — it is here for a
+    # student that arrives without them.
+    #
+    # THE TRAILING NEWLINE IS DATA, AND IT IS CARRIED AS A TWO-CHARACTER ESCAPE. gbserver
+    # fills every config string through Jinja, and its SandboxedEnvironments are built
+    # without keep_trailing_newline, so Jinja strips exactly one trailing newline from each
+    # VALUE. A real newline here would therefore never reach the container:
+    #
+    #     '<|im_start|>assistant\n'  ->  '<|im_start|>assistant'
+    #
+    # which masks a span one token off, trains, and reports success — measured on
+    # distill-gold (build d8470f14) and fixed there the same way. So this is SINGLE-quoted
+    # YAML holding a literal backslash-n, which has no trailing whitespace for anything to
+    # strip, and the launcher decodes it once inside the container.
+    response_template: '<|im_start|>assistant\n'
+
+    max_length: 4096
+
+    # ── Optimization. Same keys and same defaults as distill-gold, deliberately: a control
+    # that trains at a different batch size or learning rate than the treatment is not a
+    # control.
+    per_device_train_batch_size: 1
+    gradient_accumulation_steps: 8
+    learning_rate: "1e-6"
+    num_train_epochs: 1
+    save_steps: 100
+    seed: 42
+    # auto | never | require. The trainer resumes on the mere PRESENCE of a checkpoint
+    # directory, so this is enforced as preflight validation instead of trusted.
+    resume: auto
+    # Relative resolves against $DISTILL_HOME (/opt/distill). The distill steps share
+    # exactly one deepspeed config, baked into the GPU image at
+    # $DISTILL_HOME/configs/deepspeed/ -- distill-sft has
+    # no config of its own and reuses that one. configs/distillation/deepspeed/
+    # was the pre-port path (an in-image /opt copy that does not exist in this
+    # image), and stayed here as a stale default through the port -- confirmed
+    # missing on a real run (build 30e46247: "deepspeed config not found").
+    #
+    # It is an ACCELERATE config, not a bare DeepSpeed one, and it is load-bearing: its own
+    # header records a predecessor whose `offload_param  offload_param_device: none` parsed
+    # as ONE key, so the setting was silently dead. A typo in this file does not fail loudly.
+    deepspeed_config: "configs/deepspeed/accelerate_deepspeed_zero3.yaml"
+
+    # ── Memory. Off by default because both are model-specific and the second is narrower
+    # than its name suggests.
+    #   use_liger_memory_opt  fused linear+CE loss, no model-internal patching.
+    #   use_liger_swiglu_mlp  monkey-patches GraniteSWAMLP.forward. Needed only for
+    #                         long-context (>=64K) GraniteSWA training, costs ~2-3x MLP
+    #                         forward, and applies to no model this collection trains.
+    # Rendered as --flag/--no-flag PAIRS. This step is where that house rule was learned:
+    # jinja renders a YAML boolean with PYTHON casing, so `--use-liger-memory-opt {{ ... }}`
+    # reached the script as the literal string `False`. Nothing errors, and a shell test
+    # against "true" is then false forever — silently, in both directions.
+    use_liger_memory_opt: false
+    use_liger_swiglu_mlp: false
+
+    # ── Off-policy KD from precomputed logits. SETTING THIS STOPS THIS BEING A CONTROL.
+    # It becomes forward-KL distillation against a frozen teacher — the
+    # distill-logit-precompute arm. Empty on purpose.
+    precomputed_logits_dir: ""
+    kd_top_k: 256
+    kd_weight: 1.0
+    ce_weight: 0.0
+    kd_temperature: 1.0
+
+    # Debug knob: -1 means the whole corpus.
+    max_dataset_size: -1
+
+    # Escape hatch for the long tail of CustomSFTConfig. Merged UNDER the keys above, so a
+    # collision with an explicit contract key is an error rather than a silent winner.
+    extra_config_yaml: ""
+
+  # ─── Experiment tracking ──────────────────────────────────────────────────────
+  # ALL FIVE DEFAULT TO EMPTY, which means tracking off. A step that invented a project
+  # name would log every recipe's runs into one bucket named by whoever wrote this file.
+  #
+  # A PARTIAL config aborts the run rather than being completed with a guess: neither
+  # backend fails on an incomplete config — they log to their own defaults — which is how a
+  # multi-day run ends up somewhere nobody looks.
+  #
+  # The shared GPU image (steps/train/distill/images/gpu/, replacing the opaque
+  # kd-sandbox-distill:0.1.0-uv) DOES carry clearml==2.1.12 and wandb==0.28.2 (both in
+  # steps/train/distill/images/gpu/pyproject.toml), so setting any of these five now works rather
+  # than failing at import. tracking.py still imports them lazily and only when a
+  # project is configured, so leaving all five empty (tracking off) stays safe either way.
+  tracking:
+    clearml_project: ""
+    clearml_run_name: ""
+    wandb_entity: ""
+    wandb_project: ""
+    wandb_run_name: ""
+
+# I/O schema, validated against the build.yaml target at build time: a target that
+# does not bind a required input fails validation before anything is queued. The
+# run script reads each one as {{ bindings.<name>.binding.path }}. allow_unknown
+# stays true so a recipe can bind extra inputs purely to order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The RETAGGED student, for the same reason the distillation arms use it: a control has
+    # to differ from the treatment in the OBJECTIVE only. A control trained on the base
+    # student would also differ in its embedding rows for the control tokens, and the
+    # comparison would be measuring two things at once.
+    student:
+      type: model
+      accept: [uri, binding]
+    # distill-corpus-prep's `corpus`. Text, not tokens — sft.py tokenizes at train time —
+    # but tokenizer-specific anyway, because prep measured its length filter and its
+    # assistant-mask check in tokens.
+    corpus:
+      type: dataset
+      accept: [uri, binding]
+
+outputs:
+  required:
+    checkpoint:
+      type: model
+
+environment_configs:
+  Skypilot:
+    subtypes:
+      - lsf
+      - slurm
+    default_launcher: train
+    launchers:
+      train:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:ec82c1d9"
+          resources: {}
+          envs:
+            # The SLURM executor runs the task under `env -u PYTHONPATH` and without
+            # VIRTUAL_ENV, so the image's ENV values for both are gone at run time.
+            PYTHONPATH: /opt/distill/src
+            VIRTUAL_ENV: /stage/.venv
+            # NO HF_HUB_OFFLINE: this step LOADS A MODEL, and the `kernels` package resolves
+            # kernels-community/causal-conv1d through the Hub API at load time, which offline
+            # mode turns into OfflineModeIsEnabled after the load has begun (measured on
+            # distill-eval, build 15267e81). distill-gold, which trains on this same image,
+            # sets HF_HOME and leaves the Hub reachable.
+            # Fetch any required hub kernel that is not already in the image's cache,
+            # inside the job. run-sft.sh PREFLIGHTS the kernel list and refuses without
+            # this, which is the right design: the Mamba2 pair and the FA2 fallback are
+            # resolved at import time, so a cold cache otherwise raises AFTER the
+            # allocation is up. Measured here (build 0e60920a): the image caches
+            # kernels-community/{mamba-ssm,causal-conv1d} but NOT
+            # kernels-community/flash-attn2, which is transformers' FA2 fallback for an
+            # environment with no flash_attn package — and the renderer selects
+            # attn_implementation: flash_attention_2 for a granite student.
+            #
+            # This costs a hub fetch per run, because /opt/hf-cache lives in the container
+            # and does not persist. The better answer for repeated production runs is a
+            # WARM SHARED CACHE, which upstream ships a script for:
+            #   KERNEL_REPOS=kernels-community/flash-attn2 \
+            #     bash scripts/bluevela/prefetch-kernels.sh
+            # run once out of band against a persistent HF_HOME (workload.hf_home). Doing
+            # that and dropping this variable is a strict improvement; it is not the
+            # default here because it needs a writable shared cache this step cannot
+            # assume.
+            GOLD_PREFETCH_KERNELS: "1"
+            PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+            DS_SKIP_CUDA_CHECK: "1"
+            OMP_NUM_THREADS: "8"
+          run: |
+            echo "=== student-sft on $(hostname) ==="
+
+            # The inputs used to be config keys. A recipe that still sets one would
+            # otherwise be ignored silently, so refuse it.
+            {% for key in ("student_model_path", "corpus_path") if config.sft_config[key] is defined %}
+            echo "student-sft: FATAL: sft_config.{{ key }} is no longer read; bind the target input instead (see this step's README)" >&2
+            exit 1
+            {% endfor %}
+
+            # --- distill source: baked into the image, nothing cloned or mounted ---
+            # DISTILL_HOME, the venv (VIRTUAL_ENV) and PYTHONPATH are all set by the image's
+            # own ENV lines. The interpreter is asked of uv rather than hardcoded.
+            # Absolute, not a bare "python": the ACCELERATE export below takes
+            # dirname "$PYBIN", and dirname of a bare name is "." — which made the
+            # trainer launch die rc=127 on "./accelerate: No such file or
+            # directory" (smoke builds 04be7abd/74ceb755) once the steps moved to
+            # baked images and stopped hardcoding the venv path.
+            PYBIN="$(command -v python)"
+            CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
+            WORK="${GB_BUILD_WORKDIR:-$PWD}"
+            echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
+            echo "GB_STEP_METADATA_KEY:distill_code_commit GB_STEP_METADATA_VALUE:a5d59bc45524a8d75706e20d44ae1a254f273f23"
+            # --- distill source: END ---
+
+            # GPU allocation check (ibm-granite/granite.build#604). On Slurm 25.11.x an
+            # --overlap job step -- SkyPilot's container keeper is one -- can be granted
+            # fewer of the job's GPUs than the job holds (SchedMD bug 24862, fixed in
+            # 26.05.3), and the container keeps the keeper's device set. Ranks past the
+            # visible count would then bind a GPU another rank already holds and fail
+            # later, far from the cause. Refuse here instead. `nvidia-smi -L` lists what
+            # the container's device cgroup grants and ignores CUDA_VISIBLE_DEVICES; a
+            # failed or missing nvidia-smi (0 listed) proves nothing, so only an
+            # undercount it reports is refused. Nothing is rewritten or worked around:
+            # the check holds whether the fix lands in Slurm or in SkyPilot.
+            GPU_WANT="${SKYPILOT_NUM_GPUS_PER_NODE:-0}"
+            case $GPU_WANT in ''|*[!0-9]*) GPU_WANT=0 ;; esac
+            GPU_SEEN="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
+            case $GPU_SEEN in ''|*[!0-9]*) GPU_SEEN=0 ;; esac
+            GPU_DEVS="$(ls /dev/nvidia[0-9]* 2>/dev/null | tr '\n' ' ' || true)"
+            echo "student-sft: gpu check: allocated=$GPU_WANT visible=$GPU_SEEN CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}' SLURM_JOB_GPUS='${SLURM_JOB_GPUS:-}' SLURM_STEP_GPUS='${SLURM_STEP_GPUS:-}' devices='$GPU_DEVS'"
+            if [ "$GPU_SEEN" -ge 1 ] && [ "$GPU_SEEN" -lt "$GPU_WANT" ]; then
+              echo "student-sft: FATAL: $GPU_WANT GPU(s) were allocated (SKYPILOT_NUM_GPUS_PER_NODE) but this container can access only $GPU_SEEN (nvidia-smi -L). On SLURM this is ibm-granite/granite.build#604; rerun, or report the node." >&2
+              exit 1
+            fi
+
+            # Absolutise before the marker: the monitor hands this path to the env:// store,
+            # possibly from another host, and a relative env: URI is rejected at config load.
+            OUT_DIR="{{ config.sft_config.output_dir }}"
+            case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac
+
+            # A relative deepspeed config resolves against $DISTILL_HOME.
+            DS_CONFIG="{{ config.sft_config.deepspeed_config }}"
+            case "$DS_CONFIG" in /*) ;; *) DS_CONFIG="$CODE_DIR/$DS_CONFIG" ;; esac
+            if [ ! -f "$DS_CONFIG" ]; then
+              echo "distill: FATAL: deepspeed config not found at $DS_CONFIG" >&2
+              echo "         sft_config.deepspeed_config is resolved against the delivered" >&2
+              echo "         checkout when relative. gb-steps-distillation keeps its one" >&2
+              echo "         deepspeed config under configs/deepspeed/." >&2
+              exit 1
+            fi
+
+            # Decode the response template's escape into the real character it stands for.
+            # The trailing newline IS the data — it is where loss masking begins — and it
+            # cannot cross gbserver's config fill as a real newline (Jinja strips one). The
+            # sentinel is not decoration: `$(...)` strips trailing newlines too, so printf's
+            # output is terminated with a character that is then removed.
+            RT_RAW='{{ config.sft_config.response_template }}'
+            RESPONSE_TEMPLATE="$(printf '%b.' "$RT_RAW")"
+            RESPONSE_TEMPLATE="${RESPONSE_TEMPLATE%.}"
+
+            # The image's venv is NOT on PATH by default, and run-sft.sh launches the
+            # trainer through a BARE `accelerate` (ACCELERATE="${ACCELERATE:-accelerate}").
+            # Without this the run reaches the launch and dies with
+            # `accelerate: command not found`, rc=127, after the model has been resolved
+            # and the kernels fetched (build 75fa47d2). distill-gold exports the same line
+            # for the same reason; the dispatcher runs this with `bash <file>` (non-login),
+            # so the export sticks — a login shell would re-run /etc/profile and drop it.
+            # And name it explicitly too, via the script's own guarded knob, so the launch
+            # does not depend on PATH order alone.
+            export ACCELERATE="$(dirname "$PYBIN")/accelerate"
+
+            # Tell run-sft.sh where the shared package and the shell lib are.
+            #
+            # It resolves each from EITHER the image layout ($STEP_HOME/vendor/...) or
+            # $CHECKOUT_ROOT/..., and a non-image step has no vendor/ tree — so the first
+            # run died with `cd: .."$DISTILL_HOME/steps/student-sft/vendor"/gb_steps_post_training/distillation: No such
+            # file or directory` and `pkg root : <unresolved>` (build 739898ab).
+            #
+            # Exporting CHECKOUT_ROOT does NOT work and was tried (build 07b9e09a): the
+            # script guards STEP_HOME, SFT_SRC and LIB_DIR against the environment
+            # (`${VAR:-...}`), but computes CHECKOUT_ROOT UNCONDITIONALLY as three levels
+            # above STEP_HOME — which assumes the step directory sits inside the checkout,
+            # as it does when upstream executes the rendered command in place. Here
+            # STEP_HOME is $GB_BUILD_WORKDIR/src, so that lands on a build directory.
+            #
+            # SFT_SRC and LIB_DIR are the guarded knobs, and the script's own comment says
+            # SFT_SRC is meant to be set from outside ("a step that reads another step's env
+            # var is a step you can misconfigure"). Setting them also fixes PYTHONPATH,
+            # which the script derives as $SFT_SRC/../.. — the package ROOT, whose absence
+            # killed two upstream jobs at import time.
+            export SFT_SRC="$CODE_DIR/src/gb_steps_post_training/distillation"
+            export LIB_DIR="$DISTILL_HOME/shell"
+
+            # Weights on tape read back at recall speed, inside the allocation. Metadata
+            # only; refuses only on an authoritative OFFLINE. Every node runs it, because a
+            # rank-0-only refusal would leave the other ranks on a dead rendezvous.
+            {% if config.sft_config.check_weight_residency %}
+            "$PYBIN" "$DISTILL_HOME/steps/student-sft/check_weight_residency.py" \
+              {% if config.sft_config.allow_offline_weights %}--allow-offline{% endif %} \
+              "student={{ bindings.student.binding.path }}"
+            {% endif %}
+
+            PYBIN="$PYBIN" bash "$DISTILL_HOME/steps/student-sft/run-sft.sh" \
+              --student-model-path "{{ bindings.student.binding.path }}" \
+              --corpus-path "{{ bindings.corpus.binding.path }}" \
+              --output-dir "$OUT_DIR" \
+              --response-template "$RESPONSE_TEMPLATE" \
+              --max-length {{ config.sft_config.max_length }} \
+              --per-device-train-batch-size {{ config.sft_config.per_device_train_batch_size }} \
+              --gradient-accumulation-steps {{ config.sft_config.gradient_accumulation_steps }} \
+              --learning-rate "{{ config.sft_config.learning_rate }}" \
+              --num-train-epochs {{ config.sft_config.num_train_epochs }} \
+              --save-steps {{ config.sft_config.save_steps }} \
+              --seed {{ config.sft_config.seed }} \
+              --resume {{ config.sft_config.resume }} \
+              --deepspeed-config "$DS_CONFIG" \
+              {% if config.sft_config.use_liger_memory_opt %}--use-liger-memory-opt{% else %}--no-use-liger-memory-opt{% endif %} \
+              {% if config.sft_config.use_liger_swiglu_mlp %}--use-liger-swiglu-mlp{% else %}--no-use-liger-swiglu-mlp{% endif %} \
+              --precomputed-logits-dir "{{ config.sft_config.precomputed_logits_dir }}" \
+              --kd-top-k {{ config.sft_config.kd_top_k }} \
+              --kd-weight {{ config.sft_config.kd_weight }} \
+              --ce-weight {{ config.sft_config.ce_weight }} \
+              --kd-temperature {{ config.sft_config.kd_temperature }} \
+              --max-dataset-size {{ config.sft_config.max_dataset_size }} \
+              --extra-config-yaml "{{ config.sft_config.extra_config_yaml }}" \
+              --gpus-per-node {{ config.workload.gpus_per_node }} \
+              --nodes {{ config.workload.nodes }} \
+              --hf-home "{{ config.workload.hf_home }}" \
+              --clearml-project "{{ config.tracking.clearml_project }}" \
+              --clearml-run-name "{{ config.tracking.clearml_run_name }}" \
+              --wandb-entity "{{ config.tracking.wandb_entity }}" \
+              --wandb-project "{{ config.tracking.wandb_project }}" \
+              --wandb-run-name "{{ config.tracking.wandb_run_name }}"
+
+            echo "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:${OUT_DIR}"
+    monitors:
+      skypilot_monitor:
+        # `periodic` retrieval, like distill-gold: a training run lasts far longer than the
+        # library default on_completion mode surfaces anything for, so a stalled run would
+        # look identical to a slow one.
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(900) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
+          extra_event_configs:
+          # TRL logs a metrics dict, the same shape distill-gold pins against.
+          - event_type: WORKLOAD_STATUS_EVENT
+            line_regex: "'loss':"
+            event_fields:
+              - field_name: status
+                field_value_template: "RUNNING"
+              - field_name: message
+                field_regex: "\\{'loss'.+"

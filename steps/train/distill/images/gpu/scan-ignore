@@ -1,0 +1,19 @@
+# Vulnerabilities `make scan-image-gpu` / `publish-image-gpu` accept on purpose.
+#
+# One advisory id per line (CVE, GHSA or PYSEC; list every alias, because osv-scanner
+# and trivy name the same advisory differently); `#` starts a comment. The same file
+# goes to images/osv-gate.py and to trivy as --ignorefile, so keep it in that format.
+# Every entry names the issue that removes it. Delete the entry when that issue lands.
+
+# vllm 0.11.0: CRITICAL, fixed in 0.14.1 / 0.22.0. vllm is pinned exactly to match torch
+# 2.8.0, trl 0.26.2 and the Mamba2 kernel cache; the upgrade is #676.
+# RCE in vLLM video processing. Not reachable: the student is a text-only model, served
+# through trl's vllm_serve with our own prompts.
+PYSEC-2026-565
+GHSA-4r2x-xpjr-7cvv
+CVE-2026-22778
+# Auth bypass of vLLM's OpenAI API server AuthenticationMiddleware. Not reachable: that
+# server is not run; run_vllm_serve.py wraps trl.scripts.vllm_serve.
+PYSEC-2026-226
+GHSA-94f4-hr76-p5j6
+CVE-2026-48746

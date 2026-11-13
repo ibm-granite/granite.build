@@ -1,0 +1,365 @@
+######
+# distill-eval -- the benchmark evals of models that are ALREADY exported, with no
+# training: a ladder of a distill build's exports, an earlier build's failed evals
+# re-run, or any model given by URI. The eval targets are distill's own, text for
+# text (between the "shared eval" markers below), so a rung evaluated here and one
+# evaluated inside a distill build are configured identically.
+#
+#   gb build start -f recipes/distill/distill-eval/build.yaml \
+#     --parameters-path <site.yaml> \
+#     --param RUN_NAME=<name> --param EXPORTS=1000=env:///abs/export-1000,2000=hf://org/m \
+#     --param SCREEN_EVALS=olmes-gsm8k,bfcl --param FULL_EVAL_RUNGS=2000
+#
+# Layers: this directory's parameters.yaml, then the site file, then each --param.
+#
+# The inputs:
+#
+#   EXPORTS         "<rung>=<uri>,<rung>=<uri>": the models, each under the numeric
+#                   column it gets in the tables (ckpt_<rung>). Any scheme the
+#                   environment resolves (env://, hf://).
+#   SCREEN_EVALS / FULL_EVAL_RUNGS   distill's protocol, over the EXPORTS rungs.
+#   EVALS           "<rung>:<eval>,<eval>;<rung>:<eval>": each rung's evals named
+#                   outright, in place of the two above (an eval re-run).
+#   RERUN_TAG       appended to the experiment name, so every output path and
+#                   artifact URI is new. SET IT whenever the experiment has been
+#                   evaluated before: gbserver refuses an artifact URI another build
+#                   registered, the target still reports SUCCESS, and everything
+#                   downstream of it never dispatches.
+#
+# rerun_command.py, beside this file, reads a finished build's status and prints the
+# command that re-runs its failed evals, with all of these filled in. Re-run a
+# failed eval with a new build of this recipe, never a build restart (a restart of a
+# build whose exports are reused fails on them).
+#
+# Two templating layers meet in this file, as in distill: the CLI resolves the
+# dollar-dollar-brace values and the less-than-percent blocks, gbserver the
+# double-brace templates. Comments here name parameters bare.
+######
+# ── RERUN_TAG and the experiment name ──────────────────────────────────────
+# The tag becomes part of sage's job-script FILENAME (see experiment below), so it
+# is one flat token.
+<%- set TAG = RERUN_TAG | string | trim %>
+<%- for ch in TAG if ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" %>
+$${ RERUN_TAG_must_be_letters_digits_dots_dashes_and_underscores }
+<%- endfor %>
+<%- set EXP = (EXPERIMENT | string | trim or RUN_NAME) ~ ("-" ~ TAG if TAG else "") %>
+# ── EXPORTS, parsed once ───────────────────────────────────────────────────
+# The rungs play the ladder's part in the shared protocol below.
+<%- set EXPORT_URI = {} %>
+<%- set RUNGS = [] %>
+<%- for spec in (EXPORTS | string | replace(" ", "")).split(",") if spec %>
+<%- set n, eq, uri = spec.partition("=") %>
+<%- if not (n.isdigit() and n | int > 0 and eq and "://" in uri) %>
+$${ EXPORTS_must_be_a_comma_list_of_rung_eq_uri_with_a_positive_integer_rung_and_a_full_uri }
+<%- elif n | int in RUNGS %>
+$${ EXPORTS_must_name_each_rung_once }
+<%- endif %>
+<%- set _ = RUNGS.append(n | int) %>
+<%- set _ = EXPORT_URI.update({n | int: uri}) %>
+<%- endfor %>
+<%- if not RUNGS %>
+$${ EXPORTS_must_name_at_least_one_rung_eq_uri }
+<%- endif %>
+<%- set LADDER = RUNGS | sort %>
+# ── EVALS, parsed once ─────────────────────────────────────────────────────
+<%- set RUNG_PICK = {} %>
+<%- for spec in (EVALS | string | replace(" ", "") | lower).split(";") if spec %>
+<%- set n, colon, names = spec.partition(":") %>
+<%- if not (n.isdigit() and colon and names) %>
+$${ EVALS_must_be_rung_colon_eval_list_separated_by_semicolons }
+<%- elif n | int in RUNG_PICK %>
+$${ EVALS_must_name_each_rung_once }
+<%- endif %>
+<%- set _ = RUNG_PICK.update({n | int: names.split(",") | select | list}) %>
+<%- endfor %>
+<%- if RUNG_PICK and (SCREEN_EVALS | string | trim or FULL_EVAL_RUNGS | string | trim) %>
+$${ EVALS_must_not_be_combined_with_SCREEN_EVALS_or_FULL_EVAL_RUNGS }
+<%- endif %>
+# Each eval reads its model straight from EXPORTS: there is no export target here.
+<%- macro model_input(N) %>
+        model:
+          uri: "$${EXPORT_URI[N]}"
+          type: model
+<%- endmacro %>
+# >>> shared eval protocol (keep identical to recipes/distill/distill/build.yaml)
+# ── The benchmark protocol ─────────────────────────────────────────────────
+# Every rung runs the SCREEN_EVALS subset; a rung in FULL_EVAL_RUNGS runs the
+# whole battery. RUNG_PICK, when the recipe sets one (distill-eval's EVALS),
+# names each rung's evals instead. A name that is neither an EVAL_CATALOG entry
+# nor bfcl, or a rung off the ladder, fails the render rather than silently not
+# running. WANT maps each rung to its evals, so the targets below test one list.
+<%- set CATS = [] %>
+<%- for c in (EVAL_CATEGORIES | string | replace(" ", "") | lower).split(",") if c %>
+<%- set _ = CATS.append(c) %>
+<%- endfor %>
+<%- set SCREEN = [] %>
+<%- for s in (SCREEN_EVALS | string | replace(" ", "") | lower).split(",") if s %>
+<%- set _ = SCREEN.append(s) %>
+<%- endfor %>
+<%- set FULL = [] %>
+<%- for n in (FULL_EVAL_RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = FULL.append(n | int) %>
+<%- endfor %>
+<%- set KNOWN = ["bfcl"] %>
+<%- for e in EVAL_CATALOG %>
+<%- set _ = KNOWN.append(e.name) %>
+<%- endfor %>
+<%- for s in SCREEN %>
+<%- if s not in KNOWN %>
+$${ SCREEN_EVALS_must_name_EVAL_CATALOG_entries_or_bfcl }
+<%- endif %>
+<%- endfor %>
+<%- for n in FULL %>
+<%- if n not in LADDER %>
+$${ FULL_EVAL_RUNGS_must_be_rungs_on_the_ladder }
+<%- endif %>
+<%- endfor %>
+<%- for n, names in RUNG_PICK.items() %>
+<%- if n not in LADDER %>
+$${ EVALS_must_name_rungs_on_the_ladder }
+<%- endif %>
+<%- for s in names if s not in KNOWN %>
+$${ EVALS_must_name_EVAL_CATALOG_entries_or_bfcl }
+<%- endfor %>
+<%- endfor %>
+<%- set WANT = {} %>
+<%- set SAGE_RUNGS = [] %>
+<%- set BFCL_RUNGS = [] %>
+<%- for N in LADDER %>
+<%- set picked = [] %>
+<%- for e in EVAL_CATALOG + [{"name": "bfcl", "category": "bfcl"}] %>
+<%- set chosen = (e.name in RUNG_PICK[N]) if N in RUNG_PICK else (not RUNG_PICK and (N in FULL or e.name in SCREEN)) %>
+<%- if e.category in CATS and chosen %>
+<%- set _ = picked.append(e.name) %>
+<%- endif %>
+<%- endfor %>
+<%- set _ = WANT.update({N: picked}) %>
+<%- if picked | reject("equalto", "bfcl") | list %>
+<%- set _ = SAGE_RUNGS.append(N) %>
+<%- endif %>
+<%- if "bfcl" in picked %>
+<%- set _ = BFCL_RUNGS.append(N) %>
+<%- endif %>
+<%- endfor %>
+# <<< shared eval protocol
+# ── Every model is measured, and every named eval runs ─────────────────────
+# A rung given and never evaluated is a model nobody measures (usually a typo in
+# the protocol); an EVALS name outside EVAL_CATEGORIES would silently not run.
+<%- if not SAGE_RUNGS and not BFCL_RUNGS %>
+$${ SCREEN_EVALS_FULL_EVAL_RUNGS_or_EVALS_must_select_at_least_one_eval }
+<%- endif %>
+<%- for N in LADDER if not WANT[N] %>
+$${ EXPORTS_rungs_must_each_get_at_least_one_eval }
+<%- endfor %>
+<%- for n, names in RUNG_PICK.items() %>
+<%- for s in names if s not in WANT[n] %>
+$${ EVALS_must_name_evals_in_EVAL_CATEGORIES }
+<%- endfor %>
+<%- endfor %>
+granite.build:
+  name: distill-eval
+  # target_reuse_enabled: a retry re-runs only the FAILED targets. Evals run on
+  # the site's EVAL_PARTITION, which may preempt them; MAX_RETRIES absorbs that.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+    # >>> shared eval targets (keep identical to recipes/distill/distill/build.yaml)
+    # ═══ BENCHMARK EVALS, PER RUNG (off by default) ═════════════════════════
+    # The sage battery from EVAL_CATALOG plus BFCL, each rung's evals as WANT lists
+    # them. Each reads its rung's EXPORT through the recipe's model_input macro,
+    # never a raw checkpoint, which would measure a model nobody can download.
+    # Evals are short, idempotent and retryable, so they run on EVAL_PARTITION;
+    # the images come from EVAL_IMAGE_REGISTRY.
+    #
+    # The BigCodeBench URL cannot travel as catalog data -- a parameter marker
+    # inside a parameter VALUE is emitted literally -- so the entry carries
+    # needs_bcb_url and this template writes the value.
+<%- for N in SAGE_RUNGS %>
+<%- for e in EVAL_CATALOG %>
+<%- if e.name in WANT[N] %>
+    eval-$${e.name}-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+$${ model_input(N) }
+      outputs:
+        sage_eval_results:
+          type: dataset
+          uri: "env://$${SAGE_OUTPUT_DIR}/$${EXP}-ckpt_$${N}/$${e.output_subpath}"
+      steps:
+        - step_uri: space://steps/sage-eval
+          config:
+            # TOP LEVEL: nested under sage_eval_config it is silently ignored.
+            poll_interval_seconds: $${EVAL_STATUS_POLL_INTERVAL_SECONDS}
+            sage_eval_config:
+              gb_script: "$${e.gb_script}"
+              # A FLAT suffix: sage builds a job-script FILENAME from it, so a "/"
+              # would make that a nested path and the write fails.
+              experiment: "$${EXP}-ckpt_$${N}"
+              batch_size: $${e.batch_size | default(SAGE_BATCH_SIZE)}
+              max_length: $${e.max_length | default(SAGE_MAX_LENGTH)}
+              num_gpus: $${SAGE_NUM_GPUS}
+              output_dir: "$${SAGE_OUTPUT_DIR}"
+              image_id: "docker:$${EVAL_IMAGE_REGISTRY}/$${e.image}"
+<%- if e.extra_env | default({}) or e.needs_bcb_url | default(false) %>
+              extra_env:
+<%- for k, v in (e.extra_env | default({})).items() %>
+                $${k}: "$${v}"
+<%- endfor %>
+<%- if e.needs_bcb_url | default(false) %>
+                OE_EVAL_BCB_API_URL: "$${OE_EVAL_BCB_API_URL}"
+<%- endif %>
+<%- else %>
+              extra_env: {}
+<%- endif %>
+            launcher_config:
+              resources:
+                accelerators: "$${EVAL_ACCELERATOR}:$${SAGE_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${EVAL_PARTITION}"
+                memory: $${EVAL_MEMORY}
+<%- endif %>
+<%- endfor %>
+<%- endfor %>
+
+    # ─── eval-bfcl-ckN ──────────────────────────────────────────────────────
+    # Tool calling against ground truth, its own harness and image. A different
+    # question from the divergence: one run improved every divergence metric while
+    # this sat at 0.000. A 0.000 on a new pair has more than once been a tool-FORMAT
+    # failure (no tool-call markup), not a capability one; read the outputs first.
+<%- for N in BFCL_RUNGS %>
+    eval-bfcl-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+$${ model_input(N) }
+      outputs:
+        bfcl_results:
+          type: dataset
+          uri: "env://$${BFCL_OUTPUT_DIR}/$${EXP}-ckpt_$${N}/$${BFCL_EVAL_NAME}"
+      steps:
+        - step_uri: space://steps/bfcl-eval
+          config:
+            poll_interval_seconds: $${EVAL_STATUS_POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            bfcl_config:
+              model_id: "$${BFCL_MODEL_ID}"
+              experiment: "$${EXP}-ckpt_$${N}"
+              eval_name: "$${BFCL_EVAL_NAME}"
+              test_categories: "$${BFCL_TEST_CATEGORIES}"
+              num_gpus_generate: $${BFCL_NUM_GPUS}
+              num_gpus_evaluate: $${BFCL_NUM_GPUS}
+              gpu_memory_utilization: "$${BFCL_GPU_MEMORY_UTILIZATION}"
+              # The step appends experiment and eval_name.
+              output_dir: "$${BFCL_OUTPUT_DIR}"
+            launcher_config:
+              # The step's default image names one site's registry.
+              image_id: "docker:$${EVAL_IMAGE_REGISTRY}/$${BFCL_IMAGE}"
+              resources:
+                accelerators: "$${EVAL_ACCELERATOR}:$${BFCL_NUM_GPUS}"
+                cluster: "$${CLUSTER}"
+                zone: "$${EVAL_PARTITION}"
+                memory: $${EVAL_MEMORY}
+<%- endfor %>
+
+    # ═══ AGGREGATION ════════════════════════════════════════════════════════
+    # A CSV per rung and eval kind, each gated on that rung's own evals, so an early
+    # rung's CSV is written while later rungs still evaluate and a preempted eval
+    # delays only its own rung. Then one benchmark x checkpoint table.
+<%- for N in SAGE_RUNGS %>
+    export-sage-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<%- for e in EVAL_CATALOG %>
+<%- if e.name in WANT[N] %>
+        gate_$${e.name | replace("-", "_")}:
+          binding: eval-$${e.name}-ck$${N}.sage_eval_results
+<%- endif %>
+<%- endfor %>
+      outputs:
+        sage_export_csv:
+          type: dataset
+          uri: "env://$${SAGE_RESULTS_DIR}/$${EXP}/ckpt_$${N}-sage.csv"
+      steps:
+        - step_uri: space://steps/sage-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            sage_export_config:
+              experiment: "$${EXP}-ckpt_$${N}"
+              export_stack: "$${EXPORT_STACK}"
+              input_dir: "$${SAGE_OUTPUT_DIR}"
+              # ckpt_<N> stays NUMERIC: the roll-up keys each column on ckpt_(digits).
+              output_csv: "$${SAGE_RESULTS_DIR}/$${EXP}/ckpt_$${N}-sage.csv"
+            launcher_config:
+              image_id: "docker:$${EVAL_IMAGE_REGISTRY}/$${SAGE_EXPORT_IMAGE}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${EXPORT_PARTITION}"
+                memory: $${EXPORT_MEMORY}
+<%- endfor %>
+<%- for N in BFCL_RUNGS %>
+    export-bfcl-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        gate_bfcl:
+          binding: eval-bfcl-ck$${N}.bfcl_results
+      outputs:
+        bfcl_export_csv:
+          type: dataset
+          uri: "env://$${BFCL_RESULTS_DIR}/$${EXP}/ckpt_$${N}-bfcl.csv"
+      steps:
+        - step_uri: space://steps/bfcl-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            bfcl_export_config:
+              experiment: "$${EXP}-ckpt_$${N}"
+              eval_name: "$${BFCL_EVAL_NAME}"
+              input_dir: "$${BFCL_OUTPUT_DIR}"
+              output_csv: "$${BFCL_RESULTS_DIR}/$${EXP}/ckpt_$${N}-bfcl.csv"
+              filter: "$${BFCL_FILTER}"
+            launcher_config:
+              image_id: "docker:$${EVAL_IMAGE_REGISTRY}/$${BFCL_IMAGE}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${EXPORT_PARTITION}"
+                memory: $${EXPORT_MEMORY}
+<%- endfor %>
+
+<%- if SAGE_RUNGS or BFCL_RUNGS %>
+    # ─── export-combined ────────────────────────────────────────────────────
+    # Rows are benchmarks, columns are rungs; each row reads left to right as one
+    # metric's trajectory. It pivots the per-rung CSVs (sage cannot nest experiment
+    # dirs, so there is no tree to re-scan) and is gated on every one of them, so
+    # its completion means the run has been fully measured.
+    export-combined:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<%- for N in SAGE_RUNGS %>
+        gate_sage_$${N}:
+          binding: export-sage-ck$${N}.sage_export_csv
+<%- endfor %>
+<%- for N in BFCL_RUNGS %>
+        gate_bfcl_$${N}:
+          binding: export-bfcl-ck$${N}.bfcl_export_csv
+<%- endfor %>
+      outputs:
+        combined_csv:
+          type: dataset
+          uri: "env://$${SAGE_RESULTS_DIR}/$${EXP}/combined.csv"
+      steps:
+        - step_uri: space://steps/combined-export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            combined_export_config:
+              # Empty on a side that did not run, so the step skips it.
+              sage_input_dir: "$${SAGE_RESULTS_DIR ~ '/' ~ EXP if SAGE_RUNGS else ''}"
+              bfcl_input_dir: "$${BFCL_RESULTS_DIR ~ '/' ~ EXP if BFCL_RUNGS else ''}"
+              output_csv: "$${SAGE_RESULTS_DIR}/$${EXP}/combined.csv"
+            launcher_config:
+              image_id: "docker:$${EVAL_IMAGE_REGISTRY}/$${SAGE_EXPORT_IMAGE}"
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${EXPORT_PARTITION}"
+                memory: $${EXPORT_MEMORY}
+<%- endif %>
+    # <<< shared eval targets

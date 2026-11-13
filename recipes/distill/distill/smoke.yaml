@@ -1,0 +1,56 @@
+# smoke -- a plumbing-scale layer over parameters.yaml, for any LMBDA_MODE:
+#
+#   gb build start -f recipes/distill/distill/build.yaml --parameters-path <site.yaml> \
+#     --parameters-path recipes/distill/distill/smoke.yaml \
+#     --param RUN_NAME=smoke-<timestamp> --param LMBDA_MODE=<mode>
+#
+# Its subject is the CHAIN -- every target dispatching, every binding resolving,
+# every artifact registered -- not the science: nothing it produces is a
+# measurement. 64 rows (48 train / 16 eval) and 2 optimizer steps, enough to write
+# a checkpoint per rung and a loss trajectory.
+
+# The site's SMOKE_DATASET_URI, a small think-filtered file, instead of its dataset.
+SMOKE: true
+TARGET_ROWS: 0
+# The smoke file is a few MB, and the mixture step is single-threaded. 8 GB per CPU,
+# as in parameters.yaml.
+SOURCES_CPUS: 2
+SOURCES_MEMORY: 16
+MAX_EXAMPLES: 64
+EVAL_FRACTION: 0.25
+MAX_LENGTH: 4096
+DATASET_NUM_PROC: 8
+MAX_COMPLETION_LENGTH: 1024
+
+# A rung per step, so the mid-run emission and both exports are exercised.
+GOLD_MAX_STEPS: 2
+GOLD_SAVE_STEPS: 1
+CKPT_LADDER: "1,2"
+# No warmup: at 2 steps the recipe's ratio is one warmup step, whose learning rate
+# is 0, so rung 1 would be an untouched copy of the student.
+WARMUP_RATIO: 0
+GOLD_PER_DEVICE_TRAIN_BATCH_SIZE: 1
+GOLD_GRADIENT_ACCUMULATION_STEPS: 1
+# One node, two GPUs: the distributed path, and the per-rank checkpoint files the
+# export has to tolerate, are exercised rather than skipped.
+GOLD_NUM_NODES: 1
+GOLD_NUM_GPUS: 2
+VLLM_NUM_GPUS: 1
+# A cold load of a small model is minutes; fail fast, and release the server soon
+# after a crashed trainer.
+VLLM_HEALTH_TIMEOUT_SECONDS: 900
+VLLM_MAX_LIFETIME_SECONDS: 3600
+# Publication on the first step of a run this short.
+SFT_SAVE_STEPS: 1
+
+# 8 of the 16 held-out rows: wiring, not a measurement.
+EVAL_MAX_SAMPLES: 8
+SCREEN_EVALS: ""
+FULL_EVAL_RUNGS: ""
+
+# One node: no cross-node collectives to trace.
+NCCL_DEBUG: ""
+LOG_RETRIEVAL_INTERVAL_SECONDS: 30
+CKPT_WATCH_INTERVAL_SECONDS: 30
+# A smoke failure is usually yours, not the cluster's.
+MAX_RETRIES: 0
