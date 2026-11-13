@@ -183,8 +183,8 @@ The command stores only the files at the head of the space config branch (defaul
 deployment's config branch, e.g. `gbspace-config`) and of the assets branch named in `space.yaml`
 (its `@<ref>`). No git history, `.git` directory, or untracked files are kept. It then:
 
-- sets the row's `git_repo_uri` to `db://spaces/<name>` (pass `--no-switch` to store the snapshot
-  but keep using git);
+- sets the row's `space_uri` to `db://spaces/<name>`, so the space is loaded from the snapshot
+  (pass `--no-switch` to store the snapshot and leave `space_uri` as it is);
 - rewrites the stored `space.yaml` so that the `base_uris` entry for the assets repo becomes
   `db://spaces/<name>/assets` (a `#subdirectory=` suffix is kept);
 - records each snapshot's source repo (normalized to `https://host/org/repo`), branch, and commit.
@@ -194,24 +194,24 @@ base64-encoded zip, like a build's `build_archive`), `source_uri`, `source_ref`,
 and `snapshot_time`. At use, gbserver unpacks each snapshot into a local cache directory named by
 its content hash, and serves it from there.
 
-The space is still identified by its source repo, not by the `db://` URI. Secret groups and
-build/space consistency checks match on the snapshot's `source_uri`, so moving a space to the
-database does not change which secrets it resolves. When the space uses the IBM Cloud secret
-manager, `space-snapshot` compares the secret groups matched before and after the switch, and
-refuses the switch if they differ (`--skip-secret-group-check` overrides this).
+`space_uri` says where a space is loaded from; unset means `git_repo_uri`. Like the snapshots it
+lives in the `json` column, so no schema change is needed. `git_repo_uri` keeps naming the space's
+git repo, which is what secret groups, build/space consistency checks, build PRs and `gb` CLI
+clients use. Moving a space to the database therefore changes none of them. `space-snapshot`
+refuses a snapshot taken from a different repo than `git_repo_uri` (in any URI form), and clearing
+`space_uri` moves the space back to git.
 
-Build PRs and their messages still go to the space's repo: for a db-backed space, the snapshot's
-`source_uri`. They are optional for every space. If GitHub is unreachable, the build runs without a
+Build PRs and their messages still go to the space's repo (`git_repo_uri`). They are optional for every space. If GitHub is unreachable, the build runs without a
 PR, its messages are kept in the build's events, and after a few consecutive failures the build run
 stops trying (see `GBSERVER_BUILD_GIT_*` in
 [environment variables](../configuration/environment-variables.md)).
 
 Re-running `gbserver create-spaces` (including `--replace`/`--clear`) for a db-backed space keeps
-its snapshot when the spec names the same repo (e.g. the predefined public space), so the space is
+its `space_uri` and snapshot when the spec names the same repo (e.g. the predefined public space), so the space is
 not moved back to git. Likewise, the environment-files API reads the public space's environments
 from its snapshot.
 
-`db://spaces/<other>` makes a row an alias that is served from another row's snapshot. `GET
+A `space_uri` of `db://spaces/<other>` makes a row an alias that is served from another row's snapshot. `GET
 /api/v1/spaces/` omits the archives (but keeps the source metadata); `GET
 /api/v1/spaces/<name>` returns them.
 
