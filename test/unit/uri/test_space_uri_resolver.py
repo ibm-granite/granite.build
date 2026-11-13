@@ -35,6 +35,7 @@ which registers the ``space``/``file`` URI handlers used here.
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable, Optional
 from unittest import mock
 
@@ -1986,10 +1987,15 @@ class TestThreadLocalScoping:
 # --------------------------------------------------------------------------- #
 
 
+def _space(uri: str) -> SimpleNamespace:
+    """What _resolve_base_uris reads from a Space."""
+    return SimpleNamespace(uristr=uri, db_space_name=None)
+
+
 class TestResolveBaseUris:
     def test_relative_bare_path_against_file_space(self, tmp_path):
         space_uri = f"file://{tmp_path}"
-        result = _resolve_base_uris(["../assets"], space_uri)
+        result = _resolve_base_uris(["../assets"], _space(space_uri))
         expected = (Path(str(tmp_path)) / "../assets").resolve()
         assert result == [f"file://{expected}"]
 
@@ -2018,7 +2024,7 @@ class TestResolveBaseUris:
         when the space URI is not a local file:// URI."""
         space_uri = "git://github.ibm.com/org/repo"
         with pytest.raises(ValueError, match="Cannot resolve relative base_uri"):
-            _resolve_base_uris(["../assets"], space_uri)
+            _resolve_base_uris(["../assets"], _space(space_uri))
 
     def test_relative_file_uri_with_nonlocal_space_raises(self):
         space_uri = "git://github.ibm.com/org/repo"
