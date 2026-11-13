@@ -235,11 +235,22 @@ export function createApiClient(
  *
  * Every hook is read per request, like the shared seam, so a host may call
  * {@link configureAutotunexClient} after the AutoTuneX module has loaded.
+ *
+ * **AutoTuneX has to be configured for this too**, or every direct call fails:
+ *
+ * - The host's origin must be in AutoTuneX's `cors_allow_origins`, written as a
+ *   bare origin (`https://ui.example.com`). Without it the browser blocks the
+ *   credentialed response.
+ * - A host on a different *site* from AutoTuneX (`ui.example.org` calling
+ *   `autotunex.example.com`) also needs `session_cookie_same_site="none"`. The
+ *   default `lax` only covers same-site siblings; on another site the browser
+ *   withholds the cookie, every call 401s, and `onUnauthorized` loops.
  */
 export interface AutotunexClientOptions {
   /**
-   * AutoTuneX's origin, e.g. `https://autotunex.example.com`, without the
-   * `/api/v1` suffix — that is appended here. A trailing slash is ignored.
+   * AutoTuneX's origin, e.g. `https://autotunex.example.com`. The `/api/v1`
+   * suffix is appended here; a trailing slash, or a `/api/v1` already on the
+   * value, is dropped first, so either spelling works.
    */
   baseUrl: string
   /**
@@ -262,15 +273,23 @@ export function configureAutotunexClient(next: AutotunexClientOptions | null): v
   autotunexOptions = next
 }
 
-/** Read the installed AutoTuneX options, or `null` when using the proxy. */
-export function autotunexClientOptions(): AutotunexClientOptions | null {
-  return autotunexOptions
+/**
+ * `baseUrl` with AutoTuneX's API prefix added. A trailing slash and an existing
+ * `/api/v1` are stripped first, so `https://x`, `https://x/` and
+ * `https://x/api/v1/` all give `https://x/api/v1` rather than doubling it.
+ */
+function autotunexDirectBase(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, '').replace(/\/api\/v1$/, '')}/api/v1`
 }
 
-/** `baseUrl` with any trailing slash removed and AutoTuneX's API prefix added. */
-function autotunexDirectBase(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/api/v1`
-}
+/**
+ * The direct options a request was sent under, recorded on its config so the 401
+ * handler routes by the mode the request actually went out in, not whatever is
+ * installed when the response arrives. Absent means it went through the proxy.
+ */
+const AUTOTUNEX_DIRECT = '__uiCoreAutotunexDirect'
+
+type AutotunexConfig = OwnedConfig & { [AUTOTUNEX_DIRECT]?: AutotunexClientOptions }
 
 /**
  * The AutoTuneX client: proxied through the shared seam by default, or direct and
@@ -290,6 +309,7 @@ export function createAutotunexClient(): AxiosInstance {
     ;(config as typeof config & OwnedConfig)[OWNED_REQUEST] = true
     const direct = autotunexOptions
     if (direct) {
+      ;(config as typeof config & AutotunexConfig)[AUTOTUNEX_DIRECT] = direct
       config.baseURL = autotunexDirectBase(direct.baseUrl)
       config.withCredentials = true
       return config
@@ -306,13 +326,11 @@ export function createAutotunexClient(): AxiosInstance {
     (error) => {
       const err = error as {
         response?: { status?: number }
-        config?: OwnedConfig
+        config?: AutotunexConfig
       }
       if (err?.response?.status === 401 && err?.config?.[OWNED_REQUEST]) {
-        // Read at response time, not captured on the way out: the decision only
-        // has to match the mode the request was sent in, and a host never
-        // switches mode mid-session.
-        if (autotunexOptions) autotunexOptions.onUnauthorized?.(error)
+        const sentDirect = err.config[AUTOTUNEX_DIRECT]
+        if (sentDirect) sentDirect.onUnauthorized?.(error)
         else overrides.onUnauthorized?.(error)
       }
       return Promise.reject(error)
@@ -359,6 +377,10 @@ export function autotunexApiBase(path: string): string {
  * configured, otherwise the same proxy path as {@link autotunexApiBase}. A direct
  * link is a top-level navigation to AutoTuneX's own host, so the browser attaches
  * its session cookie without any CORS involvement.
+ *
+ * No interceptor runs for a navigation, so `onUnauthorized` cannot either: a link
+ * followed after the AutoTuneX session has expired lands on AutoTuneX's raw 401
+ * response rather than its login.
  */
 export function autotunexResourceUrl(path: string): string {
   const direct = autotunexOptions
