@@ -250,7 +250,9 @@ the payload runs.
   2026-11-06.
 - `-3` left `modular_lightglue.py` unpatched. transformers never imports that file,
   so `-3` is not exploitable through it, but `-4` patches it too. The `-3` tag was
-  **deleted from quay** on 2026-11-10. `-4` and `-5` are published.
+  **deleted from quay** on 2026-11-10.
+- `-4` lacks the PR #667 review fixes in `src/`. Its tag was **deleted from quay** on
+  2026-11-13; `-5` is the only published tag.
 
 `fms-v3.2.2-4` (manifest
 `sha256:2d4e803ece50d4f6bb62570035eb7715857cbb66280e086af111e3b9e48165cd`, published
