@@ -1,5 +1,5 @@
 import sys
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from gbcli.services.service_admin import server_log
 from gbcli.services.service_artifact import (
@@ -656,7 +656,7 @@ class GBClient:
             space: Optional[str] = None,
             params: Optional[List[str]] = [],
             skip_validation=False,
-            parameters_path: Optional[str] = None,
+            parameters_path: Optional[Sequence[str]] = None,
             targets: Optional[tuple[str, ...]] = (),
             description: str = "",
             tags: list[str] = [],
@@ -804,7 +804,7 @@ class GBClient:
             id_format: Optional[str] = None,
             space: Optional[str] = None,
             params: Optional[List[str]] = None,
-            parameters_path: Optional[str] = None,
+            parameters_path: Optional[Sequence[str]] = None,
             callback=None,
         ) -> List[Any]:
             return build_describe(
@@ -862,7 +862,7 @@ class GBClient:
             filename: Optional[str] = "",
             space: Optional[str] = None,
             params: Optional[List[str]] = [],
-            parameters_path: Optional[str] = None,
+            parameters_path: Optional[Sequence[str]] = None,
             targets: Optional[tuple[str, ...]] = (),
             callback=None,
             validation_type: str = "static",

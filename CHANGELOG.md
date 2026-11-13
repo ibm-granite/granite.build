@@ -110,6 +110,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     equally specific copies of a name for the environment, and `Invalid step for its
     environment` when the copy that would be selected is in the environment's own `steps/` but
     doesn't admit it.
+- **`gb build --param-file` (formerly `--parameters-path`) is repeatable and layers over the
+  recipe's `parameters.yaml` instead of replacing it (#663).** `start`, `validate` and
+  `describe` take the recipe's `parameters.yaml` (next to `build.yaml`) as the base, then each
+  `--param-file` in the order given, then `--param`. The last layer wins per top-level key, and
+  a list or map value is replaced whole. For example:
+  `gb build start -f build.yaml --param-file site.yaml --param-file smoke.yaml`.
+  Compatibility: a single `--parameters-path` used to replace `parameters.yaml` completely; now a
+  key the file does not define falls back to `parameters.yaml`. The recipe's `parameters.yaml` is
+  now always loaded, so a malformed one fails the build even when another `--param-file` is
+  passed. A comments-only parameters file now counts as empty instead of failing, and the error
+  for a file that is not a mapping names that file.
 - **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
   `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
   logins on that host. docker still logs in per host.
@@ -312,6 +323,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
+- **`gb build --parameters-path`, in favor of `--param-file` (#663).** The option now adds a
+  layer instead of naming the one parameters file, and `--param-file` pairs with `--param`.
+  `--parameters-path` still works on `start`, `validate` and `describe` as an alias, and the two
+  names can be mixed; layers apply in command-line order. It will be removed in a future
+  release.
 - **Config keys that carried an input path in steps shipped in v0.3.x (#453).** These
   steps now declare the input as optional and read the binding when it is bound. A bound
   input wins over the key. When the input isn't bound, the step falls back to the old
