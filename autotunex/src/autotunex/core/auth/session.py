@@ -1,4 +1,4 @@
-# Copyright IBM Corp. 2024-2026
+# Copyright Granite.Build Authors
 # SPDX-License-Identifier: Apache-2.0
 """The BFF's own session token: minted and verified here, no server-side store.
 

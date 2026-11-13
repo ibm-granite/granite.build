@@ -1,4 +1,4 @@
-# Copyright IBM Corp. 2024-2026
+# Copyright Granite.Build Authors
 # SPDX-License-Identifier: Apache-2.0
 """Pure assembly of a granite.build LSF/SkyPilot ``build.yaml`` from a job.
 

@@ -119,5 +119,5 @@ compatible with the project Apache 2.0 license.
 
 ## Source File License Notes
 
-- src/gbserver/utils/logger.py contains # (C) Copyright IBM Corp. 2024. followed by Apache 2.0 text. Valid Apache 2.0 header; not proprietary.
+- Project source files carry the Apache-2.0 header with the holder "Granite.Build Authors" (convention and check: "License headers" in CONTRIBUTING.md). Files ported from third-party projects keep their upstream notices.
 - No source files contain proprietary, confidential, or All Rights Reserved headers.

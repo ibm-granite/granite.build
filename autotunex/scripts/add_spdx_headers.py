@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pathlib
 
-HEADER = "# Copyright IBM Corp. 2024-2026\n# SPDX-License-Identifier: Apache-2.0\n"
+HEADER = "# Copyright Granite.Build Authors\n# SPDX-License-Identifier: Apache-2.0\n"
 
 for path in pathlib.Path("src/autotunex").rglob("*.py"):
     text = path.read_text(encoding="utf-8")

@@ -1,4 +1,4 @@
-<!-- Copyright IBM Corp. 2024-2026 -->
+<!-- Copyright Granite.Build Authors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
 <script lang="ts">
@@ -107,6 +107,6 @@
 			innerHeight - 800
 		}px; background: #060606; color: #e0e0e0; text-align: center; padding-right: 30px; font-size: 12px;`}
 	>
-		Copyright &copy; 2025 IBM Corp. Licensed under the Apache License 2.0.
+		Copyright &copy; Granite.Build Authors. Licensed under the Apache License 2.0.
 	</div>
 {/if}
