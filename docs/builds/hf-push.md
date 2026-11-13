@@ -32,7 +32,7 @@ hf://[<host>/][<type>/]<owner>/<repo>[/<revision>[/<path_in_repo>]]
 | `revision` | `main` | Branch, tag, or commit SHA. |
 | `path_in_repo` | `""` (repo root) | Subpath within the repo. If present, `revision` must be explicit (otherwise the parser cannot tell revision from path). |
 
-No segment may be `.` or `..`, since the segments become local paths under the HF cache. Each segment may contain only letters (including non-ASCII letters), digits, spaces, and `.` `_` `-` `+` `=` `@` `,` `~` `:` `(` `)`. The host may contain only letters, digits, `.` and `-`, plus an optional `:<port>`. A URI may not have a query (`?`) or fragment (`#`). These limits exist because the pull and push steps insert the values into shell commands and download filters. A URI that breaks any of these rules is rejected as malformed.
+No segment may be `.` or `..`, since the segments become local paths under the HF cache. No segment may start with `-`. `owner`, `repo` and `revision` may contain only letters (including non-ASCII letters), digits, and `.` `_` `-` `+` `=` `@` `,` `~`. `path_in_repo` segments may also contain spaces, `:`, `(` and `)`. The host may contain only letters, digits, `.` and `-`, plus an optional `:<port>`. A URI may not have a query (`?`) or fragment (`#`). These limits exist because the pull and push steps insert the values into shell commands, `hf` CLI arguments and download filters. A URI that breaks any of these rules is rejected as malformed.
 
 ### Examples
 

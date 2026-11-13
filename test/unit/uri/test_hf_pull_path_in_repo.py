@@ -106,9 +106,9 @@ def test_dot_segments_are_rejected(uri):
 
 def test_dot_segments_appended_after_parsing_are_rejected():
     uri = HfURI.parse("hf:///datasets/o/r/main")
-    uri.append_path("./x")
     with pytest.raises(ValueError):
-        uri.local_path(Path("/cache/o/r/main"))
+        uri.append_path("./x")
+    assert uri.local_path(Path("/d")) == Path("/d")  # left unchanged
 
 
 def test_dots_inside_segment_names_are_allowed():
@@ -146,9 +146,56 @@ def test_a_quote_in_owner_repo_or_revision_is_rejected(uri):
 @pytest.mark.parametrize("char", _UNSAFE_PATH_CHARS)
 def test_unsafe_characters_appended_after_parsing_are_rejected(char):
     uri = HfURI.parse("hf:///datasets/o/r/main")
-    uri.append_path(f"dir/a{char}b")
     with pytest.raises(ValueError):
-        uri.local_path(Path("/cache/o/r/main"))
+        uri.append_path(f"dir/a{char}b")
+    assert uri.local_path(Path("/d")) == Path("/d")  # left unchanged
+
+
+def test_append_path_after_the_parts_are_cached_is_checked_and_seen():
+    uri = HfURI.parse("hf:///datasets/o/r/main/a")
+    assert uri.local_path(Path("/d")) == Path("/d/a")  # caches the parts
+    with pytest.raises(ValueError):
+        uri.append_path("../x'$(id)")
+    uri.append_path("b")
+    assert uri.local_path(Path("/d")) == Path("/d/a/b")
+    assert str(uri) == "hf://huggingface.co/datasets/o/r/main/a/b"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "hf:///datasets/--cache-dir=/tmp",  # owner "--cache-dir=", repo "tmp"
+        "hf:///-o/r",
+        "hf:///o/-r",
+        "hf:///o/r/-rev",
+        "hf:///o/r/main/-file",
+        "hf:///o/r/main/dir/--x",
+    ],
+)
+def test_a_leading_dash_is_rejected(uri):
+    # The steps pass the repo id and revision to the hf CLI, which would read
+    # a leading "-" as an option.
+    with pytest.raises(ValueError):
+        HfURI.parse(uri)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "hf:///datasets/o x/r",
+        "hf:///datasets/o/r x",
+        "hf:///o/r/main --private",
+        "hf:///o/r/v:1",
+        "hf:///o/r(1)/main",
+        "hf:///buckets/o b/x",
+    ],
+)
+def test_path_only_characters_are_rejected_in_owner_repo_or_revision(uri):
+    # Space, ":" and "(" ")" are only for the path in the repo: no HF repo id or
+    # git revision has them, and the LSF hfpush step expands the revision
+    # unquoted, where a space would split it into extra CLI arguments.
+    with pytest.raises(ValueError):
+        HfURI.parse(uri)
 
 
 @pytest.mark.parametrize(
@@ -204,6 +251,8 @@ _REALISTIC = [
         "a/b/c/d.safetensors",
     ),
     ("hf:///buckets/o/b/dir/file.txt", "dir/file.txt"),
+    # A bucket has no revision: what follows the bucket is the path.
+    ("hf:///buckets/o/b/my dir/f (1).txt", "my dir/f (1).txt"),
 ]
 
 
@@ -213,12 +262,14 @@ def test_realistic_names_still_parse(uri, path_in_repo):
 
 
 def _uris_that_parse():
-    """The realistic URIs, plus one URI per printable ASCII character (and a
-    few non-ASCII letters) in every path segment and one in the host, kept if
-    they parse -- so the render tests below cover whatever the parser admits."""
+    """The realistic URIs, plus URIs with each printable ASCII character (and a
+    few non-ASCII letters) in every path segment, only in the path in the repo
+    (inside and at the start of a segment), and in the host, kept if they
+    parse -- so the render tests below cover whatever the parser admits."""
     candidates = [uri for uri, _ in _REALISTIC]
     for c in [chr(i) for i in range(0x20, 0x7F)] + ["é", "ß", "数"]:
         candidates.append(f"hf:///datasets/o{c}1/r{c}2/v{c}3/d{c}4/f{c}5")
+        candidates.append(f"hf:///datasets/o/r/main/d{c}4/{c}f5")
         candidates.append(f"hf://h{c}6.example.com/o/r")
     uris = []
     for candidate in candidates:
@@ -242,6 +293,12 @@ _HF_SCRIPTS = {
 
 
 def _step_config(key, uri):
+    """The step config the real Hfstore builder makes for *uri*.
+
+    :param key: ``"hfpull_config"`` or ``"hfpush_config"``, the script's config.
+    :param uri: The parsed HfURI.
+    :returns: The config dict the script's Jinja reads (``config.<key>.*``).
+    """
     if key == "hfpull_config":
         return Hfstore.build_hfpull_step_config(uri, "/cache/x")
     return Hfstore.build_hfpush_step_config(uri, "/src/x", "out", True)
@@ -315,11 +372,21 @@ def _stub_python3(tmp_path):
 
 
 def _kwargs_of(program, func):
+    """The literal keyword arguments of the ``<obj>.<func>(...)`` call in *program*.
+
+    :param program: Python source, as the stub ``python3`` recorded it.
+    :param func: The method name, e.g. ``"hfpull_step"``.
+    :returns: ``{keyword: value}``, each value ``ast.literal_eval``-ed.
+    """
     call = next(
-        n
-        for n in ast.walk(ast.parse(program))
-        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == func
+        (
+            n
+            for n in ast.walk(ast.parse(program))
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == func
+        ),
+        None,
     )
+    assert call is not None, f"no {func}(...) call in the program:\n{program}"
     return {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
 
 

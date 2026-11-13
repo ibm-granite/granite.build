@@ -56,6 +56,9 @@ from gbserver.types.constants import (
     LAKEHOUSE_ENVIRONMENT,
     get_hf_token,
 )
+from gbserver.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 artifacts_api = FastAPI()
 
@@ -836,16 +839,47 @@ class HFDatasetRegistrationRequest(BaseArtifactRequest):
     table_name: str = ""
 
 
+def _hf_uri_from_request(
+    owner: str, repo: str, hf_type: HfType, revision: Optional[str]
+) -> HfURI:
+    """The hf:// URI a typed registration request names.
+
+    Args:
+        owner: The request's organization.
+        repo: The request's model, dataset or bucket id.
+        hf_type: The resource type the route registers.
+        revision: The request's revision; ``None`` or ``""`` means ``main``.
+
+    Returns:
+        The URI, from :meth:`HfURI.from_parts`.
+
+    Raises:
+        HTTPException: 400 with a generic message if the fields cannot form a
+            valid hf:// URI (e.g. a quote, a ``#`` or a leading ``-``); the
+            reason is logged server-side only.
+    """
+    try:
+        return HfURI.from_parts(
+            owner=owner, repo=repo, hf_type=hf_type, revision=revision or "main"
+        )
+    except ValueError as e:
+        logger.info("Rejected HF artifact registration fields: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid HuggingFace organization, repository id or revision",
+        ) from e
+
+
 @artifacts_api.post("/hf/model")
 def register_hf_model(
     request: Request, artifact_request: HFModelRegistrationRequest
 ) -> RegisterArtifactResponse:
     """Register a HuggingFace model."""
-    hf_uri = HfURI.from_parts(
-        owner=artifact_request.organization,
-        repo=artifact_request.model_id,
-        hf_type=HfType.MODEL,
-        revision=artifact_request.revision or "main",
+    hf_uri = _hf_uri_from_request(
+        artifact_request.organization,
+        artifact_request.model_id,
+        HfType.MODEL,
+        artifact_request.revision,
     )
     uri_str = hf_uri.get_uristr(hf_uri)
 
@@ -863,11 +897,11 @@ def register_hf_dataset(
     artifact_request: HFDatasetRegistrationRequest,
 ) -> RegisterArtifactResponse:
     """Register a HuggingFace dataset."""
-    hf_uri = HfURI.from_parts(
-        owner=artifact_request.organization,
-        repo=artifact_request.dataset_id,
-        hf_type=HfType.DATASET,
-        revision=artifact_request.revision or "main",
+    hf_uri = _hf_uri_from_request(
+        artifact_request.organization,
+        artifact_request.dataset_id,
+        HfType.DATASET,
+        artifact_request.revision,
     )
     uri_str = hf_uri.get_uristr(hf_uri)
 
@@ -893,11 +927,11 @@ def register_hf_bucket(
     artifact_request: ArtifactBucketRequest,
 ) -> RegisterArtifactResponse:
     """Register a HuggingFace bucket."""
-    hf_uri = HfURI.from_parts(
-        owner=artifact_request.organization,
-        repo=artifact_request.bucket_id,
-        hf_type=HfType.BUCKET,
-        revision=artifact_request.revision or "main",
+    hf_uri = _hf_uri_from_request(
+        artifact_request.organization,
+        artifact_request.bucket_id,
+        HfType.BUCKET,
+        artifact_request.revision,
     )
     uri_str = hf_uri.get_uristr(hf_uri)
 
