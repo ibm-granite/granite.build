@@ -104,8 +104,8 @@ EXPECTED = {
     "environments/bash/steps/inference": ({"model"}, set()),
     "environments/bash/steps/inference-lora": ({"model"}, {"adapter"}),
     "environments/bash/steps/lora-finetune": ({"model"}, {"dataset"}),
-    "environments/bash/steps/tune/fm-tune": ({"dataset"}, {"base_model"}),
-    f"{_SKY}/tune/fm-tune": ({"dataset"}, {"base_model"}),
+    "environments/bash/steps/train/fm-tune": ({"dataset"}, {"base_model"}),
+    f"{_SKY}/train/fm-tune": ({"dataset"}, {"base_model"}),
     # MergeKit merge: new, so model_1 is required outright; the rest are optional (a recipe
     # may also name Hugging Face models directly, which MergeKit fetches itself).
     f"{_SKY}/merge/mergekit": (

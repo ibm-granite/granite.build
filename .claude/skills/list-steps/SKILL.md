@@ -5,7 +5,7 @@ description: Use when asked for an inventory, table, list, or overview of the st
 
 # List steps (inventory table)
 
-Produces one table per category (categories alphabetical) of the framework steps — every git-tracked step under `steps/<group>/<name>/<env>/` — followed by one final **Non-Framework Steps** table (uncategorised) of every git-tracked `configurations/**/step.yaml` that no framework step publishes. Both are always produced. One row per step: implementations for several envs share a row (e.g. `tune/fm-tune` bash + skypilot; non-framework `hello` in bash/docker/runpod/skypilot-aws). Output as Markdown, an Excel workbook, and/or a PowerPoint deck.
+Produces one table per category (categories alphabetical) of the framework steps — every git-tracked step under `steps/<group>/<name>/<env>/` — followed by one final **Non-Framework Steps** table (uncategorised) of every git-tracked `configurations/**/step.yaml` that no framework step publishes. Both are always produced. One row per step: implementations for several envs share a row (e.g. `train/fm-tune` bash + skypilot; non-framework `hello` in bash/docker/runpod/skypilot-aws). Output as Markdown, an Excel workbook, and/or a PowerPoint deck.
 
 ## Run
 
@@ -32,7 +32,7 @@ stdout is the Markdown tables; stderr carries `NOTE:` lines that need judgment a
 
 | Column | Source |
 |---|---|
-| Category (table heading, not a column) | framework steps only: the top-level `steps/` folder, title-cased (`steps/distill/*` → Distill, `steps/tune/*` → Tune). No mapping table: every folder is its own category |
+| Category (table heading, not a column) | framework steps only: the top-level `steps/` folder, title-cased (`steps/distill/*` → Distill, `steps/train/*` → Train). No mapping table: every folder is its own category |
 | Step | `<group>/<name>` for framework steps; for non-framework steps, the path below `.../steps/` (e.g. `bfcl-eval`) |
 | Environments | framework steps: one label per `environment_configs` entry in `step-template.yaml`: the environment class lowercased, plus ` - <subtypes>` (comma-separated) when it declares `subtypes:`, e.g. `skypilot - lsf`, `skypilot` (no restriction: any subtype), `bash`; a step with several impls lists each, separated by `; `. Non-framework steps under `configurations/assets/environments/<class>/<sub>/[<cluster>/]steps/` take the subtype from the directory (e.g. `skypilot - lsf (ibm-bluevela)`), since it is the most specific; directories without a subtype use the step.yaml's declared environments, falling back to the directory's class (`configurations/assets/steps/<class>/` gives `<class>`) |
 | Tested Environments | framework steps only (non-framework: `—`): each `test/<case>/test_*.py` paired with every `environment_uri` (quoted or not) in `test-data/<case>/build.yaml`; labels are sorted; a skypilot subtype tested on >1 cluster shows the cluster, e.g. `slurm (bluevela)`, with the base env (`skypilot/slurm`) shown as `slurm (local)` |

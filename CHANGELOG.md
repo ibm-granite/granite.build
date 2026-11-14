@@ -87,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The fm-tune step moves from the `tune` category to `train` (#677).** Its URI changes from
+  `space://steps/tune/fm-tune` to `space://steps/train/fm-tune`. The source is now
+  `steps/train/fm-tune/`, and the published copies are
+  `configurations/assets/environments/{bash,skypilot}/steps/train/fm-tune/`. The build tests,
+  docs and unit tests are updated. **Breaking:** a build.yaml outside this repo that uses
+  `space://steps/tune/fm-tune` must switch to the new URI. The old one is not kept as an alias.
 - **The `misc` step category is now `aux` (#671).** The byoc step moves from
   `space://steps/misc/byoc` to `space://steps/aux/byoc`; its source is now `steps/aux/byoc/` and
   its published copy is `configurations/assets/environments/skypilot/steps/aux/byoc/`. The
