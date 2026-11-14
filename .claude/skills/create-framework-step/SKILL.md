@@ -24,7 +24,7 @@ default option and says in its text to type the answer under "Other".
 
 1. **Step name** (`<name>`): options `new-step` (placeholder, rename later) and
    "Type a name under Other". Lowercase, hyphens ok, no slashes.
-2. **Category** (`<category>`): options `eval`, `train`, `tune`, `data`, `aux` (the tool adds
+2. **Category** (`<category>`): options `eval`, `train`, `data`, `aux` (the tool adds
    "Other" for the user's own). It becomes the directory under `steps/`:
    `steps/<category>/<name>/<env>/`, published as `space://steps/<category>/<name>`.
 3. **Inputs**: "A comma-separated list of input names, typed under Other." Options
