@@ -5,14 +5,15 @@ modules in ``sys.modules`` is enough to drive every path it has: the single-page
 read, ``fetch_all``'s paging, cross-page dedup, the page cap, both import-failure
 translations, and the two response-error translations.
 
-That matters because gbcli ships only with the opt-in ``granite-build`` extra — a
-git dependency, not a PyPI release — so it is absent from the default
-``make install`` tree and from CI. These tests used to monkeypatch attributes on
-the *real* gbcli behind a ``pytest.importorskip``, which meant they never ran
-there and the module sat at 18% coverage while looking tested. Faking also drops
-two incidental costs of importing the real package: the ``load_dotenv`` side
-effect this directory's ``conftest.py`` documents, and a 1000-record
-``BUILD_LOGALL_PAGE_SIZE`` that made every paging test build a thousand rows.
+That matters because gbcli ships with granite.build, which ``make install`` does
+not install (developers add it from the repository root with
+``uv pip install -e ..``), so it is absent from the default tree and from CI. These
+tests used to monkeypatch attributes on the *real* gbcli behind a
+``pytest.importorskip``, which meant they never ran there and the module sat at 18%
+coverage while looking tested. Faking also drops two incidental costs of importing the
+real package: the ``load_dotenv`` side effect this directory's ``conftest.py``
+documents, and a 1000-record ``BUILD_LOGALL_PAGE_SIZE`` that made every paging test
+build a thousand rows.
 
 What a fake cannot check is gbcli's own API surface: if upstream renamed
 ``run_logquery`` or moved ``BUILD_LOGALL_PAGE_SIZE``, every test below would still

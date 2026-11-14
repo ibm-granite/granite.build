@@ -4,7 +4,7 @@ The adapter's import path is exercised by injecting a fake ``autotune.catalog``
 module into ``sys.modules`` (auto-undone by ``monkeypatch``); the missing-package
 path is forced by injecting a ``None`` entry, which makes ``from autotune.catalog
 import ...`` raise ImportError even when ``autotune`` happens to be installed (it
-is an optional extra — absent in CI, present in a granite-build install). The
+is an optional extra — absent in CI, present in a training install). The
 memoized loaders are cache-cleared around every test so a payload from one test
 never leaks into the next.
 """

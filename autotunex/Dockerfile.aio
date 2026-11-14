@@ -16,9 +16,15 @@
 # 127.0.0.1 for every caller — identical fix in Podman and on OpenShift. Clients
 # keep using :8080 unchanged. See docker/aio/Caddyfile.
 #
-# granite.build is installed via its PUBLIC standalone path from ibm-granite/granite.build
-# main (no internal Artifactory). AutoTuneX submits builds to the co-located gbserver
-# through the `llmb` CLI (job_backend=llmb, GB_ENVIRONMENT=standalone).
+# granite.build is installed via its PUBLIC standalone path from THIS checkout (no
+# internal Artifactory), so an image built from a commit runs the gbserver in that
+# commit. Build from the repository root; autotunex/Dockerfile.aio.dockerignore
+# sets what enters the context:
+#   docker build -f autotunex/Dockerfile.aio -t autotunex-aio:local .
+# From a git worktree or a shallow clone, which reach no v* tag, pass the version:
+# --build-arg GB_VERSION=0.3.10 (see the py-builder stage).
+# AutoTuneX submits builds to the co-located gbserver through the `llmb` CLI
+# (job_backend=llmb, GB_ENVIRONMENT=standalone).
 #
 # All secrets and internal hostnames are injected at RUN time via --env-file
 # (see .env.aio.example); nothing sensitive is baked into this tracked file.
@@ -30,8 +36,6 @@ ARG PYTHON_VERSION=3.12
 # Node 22 (LTS): granite.build's frontend pulls @carbon/themes>=11.79, whose
 # package engines require node>=22 — yarn --frozen-lockfile aborts on node 20.
 ARG NODE_VERSION=22
-ARG GB_REPO=https://github.com/ibm-granite/granite.build.git
-ARG GB_REF=main
 
 # -----------------------------------------------------------------------------
 # Stage 1 — build the AutoTuneX SvelteKit SPA (adapter-static, base path /autotune)
@@ -45,104 +49,94 @@ WORKDIR /app/ux
 ARG PUBLIC_AUTOTUNEX_API_URL=""
 
 # Install deps first for layer caching (re-runs only when the lockfile changes).
-COPY src/ux/package.json src/ux/package-lock.json ./
+COPY autotunex/src/ux/package.json autotunex/src/ux/package-lock.json ./
 RUN npm ci
 
-COPY src/ux/ ./
+COPY autotunex/src/ux/ ./
 RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
     && npm run build
 # Output: /app/ux/build
 
 # -----------------------------------------------------------------------------
-# Stage 2 — clone granite.build (GB_REPO at GB_REF) and build its dashboard UI
+# Stage 2 — granite.build's dashboard UI, from THIS checkout
+#
+# Only frontend/ and the Makefile enter this stage, so a commit that does not
+# touch frontend/ reuses the cached yarn install and `next build`.
 # -----------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-slim AS gb-builder
+FROM node:${NODE_VERSION}-slim AS dashboard
 
-ARG GB_REPO
-ARG GB_REF
-
+# make + rsync: the repo's own `make build-frontend` recipe, run as-is. Its
+# `$(shell git …)` variables are expanded lazily and the recipe uses none of
+# them, so this stage needs neither git nor .git.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates rsync \
+    && apt-get install -y --no-install-recommends ca-certificates make rsync \
     && rm -rf /var/lib/apt/lists/*
 
-# Full commit history + tags (NOT --depth 1): granite.build versions itself with
-# setuptools_scm, which derives the version from the nearest version tag
-# (v0.3.3 → 0.3.4.devN). A shallow clone carries no tags, so scm falls back to
-# 0.0.1.dev1 — which the llmb CLI's version check reads as "outdated" and then
-# EXITS NONZERO before running ANY `build` subcommand, breaking build list/start/
-# cancel both from AutoTuneX and by hand in the pod. --filter=blob:none keeps it
-# lean: full history + tags for scm, blobs fetched lazily at checkout for the
-# frontend build below.
-RUN git clone --filter=blob:none --branch "${GB_REF}" "${GB_REPO}" /opt/granite.build
+WORKDIR /opt/granite.build
+COPY Makefile ./
+COPY frontend/ ./frontend/
 
-WORKDIR /opt/granite.build/frontend
-
-# corepack ships with the Node base image; it activates the yarn version the frontend
-# declares. This mirrors the repo's `make build-frontend` recipe: build the
-# Next.js dashboard, then stage the static export where gbserver serves it from
-# (src/gbserver/static/ui/) — granite.build does NOT track static/ui, so this build is
-# the only source of the dashboard the pod serves.
+# `make build-frontend` builds the Next.js dashboard and stages its static export
+# where gbserver serves it from (src/gbserver/static/ui/, which git does not
+# track). Calling the recipe rather than copying it keeps the export path in one
+# place.
 #
-# The export path is NOT frontend/out. granite.build's frontend became a yarn
-# workspace (ibm-granite/granite.build PR #307, 5d2d187): the root package.json only delegates `build`
-# to the `standalone-ui` workspace, so Next.js writes the static export under
-# apps/standalone/out. frontend/out is where it landed BEFORE that split, is
-# gitignored, and so simply does not exist in a fresh clone — rsyncing from it
-# failed the build with an opaque `change_dir "out" failed` (exit 23). Keep this
-# path in step with that repo's own `make build-frontend` recipe.
-#
-# CRITICAL — delete .env*.local BEFORE `yarn build`. next.config.ts inlines
+# CRITICAL — delete .env*.local BEFORE the build. next.config.ts inlines
 # GBSERVER_API_URL/AUTOTUNEX_API_URL into the CLIENT bundle, and Next.js loads
-# .env.local in every environment except `test` — `next build` included. GB_REF is
-# a moving BRANCH, so a dev-only .env.local committed there (as one was, in
-# granite.build 295f449) silently bakes baseURL=http://127.0.0.1:8080 into the
-# static export. The dashboard then XHRs to the VIEWER's own loopback and every
-# /api/v1/* call dies with net::ERR_CONNECTION_REFUSED behind a Route, while the
-# server-rendered pages still load 200 — which is why it reads as a UI bug rather
-# than a build bug. UNSET is the value we want: apiBase() then returns relative
-# paths and the dashboard calls the origin gbserver served it from, which is what
-# Caddy fronts on :8080. The grep is a tripwire — fail the build loudly here
-# rather than ship a bundle that only breaks in someone's browser.
+# .env.local in every environment except `test` — `next build` included. A dev
+# checkout usually has one (baseURL=http://127.0.0.1:8080), which would bake the
+# VIEWER's own loopback into the static export: every /api/v1/* call then dies
+# with net::ERR_CONNECTION_REFUSED behind a Route while the server-rendered pages
+# still load 200, so it reads as a UI bug rather than a build bug. The ignore
+# file already keeps .env.* out of the context; this is the second line of
+# defence. UNSET is the value we want: apiBase() then returns relative paths and
+# the dashboard calls the origin gbserver served it from, which Caddy fronts on
+# :8080. The grep is a tripwire — fail the build loudly rather than ship a bundle
+# that only breaks in someone's browser.
 RUN corepack enable \
-    && APP=apps/standalone \
-    && rm -f .env*.local apps/*/.env*.local \
-    && yarn install --frozen-lockfile \
-    && yarn build \
-    # Fail loudly if the export path moves again. Without this the grep below
-    # "passes" a missing directory — grep exits 2, so `if grep -q` is false — and
-    # the real problem only surfaces as an rsync error two lines later.
-    && if [ ! -d "$APP/out" ]; then \
-         echo "FATAL: no static export at frontend/$APP/out after yarn build" >&2; \
-         echo "       the frontend layout moved on ${GB_REF}; check that" >&2; \
-         echo "       repo's make build-frontend recipe for the new path" >&2; \
-         exit 1; \
-       fi \
-    && if grep -rq "127\.0\.0\.1:8080" "$APP/out/"; then \
+    && rm -f frontend/.env*.local frontend/apps/*/.env*.local \
+    && make build-frontend \
+    && if grep -rq "127\.0\.0\.1:8080" src/gbserver/static/ui/; then \
          echo "FATAL: loopback API base URL baked into the dashboard bundle" >&2; \
-         echo "       check for a committed frontend/$APP/.env*.local on ${GB_REF}" >&2; \
+         echo "       check for a frontend/apps/*/.env*.local in the build context" >&2; \
          exit 1; \
-       fi \
-    && mkdir -p ../src/gbserver/static/ui \
-    && rsync -a --delete "$APP/out/" ../src/gbserver/static/ui/ \
-    # Drop the frontend build artifacts once the static export is staged into
-    # src/gbserver/static/ui/ — node_modules + the .next webpack cache are
-    # hundreds of MB of pure waste that must not be copied into later stages.
-    # The workspace hoists most of node_modules to frontend/, but yarn still
-    # creates per-package ones, and .next now lives under the app.
-    && rm -rf node_modules apps/*/node_modules packages/*/node_modules \
-         apps/*/.next apps/*/out
+       fi
+# Output: /opt/granite.build/src/gbserver/static/ui — the only path later stages copy.
+
+# -----------------------------------------------------------------------------
+# .git alone, for the py-builder stage's version stamping below. Kept in its own
+# scratch stage so it never lands in a layer of a stage that ships, and the
+# dashboard stage above never sees it. A context-relative bind (source=.git)
+# works only on BuildKit — buildah, which backs `podman build`, resolves it
+# against the builder's own filesystem and silently mounts nothing — but a
+# from=<stage> bind works on both.
+# -----------------------------------------------------------------------------
+FROM scratch AS git-dir
+COPY .git /git/
 
 # -----------------------------------------------------------------------------
 # Stage 3 — build three isolated virtualenvs (conflicting pins across services)
+#
+# Every pip call here uses a cache mount: the granite.build tree changes with
+# every commit, so these layers rerun often, and the cache keeps the reruns from
+# downloading the dependency trees again. It is a mount, so it never lands in a
+# layer.
 # -----------------------------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim AS py-builder
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# granite.build versions itself with setuptools_scm, from the nearest v* tag
+# (v0.3.9 → 0.3.10.devN). GB_VERSION skips the tag check below and stamps the
+# version given, for checkouts that cannot reach a tag (worktrees, shallow CI
+# clones). An empty value is ignored by setuptools_scm, so the ENV is safe to set
+# unconditionally.
+ARG GB_VERSION=""
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_GRANITE_BUILD=${GB_VERSION}
 
 # Opt-in: also install the autotune training core (see venv 1 below).
-# 0/false (default) → lean image; 1/true → adds the `granite-build` extra and
-# the vendored fm-tune core.
+# 0/false (default) → lean image; 1/true → adds granite.build (from the copied
+# tree) and the vendored fm-tune core.
 ARG INSTALL_AUTOTUNE_CORE=0
 
 # git + a compiler for any sdist-only wheels; confined to this builder stage.
@@ -164,28 +158,60 @@ RUN apt-get update \
 # directly, so it needs no libpq at all. Same reasoning as psycopg2-binary in
 # venv 2 and `[postgres]` in venv 3 below.
 #
-# Opt-in (--build-arg INSTALL_AUTOTUNE_CORE=1): also install the `granite-build`
-# extra AND the autotune training core used by the in-process `local` job
-# backend. The core is now vendored in-tree at src/fm-tune (already COPYed in
+# Opt-in (--build-arg INSTALL_AUTOTUNE_CORE=1): also install granite.build from
+# the copied tree — the same tree venv 2 installs, so the image carries one
+# granite.build — AND the autotune training core used by the in-process `local`
+# job backend. The core is now vendored in-tree at src/fm-tune (already COPYed in
 # below) and is installed from `src/fm-tune[core,mlx]` — no credentials and no
 # private repo needed. Build it with:
 #
-#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.aio \
+#   DOCKER_BUILDKIT=1 docker build -f autotunex/Dockerfile.aio \
 #     --build-arg INSTALL_AUTOTUNE_CORE=1 .
 #
 # NOTE: `fm-tune[core,mlx]` includes torch/ray (+ mlx, which is Apple-silicon
 # oriented) — a large, heavier build; enable it only when you need the local
 # backend, and set AUTOTUNEX_JOB_BACKEND=local at run time to use it.
-COPY pyproject.toml README.md LICENSE /build/autotunex/
-COPY src /build/autotunex/src
-RUN python -m venv /opt/venv/autotunex \
+COPY autotunex/pyproject.toml autotunex/README.md /build/autotunex/
+COPY autotunex/src /build/autotunex/src
+
+# granite.build from THIS checkout: what its editable installs and gbserver read
+# (docs/ for the dashboard chat's search_docs tool), plus the dashboard export.
+WORKDIR /opt/granite.build
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+COPY test/ ./test/
+COPY configurations/ ./configurations/
+COPY steps/ ./steps/
+COPY docs/ ./docs/
+COPY --from=dashboard /opt/granite.build/src/gbserver/static/ui ./src/gbserver/static/ui
+WORKDIR /
+
+# .git is bind-mounted (from the git-dir stage above) into each RUN that stamps
+# the version, never copied: a copy would put it in a layer, and make every
+# commit, fetch or rebase invalidate everything after it.
+#
+# With no v* tag reachable the version is stamped below the llmb CLI's supported
+# floor, and the CLI's version check then EXITS NONZERO before running
+# `build start` — breaking every job launch from AutoTuneX. Fail the build here
+# instead. A git worktree fails too: its .git is a file pointing outside the
+# build context.
+RUN --mount=type=bind,from=git-dir,source=/git,target=/opt/granite.build/.git \
+    [ -n "$GB_VERSION" ] || git -C /opt/granite.build describe --tags --match 'v[0-9]*' >/dev/null 2>&1 \
+    || { echo "FATAL: no v* version tag is reachable in this checkout (or it is a git worktree)." >&2; \
+         echo "       Build from a full clone with tags, or pass the version:" >&2; \
+         echo "       --build-arg GB_VERSION=X.Y.Z." >&2; \
+         exit 1; }
+
+RUN --mount=type=bind,from=git-dir,source=/git,target=/opt/granite.build/.git \
+    --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv/autotunex \
     && /opt/venv/autotunex/bin/pip install --upgrade pip \
     && case "$INSTALL_AUTOTUNE_CORE" in \
-         1|true|TRUE|yes|on) EXTRAS="[mysql,postgres,granite-build]" ;; \
-         *)                  EXTRAS="[mysql,postgres]" ;; \
+         1|true|TRUE|yes|on) GB_PKG="-e /opt/granite.build" ;; \
+         *)                  GB_PKG="" ;; \
        esac \
-    && echo "Installing autotunex${EXTRAS}" \
-    && /opt/venv/autotunex/bin/pip install "/build/autotunex${EXTRAS}" \
+    && echo "Installing autotunex[mysql,postgres] ${GB_PKG}" \
+    && /opt/venv/autotunex/bin/pip install "/build/autotunex[mysql,postgres]" $GB_PKG \
     && case "$INSTALL_AUTOTUNE_CORE" in \
          1|true|TRUE|yes|on) \
              echo "Installing vendored fm-tune core (src/fm-tune[core,mlx])" \
@@ -216,10 +242,17 @@ RUN python -m venv /opt/venv/autotunex \
 # __init__ logs its connection line and only then connects, and tenacity retries
 # the failure 10x, nested, per table, so gbserver appears to hang silently for
 # tens of minutes instead of reporting a missing driver.
-COPY --from=gb-builder /opt/granite.build /opt/granite.build
-RUN python -m venv /opt/venv/gb \
+RUN --mount=type=bind,from=git-dir,source=/git,target=/opt/granite.build/.git \
+    --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv/gb \
     && /opt/venv/gb/bin/pip install --upgrade pip \
     && /opt/venv/gb/bin/pip install -e "/opt/granite.build[standalone]" psycopg2-binary
+
+# The version is already stamped into the editable installs' dist-info, so nothing
+# at run time needs the git history. .git was only ever bind-mounted, but a builder
+# can leave the empty mount point behind; remove it so the runtime image carries
+# no .git at all.
+RUN rm -rf /opt/granite.build/.git
 
 # --- venv 3: api-bridge (synchronous MySQL/Postgres write-path) -----------------
 # The `[postgres]` extra (psycopg 3) ships for the same reason venv 1 carries
@@ -230,7 +263,8 @@ RUN python -m venv /opt/venv/gb \
 # is already spent in this image, where venv 2 installs psycopg2-binary. The
 # `[binary]` wheel bundles libpq, so again no apt package in the runtime stage.
 # Quoted so the shell does not glob `[postgres]`.
-RUN python -m venv /opt/venv/apibridge \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv/apibridge \
     && /opt/venv/apibridge/bin/pip install --upgrade pip \
     && /opt/venv/apibridge/bin/pip install "/build/autotunex/src/api-bridge[postgres]"
 
@@ -277,20 +311,20 @@ COPY --from=py-builder /opt/granite.build /opt/granite.build
 # clone, no GB_TOKEN/GITHUB_HOST git credentials. Overriding FM_TUNE_ROOT with a
 # repo URL restores the clone path. The editable install writes .egg-info into the
 # tree, so appuser must own it (chown below).
-COPY src/fm-tune /opt/fm-tune
+COPY autotunex/src/fm-tune /opt/fm-tune
 
 # The prebuilt AutoTuneX SPA, the supervisor program definitions, and the
 # runtime entrypoint (provisions git credentials from env, then execs supervisord).
 COPY --from=ux-builder /app/ux/build /app/ux-build
-COPY docker/aio/supervisord.conf /etc/supervisor/conf.d/aio.conf
-COPY docker/aio/entrypoint.sh /usr/local/bin/aio-entrypoint.sh
+COPY autotunex/docker/aio/supervisord.conf /etc/supervisor/conf.d/aio.conf
+COPY autotunex/docker/aio/entrypoint.sh /usr/local/bin/aio-entrypoint.sh
 
 # Front reverse proxy: the static Caddy binary lifted from its official image
 # (Apache-2.0), plus the Caddyfile. Caddy owns the exposed :8080 and dials
 # gbserver over loopback so gbserver always sees a 127.0.0.1 peer — see the
 # header comment and docker/aio/Caddyfile.
 COPY --from=caddy:2-alpine /usr/bin/caddy /usr/local/bin/caddy
-COPY docker/aio/Caddyfile /etc/caddy/Caddyfile
+COPY autotunex/docker/aio/Caddyfile /etc/caddy/Caddyfile
 
 # Put the granite.build CLI on PATH so AutoTuneX's launcher finds `llmb` (its
 # console-script shebang pins the gb venv, so it works from any PATH entry), and

@@ -297,7 +297,7 @@ export GB_TOKEN=<your granite.build token>
 **Live build logs.** `GET /jobs/{id}/gb-logs` reads a running build's container
 logs through the same integration, so it needs all three of the signals above:
 `AUTOTUNEX_JOB_BACKEND=llmb`, the environment variable named by
-`AUTOTUNEX_GB_TOKEN_ENV` actually present, and the `gbcli` package installed.
+`AUTOTUNEX_GB_TOKEN_ENV` actually present, and the `gbcli` package installed (`uv pip install -e ..` from `autotunex/`).
 Any other backend — or a missing token variable or package — makes the endpoint
 return `503`.
 
