@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time (#460).
 
 ### Changed
+
 - **The fm-tune step moves from the `tune` category to `train` (#677).** Its URI changes from
   `space://steps/tune/fm-tune` to `space://steps/train/fm-tune`. The source is now
   `steps/train/fm-tune/`, and the published copies are
