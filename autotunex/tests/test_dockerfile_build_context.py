@@ -171,12 +171,16 @@ def test_the_aio_context_keeps_frontend_build_outputs_and_local_env_out() -> Non
     assert _in_context("frontend/apps/standalone/package.json", rules)
 
 
-def test_no_dockerfile_copies_git_into_a_layer() -> None:
-    # A copied .git would publish the builder's config, remotes and reflogs, and make
-    # every commit, fetch or rebase invalidate every layer after it.
+def test_git_is_copied_only_into_its_own_scratch_stage() -> None:
+    # .git must reach the version-stamping RUNs by bind mount from a scratch
+    # stage, never by COPY into a stage that ships. And the mount cannot be a
+    # plain context bind: buildah (podman build) resolves source=<path> against
+    # the builder's filesystem, not the context, and silently mounts nothing.
     for dockerfile in (_DOCKERFILE, _AIO):
-        sources = _copy_sources(_text(dockerfile))
-        assert not [s for s in sources if s.rstrip("/") == ".git"], dockerfile.name
+        content = _text(dockerfile)
+        assert "FROM scratch AS git-dir" in content, dockerfile.name
+        assert content.count("COPY .git ") == 1, dockerfile.name
+        assert _copy_sources(_stage_body(content, "git-dir")) == [".git"]
 
 
 def test_every_granite_build_install_can_read_the_version_tags() -> None:
@@ -187,16 +191,20 @@ def test_every_granite_build_install_can_read_the_version_tags() -> None:
         (_AIO, _stage_body(_text(_AIO), "py-builder"), "/opt/granite.build"),
     ]
     for dockerfile, stage, marker in stages:
+        check = next(run for run in _runs(stage) if "describe" in run)
+        assert "from=git-dir,source=/git" in check, f"{dockerfile.name}: the tag check has no .git"
         builds = [run for run in _runs(stage) if marker in run and "pip" in run]
         assert builds, f"{dockerfile.name}: no granite.build install found"
         for run in builds:
-            assert "source=.git" in run, f"{dockerfile.name}: a granite.build install has no .git"
+            assert "from=git-dir,source=/git" in run, (
+                f"{dockerfile.name}: a granite.build install has no .git"
+            )
 
 
 def test_the_aio_runtime_does_not_ship_a_git_directory() -> None:
     # .git is only bind-mounted, but a builder can leave the empty mount point behind.
     runs = _runs(_stage_body(_text(_AIO), "py-builder"))
-    last_mount = max(i for i, run in enumerate(runs) if "source=.git" in run)
+    last_mount = max(i for i, run in enumerate(runs) if "from=git-dir" in run)
 
     assert any("rm -rf /opt/granite.build/.git" in run for run in runs[last_mount + 1 :])
 

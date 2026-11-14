@@ -14,8 +14,8 @@
 !autotunex/src
 
 # granite.build, for the gb-wheel stage of the llmb backend. .git carries the
-# version tags setuptools_scm stamps the version from; it is bind-mounted, never
-# copied into a layer.
+# version tags setuptools_scm stamps the version from; it reaches the build only
+# through the git-dir scratch stage, never a shipped layer.
 !pyproject.toml
 !README.md
 !.git

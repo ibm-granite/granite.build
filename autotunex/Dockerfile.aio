@@ -104,6 +104,17 @@ RUN corepack enable \
 # Output: /opt/granite.build/src/gbserver/static/ui — the only path later stages copy.
 
 # -----------------------------------------------------------------------------
+# .git alone, for the py-builder stage's version stamping below. Kept in its own
+# scratch stage so it never lands in a layer of a stage that ships, and the
+# dashboard stage above never sees it. A context-relative bind (source=.git)
+# works only on BuildKit — buildah, which backs `podman build`, resolves it
+# against the builder's own filesystem and silently mounts nothing — but a
+# from=<stage> bind works on both.
+# -----------------------------------------------------------------------------
+FROM scratch AS git-dir
+COPY .git /git/
+
+# -----------------------------------------------------------------------------
 # Stage 3 — build three isolated virtualenvs (conflicting pins across services)
 #
 # Every pip call here uses a cache mount: the granite.build tree changes with
@@ -175,23 +186,23 @@ COPY docs/ ./docs/
 COPY --from=dashboard /opt/granite.build/src/gbserver/static/ui ./src/gbserver/static/ui
 WORKDIR /
 
-# .git is bind-mounted into each RUN that stamps the version, never copied: a
-# copy would put it in a layer, and make every commit, fetch or rebase invalidate
-# everything after it.
+# .git is bind-mounted (from the git-dir stage above) into each RUN that stamps
+# the version, never copied: a copy would put it in a layer, and make every
+# commit, fetch or rebase invalidate everything after it.
 #
 # With no v* tag reachable the version is stamped below the llmb CLI's supported
 # floor, and the CLI's version check then EXITS NONZERO before running
 # `build start` — breaking every job launch from AutoTuneX. Fail the build here
 # instead. A git worktree fails too: its .git is a file pointing outside the
 # build context.
-RUN --mount=type=bind,source=.git,target=/opt/granite.build/.git \
+RUN --mount=type=bind,from=git-dir,source=/git,target=/opt/granite.build/.git \
     [ -n "$GB_VERSION" ] || git -C /opt/granite.build describe --tags --match 'v[0-9]*' >/dev/null 2>&1 \
     || { echo "FATAL: no v* version tag is reachable in this checkout (or it is a git worktree)." >&2; \
          echo "       Build from a full clone with tags, or pass the version:" >&2; \
          echo "       --build-arg GB_VERSION=X.Y.Z." >&2; \
          exit 1; }
 
-RUN --mount=type=bind,source=.git,target=/opt/granite.build/.git \
+RUN --mount=type=bind,from=git-dir,source=/git,target=/opt/granite.build/.git \
     --mount=type=cache,target=/root/.cache/pip \
     python -m venv /opt/venv/autotunex \
     && /opt/venv/autotunex/bin/pip install --upgrade pip \
@@ -231,7 +242,7 @@ RUN --mount=type=bind,source=.git,target=/opt/granite.build/.git \
 # __init__ logs its connection line and only then connects, and tenacity retries
 # the failure 10x, nested, per table, so gbserver appears to hang silently for
 # tens of minutes instead of reporting a missing driver.
-RUN --mount=type=bind,source=.git,target=/opt/granite.build/.git \
+RUN --mount=type=bind,from=git-dir,source=/git,target=/opt/granite.build/.git \
     --mount=type=cache,target=/root/.cache/pip \
     python -m venv /opt/venv/gb \
     && /opt/venv/gb/bin/pip install --upgrade pip \

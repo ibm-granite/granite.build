@@ -295,9 +295,10 @@ setuptools_scm stamps the version from them, and without one the build stops rat
 than ship an `llmb` CLI whose version check fails every job launch. The same check
 fails a build from a git worktree, whose `.git` is a file. For a checkout that
 cannot reach a tag (a worktree, a shallow clone), pass the version instead:
-`--build-arg GB_VERSION=X.Y.Z` stamps it and skips the check. `.git` is only
-bind-mounted into the steps that stamp the version, so a commit that does not touch
-`frontend/` reuses the cached dashboard build, and the image carries no `.git`.
+`--build-arg GB_VERSION=X.Y.Z` stamps it and skips the check. `.git` is held in a
+scratch stage and bind-mounted only into the steps that stamp the version, so a
+commit that does not touch `frontend/` reuses the cached dashboard build, and the
+image carries no `.git`.
 The image also ships granite.build's `docs/`, which the dashboard chat's
 `search_docs` tool reads.
 `PUBLIC_AUTOTUNEX_API_URL` (empty by default, meaning same-origin) matters only if

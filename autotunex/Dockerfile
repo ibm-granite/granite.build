@@ -58,6 +58,13 @@ RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
     && npm run build
 
 # ---------------------------------------------------------------------------
+# Stage 1a — .git alone, for the gb-wheel stage's version stamping below. A
+# `local` build never references this stage, so it is never built.
+# ---------------------------------------------------------------------------
+FROM scratch AS git-dir
+COPY .git /git/
+
+# ---------------------------------------------------------------------------
 # Stage 1b — a granite.build wheel from THIS checkout, for the llmb backend.
 # Only the `backend-llmb` stage below uses it, so a `local` build never runs this stage
 # and needs neither .git nor its tags.
@@ -73,7 +80,10 @@ RUN echo "PUBLIC_AUTOTUNEX_API_URL=$PUBLIC_AUTOTUNEX_API_URL" >> .env \
 #
 # .git is bind-mounted into the one RUN that reads it rather than copied: a copy
 # would put it in a layer, and make every commit, fetch or rebase invalidate the
-# layers after it.
+# layers after it. The mount comes from the git-dir stage above, not the context
+# directly: a context-relative bind (source=.git) works only on BuildKit —
+# buildah, which backs `podman build`, resolves it against the builder's own
+# filesystem and silently mounts nothing.
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS gb-wheel
 ARG GB_VERSION=""
@@ -88,7 +98,7 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY test/ ./test/
 COPY configurations/ ./configurations/
-RUN --mount=type=bind,source=.git,target=/gb/.git \
+RUN --mount=type=bind,from=git-dir,source=/git,target=/gb/.git \
     { [ -n "$GB_VERSION" ] || git describe --tags --match 'v[0-9]*' >/dev/null 2>&1; } \
       || { echo "FATAL: no v* version tag is reachable in this checkout (or it is a git worktree)." >&2; \
            echo "       granite.build would be stamped below the llmb CLI's version floor, and" >&2; \
