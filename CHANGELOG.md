@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requested chat template) before registering it. Build tests on local SLURM and local
   kind run MergeKit's `gradient-slerp` example on SmolLM2-135M + -Instruct, and
   `make test-mergekit` runs the real-MergeKit tests in a separate venv.
+- **`fms-hf-tuning` step (#231)**, `space://steps/train/fms-hf-tuning`: full fine-tuning, LoRA and
+  aLoRA with foundation-model-stack/fms-hf-tuning 3.2.2 (`tuning.sft_trainer`) on any SkyPilot
+  endpoint, single node, DDP or FSDP (fms-hf-tuning's FSDP1 defaults), ClearML tracking (`auto`
+  when `CLEARML_API_*` creds are present). Training data from a bound dataset, an HF id, or an
+  fms-hf-tuning `data_config`; `args` is fms-hf-tuning's JSON config, checked against its own
+  parser on the node before training starts. Registers the full model or the adapter. Custom
+  image `quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-5` (torch 2.8.0 /
+  CUDA 12.8, transformers 4.55.4 with the CVE-2026-5241 fix backported, flash-attn 2.8.3) with a
+  fully hashed lock. Build tests on skypilot/aws (full, aLoRA) and BlueVela SLURM (LoRA/FSDP,
+  full/FSDP with `data_config`). K8s, SkyPilot-K8s and LSF are follow-ups.
 - **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
   pointing at one image, and SLURM's `slurm_image_cache` keys its `.sqsh` by tag, so a re-pushed
   tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
@@ -116,6 +126,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     equally specific copies of a name for the environment, and `Invalid step for its
     environment` when the copy that would be selected is in the environment's own `steps/` but
     doesn't admit it.
+- **`gb build --param-file` (formerly `--parameters-path`) is repeatable and layers over the
+  recipe's `parameters.yaml` instead of replacing it (#663).** `start`, `validate` and
+  `describe` take the recipe's `parameters.yaml` (next to `build.yaml`) as the base, then each
+  `--param-file` in the order given, then `--param`. The last layer wins per top-level key, and
+  a list or map value is replaced whole. For example:
+  `gb build start -f build.yaml --param-file site.yaml --param-file smoke.yaml`.
+  Compatibility: a single `--parameters-path` used to replace `parameters.yaml` completely; now a
+  key the file does not define falls back to `parameters.yaml`. The recipe's `parameters.yaml` is
+  now always loaded, so a malformed one fails the build even when another `--param-file` is
+  passed. A comments-only parameters file now counts as empty instead of failing, and the error
+  for a file that is not a mapping names that file.
 - **With podman, `make publish-image`'s `REGISTRY_USER`/`REGISTRY_PASSWORD` login is scoped to
   `$(REGISTRY)` instead of the whole registry host (#229),** so it no longer replaces your other
   logins on that host. docker still logs in per host.
@@ -282,6 +303,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
+- **`gb build --parameters-path`, in favor of `--param-file` (#663).** The option now adds a
+  layer instead of naming the one parameters file, and `--param-file` pairs with `--param`.
+  `--parameters-path` still works on `start`, `validate` and `describe` as an alias, and the two
+  names can be mixed; layers apply in command-line order. It will be removed in a future
+  release.
 - **Config keys that carried an input path in steps shipped in v0.3.x (#453).** These
   steps now declare the input as optional and read the binding when it is bound. A bound
   input wins over the key. When the input isn't bound, the step falls back to the old
