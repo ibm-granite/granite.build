@@ -59,6 +59,7 @@ from gbserver.api.utils import (
 from gbserver.api.utils import (
     confirm_existing_item_write_access as _real_confirm_existing_item_write_access,
 )
+from gbserver.storage.storage import Like
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.status import Status
@@ -825,3 +826,42 @@ def test_validate_build_rejects_db_space_uri():
                 _validate_req(ATTACKER, space_uri="db://spaces/private-team"),
             )
         assert exc.value.status_code == 400
+
+
+def _recording_storage(seen: list):
+    storage = SimpleNamespace(
+        get_by_where=lambda where=None, query_control=None: seen.append(where) or [],
+        count=lambda where=None: seen.append(where) or 0,
+    )
+    return patch.object(
+        builds_module,
+        "get_admin_storage",
+        return_value=SimpleNamespace(build_storage=storage),
+    )
+
+
+def test_list_and_count_builds_turn_a_name_wildcard_into_like():
+    """Both endpoints get the same Like() filter on name, so the paginated list
+    and its total come from one WHERE clause."""
+    seen: list = []
+    with (
+        _recording_storage(seen),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+    ):
+        req = _fake_request("admin_x", "admin_x@example.com")
+        list_builds(req, name="*sft*")
+        count_builds(req, name="*sft*")
+    assert [w["name"] for w in seen] == [Like("%sft%"), Like("%sft%")]
+
+
+def test_name_without_wildcard_stays_exact():
+    seen: list = []
+    with (
+        _recording_storage(seen),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+    ):
+        req = _fake_request("admin_x", "admin_x@example.com")
+        list_builds(req, name="granite-sft")
+        count_builds(req, name="a\\*b")  # an escaped star alone is no wildcard
+        list_builds(req)
+    assert [w.get("name") for w in seen] == ["granite-sft", "a\\*b", None]

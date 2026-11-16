@@ -66,6 +66,38 @@ def translate_remote_file_errors() -> Iterator[None]:
         ) from e
 
 
+def wildcard_to_like(value: str) -> Optional[str]:
+    """Translate a ``*`` wildcard filter value into a ``LIKE`` pattern for ``Like``.
+
+    ``*`` matches any run of characters (AIP-160's string wildcard); ``\\*`` and
+    ``\\\\`` are a literal ``*`` and ``\\``. ``%``, ``_`` and any other ``\\`` are
+    literal. Returns None if ``value`` has no unescaped ``*``: the caller then keeps
+    an exact match on ``value`` as given, so values without a ``*`` mean what they
+    always did.
+
+    Example: ``wildcard_to_like("*sft*") == "%sft%"``.
+    """
+    out = []
+    wildcard = False
+    i = 0
+    while i < len(value):
+        char = value[i]
+        if char == "\\" and value[i + 1 : i + 2] in ("*", "\\"):
+            # "*" isn't special in LIKE; "\\" is its escape character.
+            out.append("*" if value[i + 1] == "*" else "\\\\")
+            i += 2
+            continue
+        if char == "*":
+            out.append("%")
+            wildcard = True
+        elif char in "%_\\":
+            out.append("\\" + char)
+        else:
+            out.append(char)
+        i += 1
+    return "".join(out) if wildcard else None
+
+
 def get_row_filter(**kwargs):
     filter = {}
     for key, value in kwargs.items():

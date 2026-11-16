@@ -31,7 +31,11 @@ from gbserver.api import spaces as spaces_module
 from gbserver.api.artifacts import list_artifacts
 from gbserver.api.builds import count_builds, list_builds
 from gbserver.api.spaces import list_spaces
-from gbserver.api.utils import NO_ACCESSIBLE_SPACE, scope_space_name_filter
+from gbserver.api.utils import (
+    NO_ACCESSIBLE_SPACE,
+    scope_space_name_filter,
+    wildcard_to_like,
+)
 from gbserver.spaces.space_access_manager import SpaceAccessInfo
 from gbserver.storage.stored_space import StoredSpace
 
@@ -179,3 +183,23 @@ def test_all_scoped_routes_short_circuit_on_no_accessible_space(
         resp = route(_fake_request("alice@example.com"), **{space_kwarg: "space-B"})
     assert get_empty(resp) == empty
     storage.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("*sft*", "%sft%"),
+        ("sft*", "sft%"),
+        ("*", "%"),
+        ("*100%*", "%100\\%%"),  # % and _ are literal
+        ("*t_l*", "%t\\_l%"),
+        ("*a\\*b*", "%a*b%"),  # \* is a literal star
+        ("*a\\\\b*", "%a\\\\b%"),  # \\ is a literal backslash
+        ("*k\\s*", "%k\\\\s%"),  # any other backslash is literal too
+        ("sft", None),  # no unescaped star: stays an exact match
+        ("a\\*b", None),
+        ("", None),
+    ],
+)
+def test_wildcard_to_like(value, expected):
+    assert wildcard_to_like(value) == expected

@@ -32,6 +32,7 @@ from gbserver.api.utils import (
     is_super_admin,
     scope_space_name_filter,
     split_tags,
+    wildcard_to_like,
 )
 from gbserver.buildrunner.validation import BuildValidation
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
@@ -40,6 +41,7 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
+from gbserver.storage.storage import Like
 from gbserver.storage.stored_build import StoredBuild, reopen_finished_build
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
@@ -193,11 +195,26 @@ class CancelBuildResponse(BaseModel):
     canceled: StoredBuild
 
 
+NAME_FILTER_DESCRIPTION = (
+    "Build name. An exact match, unless it contains `*`: then a case-insensitive "
+    "wildcard match, where `*` matches any run of characters and `\\*` / `\\\\` "
+    "match a literal `*` / `\\` (e.g. `*sft*` for names containing `sft`)."
+)
+NameFilter = Annotated[str, Query(description=NAME_FILTER_DESCRIPTION)]
+
+
+def _apply_name_wildcard(row_filter: dict) -> None:
+    """Turn a ``name`` filter containing ``*`` into a case-insensitive ``Like``."""
+    pattern = wildcard_to_like(row_filter.get("name", ""))
+    if pattern is not None:
+        row_filter["name"] = Like(pattern)
+
+
 # Needed to list all
 @builds_api.get("/")
 def list_builds(
     request: Request,
-    name: str = "",
+    name: NameFilter = "",
     space_name: str = "",
     source_uri: str = "",
     username: str = "",  # needed
@@ -224,6 +241,7 @@ def list_builds(
         tags=tag,
         status=status,
     )
+    _apply_name_wildcard(row_filter)
     query_control = get_query_control(sort, page_index, page_size)
 
     storage = get_admin_storage()
@@ -247,7 +265,7 @@ def list_builds(
 @builds_api.get("/count")
 def count_builds(
     request: Request,
-    name: str = "",
+    name: NameFilter = "",
     space_name: str = "",
     source_uri: str = "",
     username: str = "",
@@ -266,6 +284,7 @@ def count_builds(
         tags=tag,
         status=status,
     )
+    _apply_name_wildcard(row_filter)
     storage = get_admin_storage()
     build_storage = storage.build_storage
     count = build_storage.count(where=row_filter)
