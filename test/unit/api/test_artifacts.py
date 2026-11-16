@@ -58,12 +58,16 @@ from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_
 
 from gbserver.api import artifacts as artifacts_module
 from gbserver.api.artifacts import (
+    ArtifactBucketRequest,
+    HFDatasetRegistrationRequest,
     HFModelRegistrationRequest,
     decode_uri,
     list_artifact_tags,
     list_artifacts,
     read_artifact,
     register_artifact,
+    register_hf_bucket,
+    register_hf_dataset,
     register_hf_model,
 )
 from gbserver.api.utils import (
@@ -366,6 +370,47 @@ def test_typed_register_rejects_before_touching_space(username, is_member):
     assert exc.value.status_code == 401
     admin_storage.assert_not_called()
     lineage_store.assert_not_called()
+
+
+# HfURI.from_parts raises ValueError for fields an hf:// URI may not hold (a
+# quote, a "#", a leading "-", ...); the typed routes must answer 400, not 500.
+_HF_TYPED_ROUTES = {
+    "model": (register_hf_model, HFModelRegistrationRequest, "model_id"),
+    "dataset": (register_hf_dataset, HFDatasetRegistrationRequest, "dataset_id"),
+    "bucket": (register_hf_bucket, ArtifactBucketRequest, "bucket_id"),
+}
+
+
+_INVALID_HF_FIELDS = [
+    (route, field, value)
+    for route in sorted(_HF_TYPED_ROUTES)
+    for field, value in [
+        ("organization", "o'x"),
+        ("id", "r$(id)"),
+        ("organization", "--x"),
+        ("revision", "v1#x"),
+    ]
+    if not (route == "bucket" and field == "revision")  # a bucket has none
+]
+
+
+@pytest.mark.parametrize(("route", "field", "value"), _INVALID_HF_FIELDS)
+def test_typed_register_rejects_an_invalid_hf_field_as_400(route, field, value):
+    register, request_cls, id_field = _HF_TYPED_ROUTES[route]
+    fields = {"organization": "team-b", id_field: "new-repo"}
+    fields[id_field if field == "id" else field] = value
+    req = request_cls(space_name=VICTIM_SPACE, username=VICTIM_OWNER, **fields)
+    # Registration itself can also answer 400 (e.g. an uncertified artifact),
+    # so fail if the request gets that far: it must be refused before it.
+    with patch.object(
+        artifacts_module,
+        "_create_and_register_artifact",
+        side_effect=AssertionError("an invalid HF field reached registration"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            register(_fake_request(VICTIM_OWNER, f"{VICTIM_OWNER}@example.com"), req)
+    assert exc.value.status_code == 400
+    assert value not in str(exc.value.detail)  # a generic message
 
 
 # ------------------------------------------------------------------ list_artifacts / list_artifact_tags

@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Self
+from typing import Any, Iterator, List, Optional, Self, Tuple
 
 from huggingface_hub import (
     HfApi,
@@ -56,6 +56,16 @@ _GB_RG_SPACE_NAME_PREFIX = "gbspace-"
 _GB_RG_SPACE_NAME_ALIASES = {"standalone": "public", "local": "public"}
 HF_HOST = "huggingface.co"
 HF_URI_SCHEME = "hf"
+
+# What an hf:// URI may hold (see _reject_unsafe_hf_uri): nothing bash, a
+# Python string literal or a download-filter glob treats specially. The path in
+# the repo also allows a space, ":" and "(" ")", which are common in real HF
+# paths and inert where the steps use it. Owner, repo and revision do not: no
+# HF repo id or git revision has them, and the LSF hfpush step expands the
+# revision unquoted, where a space would split it into extra CLI arguments.
+_HF_SAFE_NAME = re.compile(r"[\w.\-+=@,~]+")
+_HF_SAFE_PATH_SEGMENT = re.compile(r"[\w.\-+=@,~ :()]+")
+_HF_SAFE_HOST = re.compile(r"[A-Za-z0-9.\-]+(:[0-9]+)?")
 
 URLSEGMENT_MODELS = "models"
 URLSEGMENT_DATASETS = "datasets"
@@ -537,6 +547,87 @@ _HF_SEGMENT_TO_TYPE: dict[str, HfType] = {v: k for k, v in _HF_TYPE_TO_SEGMENT.i
 # itself (lineage URI normalization) instead of restating the segments.
 HF_TYPE_TO_SEGMENT = _HF_TYPE_TO_SEGMENT
 
+
+def _split_hf_type(segments: List[str]) -> Tuple[HfType, List[str]]:
+    """Consume the type segment (``datasets``, ...) that may lead an HF path.
+
+    :param segments: The URI path split on ``/``, outer slashes stripped.
+    :returns: The type (``MODEL`` when no type segment leads; the ``models/``
+        segment is optional) and the remaining segments.
+    """
+    if segments and segments[0] in _HF_SEGMENT_TO_TYPE:
+        return _HF_SEGMENT_TO_TYPE[segments[0]], segments[1:]
+    return HfType.MODEL, segments
+
+
+def _reject_unsafe_hf_uri(uri: urllib.parse.ParseResult) -> None:
+    """Refuse an hf:// URI that leaves the HF cache or the steps cannot render.
+
+    Owner, repo, revision and path in the repo become local path segments (the
+    pull destination and ``HfURI.local_path``), so none may be ``.`` or ``..``.
+    The hfpull/hfpush steps also put them, the host and the whole URI into bash
+    (quoted) and Python string literals, pass the repo id and revision to the
+    ``hf`` CLI, and use the path in the repo as a download filter
+    (``allow_patterns`` / ``--include``). So:
+
+    - no segment may start with ``-``, which the CLI would read as an option;
+    - owner, repo and revision may hold only letters, digits and
+      ``. _ - + = @ , ~``, and the path in the repo also spaces, ``:``, ``(``
+      and ``)``;
+    - the host may hold only letters, digits, ``.`` and ``-``, with an optional
+      ``:<port>``;
+    - there may be no query (``?``) or fragment (``#``), which would silently
+      cut the path short.
+
+    Args:
+        uri: The parsed ``hf://`` URI.
+
+    Raises:
+        ValueError: If the URI breaks one of these rules. The message names the
+            offending segment, host, query or fragment.
+    """
+    path, query, fragment = uri.path, uri.query, uri.fragment
+    if query or fragment:
+        typed = (
+            path + (f"?{query}" if query else "") + (f"#{fragment}" if fragment else "")
+        )
+        raise ValueError(
+            f"Malformed HF URI path {typed!r}: '?' and '#' are not allowed"
+        )
+    host = uri.netloc
+    if host and not _HF_SAFE_HOST.fullmatch(host):
+        raise ValueError(
+            f"Malformed HF URI host {host!r}: only letters, digits, '.' and '-'"
+            " are allowed, with an optional ':<port>'"
+        )
+    segments = path.strip("/").split("/")
+    hf_type, rest = _split_hf_type(segments)
+    # The type segment (if any), owner, repo and -- except for a bucket --
+    # revision, as HfURI._parts() reads them; the path in the repo follows.
+    named = len(segments) - len(rest) + (2 if hf_type == HfType.BUCKET else 3)
+    for i, segment in enumerate(segments):
+        if not segment:
+            continue
+        problem = None
+        if segment in (".", ".."):
+            problem = "would point outside the HF cache"
+        elif segment.startswith("-"):
+            problem = "may not start with '-'"
+        elif i < named and not _HF_SAFE_NAME.fullmatch(segment):
+            problem = (
+                "(owner, repo or revision) may only contain letters, digits"
+                " and . _ - + = @ , ~"
+            )
+        elif i >= named and not _HF_SAFE_PATH_SEGMENT.fullmatch(segment):
+            problem = (
+                "may only contain letters, digits, spaces and . _ - + = @ , ~ : ( )"
+            )
+        if problem:
+            raise ValueError(
+                f"Malformed HF URI path {path!r}: segment {segment!r} {problem}"
+            )
+
+
 # Maps HfType to the repo_type string expected by huggingface_hub APIs.
 # HfType.BUCKET has no huggingface_hub equivalent, so it is absent (callers default to "model").
 _HF_TYPE_TO_REPO_TYPE: dict[HfType, str] = {
@@ -686,6 +777,30 @@ class HfURI(URI):
         self.config = config or {}
         self.parts: Optional[_HfParts] = None
         super().__init__(uri, context, secrets, **kwargs)
+        # Fail at construction so build validation reports the URI as invalid.
+        if self.uri is not None:
+            _reject_unsafe_hf_uri(self.uri)
+
+    def append_path(self, path: str) -> None:
+        """Append *path* to the URI path, as :meth:`URI.append_path` does.
+
+        The result is checked like a parsed URI, and the cached parts are
+        dropped so the getters see the new path.
+
+        Args:
+            path: The path to append (``/``-separated).
+
+        Raises:
+            ValueError: If the result is rejected (see
+                :func:`_reject_unsafe_hf_uri`). The URI is then left unchanged.
+        """
+        # Check the result on a copy first, so a rejected path changes nothing.
+        trial = HfURI(self.uri)
+        URI.append_path(trial, path)
+        assert trial.uri is not None, "self.uri is None"
+        _reject_unsafe_hf_uri(trial.uri)
+        super().append_path(path)
+        self.parts = None
 
     @staticmethod
     def get_supported_schemes() -> List[str]:
@@ -733,13 +848,7 @@ class HfURI(URI):
                 host,
             )
 
-        # If the first path segment is a known type keyword, consume it.
-        # Otherwise the type defaults to MODEL (the "/models/" segment is optional).
-        if parts and parts[0] in _HF_SEGMENT_TO_TYPE:
-            hf_type = _HF_SEGMENT_TO_TYPE[parts[0]]
-            parts = parts[1:]
-        else:
-            hf_type = HfType.MODEL
+        hf_type, parts = _split_hf_type(parts)
 
         if not parts or len(parts) < 2:
             raise ValueError(f"Malformed HF URI: {self.uri.geturl()}")
