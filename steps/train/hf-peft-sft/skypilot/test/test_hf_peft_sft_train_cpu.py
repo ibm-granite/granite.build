@@ -128,15 +128,15 @@ def test_trains_on_a_save_to_disk_dataset_with_a_sliced_split(
 
 
 def test_template_full_flags_match_the_parser():
-    """The template's full_flags list is exactly the non-owned trainer flags that
-    are a proper prefix of an owned one; the abbreviation check exempts them."""
+    """validate's full_flags list is exactly the non-owned trainer flags that are a
+    proper prefix of an owned one; the abbreviation check exempts them."""
     import re
 
     import hf_peft_sft_train as train
     from transformers import HfArgumentParser
     from trl import SFTConfig
 
-    text = (_TRAIN.parents[1] / "step-template.yaml").read_text()
+    text = (_TRAIN.parents[1] / "macros" / "validate.j2").read_text()
 
     def names(var):
         found = re.findall(r"set " + var + r" = \[(.*?)\]", text)[0]
