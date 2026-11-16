@@ -88,12 +88,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`single_node` step flag (#651)** — `environment_configs.Skypilot.single_node: true` makes
   gbserver resolve `num_nodes` from every layer the launch reads (`compute_config`, the step's
   launcher config, the build's `launcher_config`) and fail the step at creation unless it is 1.
-  Other environments refuse the flag. The SkyPilot `openinstruct-sft`, `hf-peft-sft`, `nemo-rl`
-  and `fm-tune` steps use it instead of their own Jinja `num_nodes` checks: they now accept
-  exactly what gbserver parses as 1 (hf-peft-sft newly accepts `"01"`); only the count the
-  launch would use matters, so a `compute_config.num_nodes: 2` overridden by a build
-  `launcher_config.num_nodes: 1` now passes; and nemo-rl newly checks the build's
-  `launcher_config.num_nodes`.
+  Other environments refuse the flag. The SkyPilot `openinstruct-sft`, `hf-peft-sft`, `nemo-rl`,
+  `fm-tune`, `fms-hf-tuning` and `mergekit` steps use it instead of their own Jinja `num_nodes`
+  checks: they now accept exactly what gbserver parses as 1 (hf-peft-sft newly accepts `"01"`);
+  only the count the launch would use matters, so a `compute_config.num_nodes: 2` overridden by
+  a build `launcher_config.num_nodes: 1` now passes; and nemo-rl newly checks the build's
+  `launcher_config.num_nodes`. `gb step describe` shows the flag.
+- **`num_nodes` parsing (#651)** — for every SkyPilot step, a boolean `num_nodes` (`true` used
+  to count as one node) is now refused, and a malformed count fails at step creation, with an
+  error that names the key it came from (`compute_config.num_nodes`,
+  `launchers.<name>.config.num_nodes` or `launcher_config.num_nodes`).
 
 ### Changed
 

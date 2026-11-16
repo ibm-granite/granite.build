@@ -591,8 +591,14 @@ environment_configs:
 gbserver then resolves `num_nodes` as the launch does (`compute_config.num_nodes`, then the
 step's launcher config, then the build's `launcher_config.num_nodes`; the last one set wins)
 and fails the step at creation, before anything is provisioned, unless it is 1. The error names
-the layer that set the count. The step needs no Jinja check of its own. `Skypilot_managed`
-enforces it the same way.
+the key that set the count (`compute_config.num_nodes`, `launchers.<name>.config.num_nodes` or
+`launcher_config.num_nodes`). The step needs no Jinja check of its own. `Skypilot_managed`
+enforces it the same way, with the flag under `environment_configs.Skypilot_managed`.
+`gb step describe` lists it.
+
+A count is read as `int()` reads it (`2.0` and `"02"` are 2), except that a boolean or a
+fractional float is refused. A malformed count fails every SkyPilot step at creation, with or
+without the flag.
 
 ## See also
 
