@@ -128,7 +128,9 @@ class TestS3PullScript:
 
     def test_empty_prefix_fails(self, tmp_path):
         """Pulling nothing is an error, not an empty input."""
-        result = _run(tmp_path, "s3pull", "s3://b/none", tmp_path / "d", {"STUB_EMPTY": "1"})
+        result = _run(
+            tmp_path, "s3pull", "s3://b/none", tmp_path / "d", {"STUB_EMPTY": "1"}
+        )
         assert result.returncode != 0
         assert "no objects found" in result.stderr
 
@@ -143,7 +145,12 @@ class TestS3PullScript:
         """GBTEST_MOCK_COS skips the network and leaves a marker file."""
         dest = tmp_path / "d"
         result = _run(
-            tmp_path, "s3pull", "s3://b/k", dest, {"GBTEST_MOCK_COS": "true"}, creds=False
+            tmp_path,
+            "s3pull",
+            "s3://b/k",
+            dest,
+            {"GBTEST_MOCK_COS": "true"},
+            creds=False,
         )
         assert result.returncode == 0, result.stderr
         assert (dest / ".gbtest_mock_s3pull").exists()
@@ -193,7 +200,9 @@ class TestS3PushArtifactEvent:
 
     def _event_config(self) -> Dict:
         data = yaml.safe_load((STEPS / "s3push" / "step.yaml").read_text())
-        monitor = data["environment_configs"]["Skypilot"]["monitors"]["skypilot_monitor"]
+        monitor = data["environment_configs"]["Skypilot"]["monitors"][
+            "skypilot_monitor"
+        ]
         (event,) = monitor["config"]["event_configs"]
         return event
 
@@ -210,8 +219,12 @@ class TestS3PushArtifactEvent:
         event = self._event_config()
         assert event["event_type"] == "ARTIFACT_PUSHED_EVENT"
         (line,) = [
-            ln for ln in result.stdout.splitlines() if re.search(event["line_regex"], ln)
+            ln
+            for ln in result.stdout.splitlines()
+            if re.search(event["line_regex"], ln)
         ]
-        fields = {f["field_name"]: re.search(f["field_regex"], line).group(0)
-                  for f in event["event_fields"]}
+        fields = {
+            f["field_name"]: re.search(f["field_regex"], line).group(0)
+            for f in event["event_fields"]
+        }
         assert fields == {"uri": "s3://local/artifact", "binding_id": "bind-1"}

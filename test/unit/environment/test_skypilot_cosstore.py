@@ -164,14 +164,20 @@ class TestResolveCredentials:
     def test_from_store_secrets_by_configured_names(self):
         """The store.yaml secret names are looked up in the space secrets."""
         uri = URI.get_uri("cos://b/k")
-        assert _ibm_store().resolve_credentials(uri) == ("ibm-key-id", "ibm-secret-value")
+        assert _ibm_store().resolve_credentials(uri) == (
+            "ibm-key-id",
+            "ibm-secret-value",
+        )
 
     def test_env_var_fallback(self, monkeypatch):
         """A name absent from the secrets falls back to the same-named env var."""
         monkeypatch.setenv("COS_ACCESS_KEY_ID", "env-id")
         monkeypatch.setenv("COS_SECRET_ACCESS_KEY", "env-secret")
         store = _store("s3://", secrets={})
-        assert store.resolve_credentials(URI.get_uri("s3://b/k")) == ("env-id", "env-secret")
+        assert store.resolve_credentials(URI.get_uri("s3://b/k")) == (
+            "env-id",
+            "env-secret",
+        )
 
     def test_blank_or_missing_is_none(self, monkeypatch):
         """Blank values count as unset; a missing credential yields None."""
@@ -325,10 +331,12 @@ def stub_s3():
     """Route CosURI.exists() to the local store and a stub S3 client."""
     store = _local_store()
     client = MagicMock()
-    with patch.object(
-        cos_module, "_check_resolver", lambda uri: store.get_check_target(uri)
-    ), patch.object(cos_module, "_make_s3_client", return_value=client) as make, patch(
-        "botocore.exceptions.ClientError", _ClientError
+    with (
+        patch.object(
+            cos_module, "_check_resolver", lambda uri: store.get_check_target(uri)
+        ),
+        patch.object(cos_module, "_make_s3_client", return_value=client) as make,
+        patch("botocore.exceptions.ClientError", _ClientError),
     ):
         yield client, make
 

@@ -51,10 +51,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Self
 
+from libgbtest.buildrunner.buildtest import AbstractYamlBuildRunnerTest
+
 from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_COS
 from gbcommon.uri.cos import CosCheckTarget
 from gbcommon.uri.uri import URI
-from libgbtest.buildrunner.buildtest import AbstractYamlBuildRunnerTest
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,9 @@ def _space_secrets() -> Dict[str, str]:
     from gbserver.spacesecretmanager.spacesecretmanager import (  # pylint: disable=import-outside-toplevel
         SpaceSecretManager,
     )
-    from gbserver.types.spaceconfig import SpaceConfig  # pylint: disable=import-outside-toplevel
+    from gbserver.types.spaceconfig import (
+        SpaceConfig,  # pylint: disable=import-outside-toplevel
+    )
 
     try:
         space = SpaceConfig.from_yaml(SPACE_YAML)
@@ -105,8 +108,12 @@ def local_s3_target() -> Optional[CosCheckTarget]:
     :returns: the target (key = '' for the bucket root), or None when the
         store's credential secrets are not defined.
     """
-    from gbserver.asset.cosstore import Cosstore  # pylint: disable=import-outside-toplevel
-    from gbserver.types.assetstoreconfig import AssetStoreConfig  # pylint: disable=import-outside-toplevel
+    from gbserver.asset.cosstore import (
+        Cosstore,  # pylint: disable=import-outside-toplevel
+    )
+    from gbserver.types.assetstoreconfig import (
+        AssetStoreConfig,  # pylint: disable=import-outside-toplevel
+    )
 
     store = Cosstore(AssetStoreConfig.from_yaml(STORE_YAML), secrets=_space_secrets())
     return store.get_check_target(URI.get_uri(STORE_URI))

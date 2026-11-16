@@ -203,7 +203,9 @@ class Cosstore(Assetstore):
         values = [self._resolve_secret(name) for name in names]
         missing = [name for name, value in zip(names, values) if value is None]
         if missing:
-            logger.warning("No S3/COS credentials for %s: missing secret(s) %s", uri, missing)
+            logger.warning(
+                "No S3/COS credentials for %s: missing secret(s) %s", uri, missing
+            )
             return None
         return values[0], values[1]  # type: ignore[return-value]
 

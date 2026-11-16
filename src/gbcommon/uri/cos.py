@@ -113,7 +113,9 @@ def _s3_location_exists(client: Any, bucket: str, key: str) -> bool:
     :returns: whether the object/prefix exists.
     :raises botocore.exceptions.ClientError: for errors other than a missing object.
     """
-    from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
+    from botocore.exceptions import (
+        ClientError,  # pylint: disable=import-outside-toplevel
+    )
 
     if not key:
         client.head_bucket(Bucket=bucket)
