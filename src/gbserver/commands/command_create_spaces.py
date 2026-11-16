@@ -191,11 +191,13 @@ def cli(
     storage = singleton_storage.get_admin_storage().space_storage
     spaces_to_create = _keep_db_snapshots(storage, spaces_to_create)
     # Before --clear/--replace delete anything: a refusal must not leave the
-    # table emptied, and aliases' target rows must still be readable.
-    _check_alias_targets(storage, spaces_to_create, clear)
-    _check_local_secrets_collisions(storage, spaces_to_create, clear)
+    # table emptied, and aliases' target rows must still be readable. PROD
+    # without --force keeps its rows, so check against them.
+    will_clear = clear and (force or LAKEHOUSE_ENVIRONMENT.lower() != "prod")
+    _check_alias_targets(storage, spaces_to_create, will_clear)
+    _check_local_secrets_collisions(storage, spaces_to_create, will_clear)
     if clear:
-        if force or LAKEHOUSE_ENVIRONMENT.lower() != "prod":
+        if will_clear:
             logger.info("Deleting the space table")
             storage.delete_table()
         else:

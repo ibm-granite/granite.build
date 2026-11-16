@@ -190,3 +190,21 @@ def test_env_files_storage_error_falls_back_to_git(monkeypatch):
         assert c.get_supported_env_for_files_uri().startswith("git+ssh://")
     finally:
         c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
+
+
+def test_create_spaces_clear_in_prod_without_force_checks_kept_rows(no_git):
+    """PROD --clear without --force keeps the rows, so an alias of a kept row
+    is fine and is not refused as dangling."""
+    _add_db_public(no_git)
+    spec = StoredSpace(
+        name="alias",
+        git_repo_uri=PUBLIC_GIT,
+        space_uri=db_space.make_db_uri(c.PUBLIC_SPACE_NAME),
+        lakehouse_namespace="",  # the summary table can't print None
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(create_spaces, "LAKEHOUSE_ENVIRONMENT", "PROD")
+        mp.setattr(create_spaces, "predefined_spaces", [spec])
+        result = CliRunner().invoke(create_spaces.cli, ["--clear"])
+    assert result.exit_code == 0, repr(result.exception)
+    assert {s.name for s in no_git.get_by_uuid(None)} == {"public", "alias"}

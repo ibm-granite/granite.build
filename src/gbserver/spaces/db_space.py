@@ -224,9 +224,14 @@ def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri
         row = _get_row(ref.space_name)
     snapshot = _get_snapshot(row, ref.slot)
     path = unpack_snapshot(snapshot, f"space {row.name!r} {ref.slot} snapshot")
-    _origins[path.resolve()] = make_db_uri(row.name, ref.slot)
+    root = path.resolve()
+    _origins[root] = make_db_uri(row.name, ref.slot)
     if ref.subdirectory:
-        path = path / ref.subdirectory
+        # Contained: '..' or an absolute path would reach a sibling snapshot
+        # (another space's) in the shared cache root.
+        path = (root / ref.subdirectory).resolve()
+        if path != root and root not in path.parents:
+            raise ValueError(f"db space URI {uri!r}: subdirectory escapes the snapshot")
     file_uri = path.resolve().as_uri()
     identity_uri = (
         to_config_uri(snapshot.source_uri, snapshot.source_ref)

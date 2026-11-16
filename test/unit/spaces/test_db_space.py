@@ -277,3 +277,19 @@ def test_cache_root_must_be_private(rows, tmp_path, monkeypatch):
     monkeypatch.setattr(db_space, "get_snapshot_cache_root", lambda: shared)
     with pytest.raises(ValueError, match="refusing snapshot cache"):
         resolve_db_uri("db://spaces/x")
+
+
+@pytest.mark.parametrize(
+    "subdirectory", ["../other/steps", "steps/../../other", "/etc", "a/../../x"]
+)
+def test_subdirectory_may_not_escape_the_snapshot(rows, subdirectory):
+    """'..' or an absolute path would reach a sibling (another space's) snapshot."""
+    rows["x"] = _row()
+    with pytest.raises(ValueError, match="escapes the snapshot"):
+        resolve_db_uri(f"db://spaces/x/assets#subdirectory={subdirectory}")
+
+
+def test_subdirectory_within_the_snapshot_is_fine(rows):
+    rows["x"] = _row()
+    uri = resolve_db_uri("db://spaces/x/assets#subdirectory=steps/../steps").file_uri
+    assert uri.endswith("/steps")
