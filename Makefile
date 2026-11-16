@@ -748,8 +748,8 @@ $(VENVDIR): pyproject.toml
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf
-	if [ -n "$(VENV_USE_ARTIFACTORY)" ]; then \
-		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; \
+	@if [ -n "$(VENV_USE_ARTIFACTORY)" ]; then \
+		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; : hashicorpignore; \
 	fi
 	source $(VENVDIR)/bin/activate &&			\
 	${PIP} install --upgrade pip &&		\
