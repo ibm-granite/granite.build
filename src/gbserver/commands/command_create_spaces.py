@@ -121,7 +121,7 @@ def _keep_db_snapshots(storage, spaces: List[StoredSpace]) -> List[StoredSpace]:
                 update={
                     "space_uri": space.space_uri or existing.space_uri,
                     "space": space.space or existing.space,
-                    "assets": space.assets or existing.assets,
+                    "base_uris": space.base_uris or existing.base_uris,
                 }
             )
         result.append(space)

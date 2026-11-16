@@ -8,7 +8,7 @@ Storing space metadata in persistent storage.
 
 import datetime
 from base64 import b64decode, b64encode
-from typing import Optional, Self
+from typing import List, Optional, Self
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,8 @@ class RepoSnapshot(BaseModel):
     source_ref: Optional[str] = None  # branch the snapshot was taken from
     source_commit: Optional[str] = None
     snapshot_time: Optional[datetime.datetime] = None
+    # The space.yaml base_uris entry this was taken for, as written there.
+    entry: Optional[str] = None
 
     def load_archive(self: Self) -> bytes:
         """Decode the archive to zip bytes (empty if unset)."""
@@ -70,11 +72,11 @@ class StoredSpace(BaseStoredItem):
     # column is required.
     hf_default_resource_group_id: Optional[str] = None
 
-    # Snapshots of the space repo and the assets repo its space.yaml base_uris
-    # point at, served when space_uri is a db:// URI (gbserver.spaces.db_space).
-    # Stored inside the existing ``json`` column; no schema migration.
+    # Snapshots served when space_uri is a db:// URI (gbserver.spaces.db_space):
+    # the space repo, and one per space.yaml base_uris entry, aligned with that
+    # list (None: not snapshotted). In the ``json`` column; no schema migration.
     space: Optional[RepoSnapshot] = None
-    assets: Optional[RepoSnapshot] = None
+    base_uris: Optional[List[Optional[RepoSnapshot]]] = None
 
     def get_space_uri(self: Self) -> str:
         """Where to load the space definitions from (space_uri, else git_repo_uri)."""
@@ -82,9 +84,11 @@ class StoredSpace(BaseStoredItem):
 
     def without_archives(self: Self) -> Self:
         """Copy with the archive payloads dropped; source metadata is kept."""
-        update = {
-            key: snap.model_copy(update={"archive": None})
-            for key, snap in (("space", self.space), ("assets", self.assets))
-            if snap is not None
-        }
+
+        def strip(snap: Optional[RepoSnapshot]) -> Optional[RepoSnapshot]:
+            return snap.model_copy(update={"archive": None}) if snap else None
+
+        update: dict = {"space": strip(self.space)}
+        if self.base_uris is not None:
+            update["base_uris"] = [strip(snap) for snap in self.base_uris]
         return self.model_copy(update=update)

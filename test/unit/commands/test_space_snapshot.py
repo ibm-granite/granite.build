@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """`gbserver space-snapshot` stores only the branch head (no history), rewrites
-space.yaml's assets base_uri to db://, and records the normalized source."""
+space.yaml's base_uris to db://, and records the normalized source."""
 
 import io
 import subprocess
@@ -131,7 +131,7 @@ def _run(env, *extra):
         str(env.tmp / "space"),
         "--space-ref",
         "gbspace-config",
-        "--assets-repo",
+        "--checkout",
         str(env.tmp / "assets"),
         *extra,
     ]
@@ -153,18 +153,18 @@ def test_create_stores_snapshots_and_switches(env):
         "environments/e/environment.yaml",
     }  # no history (old.txt), no .git, no untracked files
 
-    assert row.assets.source_uri == "https://github.example.com/org/assets"
-    assert row.assets.source_ref == "gbspace-config"  # from the base_uri's @ref
-    assert row.assets.source_commit == env.assets_sha
-    # Default --assets-path: steps/ and templates/ only (no docs, images, README).
-    assert _names(row.assets.load_archive()) == {
+    assert row.base_uris[0].source_uri == "https://github.example.com/org/assets"
+    assert row.base_uris[0].source_ref == "gbspace-config"  # from the base_uri's @ref
+    assert row.base_uris[0].source_commit == env.assets_sha
+    # Default --base-uri-path: steps/ and templates/ only (no docs, images, README).
+    assert _names(row.base_uris[0].load_archive()) == {
         "steps/echo/step.yaml",
         "templates/t/template.yaml",
     }
 
     with zipfile.ZipFile(io.BytesIO(row.space.load_archive())) as zf:
         stored_yaml = zf.read("space.yaml").decode()
-    assert yaml.safe_load(stored_yaml)["base_uris"] == ["db://spaces/x/assets"]
+    assert yaml.safe_load(stored_yaml)["base_uris"] == ["db://spaces/x/base_uri_0"]
     assert "# the assets repo" in stored_yaml  # rewritten in place
 
 
@@ -194,7 +194,19 @@ def test_dry_run_stores_nothing(env):
     assert env.storage.rows == {}
 
 
-def test_assets_repo_not_in_base_uris_is_refused(env):
+def test_unused_checkout_is_reported(env):
+    result = _run(env, "--create", "--checkout", str(env.tmp / "other"))
+    assert result.exit_code == 0, result.output
+    assert "matches no base_uris entry" in result.output
+
+
+def test_checkout_mapped_explicitly(env, tmp_path):
+    """REPO=DIR serves an entry from a checkout whose origin is elsewhere."""
+    mirror = tmp_path / "mirror"
+    subprocess.run(
+        ["git", "clone", "-q", str(env.tmp / "assets"), str(mirror)], check=True
+    )
+    _git(mirror, "remote", "set-url", "origin", "https://mirror.example.com/m/assets")
     result = CliRunner().invoke(
         cmd.cli,
         [
@@ -205,12 +217,15 @@ def test_assets_repo_not_in_base_uris_is_refused(env):
             str(env.tmp / "space"),
             "--space-ref",
             "gbspace-config",
-            "--assets-repo",
-            str(env.tmp / "other"),
+            "--checkout",
+            f"https://github.example.com/org/assets={mirror}",
         ],
+        catch_exceptions=False,
     )
-    assert result.exit_code != 0
-    assert "no space.yaml base_uris entry" in result.output
+    assert result.exit_code == 0, result.output
+    snap = env.storage.rows["x"].base_uris[0]
+    assert snap.source_uri == "https://github.example.com/org/assets"  # the entry's
+    assert snap.source_commit == env.assets_sha
 
 
 @pytest.mark.parametrize(
@@ -234,6 +249,55 @@ def test_clone_url_maps_git_ssh():
     assert cmd._clone_url("https://h/o/r") == "https://h/o/r"
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "git+ssh://github.example.com/org/r.git",
+        "ssh://git@github.example.com:22/org/r.git",
+        "git@github.example.com:org/r.git",
+        "https://github.example.com/org/r",
+    ],
+)
+def test_clone_url_https_forces_https(uri):
+    assert cmd._clone_url(uri, https=True) == "https://github.example.com/org/r.git"
+
+
+def test_https_clones_space_and_base_uris_over_https(env, monkeypatch):
+    """--https clones every remote repo via https, whatever space.yaml writes."""
+    cloned = []
+    real = cmd._git
+
+    def record(args, cwd=None):
+        if args[0] == "clone":
+            cloned.append(args[-2])
+            # Serve the clone from the local fixture repos instead of the network.
+            src = env.tmp / ("space" if "gbspace-x" in args[-2] else "assets")
+            args = [*args[:-2], str(src), args[-1]]
+        return real(args, cwd=cwd)
+
+    monkeypatch.setattr(cmd, "_git", record)
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--https",
+            "--space-repo",
+            "git+ssh://github.example.com/org/gbspace-x.git",
+            "--space-ref",
+            "gbspace-config",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert cloned == [
+        "https://github.example.com/org/gbspace-x.git",
+        "https://github.example.com/org/assets.git",
+    ]
+    assert env.storage.rows["x"].base_uris[0].source_commit == env.assets_sha
+
+
 def test_create_no_switch_keeps_git(env):
     result = _run(env, "--create", "--no-switch")
     assert result.exit_code == 0, result.output
@@ -243,7 +307,7 @@ def test_create_no_switch_keeps_git(env):
     assert row.space.source_commit == env.space_sha
 
 
-def test_assets_without_ref_uses_default_branch(env, tmp_path, monkeypatch):
+def test_entry_without_ref_uses_default_branch(env, tmp_path, monkeypatch):
     """No @ref in base_uris: snapshot the default branch, not the config one."""
     space_dir = tmp_path / "space-noref"
     _repo(
@@ -262,13 +326,13 @@ def test_assets_without_ref_uses_default_branch(env, tmp_path, monkeypatch):
             str(space_dir),
             "--space-ref",
             "gbspace-config",
-            "--assets-repo",
+            "--checkout",
             str(env.tmp / "assets"),
         ],
         catch_exceptions=False,
     )
     assert result.exit_code == 0, result.output
-    assert env.storage.rows["x"].assets.source_commit == env.assets_sha
+    assert env.storage.rows["x"].base_uris[0].source_commit == env.assets_sha
 
 
 def test_token_header_scoped_to_ghe_host(monkeypatch):
@@ -307,11 +371,13 @@ def test_existing_row_in_another_form_is_accepted(env):
     assert env.storage.rows["x"].space_uri == "db://spaces/x"
 
 
-def test_assets_path_override(env):
-    result = _run(env, "--create", "--assets-path", "steps", "--assets-path", "nope")
+def test_base_uri_path_override(env):
+    result = _run(
+        env, "--create", "--base-uri-path", "steps", "--base-uri-path", "nope"
+    )
     assert result.exit_code == 0, result.output
     assert "nope not found" in result.output
-    assert _names(env.storage.rows["x"].assets.load_archive()) == {
+    assert _names(env.storage.rows["x"].base_uris[0].load_archive()) == {
         "steps/echo/step.yaml"
     }
 
@@ -339,7 +405,7 @@ def test_local_branch_behind_origin_uses_origin(env, tmp_path):
             str(clone),
             "--space-ref",
             "gbspace-config",
-            "--assets-repo",
+            "--checkout",
             str(env.tmp / "assets"),
         ],
         catch_exceptions=False,
@@ -359,7 +425,7 @@ def test_missing_default_space_branch_falls_back(env, tmp_path):
             "--create",
             "--space-repo",
             str(env.tmp / "space"),
-            "--assets-repo",
+            "--checkout",
             str(env.tmp / "assets"),
         ],
         catch_exceptions=False,
@@ -370,8 +436,8 @@ def test_missing_default_space_branch_falls_back(env, tmp_path):
     assert env.storage.rows["x"].space.source_commit == env.space_sha
 
 
-def test_assets_paths_follow_subdirectory(env, tmp_path):
-    """--assets-path is relative to the assets base_uri's #subdirectory."""
+def test_base_uri_paths_follow_subdirectory(env, tmp_path):
+    """--base-uri-path is relative to the base_uri's #subdirectory."""
     sub_assets = tmp_path / "sub-assets"
     _repo(
         sub_assets,
@@ -400,12 +466,100 @@ def test_assets_paths_follow_subdirectory(env, tmp_path):
             str(space_dir),
             "--space-ref",
             "gbspace-config",
-            "--assets-repo",
+            "--checkout",
             str(sub_assets),
         ],
         catch_exceptions=False,
     )
     assert result.exit_code == 0, result.output
-    assert _names(env.storage.rows["x"].assets.load_archive()) == {
+    assert _names(env.storage.rows["x"].base_uris[0].load_archive()) == {
         "gb/steps/echo/step.yaml"
     }
+
+
+def test_several_base_uris_one_slot_each_in_order(env, tmp_path):
+    """Each git entry gets base_uri_<i> in place; same repo+ref shares a slot."""
+    second = tmp_path / "second"
+    second_sha = _repo(
+        second,
+        {"steps/two/step.yaml": "two\n"},
+        "https://github.example.com/org/second.git",
+        "main",
+    )
+    yaml_multi = SPACE_YAML.replace(
+        "  - git+ssh://github.example.com/org/assets.git@gbspace-config\n",
+        "  - git+ssh://github.example.com/org/assets.git@gbspace-config\n"
+        "  - file://./local-steps\n"
+        "  - git@github.example.com:org/second.git@main\n"
+        "  - https://github.example.com/org/assets@gbspace-config#subdirectory=steps\n",
+    )
+    space_dir = tmp_path / "space-multi"
+    _repo(
+        space_dir,
+        {"space.yaml": yaml_multi, "local-steps/x/step.yaml": "x\n"},
+        "git@github.example.com:org/gbspace-x.git",
+        "gbspace-config",
+    )
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(space_dir),
+            "--space-ref",
+            "gbspace-config",
+            "--checkout",
+            str(env.tmp / "assets"),
+            "--checkout",
+            str(second),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    row = env.storage.rows["x"]
+    with zipfile.ZipFile(io.BytesIO(row.space.load_archive())) as zf:
+        stored = yaml.safe_load(zf.read("space.yaml"))["base_uris"]
+    assert stored == [
+        "db://spaces/x/base_uri_0",
+        "file://./local-steps",
+        "db://spaces/x/base_uri_2",
+        "db://spaces/x/base_uri_0#subdirectory=steps",  # same repo+ref: slot 0
+    ]
+    assert [snap and snap.source_commit for snap in row.base_uris] == [
+        env.assets_sha,
+        None,
+        second_sha,
+        None,
+    ]
+    assert row.base_uris[2].entry == "git@github.example.com:org/second.git@main"
+
+
+def test_relative_entry_outside_the_space_repo_is_refused(env, tmp_path):
+    space_dir = tmp_path / "space-rel"
+    _repo(
+        space_dir,
+        {
+            "space.yaml": SPACE_YAML.replace(
+                "git+ssh://github.example.com/org/assets.git@gbspace-config",
+                "file://../../assets",
+            )
+        },
+        "git@github.example.com:org/gbspace-x.git",
+        "gbspace-config",
+    )
+    result = CliRunner().invoke(
+        cmd.cli,
+        [
+            "--space-name",
+            "x",
+            "--create",
+            "--space-repo",
+            str(space_dir),
+            "--space-ref",
+            "gbspace-config",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "outside the space repo" in result.output

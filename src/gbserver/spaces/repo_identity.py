@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Scheme-independent identity of a space/assets repo URI.
+"""Scheme-independent identity of a space or base_uris repo URI.
 
 The same repo is written as ``https://host/o/r``, ``git+ssh://[git@]host/o/r.git@ref``,
 ``ssh://git@host:22/o/r.git`` or ``git@host:o/r.git`` depending on how it is

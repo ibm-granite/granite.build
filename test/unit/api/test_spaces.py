@@ -99,14 +99,14 @@ def test_spaces_for_user_propagates_storage_error():
 def _snapshotted(name: str) -> StoredSpace:
     space = RepoSnapshot(source_uri="https://h/o/gbspace-a", source_commit="abc")
     space.save_archive(b"zip")
-    assets = RepoSnapshot(source_uri="https://h/o/assets", source_commit="def")
-    assets.save_archive(b"zip")
+    base = RepoSnapshot(source_uri="https://h/o/assets", source_commit="def")
+    base.save_archive(b"zip")
     return StoredSpace(
         name=name,
         git_repo_uri="https://h/o/gbspace-a",
         space_uri=f"db://spaces/{name}",
         space=space,
-        assets=assets,
+        base_uris=[base],
     )
 
 
@@ -125,9 +125,9 @@ def test_list_spaces_strips_archives_keeps_sources():
     ):
         resp = list_spaces(_fake_request("admin_x", "admin_x@example.com"))
     (space,) = resp.spaces
-    assert space.space.archive is None and space.assets.archive is None
+    assert space.space.archive is None and space.base_uris[0].archive is None
     assert space.space.source_commit == "abc"
-    assert space.assets.source_uri == "https://h/o/assets"
+    assert space.base_uris[0].source_uri == "https://h/o/assets"
 
 
 def test_get_space_returns_archives_to_member():
@@ -139,7 +139,7 @@ def test_get_space_returns_archives_to_member():
         _set_alice_access(manager)
         space = get_space(_fake_request(ALICE, f"{ALICE}@example.com"), ALICE_SPACE)
     assert space.space.load_archive() == b"zip"
-    assert space.assets.load_archive() == b"zip"
+    assert space.base_uris[0].load_archive() == b"zip"
 
 
 @pytest.mark.parametrize("space_name", [BOB_SPACE, "no-such-space"])

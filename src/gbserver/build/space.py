@@ -99,11 +99,12 @@ def _resolve_one_base_uri(
 
     Raises:
         ValueError: ``base_uri`` is a relative ``file://`` URI or bare
-            relative path while ``space_dir`` is None.
+            relative path while ``space_dir`` is None, or one that escapes a
+            db-backed space's snapshot.
     """
     if is_db_uri(base_uri):
-        # A db-backed space's assets snapshot (db://spaces/<name>/assets). Only
-        # its own row: naming another space's would bypass that space's access.
+        # A db-backed space's base_uris[i] snapshot (db://spaces/<n>/base_uri_<i>).
+        # Only its own row: naming another space's would bypass its access.
         if parse_db_uri(base_uri).space_name != db_space_name:
             raise ValueError(
                 f"base_uri {base_uri!r} names another space's snapshot; a space"
@@ -130,7 +131,15 @@ def _resolve_one_base_uri(
             f"Use an absolute file:// URI or a non-file scheme "
             f"(git://, hf://, etc.) instead."
         )
-    return f"file://{(space_dir / p).resolve()}"
+    resolved = (space_dir / p).resolve()
+    if db_space_name is not None and not resolved.is_relative_to(space_dir.resolve()):
+        # space_dir is an unpacked snapshot: its neighbours in the cache root are
+        # other spaces' snapshots.
+        raise ValueError(
+            f"base_uri {base_uri!r} of db-backed space {space_uri!r} escapes its"
+            " snapshot"
+        )
+    return f"file://{resolved}"
 
 
 class Space:

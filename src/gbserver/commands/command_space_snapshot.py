@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Store a snapshot of a space repo and its assets repo in gb_spaces.
+"""Store snapshots of a space repo and its base_uris repos in gb_spaces.
 
 The space is then served from the database (``space_uri:
 db://spaces/<name>``) with no git access at build or request time. See
@@ -11,6 +11,7 @@ gbserver.spaces.db_space.
 
 import io
 import os
+import posixpath
 import subprocess
 import tempfile
 import urllib.parse
@@ -24,7 +25,6 @@ import yaml
 
 from gbcommon.types.gbenvconfig import DEFAULT_GH_DOMAIN
 from gbserver.spaces.db_space import (
-    ASSETS_SLOT,
     SNAPSHOT_MAX_ENTRIES,
     SNAPSHOT_MAX_UNCOMPRESSED_BYTES,
     is_db_uri,
@@ -47,9 +47,12 @@ logger = get_logger(__name__)
 
 SPACE_YAML = "space.yaml"
 
-# What builds resolve from the assets repo. Docs, images and other binaries
+# What builds resolve from a base_uris repo. Docs, images and other binaries
 # stay out: they don't compress and every gb_spaces read loads the archive.
-DEFAULT_ASSETS_PATHS = ("steps", "templates")
+DEFAULT_BASE_URI_PATHS = ("steps", "templates")
+
+# base_uris entry schemes that name a git repo (plus the scp form).
+_GIT_SCHEMES = frozenset({"https", "http", "ssh", "git", "git+ssh", "git+https"})
 
 
 @dataclass
@@ -66,7 +69,7 @@ class _Source:
 
 def _git(args: List[str], cwd: Optional[Path] = None) -> bytes:
     """Run git, with the GitHub token (if any) as an auth header, not in argv."""
-    env = dict(os.environ)
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")  # fail, never prompt
     if GBSERVER_GITHUB_TOKEN:
         # Scoped to the GHE host: never sent to a host a space.yaml names.
         env.update(
@@ -140,8 +143,17 @@ def _resolve_source(
     )
 
 
-def _clone_url(url: str) -> str:
-    """git understands ssh:// and https://; map git+ssh:// onto ssh://git@."""
+def _clone_url(url: str, https: bool = False) -> str:
+    """The URL to clone ``url`` from.
+
+    With ``https``, always ``https://host/owner/repo.git`` (authenticated with
+    GBSERVER_GITHUB_TOKEN on the GHE host), whatever form ``url`` is written in.
+    Otherwise as written, with git+ssh:// mapped onto ssh://git@ for git.
+    """
+    if https:
+        normalized = normalize_repo_uri(url)
+        if normalized.startswith("https://"):
+            return f"{normalized}.git"
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme == "git+ssh":
         netloc = parsed.netloc if "@" in parsed.netloc else f"git@{parsed.netloc}"
@@ -211,7 +223,7 @@ def _local_commit(repo_dir: Path, source: _Source) -> str:
 
 
 def _snapshot(
-    source: _Source, paths: Optional[Tuple[str, ...]] = None
+    source: _Source, paths: Optional[Tuple[str, ...]] = None, https: bool = False
 ) -> Tuple[bytes, str]:
     """Return (zip of the tree at source.ref, commit sha). No history included.
 
@@ -234,7 +246,7 @@ def _snapshot(
                     "--depth=1",
                     "--single-branch",
                     *branch,
-                    _clone_url(source.location),
+                    _clone_url(source.location, https),
                     str(clone_dir),
                 ]
             )
@@ -312,37 +324,62 @@ def _is_remote(uri: str) -> bool:
     return urllib.parse.urlparse(uri).scheme not in ("", "file")
 
 
-def _remote_git_base_uris(base_uris: List[str]) -> List[str]:
-    return [b for b in base_uris if _is_remote(b)]
+def _is_git_entry(entry: str) -> bool:
+    """Whether a base_uris entry names a git repo (URL or scp form)."""
+    if "://" not in entry:
+        return _is_remote(entry)  # scp form
+    return urllib.parse.urlparse(entry).scheme in _GIT_SCHEMES
 
 
-def _rewrite_assets_base_uris(
-    space_yaml: str, assets_source_uri: str, db_assets_uri: str
-) -> Tuple[str, Dict[str, str]]:
-    """Point every base_uris entry for the assets repo at the db snapshot.
+def _subdirectory(entry: str) -> str:
+    fragment = entry.partition("#")[2]
+    return urllib.parse.parse_qs(fragment).get("subdirectory", [""])[0].strip("/")
 
-    Text substitution of the exact entries, so comments and layout survive.
-    A ``#subdirectory=`` fragment is carried over.
+
+def _check_local_entry(entry: str) -> None:
+    """A relative file entry is served from inside the snapshot; refuse escapes."""
+    parsed = urllib.parse.urlparse(entry)
+    if parsed.scheme not in ("", "file"):
+        return
+    path = (parsed.netloc + parsed.path) if parsed.scheme == "file" else entry
+    if not path or path.startswith("/"):
+        return  # absolute: a host path, as for any space
+    if posixpath.normpath(path).split("/")[0] == "..":
+        raise click.ClickException(
+            f"base_uri {entry!r} is outside the space repo, so it can't be served"
+            " from the snapshot; name its repo as a git base_uri instead"
+        )
+
+
+def _parse_checkouts(values: Tuple[str, ...]) -> List[Tuple[str, Path]]:
+    """--checkout values: DIR (matched by its origin) or REPO=DIR."""
+    checkouts: List[Tuple[str, Path]] = []
+    for value in values:
+        repo, sep, path = value.partition("=")
+        explicit = bool(sep) and not Path(value).expanduser().is_dir()
+        directory = Path(path if explicit else value).expanduser()
+        if not directory.is_dir():
+            raise click.ClickException(f"--checkout {value!r}: no such directory")
+        if not explicit:
+            origin = _git(["remote", "get-url", "origin"], cwd=directory)
+            repo = origin.decode().strip()
+        checkouts.append((repo, directory.resolve()))
+    return checkouts
+
+
+def _rewrite_base_uris(space_yaml: str, entries: List[str], new: List[str]) -> str:
+    """Replace base_uris entries in space.yaml's text, keeping comments and layout.
+
+    Longest first, so an entry that is a prefix of another isn't hit inside it;
+    the result must parse to exactly ``new``, in order.
     """
-    rewrites: Dict[str, str] = {}
-    for base_uri in _base_uris(space_yaml):
-        if is_db_uri(base_uri) or not same_repo(base_uri, assets_source_uri):
-            continue
-        fragment = base_uri.partition("#")[2]
-        rewrites[base_uri] = db_assets_uri + (f"#{fragment}" if fragment else "")
     text = space_yaml
-    for old, new in rewrites.items():
-        if text.count(old) != 1:
-            raise click.ClickException(
-                f"cannot rewrite base_uri {old!r}: it occurs {text.count(old)}"
-                f" times in {SPACE_YAML}"
-            )
-        text = text.replace(old, new)
-    after = _base_uris(text)
-    for new in rewrites.values():
-        if new not in after:
-            raise click.ClickException(f"rewritten {SPACE_YAML} lost base_uri {new!r}")
-    return text, rewrites
+    changes = {old: rep for old, rep in zip(entries, new) if old != rep}
+    for old in sorted(changes, key=len, reverse=True):
+        text = text.replace(old, changes[old])
+    if _base_uris(text) != new:
+        raise click.ClickException(f"could not rewrite the base_uris of {SPACE_YAML}")
+    return text
 
 
 @click.command()
@@ -365,26 +402,33 @@ def _rewrite_assets_base_uris(
     " checkout's origin). Secret groups are matched on it.",
 )
 @click.option(
-    "--assets-repo",
-    default=None,
-    help="Assets repo URL or local checkout. Default: the git base_uris entry"
-    f" in the snapshot's {SPACE_YAML}.",
-)
-@click.option(
-    "--assets-ref",
-    default=None,
-    help="Branch to snapshot (default: the base_uris entry's @ref).",
-)
-@click.option("--assets-source-uri", default=None, help="As --space-source-uri.")
-@click.option(
-    "--assets-path",
-    "assets_paths",
+    "--checkout",
+    "checkouts",
     multiple=True,
-    default=DEFAULT_ASSETS_PATHS,
-    show_default=True,
-    help="Path in the assets repo to include; repeatable.",
+    help="Local checkout to snapshot a base_uris repo from: DIR (matched by its"
+    " origin) or REPO=DIR; repeatable. Repos without one are cloned.",
 )
-@click.option("--no-assets", is_flag=True, help="Snapshot only the space repo.")
+@click.option(
+    "--https",
+    "use_https",
+    is_flag=True,
+    help="Clone remote repos over https://<host>/<owner>/<repo>.git with"
+    " GBSERVER_GITHUB_TOKEN, even where they are written as git+ssh://.",
+)
+@click.option(
+    "--base-uri-path",
+    "base_uri_paths",
+    multiple=True,
+    default=DEFAULT_BASE_URI_PATHS,
+    show_default=True,
+    help="Path to include from each base_uris repo (under its #subdirectory);"
+    " repeatable.",
+)
+@click.option(
+    "--no-base-uris",
+    is_flag=True,
+    help="Snapshot only the space repo; base_uris stay as written.",
+)
 @click.option(
     "--switch/--no-switch",
     default=True,
@@ -408,22 +452,21 @@ def cli(
     space_repo: Optional[str],
     space_ref: Optional[str],
     space_source_uri: Optional[str],
-    assets_repo: Optional[str],
-    assets_ref: Optional[str],
-    assets_source_uri: Optional[str],
-    assets_paths: Tuple[str, ...],
-    no_assets: bool,
+    checkouts: Tuple[str, ...],
+    use_https: bool,
+    base_uri_paths: Tuple[str, ...],
+    no_base_uris: bool,
     switch: bool,
     create: bool,
     lakehouse_namespace: Optional[str],
     dry_run: bool,
 ):
-    """Snapshot a space repo (and its assets repo) into gb_spaces.
+    """Snapshot a space repo and the repos its base_uris name into gb_spaces.
 
-    Only the tree at the branch head is stored, no git history. The stored
-    space.yaml's base_uris entry for the assets repo is rewritten to
-    db://spaces/<name>/assets. git_repo_uri, the space's identity, is unchanged:
-    the snapshot must come from that repo.
+    Only the tree at the branch head is stored, no git history. In the stored
+    space.yaml, each git base_uris[i] becomes db://spaces/<name>/base_uri_<i>,
+    in place, so lookup order is unchanged. git_repo_uri, the space's identity,
+    is unchanged: the snapshot must come from that repo.
     """
     storage = singleton_storage.get_admin_storage().space_storage
     row = storage.get_by_name(space_name)
@@ -463,74 +506,69 @@ def cli(
             f" repo {row.git_repo_uri}; pass --space-source-uri if it is a mirror"
         )
     click.echo(f"space: {space_src.location} @ {space_src.ref}")
-    space_zip, space_sha = _snapshot(space_src)
+    space_zip, space_sha = _snapshot(space_src, https=use_https)
     space_yaml = _read_space_yaml(space_zip)
 
-    # Assets snapshot.
-    assets: Optional[RepoSnapshot] = None
-    if not no_assets:
-        remote = _remote_git_base_uris(_base_uris(space_yaml))
-        if assets_repo is None:
-            if len(remote) != 1:
-                raise click.ClickException(
-                    f"{SPACE_YAML} has {len(remote)} remote base_uris ({remote});"
-                    " pass --assets-repo or --no-assets"
-                )
-            assets_repo = remote[0]
-        assets_src = _resolve_source(assets_repo, assets_ref, assets_source_uri, None)
-        if not any(same_repo(b, assets_src.source_uri) for b in remote):
+    # base_uris snapshots: one per (repo, ref), at its first entry's index.
+    entries = _base_uris(space_yaml)
+    slots: List[Optional[RepoSnapshot]] = [None] * len(entries)
+    new_entries = list(entries)
+    groups: Dict[Tuple[str, Optional[str]], List[int]] = {}
+    for i, entry in enumerate([] if no_base_uris else entries):
+        if is_db_uri(entry):
             raise click.ClickException(
-                f"no {SPACE_YAML} base_uris entry refers to {assets_src.source_uri};"
-                " pass --no-assets or the right --assets-repo"
+                f"base_uri {entry!r} is already db://; snapshot from the space's"
+                " own repo"
             )
-        if assets_ref is None:
-            # Snapshot the branch space.yaml asks for, even from a local checkout.
-            entry_refs = sorted(
-                {
-                    ref
-                    for b in remote
-                    if same_repo(b, assets_src.source_uri) and (ref := _split_ref(b)[1])
-                }
-            )
-            if len(entry_refs) > 1:
-                raise click.ClickException(
-                    f"{SPACE_YAML} names {assets_src.source_uri} at several refs"
-                    f" {entry_refs}; pass --assets-ref"
-                )
-            if entry_refs:
-                assets_src.ref = entry_refs[0]
+        if not _is_git_entry(entry):
+            _check_local_entry(entry)
+            continue
+        url, ref = _split_ref(entry)
+        groups.setdefault((normalize_repo_uri(url).lower(), ref), []).append(i)
+    local = _parse_checkouts(checkouts)
+    for (_, ref), indices in groups.items():
+        first = indices[0]
+        url = _split_ref(entries[first])[0]
+        repo = normalize_repo_uri(url)
+        checkout = next((d for r, d in local if same_repo(r, url)), None)
+        src = _resolve_source(str(checkout or url), ref, repo, None)
         click.echo(
-            f"assets: {assets_src.location} @ {assets_src.ref or 'default branch'}"
+            f"base_uris[{first}]: {src.location} @ {src.ref or 'default branch'}"
         )
-        # Paths are relative to the base_uri's #subdirectory, if it has one.
-        subdirs = sorted(
-            {
-                urllib.parse.parse_qs(b.partition("#")[2])
-                .get("subdirectory", [""])[0]
-                .strip("/")
-                for b in remote
-                if same_repo(b, assets_src.source_uri)
-            }
+        subdirs = sorted({_subdirectory(entries[i]) for i in indices})
+        paths = tuple(
+            f"{sd}/{p}" if sd else p for sd in subdirs for p in base_uri_paths
         )
-        archive_paths = tuple(
-            f"{sd}/{p}" if sd else p for sd in subdirs for p in assets_paths
-        )
-        assets_zip, assets_sha = _snapshot(assets_src, archive_paths)
-        _check_size(assets_zip, "assets")
-        space_yaml, rewrites = _rewrite_assets_base_uris(
-            space_yaml, assets_src.source_uri, make_db_uri(space_name, ASSETS_SLOT)
-        )
-        for old, new in rewrites.items():
-            click.echo(f"base_uris: {old} -> {new}")
-        space_zip = _replace_space_yaml(space_zip, space_yaml)
-        assets = RepoSnapshot(
-            source_uri=assets_src.source_uri,
-            source_ref=assets_src.ref,
-            source_commit=assets_sha,
+        data, sha = _snapshot(src, paths, https=use_https)
+        _check_size(data, f"base_uris[{first}]")
+        snapshot = RepoSnapshot(
+            source_uri=repo,
+            source_ref=src.ref,
+            source_commit=sha,
             snapshot_time=get_utc_time(),
+            entry=entries[first],
         )
-        assets.save_archive(assets_zip)
-    for still_remote in _remote_git_base_uris(_base_uris(space_yaml)):
+        snapshot.save_archive(data)
+        slots[first] = snapshot
+        for i in indices:
+            fragment = entries[i].partition("#")[2]
+            new_entries[i] = make_db_uri(space_name, first) + (
+                f"#{fragment}" if fragment else ""
+            )
+            click.echo(f"base_uris[{i}]: {entries[i]} -> {new_entries[i]}")
+    for repo, directory in local:
+        if not any(
+            same_repo(repo, _split_ref(entries[g[0]])[0]) for g in groups.values()
+        ):
+            click.echo(
+                f"warning: --checkout {directory} ({repo}) matches no base_uris"
+                " entry; unused",
+                err=True,
+            )
+    if new_entries != entries:
+        space_yaml = _rewrite_base_uris(space_yaml, entries, new_entries)
+        space_zip = _replace_space_yaml(space_zip, space_yaml)
+    for still_remote in (e for e in new_entries if _is_remote(e)):
         click.echo(
             f"warning: base_uri {still_remote} is still fetched remotely", err=True
         )
@@ -544,7 +582,9 @@ def cli(
     )
     space.save_archive(space_zip)
 
-    updated = row.model_copy(update={"space": space, "assets": assets})
+    updated = row.model_copy(
+        update={"space": space, "base_uris": None if no_base_uris else slots}
+    )
     if switch:
         updated.space_uri = make_db_uri(space_name)
 
@@ -563,11 +603,11 @@ def cli(
         f"space {space_name} ({updated.git_repo_uri}): space_uri"
         f" {row.get_space_uri()} -> {updated.get_space_uri()};"
         f" space {space_src.source_uri}@{space_sha[:12]} ({len(space_zip)} bytes)"
-        + (
-            f", assets {assets.source_uri}@{(assets.source_commit or '')[:12]}"
-            f" ({len(assets_zip)} bytes)"
-            if assets
-            else ""
+        + "".join(
+            f", base_uris[{i}] {snap.source_uri}@{(snap.source_commit or '')[:12]}"
+            f" ({len(snap.archive or '')} bytes stored)"
+            for i, snap in enumerate(slots)
+            if snap
         )
     )
     if dry_run:

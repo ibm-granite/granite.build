@@ -28,7 +28,7 @@ from gbserver.spaces.db_space import (
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 
 SOURCE = "https://github.example.com/org/gbspace-x"
-ASSETS_SOURCE = "https://github.example.com/org/assets"
+BASE_SOURCE = "https://github.example.com/org/assets"
 
 SPACE_YAML = """\
 name: x
@@ -36,7 +36,7 @@ secret_manager:
   type: env
   config: {}
 base_uris:
-  - db://spaces/x/assets
+  - db://spaces/x/base_uri_0
 """
 
 
@@ -60,9 +60,9 @@ def _row(name: str = "x", **kw) -> StoredSpace:
         git_repo_uri=kw.pop("git_repo_uri", SOURCE),
         space_uri=kw.pop("space_uri", make_db_uri(name)),
         space=kw.pop("space", _snapshot({"space.yaml": SPACE_YAML}, SOURCE)),
-        assets=kw.pop(
-            "assets",
-            _snapshot({"steps/echo/step.yaml": "name: echo\n"}, ASSETS_SOURCE),
+        base_uris=kw.pop(
+            "base_uris",
+            [_snapshot({"steps/echo/step.yaml": "name: echo\n"}, BASE_SOURCE)],
         ),
         **kw,
     )
@@ -88,8 +88,9 @@ def rows(tmp_path, monkeypatch):
     [
         ("db://spaces/x", DbUri("x")),
         ("db://spaces/x/space", DbUri("x")),
-        ("db://spaces/x/assets", DbUri("x", "assets")),
-        ("db://spaces/x/assets#subdirectory=a/b", DbUri("x", "assets", "a/b")),
+        ("db://spaces/x/base_uri_0", DbUri("x", "base_uri_0")),
+        ("db://spaces/x/base_uri_12", DbUri("x", "base_uri_12")),
+        ("db://spaces/x/base_uri_0#subdirectory=a/b", DbUri("x", "base_uri_0", "a/b")),
         ("db://spaces/a%2Fb", DbUri("a/b")),
     ],
 )
@@ -98,7 +99,16 @@ def test_parse(uri, expected):
 
 
 @pytest.mark.parametrize(
-    "uri", ["db://space", "db://spaces/", "db://spaces/x/other", "db://other/x"]
+    "uri",
+    [
+        "db://space",
+        "db://spaces/",
+        "db://spaces/x/other",
+        "db://other/x",
+        "db://spaces/x/assets",
+        "db://spaces/x/base_uri_01",
+        "db://spaces/x/base_uri_",
+    ],
 )
 def test_parse_rejects(uri):
     with pytest.raises(ValueError):
@@ -106,7 +116,9 @@ def test_parse_rejects(uri):
 
 
 def test_make_round_trips():
-    assert parse_db_uri(make_db_uri("a/b", "assets")) == DbUri("a/b", "assets")
+    assert parse_db_uri(make_db_uri("a/b", 3)) == DbUri("a/b", "base_uri_3")
+    assert parse_db_uri(make_db_uri("a/b", 3)).base_uri_index == 3
+    assert parse_db_uri(make_db_uri("a/b")).base_uri_index is None
 
 
 def test_resolve_unpacks_once_and_reuses(rows, tmp_path):
@@ -138,14 +150,14 @@ def test_partial_extraction_is_redone(rows, tmp_path):
 
 def test_subdirectory(rows):
     rows["x"] = _row()
-    uri = resolve_db_uri("db://spaces/x/assets#subdirectory=steps").file_uri
+    uri = resolve_db_uri("db://spaces/x/base_uri_0#subdirectory=steps").file_uri
     assert Path(uri[len("file://") :], "echo", "step.yaml").is_file()
 
 
 def test_missing_snapshot(rows):
-    rows["x"] = _row(assets=None)
-    with pytest.raises(ValueError, match="no assets snapshot"):
-        resolve_db_uri("db://spaces/x/assets")
+    rows["x"] = _row(base_uris=None)
+    with pytest.raises(ValueError, match="no base_uri_0 snapshot"):
+        resolve_db_uri("db://spaces/x/base_uri_0")
 
 
 def test_alias_uses_target_row(rows):
@@ -183,8 +195,8 @@ def test_create_space_loads_offline(rows, monkeypatch):
     assert seen_uris == [space.identity_uri]
     # The space-match check in validation passes for the stored row.
     assert _same_space_repo(rows["x"].git_repo_uri, space.identity_uri)
-    # db://spaces/x/assets became the unpacked assets snapshot.
-    assets_uri = resolve_db_uri("db://spaces/x/assets").file_uri
+    # db://spaces/x/base_uri_0 became the unpacked base_uris[0] snapshot.
+    assets_uri = resolve_db_uri("db://spaces/x/base_uri_0").file_uri
     assert SpaceURI._thread_local.base_uris[:2] == [space.uristr, assets_uri]
     dest = Path(space.uristr[len("file://") :]).parent / "pulled"
     assert URI.get_uri("space://steps/echo").pull(dest=dest)
@@ -194,7 +206,7 @@ def test_create_space_loads_offline(rows, monkeypatch):
 def test_without_archives_keeps_metadata():
     row = _row()
     stripped = row.without_archives()
-    assert stripped.space.archive is None and stripped.assets.archive is None
+    assert stripped.space.archive is None and stripped.base_uris[0].archive is None
     assert stripped.space.source_commit == "abc"
     assert row.space.archive  # original untouched
     assert "archive" not in repr(row.space)
@@ -204,7 +216,7 @@ def test_snapshot_round_trips_through_json():
     row = _row()
     again = StoredSpace.model_validate_json(row.model_dump_json())
     assert again.space.load_archive() == row.space.load_archive()
-    assert again.assets.source_uri == ASSETS_SOURCE
+    assert again.base_uris[0].source_uri == BASE_SOURCE
 
 
 def test_portable_uri_round_trips(rows):
@@ -219,7 +231,9 @@ def test_portable_uri_round_trips(rows):
 def test_base_uri_may_not_name_another_space(rows):
     """A space.yaml naming another row's snapshot must not get its assets."""
     rows["other"] = _row(name="other")
-    yaml_other = SPACE_YAML.replace("db://spaces/x/assets", "db://spaces/other/assets")
+    yaml_other = SPACE_YAML.replace(
+        "db://spaces/x/base_uri_0", "db://spaces/other/base_uri_0"
+    )
     rows["x"] = _row(space=_snapshot({"space.yaml": yaml_other}, SOURCE))
     with pytest.raises(ValueError, match="another space's snapshot"):
         create_space(rows["x"])
@@ -286,10 +300,41 @@ def test_subdirectory_may_not_escape_the_snapshot(rows, subdirectory):
     """'..' or an absolute path would reach a sibling (another space's) snapshot."""
     rows["x"] = _row()
     with pytest.raises(ValueError, match="escapes the snapshot"):
-        resolve_db_uri(f"db://spaces/x/assets#subdirectory={subdirectory}")
+        resolve_db_uri(f"db://spaces/x/base_uri_0#subdirectory={subdirectory}")
 
 
 def test_subdirectory_within_the_snapshot_is_fine(rows):
     rows["x"] = _row()
-    uri = resolve_db_uri("db://spaces/x/assets#subdirectory=steps/../steps").file_uri
+    uri = resolve_db_uri(
+        "db://spaces/x/base_uri_0#subdirectory=steps/../steps"
+    ).file_uri
     assert uri.endswith("/steps")
+
+
+def test_slots_keep_base_uris_order(rows):
+    """Each base_uris[i] is served from its slot, in its original position."""
+    yaml_multi = SPACE_YAML.replace(
+        "  - db://spaces/x/base_uri_0\n",
+        "  - db://spaces/x/base_uri_0\n"
+        "  - steps-local\n"
+        "  - db://spaces/x/base_uri_2\n",
+    )
+    first = _snapshot({"steps/a/step.yaml": "a\n"}, BASE_SOURCE)
+    third = _snapshot({"steps/c/step.yaml": "c\n"}, "https://github.example.com/o/c")
+    rows["x"] = _row(
+        space=_snapshot({"space.yaml": yaml_multi, "steps-local/x": ""}, SOURCE),
+        base_uris=[first, None, third],
+    )
+    space = create_space(rows["x"])
+    bases = SpaceURI._thread_local.base_uris
+    assert bases[1] == resolve_db_uri("db://spaces/x/base_uri_0").file_uri
+    assert bases[2] == f"{space.uristr}/steps-local"
+    assert bases[3] == resolve_db_uri("db://spaces/x/base_uri_2").file_uri
+
+
+def test_relative_entry_may_not_escape_the_snapshot(rows):
+    """A relative file base_uri of a db space can't reach a sibling snapshot."""
+    yaml_rel = SPACE_YAML.replace("db://spaces/x/base_uri_0", "file://../other")
+    rows["x"] = _row(space=_snapshot({"space.yaml": yaml_rel}, SOURCE))
+    with pytest.raises(ValueError, match="escapes its snapshot"):
+        create_space(rows["x"])

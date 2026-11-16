@@ -7,8 +7,9 @@
 A row with ``space_uri: db://spaces/<name>`` is served from the ``space``
 snapshot (StoredSpace.space) of row ``<name>`` -- normally itself; another
 name makes it an alias. Its ``git_repo_uri`` stays the space's git repo. The
-snapshot's space.yaml names its assets repo as
-``db://spaces/<name>/assets``, served from that row's ``assets`` snapshot.
+snapshot's space.yaml names each snapshotted base_uris entry as
+``db://spaces/<name>/base_uri_<i>`` (``base_uris[i]``), served from that row's
+``base_uris[i]`` snapshot, in its original position.
 Either may carry a ``#subdirectory=`` fragment.
 
 Snapshots are unpacked into a local directory named by content digest and
@@ -18,13 +19,14 @@ matching and build PRs keep using ``git_repo_uri``, never the local path.
 
 import hashlib
 import os
+import re
 import shutil
 import tempfile
 import urllib.parse
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Final, Literal, Optional, cast
+from typing import TYPE_CHECKING, Dict, Final, Optional
 
 from gbcommon.uri.git import GitURI
 from gbserver.spaces.repo_identity import normalize_repo_uri, to_config_uri
@@ -39,9 +41,9 @@ logger = get_logger(__name__)
 
 DB_SCHEME = "db"
 DB_SPACES_HOST = "spaces"
-Slot = Literal["space", "assets"]
 SPACE_SLOT: Final = "space"
-ASSETS_SLOT: Final = "assets"
+BASE_URI_SLOT_PREFIX: Final = "base_uri_"
+_BASE_URI_SLOT = re.compile(r"base_uri_(0|[1-9][0-9]*)")
 
 # Snapshots are admin-written, not client uploads, so the caps only guard
 # against a corrupt row and are looser than the build-archive defaults.
@@ -57,8 +59,15 @@ class DbUri:
     """A parsed ``db://spaces/<space_name>[/<slot>][#subdirectory=...]``."""
 
     space_name: str
-    slot: Slot = SPACE_SLOT
+    slot: str = SPACE_SLOT  # "space", or "base_uri_<i>"
     subdirectory: str = ""
+
+    @property
+    def base_uri_index(self) -> Optional[int]:
+        """``i`` for a ``base_uri_<i>`` slot, None for the space slot."""
+        if self.slot == SPACE_SLOT:
+            return None
+        return int(self.slot[len(BASE_URI_SLOT_PREFIX) :])
 
 
 def is_db_uri(uri: Optional[str]) -> bool:
@@ -66,17 +75,19 @@ def is_db_uri(uri: Optional[str]) -> bool:
     return urllib.parse.urlparse((uri or "").strip()).scheme == DB_SCHEME
 
 
-def make_db_uri(space_name: str, slot: Slot = SPACE_SLOT) -> str:
-    """Build the db:// URI for a row's snapshot slot."""
+def make_db_uri(space_name: str, base_uri_index: Optional[int] = None) -> str:
+    """The db:// URI of a row's space snapshot, or of its ``base_uris[i]`` one."""
     uri = f"{DB_SCHEME}://{DB_SPACES_HOST}/{urllib.parse.quote(space_name, safe='')}"
-    return uri if slot == SPACE_SLOT else f"{uri}/{slot}"
+    if base_uri_index is None:
+        return uri
+    return f"{uri}/{BASE_URI_SLOT_PREFIX}{base_uri_index}"
 
 
 def parse_db_uri(uri: str) -> DbUri:
     """Parse a db:// space URI.
 
     Raises:
-        ValueError: Not a well-formed ``db://spaces/<name>[/space|/assets]``.
+        ValueError: Not a well-formed ``db://spaces/<name>[/base_uri_<i>]``.
     """
     parsed = urllib.parse.urlparse(uri.strip())
     parts = [urllib.parse.unquote(p) for p in parsed.path.split("/") if p]
@@ -84,14 +95,18 @@ def parse_db_uri(uri: str) -> DbUri:
         parsed.scheme != DB_SCHEME
         or parsed.netloc != DB_SPACES_HOST
         or not 1 <= len(parts) <= 2
-        or (len(parts) == 2 and parts[1] not in (SPACE_SLOT, ASSETS_SLOT))
+        or (
+            len(parts) == 2
+            and parts[1] != SPACE_SLOT
+            and not _BASE_URI_SLOT.fullmatch(parts[1])
+        )
     ):
         raise ValueError(
             f"invalid db space URI {uri!r}; expected"
-            f" {DB_SCHEME}://{DB_SPACES_HOST}/<space_name>[/{ASSETS_SLOT}]"
+            f" {DB_SCHEME}://{DB_SPACES_HOST}/<space_name>[/base_uri_<i>]"
         )
     subdir = urllib.parse.parse_qs(parsed.fragment).get("subdirectory", [""])[0]
-    slot = cast(Slot, parts[1] if len(parts) == 2 else SPACE_SLOT)
+    slot = parts[1] if len(parts) == 2 else SPACE_SLOT
     return DbUri(space_name=parts[0], slot=slot, subdirectory=subdir)
 
 
@@ -173,10 +188,15 @@ def _get_row(space_name: str) -> StoredSpace:
     return row
 
 
-def _get_snapshot(row: StoredSpace, slot: Slot) -> RepoSnapshot:
-    snapshot = row.space if slot == SPACE_SLOT else row.assets
+def _get_snapshot(row: StoredSpace, ref: DbUri) -> RepoSnapshot:
+    index = ref.base_uri_index
+    if index is None:
+        snapshot = row.space
+    else:
+        slots = row.base_uris or []
+        snapshot = slots[index] if index < len(slots) else None
     if snapshot is None or not snapshot.archive:
-        raise ValueError(f"space {row.name!r} has no {slot} snapshot")
+        raise ValueError(f"space {row.name!r} has no {ref.slot} snapshot")
     return snapshot
 
 
@@ -222,10 +242,10 @@ def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri
     ref = parse_db_uri(uri)
     if row is None or row.name != ref.space_name:
         row = _get_row(ref.space_name)
-    snapshot = _get_snapshot(row, ref.slot)
+    snapshot = _get_snapshot(row, ref)
     path = unpack_snapshot(snapshot, f"space {row.name!r} {ref.slot} snapshot")
     root = path.resolve()
-    _origins[root] = make_db_uri(row.name, ref.slot)
+    _origins[root] = make_db_uri(row.name, ref.base_uri_index)
     if ref.subdirectory:
         # Contained: '..' or an absolute path would reach a sibling snapshot
         # (another space's) in the shared cache root.

@@ -168,33 +168,42 @@ The name is also what the IBM Cloud secret manager matches against and what appe
 
 ## Storing a space in the database (no git access)
 
-A registered space can carry a snapshot of its space repo and of the assets repo its `base_uris`
-names, so builds and the REST server never fetch either from git. Take or refresh the snapshot with
+A registered space can carry snapshots of its space repo and of each git repo its `base_uris`
+names, so builds and the REST server never fetch them from git. Take or refresh the snapshots with
 [`gbserver space-snapshot`](../cli/gbserver-cli-reference.md#administration):
 
 ```shell
-# From the remote branch (any of https://, git+ssh://, ssh://, git@host:org/repo):
+# From the remotes (any of https://, git+ssh://, ssh://, git@host:org/repo):
 gbserver space-snapshot --space-name public --space-repo https://github.example.com/org/gbspace-public
-# From local checkouts (e.g. while the remote is unreachable):
-gbserver space-snapshot --space-name public --space-repo ../gbspace-public --assets-repo ../assets
+# Always clone over https with GBSERVER_GITHUB_TOKEN, even where space.yaml writes git+ssh://:
+gbserver space-snapshot --space-name public --https
+# From local checkouts (e.g. while a remote is unreachable); each --checkout is matched to the
+# base_uris entry for its origin repo (or give REPO=DIR):
+gbserver space-snapshot --space-name public --space-repo ../gbspace-public --checkout ../assets
 ```
 
-The command stores only the files at the head of the space config branch (default: the
-deployment's config branch, e.g. `gbspace-config`) and of the assets branch named in `space.yaml`
-(its `@<ref>`). No git history, `.git` directory, or untracked files are kept. From the assets
-repo it takes only `steps/` and `templates/` (`--assets-path` to change), leaving out docs, images
-and other files builds don't resolve. It then:
+The command stores only committed files at the head of each branch: the space config branch
+(default: the deployment's config branch, e.g. `gbspace-config`, else the repo's default branch),
+and for each `base_uris` entry the branch it names (its `@<ref>`, else the default branch). No git
+history, `.git` directory, or untracked files are kept. From each `base_uris` repo it takes only
+`steps/` and `templates/` under the entry's `#subdirectory` (`--base-uri-path` to change), leaving
+out docs, images and other files builds don't resolve. It then:
 
 - sets the row's `space_uri` to `db://spaces/<name>`, so the space is loaded from the snapshot
-  (pass `--no-switch` to store the snapshot and leave `space_uri` as it is);
-- rewrites the stored `space.yaml` so that the `base_uris` entry for the assets repo becomes
-  `db://spaces/<name>/assets` (a `#subdirectory=` suffix is kept);
-- records each snapshot's source repo (normalized to `https://host/org/repo`), branch, and commit.
+  (pass `--no-switch` to store the snapshots and leave `space_uri` as it is);
+- rewrites each git entry `base_uris[i]` in the stored `space.yaml`, in place, to
+  `db://spaces/<name>/base_uri_<i>` (a `#subdirectory=` suffix is kept). The list keeps its
+  order, so `space://` lookups search the bases in the same order as before. An entry for a
+  repo and branch already snapshotted reuses the earlier slot. Relative `file://` entries are
+  served from inside the space snapshot; one that points outside the space repo is refused;
+- records each snapshot's source repo (normalized to `https://host/org/repo`), branch, commit,
+  and the `base_uris` entry it was taken for.
 
-The snapshots are kept in the row's `json` column as `space` and `assets`, each holding `archive` (a
+The snapshots are kept in the row's `json` column: `space`, and `base_uris`, a list aligned with
+`space.yaml`'s `base_uris` (`null` where an entry is not snapshotted). Each holds `archive` (a
 base64-encoded zip, like a build's `build_archive`), `source_uri`, `source_ref`, `source_commit`,
-and `snapshot_time`. At use, gbserver unpacks each snapshot into a local cache directory named by
-its content hash, and serves it from there.
+`snapshot_time` and `entry`. At use, gbserver unpacks each snapshot into a private local cache
+directory named by its content hash, and serves it from there.
 
 `space_uri` says where a space is loaded from; unset means `git_repo_uri`. Like the snapshots it
 lives in the `json` column, so no schema change is needed. `git_repo_uri` keeps naming the space's
