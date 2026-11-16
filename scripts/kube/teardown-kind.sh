@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # teardown-kind.sh -- Delete the local kind cluster created by setup-kind.sh.
 #
 # Runs `sky local down`, which deletes the kind cluster and, if its context was

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for step-template.yaml.
 
 The launcher's ``run:`` block is a ~100-line shell script carrying runtime Jinja.

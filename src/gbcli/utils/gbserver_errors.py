@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """HTTP error types raised by the CLI's gbserver client helpers.
 
 Owned by gbcli (rather than reusing fastapi's ``HTTPException``) so the CLI does

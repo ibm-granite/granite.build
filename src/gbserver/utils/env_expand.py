@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Utility for expanding $VAR or ${VAR} placeholders in text.
 

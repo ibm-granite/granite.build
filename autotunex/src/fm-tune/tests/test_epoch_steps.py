@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Epoch step math: HF counts optimizer steps, not micro-batches.
 
 The regression these pin is quiet and expensive. Every multi-GPU driver used to

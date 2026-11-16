@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Central configuration — all env vars for the analytics service."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``GET /jobs/{id}`` — the detail response, and the ``shape`` that selects it.
 
 Carries the blobs and nested tasks the list response omits, because the view

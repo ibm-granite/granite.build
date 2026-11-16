@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The build detail page must decide whether to show its AutoTuneX panels from the
  * linked tuning job, never from build tags.

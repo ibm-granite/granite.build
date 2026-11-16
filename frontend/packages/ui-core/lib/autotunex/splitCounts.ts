@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The train/validation record counts an auto-split upload will get, computed the
  * way the server does it (`_validation_indices` in services/datasets_io.py):

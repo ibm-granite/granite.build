@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Core build status union — mirrors gbserver's Status enum
 // (src/gbserver/types/status.py) plus 'planned', a frontend-only synthetic
 // status for target steps that haven't started yet.

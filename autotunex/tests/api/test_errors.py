@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The single error-translation layer, including auth-specific header forwarding."""
 
 from __future__ import annotations

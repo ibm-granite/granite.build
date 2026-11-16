@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 export interface ValuesParseResult {
   /** Sorted, parsed candidate values — null when the input is not committable. */
   values: number[] | null

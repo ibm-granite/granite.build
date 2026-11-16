@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Chat assistant API — streams ChatAgentBackend responses as SSE.
 
 Mirrors plans.py's gating pattern (503 when unconfigured). The route only

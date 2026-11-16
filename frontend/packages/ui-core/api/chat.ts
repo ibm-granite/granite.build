@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * API client for the chat assistant (/api/analytics/chat/*).
  * Deliberately not using the shared axios client for streaming — axios

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure helpers for the Start Tuning wizard's "My tuned models" source.
 // Type-only imports: tests require() this file under plain `node --test`.
 import type { TunedModel, TuningAsset } from '@granite-build/ui-core/types'

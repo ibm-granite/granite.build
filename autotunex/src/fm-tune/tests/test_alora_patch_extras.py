@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Coverage gaps for autotune.alora_patch — version gating and idempotency.
 
 The happy-path test in test_alora_gc_patch.py loads a real model. These

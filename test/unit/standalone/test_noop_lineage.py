@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests that lineage is disabled (noop) in standalone mode.
 
 Verifies that:

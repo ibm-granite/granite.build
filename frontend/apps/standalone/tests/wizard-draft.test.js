@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for reconciling a restored wizard draft with what still exists.
  *

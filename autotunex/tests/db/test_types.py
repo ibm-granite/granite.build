@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Column types must round-trip identically on every supported backend.
 
 ``UtcDateTime`` already has coverage through the API tests; these cover the two

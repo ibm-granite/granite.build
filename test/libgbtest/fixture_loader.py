@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Utility for loading JSON fixture files from test-data/lib/fixtures/.
 
 Fixtures are canned API responses used by mock-mode test fixtures, stored

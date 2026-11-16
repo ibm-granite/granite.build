@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.slurm — host-list parsing, CPU sizing, srun argv and teardown."""
 
 import subprocess

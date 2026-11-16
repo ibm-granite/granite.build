@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+
+
 def dataset_info_lh(lh, dataset_name: str, namespace: str):
     try:
 

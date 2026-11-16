@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared ``.sqsh`` cache for SLURM container images (issue #559).
 
 Covers the pure helpers (naming, enroot URI, config parsing, the rendered

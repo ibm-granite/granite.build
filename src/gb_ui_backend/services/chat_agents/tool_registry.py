@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared types and tool assembly for tool_loop_backend.py's two model providers.
 
 ToolSpec/ModelProvider are the seam between the provider-agnostic backend and

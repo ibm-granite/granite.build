@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Test that messaging discovery works without aio_pika installed."""
 
 import sys

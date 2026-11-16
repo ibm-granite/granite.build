@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the distill-gold step asset's response-template transport.
 
 The trainer masks loss from the first token AFTER ``response_template``, so the

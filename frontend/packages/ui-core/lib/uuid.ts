@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Whether `s` is a registry UUID, as opposed to an artifact URI or any other id.
  * Shared by every place that tells a registered artifact from a URI-named one.

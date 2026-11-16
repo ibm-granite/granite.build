@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from libgbtest.local_postgres import LOCAL_POSTGRES_TEST_MARKS
 from libgbtest.storage.build_storage import (
     BaseBuildStorageTest,

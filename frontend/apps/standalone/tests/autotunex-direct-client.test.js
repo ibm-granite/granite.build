@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * configureAutotunexClient: a hosted dashboard calling AutoTuneX directly.
  *

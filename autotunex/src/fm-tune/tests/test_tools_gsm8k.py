@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.tools.build_gsm8k_dataset — pure helpers."""
 
 import pytest

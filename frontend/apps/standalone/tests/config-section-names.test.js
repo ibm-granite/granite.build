@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression test for the Step 2 "Configure" config editor's tab list.
  *

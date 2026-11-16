@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # SPDX-License-Identifier: Apache-2.0
 #
 # Binding-path guard for the nemo-rl step, invoked from the generated step.yaml's

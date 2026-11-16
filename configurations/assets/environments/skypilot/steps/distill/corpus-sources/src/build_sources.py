@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Build ONE corpus file from several SFT splits, because three things are true at once
 and no single one of them is optional:
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Every DPO loss_type a shipped config can sample must exist in the installed TRL.
 
 TRL rejects an unknown loss type only when it first computes the loss, i.e. inside

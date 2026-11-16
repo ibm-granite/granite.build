@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Repository-level tests for ``TrainingMetricsRepository``."""
 
 from __future__ import annotations

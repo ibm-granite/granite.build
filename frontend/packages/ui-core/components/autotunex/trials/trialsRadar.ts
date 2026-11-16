@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { Trial } from '../../../types'
 
 /** Axis label for a metric key: `total_time` becomes `Total Time`. */

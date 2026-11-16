@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SharedFilesystemProvider contract + the shared_workdir resolver."""
 
 from abc import ABC, abstractmethod

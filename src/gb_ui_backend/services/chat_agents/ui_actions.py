@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Framework-agnostic page-navigation registry and route builder.
 
 This module has nothing to do with gbmcp — it never touches gbserver or build

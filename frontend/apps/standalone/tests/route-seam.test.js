@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The route seam's pure half: the default link builders, and the invariant that
  * ui-core holds exactly one copy of each URL shape.

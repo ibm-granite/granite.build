@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The pure local-bash build-spec builder. Assertions parse the YAML, never match strings.
 
 The generated document is a granite.build ``build.yaml`` in the local-bash shape —

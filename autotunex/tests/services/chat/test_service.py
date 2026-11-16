@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for :mod:`autotunex.services.chat.service`.
 
 ``ChatService.chat_stream`` builds a :class:`~autotunex.services.chat.context.ToolContext`

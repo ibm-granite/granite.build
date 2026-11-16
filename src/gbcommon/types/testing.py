@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Environment variable constants used exclusively in test contexts.
 # These env vars are generally passed to distributed components (i.e. steps, buildrunners, etc)
 # that are then responsible for implementing/following their implications.

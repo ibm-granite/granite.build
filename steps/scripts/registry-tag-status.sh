@@ -1,4 +1,7 @@
 #!/bin/sh
+
+# SPDX-License-Identifier: Apache-2.0
+
 # SPDX-License-Identifier: Apache-2.0
 #
 # registry-tag-status.sh [--repository | --config-digest] <image-ref>

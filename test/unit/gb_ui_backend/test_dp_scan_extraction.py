@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The batched path extraction must match per-build extraction, and stay off the loop.
 
 `_scan_datasets_async` used to call `_extract_dp_paths` per build inside the

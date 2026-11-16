@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.tools.build_nli_dataset — pure helpers + CLI."""
 
 import json

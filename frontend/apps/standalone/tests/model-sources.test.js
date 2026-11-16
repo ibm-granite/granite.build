@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The PVC (`dmf`) model source was retired. New tunings can only be launched
  * against Hugging Face or Local, but jobs already in the database still carry

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Inference with an optional LoRA adapter.
 
 Loads the base model ($LLMB_BASH_INPUT_MODEL) and, if a LoRA adapter is bound

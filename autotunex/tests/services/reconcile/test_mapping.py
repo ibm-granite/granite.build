@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """to_run_status maps every gbserver status, and warns on the unknown."""
 
 from __future__ import annotations

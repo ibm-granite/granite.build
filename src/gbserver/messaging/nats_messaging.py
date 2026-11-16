@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """NATS-based messaging backend for standalone and multi-node deployments.
 
 Uses nats-py to connect to a nats-server instance. Provides sub-millisecond

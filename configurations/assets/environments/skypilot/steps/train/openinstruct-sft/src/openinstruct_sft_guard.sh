@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # SPDX-License-Identifier: Apache-2.0
 #
 # Staged-binding-path guard for the openinstruct-sft step, called from step.yaml's

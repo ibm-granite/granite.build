@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SLURM-specific helpers for SkyPilot environments.
 
 Read from what SkyPilot already returns; no extra login-node round trip.

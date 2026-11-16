@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """EFS provider: BYO pre-provisioned NFS filesystem, mounted on host or inside a
 containerized step. SkyPilot's container run options already permit the in-container
 mount -- ``--cap-add=SYS_ADMIN`` for mount(2) and ``--security-opt=apparmor:unconfined``

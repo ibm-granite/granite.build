@@ -1,4 +1,3 @@
-# Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 """Hardened subprocess implementation of the reward-execution seam.
 

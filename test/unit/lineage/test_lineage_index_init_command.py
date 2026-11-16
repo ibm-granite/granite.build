@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``gbserver lineage-index-init``: seed, keep, force and show the indexer checkpoint.
 
 Drives the real indexer seeding (W&B source, whose API is a mock) against an

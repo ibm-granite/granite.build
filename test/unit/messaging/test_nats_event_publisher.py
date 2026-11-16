@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for NATS-based event publishing in standalone mode."""
 
 import os

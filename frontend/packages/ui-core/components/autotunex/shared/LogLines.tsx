@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 'use client'
 
 import { InlineLoading, InlineNotification, ProgressBar } from '@carbon/react'

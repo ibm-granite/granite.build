@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The score a reward function's test-run return value stands for, or null when
  * verl could not use it.

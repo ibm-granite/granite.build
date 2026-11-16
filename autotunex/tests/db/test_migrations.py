@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The precision drop must not lose data.
 
 ``jobs.precision`` was ``VARCHAR(50) NOT NULL`` and the live database has values
