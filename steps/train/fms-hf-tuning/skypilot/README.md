@@ -359,7 +359,7 @@ The unit tests at `test/`'s root need no cluster, GPU or image:
 
 | Test | Pins |
 |---|---|
-| `test_skypilot_train_fms_hf_tuning_render.py` | the template under gbserver's strict renderer: identity, I/O schema, defaults, the monitor rule, identical macro copies, `owned` == the job script's `OWNED`, the `docker:` prefix, every `raise_error`, every owned key refused, and the guard/run argv (base64 round trip, ClearML mode, data paths) |
+| `test_skypilot_train_fms_hf_tuning_render.py` | the template under gbserver's strict renderer: identity, I/O schema, defaults, the monitor rule, identical macro copies, the `single_node` declaration (gbserver refuses 2 nodes; the template leaves `num_nodes` to it), `owned` == the job script's `OWNED`, the `docker:` prefix, every `raise_error`, every owned key refused, and the guard/run argv (base64 round trip, ClearML mode, data paths) |
 | `test_fms_hf_tuning_job.py` | the job script without fms-hf-tuning: value conversion and refusals on an argparse stand-in, the merge (owned keys, defaults, data_config, ClearML), output checks (adapter, single-file and sharded model, 0 tensors), the base-id rewrite, the CLI |
 | `test_fms_hf_tuning_job_upstream.py` | the same against the real parser: `EXTRA_ARGS` and `OWNED` match upstream, DiGiT-style and aLoRA configs pass, typos/bad values fail, every shipped `args` map passes (skipped without `tuning`) |
 | `test_fms_hf_tuning_entry.py` | `step_line`, the `train` wrapper, rank-0 printing, upstream's `additional_callbacks`, and a 2-step CPU run (full + LoRA) through the wrapper (the last three need `tuning`) |

@@ -42,7 +42,8 @@ config:
     clearml_project: ""
     clearml_task_name: ""
   compute_config:
-    # Single node only (validated). GPUs come from the build's
+    # Single node only: environment_configs.Skypilot.single_node makes gbserver
+    # refuse any other num_nodes at step creation. GPUs come from the build's
     # launcher_config.resources.accelerators; the step reads the count from
     # $SKYPILOT_NUM_GPUS_PER_NODE.
     num_nodes: 1
@@ -73,6 +74,9 @@ outputs:
 
 environment_configs:
   Skypilot:
+    # gbserver refuses, at step creation, a build whose resolved num_nodes is not 1
+    # (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
     default_launcher: fms_hf_tuning
     launchers:
       fms_hf_tuning:
@@ -93,7 +97,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound, lc) -%}
+            {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "push_to_hub_token", "push_to_hub_model_id", "push_to_hub_organization", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "use_cpu", "no_cuda", "log_level_replica", "do_dataprocessing_only"] -%}
             {%- set res = lc.get("resources") or {} -%}
             {%- if c.peft_method not in ["none", "lora", "alora"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.peft_method must be none, lora or alora, got '" ~ c.peft_method ~ "'.") }}{% endif -%}
@@ -111,9 +115,6 @@ environment_configs:
             {%- if c.peft_method == "none" and c.base_model_id %}{{ raise_error("fms-hf-tuning: base_model_id rewrites an adapter's base_model_name_or_path; it does not apply to peft_method: none.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output is required; it names the target's model output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else ((v | string | trim).lstrip("+").isdigit() and (v | string | trim | int) == 1)) else "" }}{% endmacro -%}
-            {%- if not one(cc.num_nodes) %}{{ raise_error("fms-hf-tuning: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
-            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("fms-hf-tuning: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("fms-hf-tuning: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
             {%- set acc = res.get("accelerators") -%}
             {%- if c.distributed == "fsdp" and acc is string and acc -%}
@@ -129,7 +130,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.fms_hf_tuning_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
+            {{- validate(c, "dataset" in b, config.get("launcher_config") or {}) }}
             bash /opt/fms-hf-tuning/fms_hf_tuning_guard.sh \
               --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
@@ -142,7 +143,7 @@ environment_configs:
             {%- macro q(v) -%}
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
-            {%- macro validate(c, cc, bound, lc) -%}
+            {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "push_to_hub_token", "push_to_hub_model_id", "push_to_hub_organization", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "use_cpu", "no_cuda", "log_level_replica", "do_dataprocessing_only"] -%}
             {%- set res = lc.get("resources") or {} -%}
             {%- if c.peft_method not in ["none", "lora", "alora"] %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.peft_method must be none, lora or alora, got '" ~ c.peft_method ~ "'.") }}{% endif -%}
@@ -160,9 +161,6 @@ environment_configs:
             {%- if c.peft_method == "none" and c.base_model_id %}{{ raise_error("fms-hf-tuning: base_model_id rewrites an adapter's base_model_name_or_path; it does not apply to peft_method: none.") }}{% endif -%}
             {%- if not c.output %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output is required; it names the target's model output.") }}{% endif -%}
             {%- if ((c.output | string).split() | join("")) != (c.output | string) or '"' in (c.output | string) %}{{ raise_error("fms-hf-tuning: fms_hf_tuning_config.output contains whitespace or a double quote: '" ~ c.output ~ "'.") }}{% endif -%}
-            {%- macro one(v) %}{{ "y" if (v == 1 if v is number else ((v | string | trim).lstrip("+").isdigit() and (v | string | trim | int) == 1)) else "" }}{% endmacro -%}
-            {%- if not one(cc.num_nodes) %}{{ raise_error("fms-hf-tuning: compute_config.num_nodes must be 1 (got '" ~ cc.num_nodes ~ "'); this step is single-node.") }}{% endif -%}
-            {%- if lc.get("num_nodes") is not none and not one(lc.get("num_nodes")) %}{{ raise_error("fms-hf-tuning: launcher_config.num_nodes must be 1 (got '" ~ lc.get("num_nodes") ~ "'); this step is single-node.") }}{% endif -%}
             {%- if not (res.get("accelerators") or res.get("instance_type")) %}{{ raise_error("fms-hf-tuning: no GPU request; set launcher_config.resources.accelerators to \"<type>:<count>\" for your endpoint, e.g. \"A10G:1\" (or a GPU instance_type).") }}{% endif -%}
             {%- set acc = res.get("accelerators") -%}
             {%- if c.distributed == "fsdp" and acc is string and acc -%}
@@ -178,7 +176,7 @@ environment_configs:
             {%- endmacro %}
             {%- set c = config.fms_hf_tuning_config %}
             {%- set b = bindings if bindings is defined else {} %}
-            {{- validate(c, config.compute_config, "dataset" in b, config.get("launcher_config") or {}) }}
+            {{- validate(c, "dataset" in b, config.get("launcher_config") or {}) }}
             {%- set ce = c.clearml_enabled | string | lower %}
             {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
             bash /opt/fms-hf-tuning/fms_hf_tuning_guard.sh \
