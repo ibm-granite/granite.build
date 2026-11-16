@@ -21,7 +21,8 @@ import os
 from typing import Dict, Optional, Self, Tuple, Union
 from urllib.parse import urlparse
 
-from gbcommon.uri.cos import CosCheckTarget, CosURI, set_cos_check_resolver
+from gbcommon.types.testing import is_cos_mocked
+from gbcommon.uri.cos import CosCheckTarget, CosURI, check_s3_location
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
 from gbserver.utils.logger import get_logger
@@ -209,6 +210,23 @@ class Cosstore(Assetstore):
             return None
         return values[0], values[1]  # type: ignore[return-value]
 
+    def uri_exists(self: Self, uri: URI) -> bool:
+        """Check that ``uri``'s object or prefix exists in this store.
+
+        Uses this store's endpoint (``cos_gbserver_endpoint``, else
+        ``cos_endpoint``), bucket and credentials, so the answer comes from the
+        exact store the URI routes to. True when GBTEST_MOCK_COS is set.
+
+        :param uri: a CosURI this store handles.
+        :returns: whether it exists (False, logged, when it can't be checked).
+        """
+        if is_cos_mocked():
+            return True
+        target = self.get_check_target(uri)
+        if target is None:
+            return False
+        return check_s3_location(target, URI.get_uristr(uri))
+
     def get_check_target(self: Self, uri: URI) -> Optional[CosCheckTarget]:
         """Build the gbserver-side existence-check target for ``uri``.
 
@@ -230,26 +248,3 @@ class Cosstore(Assetstore):
             access_key_id=credentials[0],
             secret_access_key=credentials[1],
         )
-
-
-def _resolve_check_target(uri: CosURI) -> Optional[CosCheckTarget]:
-    """CosURI.exists() resolver: route ``uri`` to its loaded Cosstore.
-
-    Uses the same longest-prefix match as dispatch over the loaded assetstores.
-
-    :param uri: the CosURI being checked.
-    :returns: the check target, or None (logged) if no Cosstore matches.
-    """
-    from gbserver.asset.asset import Asset  # pylint: disable=import-outside-toplevel
-
-    try:
-        store = Asset.get_assetstore(uri=uri)
-    except AttributeError:  # no assetstores loaded on this thread yet
-        store = None
-    if not isinstance(store, Cosstore):
-        logger.warning("Cannot check %s exists: no Cosstore is configured for it", uri)
-        return None
-    return store.get_check_target(uri)
-
-
-set_cos_check_resolver(_resolve_check_target)

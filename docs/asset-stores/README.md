@@ -113,7 +113,8 @@ For a COS / S3 store:
   (`s3.amazonaws.com`) gets `https://`. Plain `http://` is accepted only for loopback or
   single-label private hosts, such as a `gb-s3` container on a private container network.
 - **`cos_gbserver_endpoint` (optional) is the endpoint gbserver itself uses**, for example for
-  the input existence check (`CosURI.exists()`). Set it when gbserver can't reach `cos_endpoint`.
+  the input existence check that build validation runs (`Cosstore.uri_exists`, reached through the
+  target environment's `input_exists`). Set it when gbserver can't reach `cos_endpoint`.
   The local SeaweedFS store [`s3-local`](../../configurations/assets/assetstores/s3-local/store.yaml)
   uses `http://gb-s3:9000` for the cluster and `http://localhost:9000` for gbserver.
 - **`cos_bucket_name` (optional) replaces the URI's bucket.**

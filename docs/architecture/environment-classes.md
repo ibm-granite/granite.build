@@ -394,7 +394,11 @@ For S3 / COS, the endpoint, region and credential secret names come from the dis
 can therefore list one store per endpoint. Credentials are resolved by
 `Cosstore.resolve_credentials` (space secrets, then the same-named env var, as hf's
 `resolve_token` does) and passed to the step as `AWS_*` launcher envs. Setting
-`GBTEST_MOCK_COS` short-circuits both steps and `CosURI.exists()`.
+Build validation checks `s3://` / `cos://` inputs through the target environment's
+`input_exists`. It uses the same store routing as pull and push, then calls
+`Cosstore.uri_exists`. It never uses the process-wide assetstore registry, which can be empty on
+the validating thread or hold another environment's store for the same prefix.
+`GBTEST_MOCK_COS` short-circuits both steps and the existence check.
 
 ---
 

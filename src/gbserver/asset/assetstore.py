@@ -89,6 +89,18 @@ class Assetstore(ABC):
     def get_metadata(self, uri: URI) -> Dict:
         return {}
 
+    def uri_exists(self, uri: URI) -> bool:
+        """Return whether ``uri`` exists, checked against this store.
+
+        Stores whose URIs can't check themselves (they need store settings such
+        as an endpoint or credentials) override this; the default defers to the
+        URI.
+
+        :param uri: a URI this store handles.
+        :returns: whether it exists.
+        """
+        return uri.exists()
+
     @classmethod
     def load_assetstores_from_dir(
         cls,

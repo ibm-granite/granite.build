@@ -328,35 +328,50 @@ class _ClientError(Exception):
 
 @pytest.fixture
 def stub_s3():
-    """Route CosURI.exists() to the local store and a stub S3 client."""
-    store = _local_store()
+    """Replace the boto3 client used by existence checks with a stub."""
     client = MagicMock()
     with (
-        patch.object(
-            cos_module, "_check_resolver", lambda uri: store.get_check_target(uri)
-        ),
         patch.object(cos_module, "_make_s3_client", return_value=client) as make,
         patch("botocore.exceptions.ClientError", _ClientError),
     ):
         yield client, make
 
 
+def _env_with_stores(*stores):
+    """A minimal Skypilot env whose own assetstores are ``stores``."""
+    from gbserver.environment.skypilot import Skypilot
+    from gbserver.types.environmentconfig import EnvironmentConfig
+
+    env = Skypilot(
+        event_q=asyncio.Queue(),
+        environment_config=EnvironmentConfig(
+            name="test-skypilot", type="Skypilot", config={"default_cloud": "slurm"}
+        ),
+    )
+    env.supported_assetstores = {store: MagicMock() for store in stores}
+    return env
+
+
 class TestCosURIExists:
+    """A bare CosURI can't know its store, so it only answers when mocked."""
+
     def test_mocked_is_true(self, monkeypatch):
         """Like HfURI.exists: True whenever GBTEST_MOCK_COS is set."""
         monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_COS, "1")
-        with patch.object(cos_module, "_check_resolver", None):
-            assert URI.get_uri("s3://b/k").exists()
+        assert URI.get_uri("s3://b/k").exists()
 
-    def test_no_resolver_is_false(self):
-        """Without a store resolver the check cannot run: False."""
-        with patch.object(cos_module, "_check_resolver", None):
-            assert not URI.get_uri("s3://b/k").exists()
+    def test_unmocked_without_store_is_false(self, stub_s3):
+        """Unmocked, it never guesses a store (and never calls S3)."""
+        client, make = stub_s3
+        assert not URI.get_uri("s3://local/k").exists()
+        make.assert_not_called()
 
+
+class TestCosstoreUriExists:
     def test_object_found_uses_gbserver_endpoint(self, stub_s3):
         """An object HEAD succeeds; the check uses cos_gbserver_endpoint."""
         client, make = stub_s3
-        assert URI.get_uri("s3://local/in/data.txt").exists()
+        assert _local_store().uri_exists(URI.get_uri("s3://local/in/data.txt"))
         client.head_object.assert_called_once_with(
             Bucket="gb-checkpoints", Key="in/data.txt"
         )
@@ -367,7 +382,7 @@ class TestCosURIExists:
         client, _ = stub_s3
         client.head_object.side_effect = _ClientError(404)
         client.list_objects_v2.return_value = {"KeyCount": 1}
-        assert URI.get_uri("s3://local/in").exists()
+        assert _local_store().uri_exists(URI.get_uri("s3://local/in"))
         client.list_objects_v2.assert_called_once_with(
             Bucket="gb-checkpoints", Prefix="in/", MaxKeys=1
         )
@@ -377,18 +392,96 @@ class TestCosURIExists:
         client, _ = stub_s3
         client.head_object.side_effect = _ClientError(404)
         client.list_objects_v2.return_value = {"KeyCount": 0}
-        assert not URI.get_uri("s3://local/none").exists()
+        assert not _local_store().uri_exists(URI.get_uri("s3://local/none"))
 
     def test_error_is_false(self, stub_s3):
         """An auth/server error is a (logged) False, not an exception."""
         client, _ = stub_s3
         client.head_object.side_effect = _ClientError(500)
-        assert not URI.get_uri("s3://local/k").exists()
+        assert not _local_store().uri_exists(URI.get_uri("s3://local/k"))
 
-    def test_secret_not_in_repr(self, stub_s3):
+    def test_missing_credentials_is_false(self, stub_s3, monkeypatch):
+        """Without the store's credentials the check can't run: False."""
+        monkeypatch.delenv("S3_LOCAL_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("S3_LOCAL_SECRET_ACCESS_KEY", raising=False)
+        store = _local_store(
+            cos_access_key_id_secret_name="S3_LOCAL_ACCESS_KEY_ID",
+            cos_secret_access_key_secret_name="S3_LOCAL_SECRET_ACCESS_KEY",
+        )
+        _, make = stub_s3
+        assert not store.uri_exists(URI.get_uri("s3://local/k"))
+        make.assert_not_called()
+
+    def test_mocked_is_true_without_credentials(self, stub_s3, monkeypatch):
+        """Mocked, no credentials or S3 access are needed."""
+        monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_COS, "true")
+        _, make = stub_s3
+        assert _store("s3://", secrets={}).uri_exists(URI.get_uri("s3://b/k"))
+        make.assert_not_called()
+
+    def test_secret_not_in_repr(self):
         """The check target never prints its secret."""
         target = _local_store().get_check_target(URI.get_uri("s3://local/k"))
         assert "local-secret-value" not in repr(target)
+
+
+class TestEnvironmentInputExists:
+    """Build validation checks inputs through the target's environment, so the
+    store is the one that environment pulls from, independent of the
+    thread-wide assetstore registry."""
+
+    def test_works_on_a_thread_with_no_loaded_stores(self, stub_s3):
+        """A thread whose registry was never populated still checks correctly."""
+        import threading
+
+        from gbserver.asset.assetstore import Assetstore
+
+        env = _env_with_stores(_local_store())
+        client, _ = stub_s3
+        result = {}
+
+        def check():
+            result["registry"] = hasattr(Assetstore._thread_local, "assetstores")
+            result["exists"] = env.input_exists(URI.get_uri("s3://local/in/data.txt"))
+
+        thread = threading.Thread(target=check)
+        thread.start()
+        thread.join()
+        assert result == {"registry": False, "exists": True}
+        client.head_object.assert_called_once_with(
+            Bucket="gb-checkpoints", Key="in/data.txt"
+        )
+
+    def test_uses_its_own_store_when_another_env_shares_the_prefix(
+        self, stub_s3, monkeypatch
+    ):
+        """Two environments with different stores for the same base_uri each
+        check against their own, even when the registry holds the other one."""
+        from gbserver.asset.assetstore import Assetstore
+
+        store_a = _store("s3://", cos_endpoint="s3.a.example.com")
+        store_b = _store("s3://", cos_endpoint="s3.b.example.com")
+        env_a, env_b = _env_with_stores(store_a), _env_with_stores(store_b)
+        # The registry keeps the last store loaded for "s3://": env_b's.
+        registry = dict(getattr(Assetstore._thread_local, "assetstores", {}))
+        registry["s3://"] = store_b
+        monkeypatch.setattr(
+            Assetstore._thread_local, "assetstores", registry, raising=False
+        )
+        _, make = stub_s3
+
+        uri = URI.get_uri("s3://bucket/k")
+        assert env_a.input_exists(uri)
+        assert make.call_args.args[0].endpoint_url == "https://s3.a.example.com"
+        assert env_b.input_exists(uri)
+        assert make.call_args.args[0].endpoint_url == "https://s3.b.example.com"
+
+    def test_no_matching_store_falls_back_to_uri(self, stub_s3):
+        """With no store for the URI, the URI's own exists() answers."""
+        env = _env_with_stores(_ibm_store())  # handles cos:// only
+        _, make = stub_s3
+        assert not env.input_exists(URI.get_uri("s3://local/k"))
+        make.assert_not_called()
 
 
 class TestGetCosCacheDir:

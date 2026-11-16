@@ -18,7 +18,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Self
+from typing import Any, Dict, List, Optional, Self
 from urllib.parse import ParseResult
 
 from gbcommon.types.testing import is_cos_mocked
@@ -53,23 +53,6 @@ class CosCheckTarget:
     region: str
     access_key_id: str
     secret_access_key: str = field(repr=False)
-
-
-# Resolves a CosURI to its CosCheckTarget (or None when it can't). The endpoint
-# and credential secret names live on the gbserver Cosstore the URI routes to,
-# which this module cannot see, so gbserver registers the resolver
-# (gbserver.asset.cosstore) instead of gbcommon importing gbserver asset code.
-CosCheckResolver = Callable[["CosURI"], Optional[CosCheckTarget]]
-_check_resolver: Optional[CosCheckResolver] = None  # pylint: disable=invalid-name
-
-
-def set_cos_check_resolver(resolver: Optional[CosCheckResolver]) -> None:
-    """Register (or clear, with None) the resolver used by CosURI.exists().
-
-    :param resolver: maps a CosURI to its CosCheckTarget, or None.
-    """
-    global _check_resolver  # pylint: disable=global-statement
-    _check_resolver = resolver
 
 
 def _status_code(error: Any) -> int:
@@ -130,6 +113,32 @@ def _s3_location_exists(client: Any, bucket: str, key: str) -> bool:
     prefix = key.rstrip("/") + "/"
     resp = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
     return int(resp.get("KeyCount", 0)) > 0
+
+
+def check_s3_location(target: CosCheckTarget, uristr: str) -> bool:
+    """Check that ``target``'s object or prefix exists, with HfURI.exists' semantics.
+
+    Returns False on any error: a genuine miss logs at DEBUG, while a missing
+    boto3 or an auth/network error logs at WARNING/ERROR, since the object may
+    exist and the False is then a false negative that must be visible.
+
+    :param target: where and as whom to check (from the URI's own Cosstore).
+    :param uristr: the URI, for log messages.
+    :returns: whether the object/prefix exists.
+    """
+    try:
+        client = _make_s3_client(target)
+        found = _s3_location_exists(client, target.bucket, target.key)
+    except ImportError:
+        logger.error("Cannot check %s exists: boto3 is not installed", uristr)
+        return False
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        status = _status_code(e) if hasattr(e, "response") else 0
+        log = logger.debug if status == 404 else logger.warning
+        log("S3 exists check for %s failed (status %s): %s", uristr, status, e)
+        return False
+    logger.debug("S3 exists check for %s returned %s", uristr, found)
+    return found
 
 
 class CosURI(URI):
@@ -193,53 +202,25 @@ class CosURI(URI):
         return [COS_SCHEME, S3_SCHEME]
 
     def exists(self: Self, force: bool = False) -> bool:
-        """Check whether the object or prefix actually exists in its store.
+        """Check existence without a store: only answerable when mocked.
 
-        Mirrors HfURI.exists: True when GBTEST_MOCK_COS is set; otherwise a real
-        HEAD/LIST against the store this URI routes to (endpoint, region and
-        credentials from the registered :data:`CosCheckResolver`). Returns False
-        on any error: a genuine miss logs at DEBUG, while a missing resolver /
-        store / secret, a missing boto3, or an auth/network error logs at
-        WARNING/ERROR, since the object may exist and the False is then a false
-        negative that must be visible.
+        A real check needs the endpoint, bucket and credentials of the Cosstore
+        the URI routes to, which a bare URI doesn't know -- and guessing it from
+        a process-wide registry can pick the wrong store. Real checks therefore go
+        through ``Cosstore.uri_exists`` via the environment that will pull the
+        input (``Environment.input_exists``). Mirrors HfURI.exists when mocked.
 
         :param force: unused (kept for the URI interface).
-        :returns: whether the object/prefix exists.
+        :returns: True when GBTEST_MOCK_COS is set, else False (logged).
         """
         if is_cos_mocked():
             return True
-        uristr = self.get_uristr(self)
-        target = self._resolve_check_target(uristr)
-        if target is None:
-            return False
-        try:
-            client = _make_s3_client(target)
-            found = _s3_location_exists(client, target.bucket, target.key)
-        except ImportError:
-            logger.error("Cannot check %s exists: boto3 is not installed", uristr)
-            return False
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            status = _status_code(e) if hasattr(e, "response") else 0
-            log = logger.debug if status == 404 else logger.warning
-            log("S3 exists check for %s failed (status %s): %s", uristr, status, e)
-            return False
-        logger.debug("S3 exists check for %s returned %s", uristr, found)
-        return found
-
-    def _resolve_check_target(self: Self, uristr: str) -> Optional[CosCheckTarget]:
-        """Resolve this URI's check target via the registered resolver.
-
-        :param uristr: this URI as a string (for log messages).
-        :returns: the target, or None (logged) when it cannot be resolved.
-        """
-        if _check_resolver is None:
-            logger.warning("Cannot check %s exists: no COS store resolver", uristr)
-            return None
-        try:
-            return _check_resolver(self)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.warning("Cannot check %s exists: %s", uristr, e)
-            return None
+        logger.warning(
+            "Cannot check %s exists without its assetstore; use the environment's "
+            "input_exists()",
+            self.get_uristr(self),
+        )
+        return False
 
     def is_accessible(self) -> bool:
         # TODO: Fix logic

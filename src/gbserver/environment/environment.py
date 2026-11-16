@@ -1478,6 +1478,24 @@ class Environment(ABC):
         except BaseException:
             return None
 
+    def input_exists(self: Self, uri: URI) -> bool:
+        """Return whether input ``uri`` exists, checked against this env's store.
+
+        Routes ``uri`` with the same longest-prefix match pull/push dispatch use
+        (:meth:`_get_storeconfig` over this environment's own assetstores), so
+        the check runs against the store this environment will pull from -- not
+        a process-wide registry, which may be unpopulated on this thread or hold
+        another environment's store for the same prefix. Falls back to
+        ``uri.exists()`` when no store matches.
+
+        :param uri: the input URI.
+        :returns: whether it exists.
+        """
+        assetstore, _ = self._get_storeconfig(uri)
+        if assetstore is None:
+            return uri.exists()
+        return assetstore.uri_exists(uri)
+
     def _get_storeconfig(
         self: Self, uri: URI, raise_exceptions: bool = False
     ) -> Tuple[Optional[Assetstore], Optional[AssetStoreEnvironmentConfig]]:
