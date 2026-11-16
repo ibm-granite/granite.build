@@ -110,6 +110,19 @@ class Hfstore(Assetstore):
         assert isinstance(uri, HfURI)
         return uri.get_artifact_type()
 
+    def uri_exists(self, uri: URI) -> bool:
+        """Check that ``uri`` exists on the Hub with this store's token.
+
+        Resolves the token through the store (:meth:`resolve_token`, honoring
+        ``token_secretname``) rather than the URI's fixed ``HF_TOKEN`` lookup, so
+        existence checks use the same credential as pull/push.
+
+        :param uri: an HfURI this store handles.
+        :returns: whether it exists (True when HF is mocked).
+        """
+        assert isinstance(uri, HfURI), f"expected HfURI, got {type(uri)}"
+        return uri.exists(token=self.resolve_token(uri))
+
     def resolve_token(self, uri) -> Optional[str]:
         metadata = self.get_metadata(uri)
         token_key = metadata["token_secretname"]
