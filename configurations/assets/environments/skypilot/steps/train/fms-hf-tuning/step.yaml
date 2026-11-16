@@ -94,6 +94,7 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
+            {#- fms-hf-tuning's q() and config checks; setup: and run: both include this file. -#}
             {%- macro q(v) -%}
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
@@ -136,10 +137,12 @@ environment_configs:
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
             bash /opt/fms-hf-tuning/fms_hf_tuning_setup.sh
           # Each block is filled on its own (no shared Jinja scope across YAML
-          # keys), so the macros repeat; run validates too, since a warm-cluster
+          # keys), so both pull in the macros; make space / make publish-step
+          # expand the include lines. run validates too, since a warm-cluster
           # re-run renders it without setup.
           run: |
             set -euo pipefail
+            {#- fms-hf-tuning's q() and config checks; setup: and run: both include this file. -#}
             {%- macro q(v) -%}
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}

@@ -115,8 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without such lines render byte-identically). The SkyPilot `openinstruct-sft` and
   `hf-peft-sft` steps now share their `args` checks, `q()` and `args` argv rendering
   (`steps/train/shared/trainer_args.j2`) and define their `validate` macro once
-  (`macros/validate.j2`) instead of in both `setup:` and `run:`; their behaviour and
-  messages are unchanged. The CI test that checks every published `step.yaml` against
+  (`macros/validate.j2`) instead of in both `setup:` and `run:`. `fms-hf-tuning` writes
+  its own `q()` and `validate` once the same way (its `args` go to the job as JSON, so it
+  keeps its own checks). Behaviour and messages are unchanged. The CI test that checks every published `step.yaml` against
   its source now renders the source as `make publish-step` does, so it also covers
   `${IMAGE_REF}` and `gb-include` steps.
 
