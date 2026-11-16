@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ``gbserver.api.environment_queue``.
+"""Tests for ``gbserver.api.environment_queue`` and ``gbserver.api.slurm_output``.
 
 squeue lines follow Slurm 25.11 output field for field; every user, account,
 host and id is invented. SSH, git and the Secret Manager are faked.
@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from gbserver.api import environment_queue as eq
+from gbserver.api import slurm_output as so
 from gbserver.api.utils import NO_ACCESSIBLE_SPACE
 from gbserver.environment._skypilot_metadata import (
     comment_value,
@@ -107,13 +108,62 @@ JOBS = "\n".join(
 )
 LOAD = "\n".join(
     [
-        "RUNNING|2|gres/gpu:h200:4",
-        "PENDING|1|gres/gpu:8",
-        "RUNNING|1|N/A",
-        "RUNNING|4|gres:gpu:8",
-        "PENDING|1|N/A",
+        "RUNNING|2|gres/gpu:h200:4|gpu",
+        "PENDING|1|gres/gpu:8|gpu,gpu-high",
+        "RUNNING|1|N/A|cpu",
+        "RUNNING|4|gres:gpu:8|gpu-high",
+        "PENDING|1|N/A|cpu",
     ]
 )
+
+
+def sinfo_line(host, state, gres, used, partition):
+    return f"{host:<128}{state:<64}{gres:<256}{used:<256}{partition:<64}"
+
+
+SINFO = "\n".join(
+    [
+        sinfo_line("n01", "mixed", "gpu:h200:8(S:0-1)", "gpu:h200:3(IDX:0-2)", "gpu*"),
+        sinfo_line(
+            "n01", "mixed", "gpu:h200:8(S:0-1)", "gpu:h200:3(IDX:0-2)", "gpu-high"
+        ),
+        sinfo_line("n02", "idle", "gpu:h200:8(S:0-1)", "gpu:h200:0", "gpu*"),
+        sinfo_line(
+            "n03", "allocated", "gpu:h100:8(S:0-1)", "gpu:h100:8(IDX:0-7)", "gpu*"
+        ),
+        sinfo_line("n04", "drained", "gpu:h100:8(S:0-1)", "gpu:h100:0", "gpu*"),
+        sinfo_line("n05", "idle~", "gpu:h100:8(S:0-1)", "gpu:h100:0", "gpu*"),
+        sinfo_line("n06", "down*", "gpu:8(S:0-1)", "gpu:0", "gpu*"),
+        sinfo_line("c01", "idle", "(null)", "gpu:0", "cpu"),
+    ]
+)
+
+
+def sacct_line(
+    job_id,
+    state,
+    *,
+    elapsed="3600",
+    tres="billing=8,cpu=8,gres/gpu:h200=4,gres/gpu=4,mem=240G,node=1",
+    comment="",
+):
+    return "|".join(
+        [
+            job_id,
+            "gb-sft-run-train-1a2b",
+            "gpu",
+            "normal",
+            state,
+            "2026-11-10T09:00:00",
+            "2026-11-10T09:00:05",
+            "2026-11-10T10:00:05",
+            elapsed,
+            "1",
+            tres,
+            "0:0",
+            comment,
+        ]
+    )
 
 
 # ------------------------------------------------------------------ parsing
@@ -133,12 +183,12 @@ class TestParseGpuGres:
         ],
     )
     def test_cases(self, gres, expected):
-        assert eq.parse_gpu_gres(gres) == expected
+        assert so.parse_gpu_gres(gres) == expected
 
 
 class TestParseGbComment:
     def test_reads_the_writer(self):
-        t = eq.parse_gb_comment(ALICE)
+        t = so.parse_gb_comment(ALICE)
         assert (t.build_id, t.gb_env, t.space, t.username, t.build_name) == (
             "b-1",
             "DEV",
@@ -148,31 +198,31 @@ class TestParseGbComment:
         )
 
     def test_every_writer_key_has_a_model_field(self):
-        assert eq._GB_COMMENT_KEYS <= set(eq.GbJobTag.model_fields)
+        assert so._GB_COMMENT_KEYS <= set(so.GbJobTag.model_fields)
 
     def test_repeated_key_is_rejected(self):
-        assert eq.parse_gb_comment("build_id=a;space=x;space=y") is None
+        assert so.parse_gb_comment("build_id=a;space=x;space=y") is None
 
     @pytest.mark.parametrize(
         "comment", [None, "", "free text", "build_name=x;target=y"]
     )
     def test_not_ours(self, comment):
-        assert eq.parse_gb_comment(comment) is None
+        assert so.parse_gb_comment(comment) is None
 
 
 class TestParseJobLine:
     def test_gpus_are_per_node_times_nodes(self):
-        j = eq.parse_job_line(
+        j = so.parse_job_line(
             job_line("100", "RUNNING", gres="gres/gpu:h200:4", nodes="2")
         )
         assert (j.gpus_per_node, j.gpus, j.gpu_model) == (4, 8, "h200")
 
     def test_pipe_in_comment_stays_in_comment(self):
-        j = eq.parse_job_line(job_line("100", "RUNNING", comment="a|b|c"))
+        j = so.parse_job_line(job_line("100", "RUNNING", comment="a|b|c"))
         assert j.comment == "a|b|c" and j.name == "gb-x" and j.state == "RUNNING"
 
     def test_pending_array(self):
-        j = eq.parse_job_line(job_line("103_[0-9%4]", "PENDING"))
+        j = so.parse_job_line(job_line("103_[0-9%4]", "PENDING"))
         assert (j.array_job_id, j.start_time, j.nodelist, j.reason) == (
             "103",
             None,
@@ -192,10 +242,10 @@ class TestParseJobLine:
         ],
     )
     def test_rejects(self, line):
-        assert eq.parse_job_line(line) is None
+        assert so.parse_job_line(line) is None
 
     def test_unparsed_lines_are_counted(self):
-        jobs, bad = eq.parse_jobs(JOBS + "\ngarbage")
+        jobs, bad = so.parse_jobs(JOBS + "\ngarbage")
         assert len(jobs) == 3 and bad == 1
 
 
@@ -232,7 +282,7 @@ def test_round_trip_through_the_real_writers(raw):
         "0123456789abcdef", target_name=raw, build_id="b-9", build_config_name=raw
     )
     assert "\n" not in comment and "\n" not in name
-    job = eq.parse_job_line(job_line("700", "RUNNING", name=name, comment=comment))
+    job = so.parse_job_line(job_line("700", "RUNNING", name=name, comment=comment))
     assert job is not None and job.state == "RUNNING" and job.user == SVC
     assert job.name == name and job.comment == comment
     assert (job.gb.build_name, job.gb.target, job.gb.space) == (comment_value(raw),) * 3
@@ -240,17 +290,18 @@ def test_round_trip_through_the_real_writers(raw):
 
 
 def test_load_counts_cover_every_user():
-    counts, bad = eq.parse_load(LOAD + "\nCOMPLETED|1|N/A")
-    assert (counts.running, counts.pending, counts.running_gpus, bad) == (3, 2, 40, 1)
+    counts, bad = so.parse_load(LOAD + "\nCOMPLETED|1|N/A|gpu\nRUNNING|1|N/A")
+    assert (counts.running, counts.pending, counts.running_gpus, bad) == (3, 2, 40, 2)
+    assert counts.running_gpus_by_partition == {"gpu": 8, "cpu": 0, "gpu-high": 32}
 
 
 def test_jobs_command_quotes_the_user():
-    assert eq.squeue_jobs_command(SVC).startswith(
+    assert so.squeue_jobs_command(SVC).startswith(
         f"squeue -h -a -t RUNNING,PENDING -u {SVC} -o '%i|"
     )
-    assert "-u 'svc builder;id'" in eq.squeue_jobs_command("svc builder;id")
-    assert eq.squeue_jobs_command(SVC).endswith("|%j|%k'")
-    assert "%j" not in eq.SQUEUE_LOAD and "%k" not in eq.SQUEUE_LOAD
+    assert "-u 'svc builder;id'" in so.squeue_jobs_command("svc builder;id")
+    assert so.squeue_jobs_command(SVC).endswith("|%j|%k'")
+    assert "%j" not in so.SQUEUE_LOAD and "%k" not in so.SQUEUE_LOAD
 
 
 # ------------------------------------------------------------- path / asset
@@ -523,7 +574,12 @@ class FakeTunnel:
     host = "login1.cluster-a.example"
 
     def __init__(self, rc=0, stderr="", run_error=None):
-        self.outputs = {eq.squeue_jobs_command(SVC): JOBS, eq.SQUEUE_LOAD: LOAD}
+        self.outputs = {
+            so.squeue_jobs_command(SVC): JOBS,
+            so.SQUEUE_LOAD: LOAD,
+            so.SINFO_NODES: SINFO,
+            **{so.sacct_history_command(SVC, d): SACCT for d in so.HISTORY_DAYS},
+        }
         self.rc, self.stderr, self.run_error, self.commands = rc, stderr, run_error, []
 
     async def run_remote(self, command, raise_on_error=False):
@@ -576,10 +632,15 @@ def jobs_of(client, query=""):
 
 
 def test_lists_the_service_accounts_jobs_and_whole_queue_counts(queue, client):
-    body = client.get(URL).json()
-    assert queue.tunnel.commands == [eq.squeue_jobs_command(SVC), eq.SQUEUE_LOAD]
+    body = client.get(f"/{KEY}/queue").json()
+    assert queue.tunnel.commands == [so.squeue_jobs_command(SVC), so.SQUEUE_LOAD]
     assert queue.opens[0]["key_material"] == "KEY"
-    assert body["counts"] == {"running": 3, "pending": 2, "running_gpus": 40}
+    assert body["counts"] == {
+        "running": 3,
+        "pending": 2,
+        "running_gpus": 40,
+        "running_gpus_by_partition": {"gpu": 8, "cpu": 0, "gpu-high": 32},
+    }
     assert sorted(j["job_id"] for j in body["jobs"]) == ["100", "101", "102"]
 
 
@@ -633,14 +694,14 @@ def test_filters_run_on_the_callers_view(queue, client):
 
 
 def test_cache_shares_one_session(queue, client):
-    client.get(URL)
-    client.get(f"{URL}?state=running")
+    client.get(f"/{KEY}/queue")
+    client.get(f"/{KEY}/queue?state=running")
     assert len(queue.opens) == 1
 
 
 def test_squeue_failure_is_503_cached_and_generic(queue, client):
     queue.tunnel = FakeTunnel(rc=1, stderr="slurm_load_jobs error: timed out")
-    r1, r2 = client.get(URL), client.get(URL)
+    r1, r2 = client.get(f"/{KEY}/queue"), client.get(f"/{KEY}/queue")
     assert (r1.status_code, r2.status_code) == (503, 503) and len(queue.opens) == 1
     assert "slurm_load_jobs" not in r1.json()["detail"]
 
@@ -648,20 +709,20 @@ def test_squeue_failure_is_503_cached_and_generic(queue, client):
 def test_failed_tunnel_open_clears_the_connection_cache(queue, client):
     eq._connections[KEY] = "stale"
     queue.open_error = HTTPException(503, "no reachable login nodes")
-    assert client.get(URL).status_code == 503
+    assert client.get(f"/{KEY}/queue").status_code == 503
     assert KEY not in eq._connections
 
 
 def test_ssh_error_mid_session_clears_the_connection_cache(queue, client):
     eq._connections[KEY] = "stale"
     queue.tunnel = FakeTunnel(run_error=SshTunnelError("session dropped"))
-    r = client.get(URL)
+    r = client.get(f"/{KEY}/queue")
     assert r.status_code == 503 and "dropped" not in r.json()["detail"]
     assert KEY not in eq._connections
 
 
 def test_bad_state_is_422(queue, client):
-    assert client.get(f"{URL}?state=done").status_code == 422
+    assert client.get(f"/{KEY}/queue?state=done").status_code == 422
 
 
 def test_response_names_the_environment(queue, client):
@@ -690,3 +751,190 @@ def test_caches_are_bounded(monkeypatch):
     cache["c"] = 1
     eq._bound(cache, lambda v: v == 0)
     assert list(cache) == ["b", "c"]
+
+
+@pytest.mark.parametrize("kind", ["capacity", "history?days=7"])
+def test_capacity_and_history_need_the_space_too(queue, client, kind):
+    queue.scope = ["public"]
+    assert client.get(f"/{KEY}/{kind}").status_code == 404
+    assert queue.opens == []
+
+
+# ----------------------------------------------------------------- capacity
+
+
+@pytest.mark.parametrize(
+    "state, usable",
+    [
+        ("idle", True),
+        ("mixed", True),
+        ("allocated", True),
+        ("planned", True),
+        ("mixed-", True),
+        ("drained", False),
+        ("draining", False),
+        ("down*", False),
+        ("idle~", False),
+        ("idle#", False),
+        ("maint", False),
+        ("reserved", False),
+        ("rebooting", False),
+        ("powered_down", False),
+        ("unknown", False),
+        ("mixed$", False),
+    ],
+)
+def test_node_is_usable(state, usable):
+    assert so.node_is_usable(state) is usable
+
+
+def test_sinfo_nodes_are_deduplicated_across_partitions():
+    nodes, bad = so.parse_sinfo_nodes(SINFO + "\ntoo few fields")
+    assert bad == 1 and len(nodes) == 7
+    assert nodes["n01"].partitions == {
+        "gpu",
+        "gpu-high",
+    }  # default-partition "*" stripped
+    assert (nodes["n01"].gpus, nodes["n01"].gpus_used, nodes["n01"].model) == (
+        8,
+        3,
+        "h200",
+    )
+    assert nodes["c01"].gpus == 0
+
+
+def test_capacity_counts_free_gpus_on_usable_nodes_only():
+    nodes, _ = so.parse_sinfo_nodes(SINFO)
+    models, parts = so.summarize_capacity(nodes)
+    by = {m.gpu_model: m for m in models}
+    assert (by["h200"].usable_nodes, by["h200"].gpus_used, by["h200"].gpus_free) == (
+        2,
+        3,
+        13,
+    )
+    assert (by["h100"].nodes, by["h100"].usable_nodes, by["h100"].gpus_free) == (
+        3,
+        1,
+        0,
+    )
+    assert (by[None].nodes, by[None].usable_nodes) == (1, 0)  # unnamed model, down
+    p = {x.partition: x for x in parts}
+    assert (p["gpu"].nodes, p["gpu"].gpus_free) == (6, 13) and p[
+        "gpu-high"
+    ].gpus_free == 5
+
+
+def test_capacity_route(queue, client):
+    r = client.get(f"/{KEY}/capacity")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert queue.tunnel.commands == [so.SINFO_NODES]
+    assert {m["gpu_model"]: m["gpus_free"] for m in body["models"]} == {
+        "h100": 0,
+        "h200": 13,
+        None: 0,
+    }
+    assert "n01" not in r.text  # aggregates only
+
+
+# ------------------------------------------------------------------ history
+
+SACCT = "\n".join(
+    [
+        sacct_line("300", "COMPLETED", comment=ALICE),
+        sacct_line(
+            "301", "FAILED", elapsed="1800", tres="cpu=8,gres/gpu=8,node=1", comment=BOB
+        ),
+        sacct_line("302", "CANCELLED by 4242", comment=ALICE + "|tail"),
+        sacct_line(
+            "303", "RUNNING", comment=ALICE
+        ),  # still running: skipped, not unparsed
+        sacct_line("304", "PREEMPTED", comment=""),
+    ]
+)
+
+
+def test_history_command_is_fixed_per_window():
+    cmd = so.sacct_history_command(SVC, 7)
+    assert cmd.startswith(
+        f"sacct -X -n -P -u {SVC} -S now-7days -E now --format=JobID,"
+    )
+    assert cmd.endswith(",ExitCode,Comment")
+    with pytest.raises(AssertionError):
+        so.sacct_history_command(SVC, 3)
+
+
+@pytest.mark.parametrize(
+    "tres, expected",
+    [
+        ("gres/gpu:h200=4,gres/gpu=4", (4, "h200")),
+        ("cpu=8,gres/gpu=8", (8, None)),
+        ("gres/gpu:h100=16", (16, "h100")),
+        ("cpu=8,mem=4G", (None, None)),
+        (None, (None, None)),
+    ],
+)
+def test_alloc_gpus(tres, expected):
+    assert so.parse_alloc_gpus(tres) == expected
+
+
+def test_history_parsing():
+    jobs, bad = so.parse_history(SACCT + "\ngarbage")
+    by = {j.job_id: j for j in jobs}
+    assert sorted(by) == ["300", "301", "302", "304"] and bad == 1
+    assert (by["300"].gpus, by["300"].gpu_model, by["300"].gpu_hours) == (
+        4,
+        "h200",
+        4.0,
+    )
+    assert by["301"].gpu_hours == 4.0
+    assert by["302"].state == "CANCELLED" and by["302"].comment.endswith("|tail")
+    assert by["304"].gb is None
+
+
+def test_history_route_visibility_and_totals(queue, client):
+    r = client.get(f"/{KEY}/history?days=7")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    jobs = {j["job_id"]: j for j in body["jobs"]}
+    assert body["comments_recorded"] is True
+    assert not jobs["300"]["redacted"] and jobs["300"]["mine"]
+    assert jobs["301"]["redacted"] and jobs["301"]["gb"] is None  # bob's space
+    assert jobs["304"]["redacted"]  # no tag: fails closed
+    assert body["totals"]["jobs"] == 4
+    mine = client.get(f"/{KEY}/history?days=7&mine=true").json()
+    assert sorted(j["job_id"] for j in mine["jobs"]) == ["300", "302"]
+    assert mine["totals"] == {
+        "jobs": 2,
+        "gpu_hours": 8.0,
+        "gpu_hours_by_model": {"h200": 8.0},
+    }
+
+
+def test_history_windows_are_cached_separately(queue, client):
+    client.get(f"/{KEY}/history?days=7")
+    client.get(f"/{KEY}/history?days=7")
+    client.get(f"/{KEY}/history?days=30")
+    assert queue.tunnel.commands == [
+        so.sacct_history_command(SVC, 7),
+        so.sacct_history_command(SVC, 30),
+    ]
+
+
+def test_history_rejects_other_windows(queue, client):
+    assert client.get(f"/{KEY}/history?days=3").status_code == 422
+
+
+def test_no_comments_recorded_is_flagged(queue, client):
+    queue.tunnel.outputs[so.sacct_history_command(SVC, 1)] = sacct_line(
+        "400", "COMPLETED"
+    )
+    body = client.get(f"/{KEY}/history?days=1").json()
+    assert body["comments_recorded"] is False and body["jobs"][0]["redacted"]
+
+
+def test_kinds_share_one_connection_but_cache_separately(queue, client):
+    client.get(f"/{KEY}/queue")
+    client.get(f"/{KEY}/capacity")
+    client.get(f"/{KEY}/queue")
+    assert len(queue.opens) == 2

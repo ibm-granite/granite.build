@@ -2,19 +2,20 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""``GET /environments/{space}/{env_path}/queue``: a Slurm queue read over SSH.
+"""Slurm environments read over SSH: ``…/queue``, ``…/capacity`` and ``…/history``.
 
-The environment is addressed as builds address it: a space and the asset's path
-under its ``environments/``. Login details are read from that asset, so nothing
-is configured on the server. The caller must have access to the space, and the
+Routes live under ``/environments/{space}/{env_path}/``: an environment is
+addressed as builds address it, by a space and the asset's path under its
+``environments/``. Login details are read from that asset, so nothing is
+configured on the server. The caller must have access to the space, and the
 asset must be a Slurm environment; anything else is a 404 that does not say which.
 The remote commands are fixed and every filter runs in Python.
 
 Trust assumption: only gbserver and its operators submit jobs as the asset's
-``User``. Jobs are listed for that user only, so the free text in the output (job
-name and comment) was written by gbserver, which slugifies the cluster name and
-sanitizes every comment value. Other users' jobs contribute only fixed fields to
-the queue-wide ``counts``.
+``User``. Jobs (``squeue``, ``sacct``) are listed for that user only, so the free
+text in the output (job name and comment) was written by gbserver, which slugifies
+the cluster name and sanitizes every comment value. Other users' jobs contribute
+only fixed fields: the queue-wide ``counts`` and ``…/capacity``'s node totals.
 
 Each job's granite.build tag (``_skypilot_metadata``) is parsed into ``gb``. A job
 is shown in full only when its tag's space is one of the caller's spaces (super
@@ -25,17 +26,34 @@ scheduler fields only.
 import asyncio
 import os
 import re
-import shlex
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Set, Tuple
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from gbcommon.uri.uri import URI
 from gbserver.api.login_tunnel import fetch_space_ssh_key, open_login_tunnel
+from gbserver.api.slurm_output import (
+    HISTORY_DAYS,
+    SINFO_NODES,
+    SQUEUE_LOAD,
+    GbJobTag,
+    HistoryJob,
+    ModelCapacity,
+    PartitionCapacity,
+    QueueCounts,
+    QueueJob,
+    parse_history,
+    parse_jobs,
+    parse_load,
+    parse_sinfo_nodes,
+    sacct_history_command,
+    squeue_jobs_command,
+    summarize_capacity,
+)
 from gbserver.api.utils import NO_ACCESSIBLE_SPACE, scope_space_name_filter
 from gbserver.environment import _skypilot_metadata as tagmeta
 from gbserver.environment.environment import Environment, UnknownEnvironmentType
@@ -233,101 +251,6 @@ async def resolve_connection(
     return conn, key
 
 
-# ---------------------------------------------------------- squeue contract
-
-# The service account's jobs. %k must stay last: the comment writer keeps "|", so
-# lines are split with maxsplit. %j is a slugified cluster name.
-JOB_FIELDS: Tuple[Tuple[str, str], ...] = (
-    ("job_id", "%i"),
-    ("user", "%u"),
-    ("account", "%a"),
-    ("partition", "%P"),
-    ("qos", "%q"),
-    ("state", "%T"),
-    ("reason", "%r"),
-    ("submit_time", "%V"),
-    ("start_time", "%S"),
-    ("time_limit", "%l"),
-    ("time_used", "%M"),
-    ("nodes", "%D"),
-    ("cpus", "%C"),
-    ("min_memory", "%m"),
-    ("nodelist", "%N"),
-    ("gres", "%b"),
-    ("name", "%j"),
-    ("comment", "%k"),
-)
-assert JOB_FIELDS[-1][0] == "comment", "comment must be the last squeue field"
-_JOB_FORMAT = "|".join(code for _, code in JOB_FIELDS)
-# Whole-queue load from fixed fields only (state, node count, tres-per-node).
-SQUEUE_LOAD = "squeue -h -a -t RUNNING,PENDING -o '%T|%D|%b'"
-
-
-def squeue_jobs_command(username: str) -> str:
-    return (
-        f"squeue -h -a -t RUNNING,PENDING -u {shlex.quote(username)} "
-        f"-o '{_JOB_FORMAT}'"
-    )
-
-
-_STATES = frozenset({"RUNNING", "PENDING"})
-_EMPTY = frozenset({"", "N/A", "(null)", "None", "n/a"})
-_JOB_ID_RE = re.compile(r"^\d+(?:_(?:\d+|\[[^\]|]*\]))?$")
-# %b is tres-per-node: "gres/gpu:8", "gres:gpu:8", "gres/gpu:h200:4", "gpu:h100:1".
-_GPU_GRES_RE = re.compile(r"(?:^|,)(?:gres[/:])?gpu(?::([A-Za-z0-9_.-]+))?:(\d+)")
-_GB_COMMENT_KEYS = frozenset(tagmeta.COMMENT_KEYS)
-
-
-class GbJobTag(BaseModel):
-    """granite.build ids parsed from a job's comment tag."""
-
-    build_id: str
-    gb_env: Optional[str] = None
-    space: Optional[str] = None
-    username: Optional[str] = None
-    build_name: Optional[str] = None
-    target: Optional[str] = None
-    step_uri: Optional[str] = None
-    target_id: Optional[str] = None
-    step_id: Optional[str] = None
-
-
-class QueueJob(BaseModel):
-    job_id: str
-    array_job_id: Optional[str] = None
-    name: Optional[str] = None
-    user: Optional[str] = None
-    account: Optional[str] = None
-    partition: Optional[str] = None
-    qos: Optional[str] = None
-    state: str
-    reason: Optional[str] = None
-    submit_time: Optional[str] = None
-    start_time: Optional[str] = None
-    time_limit: Optional[str] = None
-    time_used: Optional[str] = None
-    nodes: Optional[int] = None
-    cpus: Optional[int] = None
-    min_memory: Optional[str] = None
-    nodelist: Optional[str] = None
-    gres: Optional[str] = None
-    gpus_per_node: Optional[int] = None
-    gpus: Optional[int] = None
-    gpu_model: Optional[str] = None
-    comment: Optional[str] = None
-    gb: Optional[GbJobTag] = None
-    mine: bool = False
-    redacted: bool = False
-
-
-class QueueCounts(BaseModel):
-    """Whole queue, every user."""
-
-    running: int = 0
-    pending: int = 0
-    running_gpus: int = 0
-
-
 class QueueResponse(BaseModel):
     environment: str
     scheduler: Literal["slurm"] = "slurm"
@@ -340,118 +263,6 @@ class QueueResponse(BaseModel):
     unparsed_lines: int = 0
 
 
-def _blank(value: str) -> Optional[str]:
-    value = value.strip()
-    return None if value in _EMPTY else value
-
-
-def parse_gpu_gres(gres: Optional[str]) -> Tuple[Optional[int], Optional[str], bool]:
-    """(GPUs per node, model, ok). ``ok`` is False for a gpu gres we can't read."""
-    if not gres:
-        return None, None, True
-    matches = list(_GPU_GRES_RE.finditer(gres))
-    if not matches:
-        return None, None, "gpu" not in gres.lower()
-    model = next((m.group(1) for m in matches if m.group(1)), None)
-    return sum(int(m.group(2)) for m in matches), model, True
-
-
-def parse_gb_comment(comment: Optional[str]) -> Optional[GbJobTag]:
-    """Parse the ``key=value;…`` tag. None without a build_id or with a repeated key."""
-    if not comment:
-        return None
-    values: Dict[str, str] = {}
-    for part in comment.split(";"):
-        key, sep, value = part.partition("=")
-        if not (sep and key in _GB_COMMENT_KEYS and value):
-            continue
-        if key in values:
-            return None
-        values[key] = value
-    return GbJobTag(**values) if "build_id" in values else None
-
-
-def parse_job_line(line: str) -> Optional[QueueJob]:
-    parts = line.rstrip("\n").split("|", len(JOB_FIELDS) - 1)
-    if len(parts) != len(JOB_FIELDS):
-        return None
-    raw = {name: value for (name, _), value in zip(JOB_FIELDS, parts)}
-    job_id, state = raw["job_id"].strip(), raw["state"].strip()
-    nodes, cpus = raw["nodes"].strip(), raw["cpus"].strip()
-    if not _JOB_ID_RE.match(job_id) or state not in _STATES:
-        return None
-    if not (nodes.isdigit() and cpus.isdigit()):
-        return None
-    gres = _blank(raw["gres"])
-    per_node, model, ok = parse_gpu_gres(gres)
-    if not ok:
-        return None
-    comment = _blank(raw["comment"])
-    return QueueJob(
-        job_id=job_id,
-        array_job_id=job_id.split("_", 1)[0] if "_" in job_id else None,
-        name=_blank(raw["name"]),
-        user=_blank(raw["user"]),
-        account=_blank(raw["account"]),
-        partition=_blank(raw["partition"]),
-        qos=_blank(raw["qos"]),
-        state=state,
-        reason=_blank(raw["reason"]),
-        submit_time=_blank(raw["submit_time"]),
-        start_time=_blank(raw["start_time"]),
-        time_limit=_blank(raw["time_limit"]),
-        time_used=_blank(raw["time_used"]),
-        nodes=int(nodes),
-        cpus=int(cpus),
-        min_memory=_blank(raw["min_memory"]),
-        nodelist=_blank(raw["nodelist"]),
-        gres=gres,
-        gpus_per_node=per_node,
-        gpus=per_node * int(nodes) if per_node is not None else None,
-        gpu_model=model,
-        comment=comment,
-        gb=parse_gb_comment(comment),
-    )
-
-
-def parse_jobs(stdout: str) -> Tuple[List[QueueJob], int]:
-    """Parse the service account's jobs. Returns (jobs, unparsed lines)."""
-    jobs: List[QueueJob] = []
-    bad = 0
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        job = parse_job_line(line)
-        if job is None:
-            bad += 1
-        else:
-            jobs.append(job)
-    return jobs, bad
-
-
-def parse_load(stdout: str) -> Tuple[QueueCounts, int]:
-    """Whole-queue counts from ``%T|%D|%b`` lines. Returns (counts, unparsed lines)."""
-    counts = QueueCounts()
-    bad = 0
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("|")
-        if len(parts) != 3 or parts[0] not in _STATES or not parts[1].isdigit():
-            bad += 1
-            continue
-        per_node, _, ok = parse_gpu_gres(_blank(parts[2]))
-        if not ok:
-            bad += 1
-            continue
-        if parts[0] == "RUNNING":
-            counts.running += 1
-            counts.running_gpus += (per_node or 0) * int(parts[1])
-        else:
-            counts.pending += 1
-    return counts, bad
-
-
 # -------------------------------------------------------------------- fetch
 
 
@@ -460,18 +271,18 @@ class _Snapshot:
     fetched_at: float
     as_of: str = ""
     login_node: Optional[str] = None
-    jobs: List[QueueJob] = field(default_factory=list)
-    counts: QueueCounts = field(default_factory=QueueCounts)
+    data: Any = None
     unparsed: int = 0
     error: Optional[HTTPException] = None
 
 
-_snapshots: Dict[str, _Snapshot] = {}
-_locks: Dict[str, asyncio.Lock] = {}
+# Keyed by (environment, kind), e.g. ("ops/slurm/cluster-a", "history:7").
+_snapshots: Dict[Tuple[str, str], _Snapshot] = {}
+_locks: Dict[Tuple[str, str], asyncio.Lock] = {}
 
 
 class _SshFailure(Exception):
-    """The login node couldn't run a command (as opposed to squeue failing)."""
+    """The login node couldn't run a command (as opposed to the command failing)."""
 
 
 async def _run(tunnel, environment: str, command: str) -> str:
@@ -480,14 +291,20 @@ async def _run(tunnel, environment: str, command: str) -> str:
     except (SshTunnelError, TimeoutError) as e:
         raise _SshFailure(str(e)) from e
     if rc != 0:
-        # Never degrade to an empty list: that would read as "no jobs".
+        # Never degrade to an empty list: that would read as "nothing there".
         raise _unavailable(
-            environment, f"squeue exit {rc}: {(stderr or '').strip()[:300]}"
+            environment,
+            f"{command.split()[0]} exit {rc}: {(stderr or '').strip()[:300]}",
         )
     return stdout or ""
 
 
-async def _fetch(environment: str, record: QueueEnvironment) -> _Snapshot:
+async def run_on_login_node(
+    environment: str,
+    record: QueueEnvironment,
+    commands_for: Callable[[QueueConnection], List[str]],
+) -> Tuple[List[str], Optional[str]]:
+    """Run fixed commands in one SSH session. Returns (outputs, login node)."""
     conn, key = await resolve_connection(environment, record)
     opened = False
     try:
@@ -501,11 +318,8 @@ async def _fetch(environment: str, record: QueueEnvironment) -> _Snapshot:
             log_tag="env-queue",
         ) as tunnel:
             opened = True
-            jobs_out = await _run(
-                tunnel, environment, squeue_jobs_command(conn.username)
-            )
-            load_out = await _run(tunnel, environment, SQUEUE_LOAD)
-            login_node = getattr(tunnel, "host", None)
+            outs = [await _run(tunnel, environment, c) for c in commands_for(conn)]
+            return outs, getattr(tunnel, "host", None)
     except (_SshFailure, HTTPException) as e:
         if not opened or isinstance(e, _SshFailure):
             # A rotated key or changed login node must not stay cached.
@@ -513,45 +327,73 @@ async def _fetch(environment: str, record: QueueEnvironment) -> _Snapshot:
         if isinstance(e, _SshFailure):
             raise _unavailable(environment, f"login node error: {e}") from e
         raise
-    jobs, bad_jobs = parse_jobs(jobs_out)
-    counts, bad_load = parse_load(load_out)
-    unparsed = bad_jobs + bad_load
-    if unparsed:
-        logger.warning(
-            "[env-queue] %s: %d unexpected squeue line(s)", environment, unparsed
-        )
-    return _Snapshot(
-        fetched_at=time.monotonic(),
-        as_of=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        login_node=login_node,
-        jobs=jobs,
-        counts=counts,
-        unparsed=unparsed,
-    )
 
 
-def _fresh(snap: _Snapshot) -> bool:
-    return time.monotonic() - snap.fetched_at < GBSERVER_ENV_QUEUE_CACHE_TTL_S
+async def cached_snapshot(
+    environment: str,
+    kind: str,
+    ttl_s: float,
+    fetch: Callable[[], Awaitable[Tuple[Any, int, Optional[str]]]],
+) -> _Snapshot:
+    """One fetch per TTL per (environment, kind); failures are cached for the TTL too.
 
+    ``fetch`` returns (data, unparsed lines, login node).
+    """
+    key = (environment, kind)
 
-async def get_queue_snapshot(environment: str, record: QueueEnvironment) -> _Snapshot:
-    """One refresh per TTL per environment; failures are cached for the TTL too."""
-    snap = _snapshots.get(environment)
-    if snap is None or not _fresh(snap):
-        if environment not in _locks:
+    def fresh(snap: Optional[_Snapshot]) -> bool:
+        return snap is not None and time.monotonic() - snap.fetched_at < ttl_s
+
+    snap = _snapshots.get(key)
+    if not fresh(snap):
+        if key not in _locks:
             _bound(_locks, lambda lock: not lock.locked())
-        async with _locks.setdefault(environment, asyncio.Lock()):
-            snap = _snapshots.get(environment)
-            if snap is None or not _fresh(snap):
+        async with _locks.setdefault(key, asyncio.Lock()):
+            snap = _snapshots.get(key)
+            if not fresh(snap):
                 try:
-                    snap = await _fetch(environment, record)
+                    data, unparsed, node = await fetch()
+                    if unparsed:
+                        logger.warning(
+                            "[env-queue] %s %s: %d unexpected line(s)",
+                            environment,
+                            kind,
+                            unparsed,
+                        )
+                    snap = _Snapshot(
+                        fetched_at=time.monotonic(),
+                        as_of=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        login_node=node,
+                        data=data,
+                        unparsed=unparsed,
+                    )
                 except HTTPException as e:
                     snap = _Snapshot(fetched_at=time.monotonic(), error=e)
-                _bound(_snapshots, lambda v: not _fresh(v))
-                _snapshots[environment] = snap
+                # Stale for its own kind's TTL; at worst a kind refetches early.
+                _bound(_snapshots, lambda v: time.monotonic() - v.fetched_at >= ttl_s)
+                _snapshots[key] = snap
+    assert snap is not None
     if snap.error is not None:
         raise snap.error
     return snap
+
+
+async def get_queue_snapshot(environment: str, record: QueueEnvironment) -> _Snapshot:
+    """``data`` is (jobs, counts)."""
+
+    async def fetch():
+        (jobs_out, load_out), node = await run_on_login_node(
+            environment,
+            record,
+            lambda conn: [squeue_jobs_command(conn.username), SQUEUE_LOAD],
+        )
+        jobs, bad_jobs = parse_jobs(jobs_out)
+        counts, bad_load = parse_load(load_out)
+        return (jobs, counts), bad_jobs + bad_load, node
+
+    return await cached_snapshot(
+        environment, "queue", GBSERVER_ENV_QUEUE_CACHE_TTL_S, fetch
+    )
 
 
 # --------------------------------------------------------------------- route
@@ -574,7 +416,18 @@ def tag_spaces(spaces: Optional[Set[str]]) -> Optional[Set[str]]:
     return None if spaces is None else {tagmeta.comment_value(n) for n in spaces}
 
 
-def view_for(job: QueueJob, spaces: Optional[Set[str]], caller: str) -> QueueJob:
+async def authorize(
+    request: Request, space_name: str, env_path: str
+) -> Tuple[QueueEnvironment, Optional[Set[str]]]:
+    """The environment and the caller's spaces; 404 unless the caller has the space."""
+    record = parse_queue_environment(space_name, env_path)
+    spaces = await caller_spaces(request)
+    if spaces is not None and record.space not in spaces:
+        raise _not_found()
+    return record, spaces
+
+
+def view_for(job, spaces: Optional[Set[str]], caller: str):
     """Full view if the job's tag space is one of the caller's; else scheduler fields."""
     tag = job.gb
     if tag is not None and (spaces is None or (tag.space and tag.space in spaces)):
@@ -591,11 +444,28 @@ def _tag_matches(tag: Optional[GbJobTag], filters: Dict[str, str]) -> bool:
     return tag is not None and all(getattr(tag, k) == v for k, v in filters.items())
 
 
+def _tag_filters(gb_env, space, username, build_id) -> Dict[str, str]:
+    """Tag filters in the tag's spelling: the writer sanitizes values."""
+    return {
+        k: tagmeta.comment_value(v)
+        for k, v in (
+            ("gb_env", gb_env),
+            ("space", space),
+            ("username", username),
+            ("build_id", build_id),
+        )
+        if v is not None
+    }
+
+
 _STATE_ARGS = {"running": "RUNNING", "pending": "PENDING"}
 _TAG_MAX = tagmeta.MAX_COMMENT_VALUE_LEN
 
 
-@queue_api.get("/{space_name}/{env_path:path}/queue", response_model=QueueResponse)
+_ROUTE = "/{space_name}/{env_path:path}"
+
+
+@queue_api.get(_ROUTE + "/queue", response_model=QueueResponse)
 async def get_environment_queue(
     request: Request,
     space_name: str,
@@ -620,10 +490,8 @@ async def get_environment_queue(
     queue; filters AND together and run on the caller's view. 404 unless the
     caller has access to the space and the asset is a Slurm environment; 503,
     never an empty list, when the queue can't be read."""
-    record = parse_queue_environment(space_name, env_path)
-    spaces = await caller_spaces(request)
-    if spaces is not None and record.space not in spaces:
-        raise _not_found()
+    record, spaces = await authorize(request, space_name, env_path)
+    tag_filters = _tag_filters(gb_env, space, username, build_id)
     wanted = {s.strip().lower() for s in state.split(",") if s.strip()}
     if not wanted or not wanted <= _STATE_ARGS.keys():
         raise HTTPException(
@@ -631,24 +499,12 @@ async def get_environment_queue(
             f"state must be a comma-separated subset of {sorted(_STATE_ARGS)}",
         )
     wanted_states = {_STATE_ARGS[s] for s in wanted}
-    # Compare in the tag's spelling: the writer sanitizes values.
-    tag_filters = {
-        k: tagmeta.comment_value(v)
-        for k, v in (
-            ("gb_env", gb_env),
-            ("space", space),
-            ("username", username),
-            ("build_id", build_id),
-        )
-        if v is not None
-    }
     snap = await get_queue_snapshot(record.key, record)
+    all_jobs, counts = snap.data
     visible = tag_spaces(spaces)
     caller = request.state.data["user"].login
 
-    views = (
-        view_for(j, visible, caller) for j in snap.jobs if j.state in wanted_states
-    )
+    views = (view_for(j, visible, caller) for j in all_jobs if j.state in wanted_states)
     jobs = [
         j for j in views if (not mine or j.mine) and _tag_matches(j.gb, tag_filters)
     ]
@@ -657,7 +513,143 @@ async def get_environment_queue(
         as_of=snap.as_of,
         cache_age_s=round(time.monotonic() - snap.fetched_at, 1),
         login_node=snap.login_node,
-        counts=snap.counts,
+        counts=counts,
+        jobs=jobs[:GBSERVER_ENV_QUEUE_MAX_JOBS],
+        truncated=len(jobs) > GBSERVER_ENV_QUEUE_MAX_JOBS,
+        unparsed_lines=snap.unparsed,
+    )
+
+
+class CapacityResponse(BaseModel):
+    environment: str
+    scheduler: Literal["slurm"] = "slurm"
+    as_of: str
+    cache_age_s: float
+    login_node: Optional[str] = None
+    models: List[ModelCapacity]
+    partitions: List[PartitionCapacity]
+    unparsed_lines: int = 0
+
+
+@queue_api.get(_ROUTE + "/capacity", response_model=CapacityResponse)
+async def get_environment_capacity(
+    request: Request, space_name: str, env_path: str
+) -> CapacityResponse:
+    """Cluster-wide GPU capacity from ``sinfo``: aggregates only, no node names or
+    jobs. 404 as for ``…/queue``."""
+    record, _ = await authorize(request, space_name, env_path)
+    environment = record.key
+
+    async def fetch():
+        (out,), node = await run_on_login_node(
+            environment, record, lambda _c: [SINFO_NODES]
+        )
+        nodes, bad = parse_sinfo_nodes(out)
+        return summarize_capacity(nodes), bad, node
+
+    snap = await cached_snapshot(
+        environment, "capacity", GBSERVER_ENV_QUEUE_CACHE_TTL_S, fetch
+    )
+    models, partitions = snap.data
+    return CapacityResponse(
+        environment=environment,
+        as_of=snap.as_of,
+        cache_age_s=round(time.monotonic() - snap.fetched_at, 1),
+        login_node=snap.login_node,
+        models=models,
+        partitions=partitions,
+        unparsed_lines=snap.unparsed,
+    )
+
+
+_HISTORY_TTL_S = 300.0
+
+
+class HistoryTotals(BaseModel):
+    """Over the jobs in this response (after visibility and filters)."""
+
+    jobs: int = 0
+    gpu_hours: float = 0.0
+    gpu_hours_by_model: Dict[str, float] = Field(default_factory=dict)
+
+
+class HistoryResponse(BaseModel):
+    environment: str
+    scheduler: Literal["slurm"] = "slurm"
+    days: int
+    as_of: str
+    cache_age_s: float
+    login_node: Optional[str] = None
+    # False when no job carries a comment: the cluster may not store job comments
+    # in accounting (AccountingStoreFlags=job_comment), so nothing can be shown.
+    comments_recorded: bool
+    totals: HistoryTotals
+    jobs: List[HistoryJob]
+    truncated: bool = False
+    unparsed_lines: int = 0
+
+
+@queue_api.get(_ROUTE + "/history", response_model=HistoryResponse)
+async def get_environment_history(
+    request: Request,
+    space_name: str,
+    env_path: str,
+    days: int = Query(7, description="Window in days: 1, 7 or 30"),
+    gb_env: Optional[str] = Query(None, max_length=_TAG_MAX),
+    space: Optional[str] = Query(None, max_length=_TAG_MAX),
+    username: Optional[str] = Query(None, max_length=_TAG_MAX),
+    build_id: Optional[str] = Query(None, max_length=_TAG_MAX),
+    mine: bool = Query(
+        False, description="Only jobs whose tag's username is the caller's login"
+    ),
+) -> HistoryResponse:
+    """granite.build's finished jobs from ``sacct``, with measured GPU-hours. Same
+    visibility and 404s as ``…/queue``; ``totals`` cover the returned jobs."""
+    record, spaces = await authorize(request, space_name, env_path)
+    environment = record.key
+    if days not in HISTORY_DAYS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"days must be one of {list(HISTORY_DAYS)}",
+        )
+    tag_filters = _tag_filters(gb_env, space, username, build_id)
+
+    async def fetch():
+        (out,), node = await run_on_login_node(
+            environment,
+            record,
+            lambda conn: [sacct_history_command(conn.username, days)],
+        )
+        jobs, bad = parse_history(out)
+        return jobs, bad, node
+
+    snap = await cached_snapshot(environment, f"history:{days}", _HISTORY_TTL_S, fetch)
+    visible = tag_spaces(spaces)
+    caller = request.state.data["user"].login
+    jobs = [
+        j
+        for j in (view_for(j, visible, caller) for j in snap.data)
+        if (not mine or j.mine) and _tag_matches(j.gb, tag_filters)
+    ]
+    totals = HistoryTotals(jobs=len(jobs))
+    for j in jobs:
+        totals.gpu_hours += j.gpu_hours
+        key = j.gpu_model or "unspecified"
+        totals.gpu_hours_by_model[key] = (
+            totals.gpu_hours_by_model.get(key, 0.0) + j.gpu_hours
+        )
+    totals.gpu_hours = round(totals.gpu_hours, 3)
+    totals.gpu_hours_by_model = {
+        k: round(v, 3) for k, v in totals.gpu_hours_by_model.items()
+    }
+    return HistoryResponse(
+        environment=environment,
+        days=days,
+        as_of=snap.as_of,
+        cache_age_s=round(time.monotonic() - snap.fetched_at, 1),
+        login_node=snap.login_node,
+        comments_recorded=any(j.comment for j in snap.data),
+        totals=totals,
         jobs=jobs[:GBSERVER_ENV_QUEUE_MAX_JOBS],
         truncated=len(jobs) > GBSERVER_ENV_QUEUE_MAX_JOBS,
         unparsed_lines=snap.unparsed,

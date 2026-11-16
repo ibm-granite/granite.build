@@ -91,8 +91,6 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | `GBSERVER_GITHUB_TOKEN` (aka `GBSERVER_DEFAULT_GITHUB_TOKEN`) | `` | GHE token (falls back to `GITHUB_TOKEN`). |
 | `GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT` | `60` | GitHub request timeout (seconds). |
 | `GITHUB_API_MAX_RETRIES` / `_RETRY_BASE_DELAY` / `_RETRY_MAX_DELAY` | `10` / `1.0` / `60.0` | GitHub API retry policy. |
-| `BUILD_GIT_MAX_CONSECUTIVE_FAILURES` / `BUILD_GIT_OPERATION_DEADLINE` | `3` / `120` | A build's PR and PR messages are optional: if the PR is never created, the rest of the build runs without it. Each git clone, pull or push for the PR is killed after the deadline (seconds; API calls have `GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT`), and retries stop at it. After this many consecutive failures the rest of that build run, in-place retries included, skips them (a build that started without a PR stays without one). |
-| `MAX_PR_CREATION_TRIES` / `PR_CREATION_RETRY_INTERVAL` | `100` / `5` | Hard cap on PR-creation attempts per build run (the `BUILD_GIT_MAX_CONSECUTIVE_FAILURES` give-up normally stops it first), and the pause (seconds) between them. |
 | `GIT_CLONE_MAX_RETRIES` / `_RETRY_MIN_WAIT` / `_RETRY_MAX_WAIT` | `5` / `1.0` / `30.0` | git clone retry policy. |
 
 ## Monitoring & metrics
@@ -135,15 +133,18 @@ Limits on the build-files REST endpoints: `GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYT
 
 ## Environment queue API
 
-`GET /api/v1/environments/{space}/{env_path}/queue` reads a Slurm cluster's running and
-pending granite.build jobs over SSH. The environment is the asset at `environments/{env_path}`
-in `{space}`; login nodes, user and key secret come from
-its `cluster_ssh_configs.slurm` host, so no server configuration names environments. It is a
-404 unless the caller has access to the space and the asset is a Slurm environment.
+`GET /api/v1/environments/{space}/{env_path}/queue` (running and pending granite.build jobs),
+`…/capacity` (GPU capacity from `sinfo`) and `…/history?days=1|7|30` (finished jobs and
+GPU-hours from `sacct`) read a Slurm cluster over SSH. The environment is the asset at
+`environments/{env_path}` in `{space}`; login nodes, user and key secret come from its
+`cluster_ssh_configs.slurm` host, so no server configuration names environments. Each route is
+a 404 unless the caller has access to the space and the asset is a Slurm environment. `…/history` needs
+the cluster to keep job comments in accounting (`AccountingStoreFlags=job_comment`); without
+them its jobs can't be linked to builds and are all shown redacted (`comments_recorded: false`).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GBSERVER_ENV_QUEUE_CACHE_TTL_S` | `30` | One squeue refresh per environment per TTL; a failed refresh is cached too. |
+| `GBSERVER_ENV_QUEUE_CACHE_TTL_S` | `30` | One `squeue`/`sinfo` refresh per environment per TTL; a failed refresh is cached too. `…/history` is cached for 5 minutes. |
 | `GBSERVER_ENV_QUEUE_SSH_BUDGET_S` | `20` | Time budget for trying the login nodes in turn. |
 | `GBSERVER_ENV_QUEUE_COMMAND_TIMEOUT_S` | `20` | Timeout per remote command. |
 | `GBSERVER_ENV_QUEUE_MAX_JOBS` | `5000` | Cap on jobs returned; `truncated` is set beyond it. |
