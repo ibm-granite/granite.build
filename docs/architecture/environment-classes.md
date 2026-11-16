@@ -374,6 +374,30 @@ themselves (URI schemes, secrets, configuration), see [Asset stores](../asset-st
 
 ---
 
+## `Skypilot` — asset stores
+
+The `Skypilot` environment ([`skypilot.py`](../../src/gbserver/environment/skypilot.py)) implements
+these `pullasset_*`/`pushasset_*` methods. Each one queues a built-in step from
+`builtins/steps/skypilot/` that runs as its own SkyPilot task. Those steps exchange data with the
+main step through `shared_workdir`. See [SkyPilot](../environments/skypilot.md) for the
+`environment.yaml` config.
+
+| Method | Store type | Behavior |
+|--------|-----------|----------|
+| `pullasset_hfstore` | HuggingFace | Injects an `hfpull` step (or, with `inline: true`, downloads in the main step's setup) |
+| `pushasset_hfstore` | HuggingFace | Injects an `hfpush` step |
+| `pullasset_cosstore` | S3 / COS | Injects an `s3pull` step (AWS CLI) into `<cache>/<uri hash>` |
+| `pushasset_cosstore` | S3 / COS | Injects an `s3push` step (file → exact key, directory → prefix sync) |
+
+For S3 / COS, the endpoint, region and credential secret names come from the dispatched store
+(helpers in [`_skypilot_cos.py`](../../src/gbserver/environment/_skypilot_cos.py)). An environment
+can therefore list one store per endpoint. Credentials are resolved by
+`Cosstore.resolve_credentials` (space secrets, then the same-named env var, as hf's
+`resolve_token` does) and passed to the step as `AWS_*` launcher envs. Setting
+`GBTEST_MOCK_COS` short-circuits both steps and `CosURI.exists()`.
+
+---
+
 ## Adding a New Environment
 
 1. Create `src/gbserver/environment/myenv.py` with a class named `Myenv(Environment)`.

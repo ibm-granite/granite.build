@@ -592,6 +592,10 @@ Constraints and notes:
   extra mount and the fix is inert.
 - **Bare steps don't need this** — they run on the host and see `shared_workdir` directly. `workdir` is
   only required once a step runs in a container.
+- **Pulled inputs need to be under the mount too.** An `s3://` / `cos://` input defaults to
+  `<shared_workdir>/cos_cache`, so it falls inside `workdir` whenever `shared_workdir` does. An
+  explicit storeload `cache_path` (for hf or COS) that sits outside `workdir` is invisible to a
+  containerized step.
 - **Side effect:** SkyPilot relocates its cluster home to `<workdir>/.sky_clusters/<cluster>`. This is
   benign and does not collide with gbserver's `<shared_workdir>/builds/...` run tree.
 - This mirrors LSF's `cloud_config.lsf.cluster_configs.<cluster>.workdir`, but LSF does **not** require

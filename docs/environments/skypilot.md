@@ -75,7 +75,26 @@ assetstores:
                                      # else ~/.cache/gbserver/hf on the worker.
     push:
       - mode: default
+  - store_uri: space://assetstores/s3/   # s3:// / cos:// (Cosstore) — queues the builtin
+    pull:                                # s3pull / s3push steps (AWS CLI).
+      - mode: default
+        config:
+          cache_path: /shared/cos_cache  # Optional. Defaults to {shared_workdir}/cos_cache when set,
+                                         # else ~/.cache/gbserver/cos on the worker.
+    push:
+      - mode: default
 ```
+
+> **S3 / COS (`s3://`, `cos://`).** A pull lands in `<cache>/<uri hash>`, a directory; a single
+> object is copied into it under its basename, and a prefix is synced into it. A push copies a
+> file to the exact object key, or syncs a directory under the URI as a prefix. The endpoint,
+> region and credential secret names come from the matched store's `store.yaml`. Credentials
+> resolve the way hf's `token_secretname` does: space secrets first, then the same-named env var.
+> They reach the step as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. One environment can
+> serve several endpoints by listing one store per endpoint, each with a distinct `base_uri`
+> prefix (see [asset stores](../asset-stores/README.md#multiple-s3cos-endpoints)). Both steps run
+> separately from the main step, so they need a `shared_workdir`. There is no inline mode yet
+> (see [AWS](skypilot-aws.md)).
 
 > Outside k8s, `mode` must be unset or `default` — dispatch is by store type, not `mode`. See
 > [asset stores](../asset-stores/README.md#load-and-push-modes).

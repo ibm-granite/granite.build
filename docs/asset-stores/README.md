@@ -107,6 +107,33 @@ that declares which URIs it handles and any store-specific settings:
 - `config` — store-specific settings: the secret names above, plus e.g. COS `cos_endpoint` / `cos_region`,
   Lakehouse `env`, and HuggingFace `enterprise_organizations`.
 
+For a COS / S3 store:
+
+- **`cos_endpoint` is the endpoint the cluster's transfer steps use.** A bare host
+  (`s3.amazonaws.com`) gets `https://`. Plain `http://` is accepted only for loopback or
+  single-label private hosts, such as a `gb-s3` container on a private container network.
+- **`cos_gbserver_endpoint` (optional) is the endpoint gbserver itself uses**, for example for
+  the input existence check (`CosURI.exists()`). Set it when gbserver can't reach `cos_endpoint`.
+  The local SeaweedFS store [`s3-local`](../../configurations/assets/assetstores/s3-local/store.yaml)
+  uses `http://gb-s3:9000` for the cluster and `http://localhost:9000` for gbserver.
+- **`cos_bucket_name` (optional) replaces the URI's bucket.**
+
+### Multiple S3/COS endpoints
+
+To use several endpoints in one environment, give each endpoint its own `store.yaml` with a
+distinct `base_uri` prefix, and list each store in the environment's `assetstores`. Each URI goes
+to the store with the longest matching prefix, and that store supplies the endpoint, region and
+secret names:
+
+```text
+assetstores/s3/store.yaml        base_uri: "s3://"               cos_endpoint: s3.amazonaws.com
+assetstores/s3-local/store.yaml  base_uri: "s3://local/"   cos_endpoint: http://gb-s3:9000  cos_bucket_name: gb-checkpoints
+assetstores/ibmcos/store.yaml    base_uri: "cos://"              cos_access_key_id_secret_name: IBMCOS_KEY_ID ...
+```
+
+Each `base_uri` must be unique: the store registry is keyed by it. Routing is by URI only, so two
+endpoints that share a bucket name need distinct prefixes.
+
 For the `hf` store, `config.enterprise_organizations` lists the HF organizations that use
 Enterprise resource groups; pushes to any other org skip resource groups entirely. Omitting
 the key treats every org as Enterprise. See
@@ -137,7 +164,7 @@ value is still accepted for backwards compatibility but logs a deprecation warni
 (via `Environment._warn_non_default_mode`).
 
 Each store type is implemented by a `pullasset_*` / `pushasset_*` method on the environment class — some
-pull/push inline, others inject a built-in step (e.g. `hfpull`, `cosrclone`, `lhpull`). Which methods an
+pull/push inline, others inject a built-in step (e.g. `hfpull`, `cosrclone`, `s3pull` / `s3push`, `lhpull`). Which methods an
 environment provides, and whether they mount volumes or queue steps, is environment-specific: see
 [environments](../environments/README.md#asset-stores) for the `environment.yaml` config and
 [environment classes](../architecture/environment-classes.md) for the per-environment implementations.

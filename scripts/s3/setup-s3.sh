@@ -2,7 +2,9 @@
 # setup-s3.sh — Deploy a local S3-compatible object store (SeaweedFS)
 #
 # Deploys a single-node SeaweedFS container (`weed mini`) serving the S3 API,
-# creates the gb-checkpoints bucket, and prints AWS environment variables for
+# creates the gb-checkpoints bucket, registers the store's credentials as local
+# space secrets (S3_LOCAL_ACCESS_KEY_ID / S3_LOCAL_SECRET_ACCESS_KEY, the names
+# the s3-local assetstore declares), and prints AWS environment variables for
 # SkyPilot / AWS CLI compatibility.
 #
 # Usage:
@@ -25,6 +27,15 @@ GB_S3_PORT="${GB_S3_PORT:-9000}"
 GB_S3_IMAGE="${GB_S3_IMAGE:-docker.io/chrislusf/seaweedfs:4.47}"
 GB_S3_BUCKET="${GB_S3_BUCKET:-gb-checkpoints}"
 GB_S3_DATA_VOLUME="${GB_S3_DATA_VOLUME:-gb-s3-data}"
+# Local space whose secret manager receives the credentials: the space.yaml
+# `name` of configurations/spaces/local. Its default local secrets directory is
+# <GB_HOME_DIR>/space_secrets/<space>/ (see docs/secrets/local-secrets-manager.md).
+GB_S3_SECRETS_SPACE="${GB_S3_SECRETS_SPACE:-public}"
+GB_S3_HOME_DIR="${GB_HOME_DIR:-${HOME}/.granite.build}"
+GB_S3_SECRETS_FILE="${GB_S3_HOME_DIR/#\~/${HOME}}/space_secrets/${GB_S3_SECRETS_SPACE}/s3-local.yaml"
+# Secret names declared by configurations/assets/assetstores/s3-local/store.yaml.
+S3_LOCAL_KEY_ID_SECRET="S3_LOCAL_ACCESS_KEY_ID"
+S3_LOCAL_SECRET_KEY_SECRET="S3_LOCAL_SECRET_ACCESS_KEY"
 
 ENDPOINT="http://localhost:${GB_S3_PORT}"
 
@@ -154,6 +165,49 @@ create_bucket() {
     log_create "Bucket '${bucket}'"
 }
 
+# ── Space secrets ────────────────────────────────────────────────────────
+# Base64 without line wrapping (GNU base64 wraps at 76 columns).
+b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+
+# Register the store's credentials where the s3-local assetstore resolves them
+# (Cosstore.resolve_credentials: local space secrets first, then env vars), in a
+# dedicated file so no other secret file in the space is touched. An existing
+# file is kept, so values a user edited are never overwritten; delete it (or run
+# teardown-s3.sh --remove-data) to regenerate. Values are never printed.
+register_space_secrets() {
+    local file="${GB_S3_SECRETS_FILE}"
+    local dir
+    dir="$(dirname "${file}")"
+    if [[ -f "${file}" ]]; then
+        log_skip "Space secrets file ${file} already exists"
+        return
+    fi
+    mkdir -p "${dir}"
+    chmod 700 "${dir}"
+    local key_b64 secret_b64
+    key_b64="$(b64 "${GB_S3_ACCESS_KEY}")"
+    secret_b64="$(b64 "${GB_S3_SECRET_KEY}")"
+    (
+        umask 077
+        cat > "${file}" <<SECRETS_EOF
+# Managed by scripts/s3/setup-s3.sh: credentials of the local SeaweedFS store,
+# read by the s3-local assetstore (s3://local/). Delete to regenerate.
+spaces:
+  ${GB_S3_SECRETS_SPACE}:
+    secrets:
+      ${S3_LOCAL_KEY_ID_SECRET}:
+        payload: ${key_b64}
+        labels:
+          - encode:base64
+      ${S3_LOCAL_SECRET_KEY_SECRET}:
+        payload: ${secret_b64}
+        labels:
+          - encode:base64
+SECRETS_EOF
+    )
+    log_create "Space secrets ${S3_LOCAL_KEY_ID_SECRET} / ${S3_LOCAL_SECRET_KEY_SECRET} in ${file}"
+}
+
 # ── Summary ──────────────────────────────────────────────────────────────
 print_summary() {
     echo ""
@@ -163,6 +217,8 @@ print_summary() {
     echo ""
     echo "  API endpoint:  ${ENDPOINT}"
     echo "  Bucket:        ${GB_S3_BUCKET}"
+    echo "  Space secrets: ${GB_S3_SECRETS_FILE}"
+    echo "                 (${S3_LOCAL_KEY_ID_SECRET}, ${S3_LOCAL_SECRET_KEY_SECRET}; s3://local/ store)"
     echo "  Container:     ${GB_S3_CONTAINER_NAME}"
     echo ""
     echo "  Export these variables for AWS CLI / SkyPilot:"
@@ -194,6 +250,7 @@ main() {
     connect_slurm_net
     wait_for_healthy
     create_bucket
+    register_space_secrets
     print_summary
 }
 

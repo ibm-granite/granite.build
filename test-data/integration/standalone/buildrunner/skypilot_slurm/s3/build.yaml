@@ -1,0 +1,36 @@
+# s3:// input -> command step on Skypilot/slurm -> s3:// output, against the
+# local SeaweedFS (`make s3-setup`) through the s3-local assetstore that the
+# slurm/local environment lists. __GBTEST_S3_RUN__ is replaced with a per-run id
+# by libgbtest.s3.S3BuildTestMixin (which also seeds the input and cleans up).
+granite.build:
+  name: skypilot-slurm-s3-test
+  targets:
+    s3-run:
+      environment_uri: space://environments/skypilot/slurm/local
+      inputs:
+        input_data:
+          uri: s3://local/gbtest/skypilot-s3/__GBTEST_S3_RUN__/input/data.txt
+      outputs:
+        output_data:
+          uri: s3://local/gbtest/skypilot-s3/__GBTEST_S3_RUN__/output/out.txt
+          # Required: a Cosstore cannot infer an artifact type from the URI.
+          type: fileset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            # Fast completion detection for the test (base default is 300s).
+            poll_interval_seconds: 5
+            command_config:
+              # The s3pull binding is a directory holding the object under its
+              # basename (data.txt), or only the mock marker when GBTEST_MOCK_COS
+              # is set. Copy the object's content to the output so the real test
+              # can check the round trip.
+              command: >-
+                set -e;
+                in="{{ bindings.input_data.binding.path }}";
+                test -n "$(ls -A "$in")";
+                if [ -f "$in/data.txt" ]; then cat "$in/data.txt" > out.txt; else echo mock > out.txt; fi;
+                echo "GB_ARTIFACT_ID:output_data GB_ARTIFACT_PATH:out.txt"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

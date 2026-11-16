@@ -113,6 +113,11 @@ env.filters["short_hash"] = short_alphanumeric_lower_hash
 env.filters["json_dumps"] = json.dumps
 env.filters["path_basename"] = lambda x: os.path.basename(os.path.normpath(x))
 env.filters["indent"] = indent
+env.filters["get_file_extension"] = get_file_extension
+# Shared with strict_env so templates (e.g. the skypilot s3pull/s3push step
+# scripts, which base64-encode values for safe shell quoting) render under
+# either env.
+env.filters["b64encode"] = my_b64encode
 
 
 def fill_template(templ: str, data: dict, strict: bool = False) -> str:

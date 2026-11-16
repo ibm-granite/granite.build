@@ -1,15 +1,27 @@
 name: s3pull
 version: 1.0.0
 type: upload
+# Hidden step queued by Skypilot.pullasset_cosstore for an s3:// / cos:// input.
+# Pulls an object (copied into local_path under its basename) or a prefix
+# (synced into local_path) with the AWS CLI. Credentials arrive as
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in launcher_config.envs, resolved by
+# Cosstore.resolve_credentials from the secrets the store.yaml names
+# (cos_*_secret_name), as HF_TOKEN reaches hfpull.
 config:
   retry_enabled_default: true
   retry_transparently_default: true
   gb:
     step_contents_in_env: false
+  workload:
+    cwd: .
   s3pull_config:
+    # The artifact URI as written in the build, and the bucket-resolved s3://
+    # URI the AWS CLI reads from.
+    uri: <uri>
     s3_uri: <s3://bucket/path>
     local_path: <destination>
     endpoint_url: ''
+    region: ''
   compute_config:
     num_cpus_per_node: 2
     num_gpus_per_node: 0
@@ -23,27 +35,73 @@ environment_configs:
         monitors:
         - skypilot_monitor
         config:
-          image_id: docker:amazon/aws-cli:latest
           # The cpus floor lives in compute_config.num_cpus_per_node, not here.
           # The engine turns it into the form each cloud accepts (_cpus_floor):
           # a "{n}+" minimum on cloud catalogs, a bare int on slurm/lsf, whose
           # SkyPilot cloud crashes on float("{n}+"). A literal "{n}+" in
           # resources is passed through verbatim and broke this step on LSF.
           resources: {}
+          # No container image: the AWS CLI is pip-installed so the step runs on
+          # every SkyPilot cloud (incl. SLURM without Pyxis, and LSF), as hfpull
+          # does. Skipped when mocked or when `aws` is already on PATH.
+          setup: |
+            case "${GBTEST_MOCK_COS:-}" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) exit 0 ;; esac
+            command -v aws >/dev/null 2>&1 || pip install --no-cache-dir awscli
           run: |
             set -euo pipefail
             trap 'EC=$?; echo "s3pull failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
             echo 's3pull start'
+            # Values are base64-encoded at render time so no URI/path character
+            # can break out of shell quoting.
+            S3_URI="$(printf %s '{{ config.s3pull_config.s3_uri | b64encode }}' | base64 -d)"
+            LOCAL_PATH="$(printf %s '{{ config.s3pull_config.local_path | b64encode }}' | base64 -d)"
+            ENDPOINT_URL="$(printf %s '{{ config.s3pull_config.endpoint_url | default("") | b64encode }}' | base64 -d)"
+            REGION="$(printf %s '{{ config.s3pull_config.region | default("") | b64encode }}' | base64 -d)"
+            MOCK_MARKER=".gbtest_mock_s3pull"
+            mkdir -p "${LOCAL_PATH}"
+
+            # Mocked when GBTEST_MOCK_COS is truthy, matching
+            # gbcommon.types.testing.is_cos_mocked (getenv_boolean). Keep identical
+            # to the copy in the skypilot s3push step.
+            cos_mocked() {
+                case "${GBTEST_MOCK_COS:-}" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;; *) return 1 ;; esac
+            }
+            if cos_mocked; then
+                echo "[GBTEST_MOCK_COS] mocking s3pull - skipping real download"
+                echo mock > "${LOCAL_PATH}/${MOCK_MARKER}"
+                echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
+                echo 's3pull end'
+                exit 0
+            fi
+
             if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-              echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set (inject via K8s secret in pod_config)" >&2
+              echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set (from the store's cos_*_secret_name secrets)" >&2
               exit 1
             fi
-            mkdir -p "{{ config.s3pull_config.local_path }}"
-            {% if config.s3pull_config.endpoint_url %}
-            aws s3 sync "{{ config.s3pull_config.s3_uri }}" "{{ config.s3pull_config.local_path }}" --endpoint-url "{{ config.s3pull_config.endpoint_url }}"
-            {% else %}
-            aws s3 sync "{{ config.s3pull_config.s3_uri }}" "{{ config.s3pull_config.local_path }}"
-            {% endif %}
+            AWS_ARGS=()
+            if [ -n "${ENDPOINT_URL}" ]; then AWS_ARGS+=(--endpoint-url "${ENDPOINT_URL}"); fi
+            if [ -n "${REGION}" ]; then export AWS_DEFAULT_REGION="${REGION}"; fi
+
+            S3_REST="${S3_URI#s3://}"
+            S3_BUCKET="${S3_REST%%/*}"
+            S3_KEY=""
+            if [[ "${S3_REST}" == */* ]]; then S3_KEY="${S3_REST#*/}"; fi
+
+            # An exact object -> copy it in under its basename; otherwise treat the
+            # URI as a prefix and sync it (rclone-copy semantics, as on K8s/LSF).
+            if [ -n "${S3_KEY}" ] && [[ "${S3_KEY}" != */ ]] && \
+               aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3api head-object --bucket "${S3_BUCKET}" --key "${S3_KEY}" >/dev/null 2>&1; then
+              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 cp --only-show-errors "${S3_URI}" "${LOCAL_PATH}/$(basename "${S3_KEY}")"
+            else
+              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 sync --only-show-errors "${S3_URI%/}/" "${LOCAL_PATH}/"
+            fi
+
+            # An empty/missing prefix is an error, not a silently empty input.
+            if [ -z "$(find "${LOCAL_PATH}" -type f ! -name "${MOCK_MARKER}" -print -quit)" ]; then
+              echo "ERROR: no objects found at ${S3_URI}" >&2
+              exit 1
+            fi
+            echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
             echo 's3pull end'
     monitors:
       skypilot_monitor:

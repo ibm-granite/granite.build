@@ -342,6 +342,29 @@ def pytest_addoption(parser):
     )
 
 
+def _default_mock_in_mock_mode(mock_var: str, live_var: str) -> None:
+    """Resolve a GBTEST_MOCK_<SERVICE> flag for a GBTEST_MODE=mock session.
+
+    Mock mode defaults the mock ON; an explicitly set, non-blank ``mock_var``
+    then wins (parsed with getenv_boolean); a whole-run ``live_var=true``
+    opt-in turns it OFF. The result is written back as "true"/"false" so
+    in-process readers and dispatched workers (whose shell guards match on
+    "true") agree. A blank value counts as "no choice made", not an opt-out.
+
+    Args:
+        mock_var: the mock flag, e.g. GBTEST_MOCK_HF or GBTEST_MOCK_COS.
+        live_var: the whole-run live opt-in, e.g. GBTEST_LIVE_HF.
+    """
+    from gbcommon.types.gbenvconfig import getenv_boolean
+
+    mocked = True
+    if os.environ.get(mock_var, "").strip():
+        mocked = getenv_boolean(mock_var, mocked)
+    if os.environ.get(live_var, "").lower() == "true":
+        mocked = False
+    os.environ[mock_var] = "true" if mocked else "false"
+
+
 def pytest_sessionstart(session):
     """
     Called after the Session object has been created and
@@ -375,8 +398,10 @@ def pytest_sessionstart(session):
         # Mock mode: apply placeholder env vars so modules can import safely
         from libgbtest.mock_env import MOCK_ENV_DEFAULTS, MOCK_ENV_FORCED
 
-        from gbcommon.types.gbenvconfig import getenv_boolean
-        from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
+        from gbcommon.types.testing import (
+            ENV_VAR_GBTEST_MOCK_COS,
+            ENV_VAR_GBTEST_MOCK_HF,
+        )
 
         for key, value in MOCK_ENV_FORCED.items():
             os.environ[key] = value
@@ -402,15 +427,15 @@ def pytest_sessionstart(session):
         # sees the same normalized "true"/"false": in-process is_hf_mocked(), and
         # dispatched jobs/pods, which receive only the forwarded env var and
         # re-read it in a separate process (their shell guards match on "true").
-        mock_hf = True
-        if os.environ.get(ENV_VAR_GBTEST_MOCK_HF, "").strip():
-            mock_hf = getenv_boolean(ENV_VAR_GBTEST_MOCK_HF, mock_hf)
+        #
         # A whole-run live-HF opt-in (GBTEST_LIVE_HF=true) lifts the HF mock so
         # the entire mock-mode run can exercise real HuggingFace. Per-test opt-in
         # is handled by the _hf_mock fixture via @pytest.mark.live("hf").
-        if os.environ.get("GBTEST_LIVE_HF", "").lower() == "true":
-            mock_hf = False
-        os.environ[ENV_VAR_GBTEST_MOCK_HF] = "true" if mock_hf else "false"
+        _default_mock_in_mock_mode(ENV_VAR_GBTEST_MOCK_HF, "GBTEST_LIVE_HF")
+        # S3/COS mocking follows the same rules (GBTEST_LIVE_COS=true lifts it),
+        # so an s3:// build test, like an hf:// one, runs mocked in mock mode and
+        # for real in live mode unless GBTEST_MOCK_COS says otherwise.
+        _default_mock_in_mock_mode(ENV_VAR_GBTEST_MOCK_COS, "GBTEST_LIVE_COS")
         logger.info(
             "Mock mode: applied placeholder env vars. "
             "Set GBTEST_MODE=live or per-service GBTEST_LIVE_<SERVICE>=true for real connections."
