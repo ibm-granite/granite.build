@@ -91,6 +91,8 @@ class StepEnvironmentTypeConfig(Config):
     setups: Optional[Dict[str, StepSetupConfig]] = Field(default_factory=dict)
     launchers: Dict[str, StepLauncherConfig]
     monitors: Optional[Dict[str, StepMonitorConfig]] = Field(default_factory=dict)
+    # One node only; gbserver enforces it (gbserver.types.stepconfig).
+    single_node: bool = Field(default=False)
 
 
 class StepConfig(Config):

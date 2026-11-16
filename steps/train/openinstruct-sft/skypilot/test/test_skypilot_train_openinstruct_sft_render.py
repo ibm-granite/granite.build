@@ -27,7 +27,9 @@ import pytest
 import yaml
 
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
+from gbserver.environment.skypilot import validate_launch_num_nodes
 from gbserver.types.buildevent import BuildEventType, EntityRunMetadata
+from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -36,6 +38,9 @@ _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"][
     "openinstruct_sft"
 ]["config"]
 _DEFAULTS = _TEMPLATE["config"]["openinstruct_sft_config"]
+_ENV = StepEnvironmentTypeConfig.model_validate(
+    _TEMPLATE["environment_configs"]["Skypilot"]
+)
 _MIX = {"allenai/tulu-3-sft-personas-algebra": 64}
 _BASE = {"base_model": {"binding": {"path": "/staged/base it's"}}}
 _SCRIPTS = (
@@ -207,60 +212,6 @@ class TestValidation:
             "run", _ctx(output=bad)
         )
 
-    def test_multi_node_refused(self):
-        assert "num_nodes must be 1" in _render_error(
-            "run", _ctx(compute={"num_nodes": 2})
-        )
-
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    def test_multi_node_launcher_config_refused(self, block):
-        # gbserver's _num_nodes_from_configs lets the build's
-        # launcher_config.num_nodes win over compute_config: 2 nodes would each
-        # run a separate single-node training.
-        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": 2}
-        assert _render_error(block, _ctx(launcher_config=lc)) == (
-            "openinstruct-sft: launcher_config.num_nodes must be 1 (got '2'); "
-            "this step is single-node."
-        )
-
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    @pytest.mark.parametrize("layer", ["compute", "launcher"])
-    @pytest.mark.parametrize("n", [1, 1.0, "1", "01", " 1", "+1", "1 "])
-    def test_whole_one_num_nodes_is_fine(self, block, layer, n):
-        # gbserver's _num_nodes_from_configs takes int(value): a whole float
-        # (YAML 1.0) and any string int() reads as 1 (a substituted parameter).
-        if layer == "compute":
-            ctx = _ctx(compute={"num_nodes": n})
-        else:
-            ctx = _ctx(
-                launcher_config={
-                    "resources": {"accelerators": "A10G:1"},
-                    "num_nodes": n,
-                }
-            )
-        _render(block, ctx)
-
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    @pytest.mark.parametrize("n", ["2", "02", "1.0", "0x1", "", "${NODES}"])
-    def test_string_num_nodes_other_than_one_refused(self, block, n):
-        # "1.0" and "0x1" fail gbserver's int() too; "${NODES}" is an
-        # unsubstituted parameter.
-        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": n}
-        assert _render_error(block, _ctx(launcher_config=lc)) == (
-            f"openinstruct-sft: launcher_config.num_nodes must be 1 (got '{n}'); "
-            "this step is single-node."
-        )
-
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    def test_whole_float_two_num_nodes_refused(self, block):
-        assert "compute_config.num_nodes must be 1 (got '2.0')" in _render_error(
-            block, _ctx(compute={"num_nodes": 2.0})
-        )
-        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": 2.0}
-        assert "launcher_config.num_nodes must be 1 (got '2.0')" in _render_error(
-            block, _ctx(launcher_config=lc)
-        )
-
     @pytest.mark.parametrize("block", ["setup", "run"])
     @pytest.mark.parametrize(
         "launcher_config",
@@ -406,6 +357,36 @@ class TestValidation:
         # foo's value.
         err = _render_error(block, _ctx(args={"foo": [], "max_train_steps": 3}))
         assert "args.foo is an empty list" in err
+
+
+class TestSingleNode:
+    """gbserver, not the template, refuses multi-node: the step declares
+    single_node and the num_nodes resolver enforces it at step creation, on
+    every layer it reads."""
+
+    def test_declared(self):
+        assert _ENV.single_node is True
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"compute_config": {"num_nodes": 2}},
+            {"compute_config": {"num_nodes": 1}, "launcher_config": {"num_nodes": 2}},
+        ],
+    )
+    def test_gbserver_refuses_more_than_one_node(self, config):
+        with pytest.raises(ValueError, match="this step is single-node"):
+            validate_launch_num_nodes(_ENV, _LAUNCHER, config)
+
+    def test_gbserver_accepts_one_node(self):
+        assert validate_launch_num_nodes(_ENV, _LAUNCHER, _ctx()["config"]) == 1
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_template_leaves_num_nodes_to_gbserver(self, block):
+        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": 2}
+        assert "openinstruct_sft_guard.sh" in _render(
+            block, _ctx(compute={"num_nodes": 2}, launcher_config=lc)
+        )
 
 
 class TestGuardArgv:

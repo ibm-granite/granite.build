@@ -503,6 +503,14 @@ class TargetStepRun(Run):
             logger.info(
                 "FULL CONFIG LAUNCHER CONFIG: %s", self.full_config[LAUNCHER_CONFIG]
             )
+            # Step-declared launch constraints (e.g. single_node) checked against
+            # the same filled configs the launch gets, so a bad request fails the
+            # step here, on creation, before anything is provisioned.
+            targetstep.environment.validate_launch_config(
+                env_config,
+                self.full_config[LAUNCHER_CONFIG],
+                self.full_config[CONFIG_KEY],
+            )
 
             # --- Monitor Config ---
             # Shared launcher->monitor selection (StepEnvironmentTypeConfig)

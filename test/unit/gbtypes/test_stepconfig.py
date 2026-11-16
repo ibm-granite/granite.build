@@ -204,3 +204,17 @@ class TestSelectLauncherMonitors:
             [],
             [],
         )
+
+
+class TestSingleNode:
+    def test_defaults_to_false(self):
+        assert (
+            StepEnvironmentTypeConfig.model_validate({"launchers": {}}).single_node
+            is False
+        )
+
+    def test_parses_true(self):
+        env = StepEnvironmentTypeConfig.model_validate(
+            {"launchers": {}, "single_node": True}
+        )
+        assert env.single_node is True

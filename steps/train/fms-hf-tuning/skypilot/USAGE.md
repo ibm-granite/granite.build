@@ -144,14 +144,16 @@ a message that starts `fms-hf-tuning:`. They are:
   reads as true: `true`, `yes`, `t`, `y`, `1`) or `args.padding_free` set;
 - `base_model_id` with `peft_method: none`;
 - an empty `output`, or one with whitespace or a double quote;
-- `compute_config.num_nodes` or `launcher_config.num_nodes` other than 1. `1.0`,
-  and a string such as `"01"` that reads as the integer 1, count as 1;
 - no GPU request (neither `launcher_config.resources.accelerators` nor an
   `instance_type`); `distributed: fsdp` with a string `accelerators` asking for one
   GPU (`"A10G:1"` or `"A10G"`). The dict and list forms (`{H100: 1}`) are not read
   here; the node refuses them after provisioning;
 - an `args` key that is not a bare name (empty, or with `=`, a leading `-` or
   whitespace), or a step-owned key.
+
+A `num_nodes` other than 1, in `compute_config` or `launcher_config`, also fails at step
+creation, with gbserver's own message: the step sets `single_node: true`. `1.0`, and a
+string such as `"01"` that reads as the integer 1, count as 1.
 
 ## Passing fms-hf-tuning arguments (args)
 
@@ -438,8 +440,9 @@ but fail at runtime: the image has no fms-acceleration.
 
 ## Notes and limitations
 
-- Single node only (`num_nodes` 1). SkyPilot only: K8s, SkyPilot-K8s and LSF are
-  follow-ups.
+- Single node only (`num_nodes` 1): the step sets `single_node: true`, so gbserver
+  refuses any other count when it creates the step. SkyPilot only: K8s, SkyPilot-K8s
+  and LSF are follow-ups.
 - No QLoRA, GPTQ-LoRA, padding-free, multipack or fast MoE (fms-acceleration is not
   in the image), no prompt tuning (`pt`), no DeepSpeed.
 - One output, the final model. Mid-run checkpoints (`save_strategy` in `args`) go to
