@@ -3045,13 +3045,7 @@ class TestNumNodesResolution:
     """
 
     @staticmethod
-    def _resolve(
-        compute_config=None,
-        launcher_config=None,
-        config=None,
-        cloud="",
-        single_node=False,
-    ):
+    def _resolve(compute_config=None, launcher_config=None, config=None, cloud=""):
         from gbserver.environment.skypilot import _num_nodes_from_configs
 
         return _num_nodes_from_configs(
@@ -3059,7 +3053,6 @@ class TestNumNodesResolution:
             launcher_config or {},
             config or {},
             cloud=cloud,
-            single_node=single_node,
         )
 
     def test_defaults_to_one(self):
@@ -3104,6 +3097,61 @@ class TestNumNodesResolution:
         with pytest.raises(ValueError, match="num_nodes"):
             self._resolve(compute_config={"num_nodes": value})
 
+    @pytest.mark.parametrize("value", [True, False])
+    def test_booleans_are_not_node_counts(self, value):
+        """bool subclasses int, so int(True) == 1 would let a YAML `true` (or a
+        bad substitution) through as one node, and `false` as 0 nodes."""
+        with pytest.raises(ValueError) as exc:
+            self._resolve(compute_config={"num_nodes": value})
+        assert str(exc.value) == (
+            f"compute_config.num_nodes={value!r} is not an integer; set "
+            "compute_config.num_nodes to a whole number of nodes >= 1."
+        )
+
+    @pytest.mark.parametrize(
+        "layers,key",
+        [
+            ({"compute_config": {"num_nodes": "abc"}}, "compute_config.num_nodes"),
+            (
+                {"launcher_config": {"num_nodes": "abc"}},
+                "launchers.<name>.config.num_nodes",
+            ),
+            (
+                {"config": {"launcher_config": {"num_nodes": "abc"}}},
+                "launcher_config.num_nodes",
+            ),
+        ],
+    )
+    def test_a_bad_value_names_its_own_layer(self, layers, key):
+        """The fix goes where the bad value is, not always compute_config."""
+        with pytest.raises(ValueError) as exc:
+            self._resolve(**layers)
+        assert str(exc.value) == (
+            f"{key}='abc' is not an integer; set {key} to a whole number of "
+            "nodes >= 1."
+        )
+
+    def test_a_count_below_one_names_its_layer(self):
+        with pytest.raises(ValueError) as exc:
+            self._resolve(config={"launcher_config": {"num_nodes": 0}})
+        assert (
+            str(exc.value) == "launcher_config.num_nodes=0 is invalid; it must be >= 1."
+        )
+
+    @pytest.mark.parametrize(
+        "layers,name",
+        [
+            ({"compute_config": "x"}, "compute_config"),
+            ({"launcher_config": "x"}, "launchers.<name>.config"),
+            ({"config": {"launcher_config": "x"}}, "launcher_config"),
+        ],
+    )
+    def test_a_layer_that_is_not_a_mapping_fails_clearly(self, layers, name):
+        """Not an AttributeError from .get() on a str."""
+        with pytest.raises(ValueError) as exc:
+            self._resolve(**layers)
+        assert str(exc.value) == f"{name} must be a mapping, got str."
+
     @pytest.mark.parametrize(
         "launcher_config,config",
         [
@@ -3139,52 +3187,6 @@ class TestNumNodesResolution:
         with caplog.at_level(logging.WARNING):
             assert self._resolve(compute_config={"num_nodes": 2}) == 2
         assert "resources.num_nodes" not in caplog.text
-
-    @pytest.mark.parametrize("value", [None, 1, 1.0, "1", "01", " 1", "+1"])
-    def test_single_node_accepts_one(self, value):
-        """Exactly what int() reads as 1, as the launch parses it."""
-        assert self._resolve(compute_config={"num_nodes": value}, single_node=True) == 1
-
-    @pytest.mark.parametrize(
-        "layers,source",
-        [
-            ({"compute_config": {"num_nodes": 2}}, "compute_config.num_nodes"),
-            ({"compute_config": {"num_nodes": 2.0}}, "compute_config.num_nodes"),
-            ({"launcher_config": {"num_nodes": 2}}, "the step's launcher config"),
-            (
-                {"config": {"launcher_config": {"num_nodes": "2"}}},
-                "launcher_config.num_nodes",
-            ),
-        ],
-    )
-    def test_single_node_refuses_more_than_one_and_names_the_layer(
-        self, layers, source
-    ):
-        with pytest.raises(ValueError) as exc:
-            self._resolve(single_node=True, **layers)
-        assert str(exc.value) == (
-            f"num_nodes resolved to 2 (from {source}), but this step is single-node "
-            "(environment_configs.Skypilot.single_node); set num_nodes to 1 or "
-            "remove it."
-        )
-
-    def test_single_node_checks_the_resolved_count(self):
-        """Only the count the launch would use matters: the last layer wins."""
-        assert (
-            self._resolve(
-                compute_config={"num_nodes": 2},
-                config={"launcher_config": {"num_nodes": 1}},
-                single_node=True,
-            )
-            == 1
-        )
-
-    def test_single_node_keeps_the_parse_error(self):
-        with pytest.raises(ValueError, match="is not an integer"):
-            self._resolve(compute_config={"num_nodes": "many"}, single_node=True)
-
-    def test_multi_node_without_single_node_is_unchanged(self):
-        assert self._resolve(compute_config={"num_nodes": 2}) == 2
 
 
 class TestMultinodeSupportPreflight:
@@ -3256,19 +3258,6 @@ class TestMultinodeSupportPreflight:
             with pytest.raises(RuntimeError, match="predates LSF multi-node"):
                 _num_nodes_from_configs({"num_nodes": 2}, {}, {}, cloud="lsf")
 
-    def test_single_node_is_refused_before_the_lsf_check(self):
-        """The step's own constraint is the clearer error, so it comes first."""
-        from gbserver.environment.skypilot import _num_nodes_from_configs
-
-        with patch(
-            "gbserver.environment.skypilot.importlib.util.find_spec",
-            return_value=None,
-        ):
-            with pytest.raises(ValueError, match="this step is single-node"):
-                _num_nodes_from_configs(
-                    {"num_nodes": 2}, {}, {}, cloud="lsf", single_node=True
-                )
-
 
 class TestValidateLaunchNumNodes:
     """The step-creation entry point: a step's filled configs in, the count out."""
@@ -3315,6 +3304,103 @@ class TestValidateLaunchNumNodes:
             validate_launch_num_nodes(None, {}, {"compute_config": {"num_nodes": 2}})
             == 2
         )
+
+    @staticmethod
+    def _check(launcher_config=None, config=None, single_node=True, **kwargs):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        return validate_launch_num_nodes(
+            TestValidateLaunchNumNodes._env(single_node),
+            launcher_config or {},
+            config or {},
+            **kwargs,
+        )
+
+    @pytest.mark.parametrize("value", [None, 1, 1.0, "1", "01", " 1", "+1"])
+    def test_single_node_accepts_one(self, value):
+        """Exactly what int() reads as 1, as the launch parses it."""
+        assert self._check(config={"compute_config": {"num_nodes": value}}) == 1
+
+    @pytest.mark.parametrize(
+        "launcher_config,config,source",
+        [
+            ({}, {"compute_config": {"num_nodes": 2}}, "compute_config.num_nodes"),
+            ({}, {"compute_config": {"num_nodes": 2.0}}, "compute_config.num_nodes"),
+            ({"num_nodes": 2}, {}, "launchers.<name>.config.num_nodes"),
+            ({}, {"launcher_config": {"num_nodes": "2"}}, "launcher_config.num_nodes"),
+        ],
+    )
+    def test_single_node_refuses_more_than_one_and_names_the_layer(
+        self, launcher_config, config, source
+    ):
+        with pytest.raises(ValueError) as exc:
+            self._check(launcher_config, config)
+        assert str(exc.value) == (
+            f"num_nodes resolved to 2 (from {source}), but this step is single-node "
+            "(environment_configs.Skypilot.single_node); set num_nodes to 1 or "
+            "remove it."
+        )
+
+    def test_the_error_names_the_step_environment(self):
+        """A managed-jobs step declares the flag under its own block."""
+        with pytest.raises(ValueError) as exc:
+            self._check(
+                config={"compute_config": {"num_nodes": 2}}, env_type="Skypilot_managed"
+            )
+        assert "(environment_configs.Skypilot_managed.single_node)" in str(exc.value)
+
+    def test_single_node_checks_the_resolved_count(self):
+        """Only the count the launch would use matters: the last layer wins."""
+        assert (
+            self._check(
+                config={
+                    "compute_config": {"num_nodes": 2},
+                    "launcher_config": {"num_nodes": 1},
+                }
+            )
+            == 1
+        )
+
+    def test_single_node_keeps_the_parse_error(self):
+        with pytest.raises(ValueError, match="is not an integer"):
+            self._check(config={"compute_config": {"num_nodes": "many"}})
+
+    @pytest.mark.parametrize("config", ["abc", ["compute_config"]])
+    def test_a_step_config_that_is_not_a_mapping_fails_clearly(self, config):
+        """TargetStepRun only warns when the filled step config is not a dict;
+        this runs for every SkyPilot step, so it must not crash on .get()."""
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        with pytest.raises(ValueError) as exc:
+            validate_launch_num_nodes(self._env(False), {}, config)
+        assert str(exc.value) == (
+            f"The step config must be a mapping, got {type(config).__name__}."
+        )
+
+    def test_does_not_repeat_the_misplaced_resources_warning(self, caplog):
+        """The launch resolves num_nodes again and warns there; warning at
+        creation too would read as a second problem."""
+        with caplog.at_level(logging.WARNING):
+            assert (
+                self._check(
+                    launcher_config={"resources": {"num_nodes": 4}}, single_node=False
+                )
+                == 1
+            )
+        assert "resources.num_nodes" not in caplog.text
+
+    def test_leaves_the_lsf_preflight_to_the_launch(self):
+        """It has no target cloud; the launch runs the LSF check."""
+        with patch(
+            "gbserver.environment.skypilot.importlib.util.find_spec",
+            return_value=None,
+        ):
+            assert (
+                self._check(
+                    config={"compute_config": {"num_nodes": 2}}, single_node=False
+                )
+                == 2
+            )
 
 
 class TestNumNodesReachesSkyTask:

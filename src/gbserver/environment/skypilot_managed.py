@@ -9,7 +9,7 @@ The gbserver process does not need to stay running for jobs to complete.
 import asyncio
 import glob
 import os
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Self
+from typing import Any, Dict, List, Optional, Self
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -66,6 +66,7 @@ from gbserver.environment._skypilot_ssh import (
 # Shared file_mounts builder — keeps the unmanaged and managed launchers in sync
 # (relative-source resolution against the step.yaml dir, bucket sub-path handling).
 from gbserver.environment.skypilot import (
+    SkypilotLaunchConfigCheck,
     _abort_shielded_request,
     _build_skypilot_mounts,
     _get_step_skypilot_config,
@@ -75,14 +76,10 @@ from gbserver.environment.skypilot import (
     _run_sky_verb_off_loop,
     _sky_submit_to_thread,
     _warn_unrequested_gpus,
-    validate_launch_num_nodes,
 )
 
-if TYPE_CHECKING:
-    from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 
-
-class Skypilot_managed(Environment):
+class Skypilot_managed(SkypilotLaunchConfigCheck, Environment):
     """SkyPilot environment — managed jobs with in-cluster controller."""
 
     def __init__(
@@ -131,18 +128,6 @@ class Skypilot_managed(Environment):
         return _get_step_skypilot_config(
             kwargs.get("config") or {}
         ).secrets.secret_names_to_use_as_env_variable
-
-    def validate_launch_config(
-        self: Self,
-        step_env_config: "StepEnvironmentTypeConfig",
-        launcher_config: Dict,
-        config: Dict,
-    ) -> None:
-        """Resolve ``num_nodes`` as the launch will and enforce ``single_node``.
-
-        Shares :func:`validate_launch_num_nodes` with the unmanaged launcher.
-        """
-        validate_launch_num_nodes(step_env_config, launcher_config, config)
 
     def _launch_env_layers(self: Self, **kwargs: Any) -> List[Dict[str, str]]:
         """Managed-job env layers for the shared launch-env composer.

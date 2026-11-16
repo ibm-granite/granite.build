@@ -94,6 +94,17 @@ class TestSkypilotEnvironments:
                 _step_env(True), launcher_config, config
             )
 
+    def test_the_error_names_this_environments_block(self, skypilot_env):
+        """Skypilot_managed steps declare the flag under their own key."""
+        with pytest.raises(ValueError) as exc:
+            skypilot_env.validate_launch_config(
+                _step_env(True), {}, {"compute_config": {"num_nodes": 2}}
+            )
+        assert (
+            f"(environment_configs.{type(skypilot_env).__name__}.single_node)"
+            in str(exc.value)
+        )
+
     def test_single_node_accepts_one(self, skypilot_env):
         assert (
             skypilot_env.validate_launch_config(

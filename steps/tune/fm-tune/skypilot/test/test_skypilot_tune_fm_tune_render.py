@@ -355,7 +355,7 @@ def test_gbserver_refuses_more_than_one_node(config):
         validate_launch_num_nodes(_ENV, _LAUNCHER, config)
 
 
-@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, ""])
+@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, True, False, [1], ""])
 def test_gbserver_refuses_a_count_it_cannot_read(bad):
     with pytest.raises(ValueError, match="is not an integer"):
         validate_launch_num_nodes(
