@@ -1,44 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Client-side Builds search over a bounded window of recent builds.
+ * Helpers for the Builds search box, and the page clamp list views share.
  *
- * gbserver's `name` filter on `/builds/` is an exact match, so a substring
- * search can't be pushed to the server. While a term is active the Builds page
- * fetches the `SEARCH_WINDOW` most recent builds matching its other filters
- * once, then matches and paginates them here.
+ * Search runs on gbserver: `/builds/`'s `name` filter takes a `*` wildcard
+ * (case-insensitive), so a term becomes `*term*`. A term shaped like a build id
+ * is also looked up directly, as ids aren't part of the name (see searchBuilds
+ * in api/gbserver.ts).
  */
 
-export const SEARCH_WINDOW = 500
+/** Build ids are UUIDs (gbserver's get_uuid). */
+const BUILD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** Which request a builds result came from: one server page, or a search window. */
-export type BuildsFetchMode = 'page' | 'window'
-
-export interface SearchableBuild {
-  name: string
-  uuid: string
-  username?: string
-  space_name?: string
+export function isBuildId(term: string): boolean {
+  return BUILD_ID_RE.test(term.trim())
 }
 
-export interface BuildsResult<T> {
-  items: T[]
-  total: number
-}
-
-export interface BuildsView<T> {
-  items: T[]
-  total: number
-  /** The window held fewer builds than match the filters, so older ones weren't searched. */
-  truncated: boolean
-}
-
-export function matchesBuildSearch(build: SearchableBuild, term: string): boolean {
-  const needle = term.trim().toLowerCase()
-  if (!needle) return true
-  return [build.name, build.uuid, build.username, build.space_name].some((f) =>
-    (f ?? '').toLowerCase().includes(needle),
-  )
+/**
+ * The gbserver `name` wildcard matching names that contain `term`. `*` and `\`
+ * in the term are escaped, so they match literally rather than as wildcards.
+ */
+export function nameContainsWildcard(term: string): string {
+  return `*${term.trim().replace(/[\\*]/g, (c) => `\\${c}`)}*`
 }
 
 export function pageSlice<T>(items: T[], page: number, pageSize: number): T[] {
@@ -49,34 +32,4 @@ export function pageSlice<T>(items: T[], page: number, pageSize: number): T[] {
 export function clampPage(page: number, total: number, pageSize: number): number {
   const lastPage = Math.max(1, Math.ceil(total / pageSize))
   return Math.min(Math.max(1, page), lastPage)
-}
-
-/**
- * What the Builds table should show for `data`, given the current search state.
- *
- * `data` may be React Query placeholder data fetched in the other mode while the
- * new request is in flight, so `mode` is the mode `data` was fetched in, not the
- * one now wanted. A placeholder is shown as it was, never re-derived as if it
- * were the other kind:
- *
- * - entering a search over a server page: the page as it was, no notice;
- * - clearing a search over a window: page 1 of the window (it is newest-first,
- *   like the page being fetched) against the server total, not all its rows.
- */
-export function buildsView<T extends SearchableBuild>(
-  data: BuildsResult<T> | undefined,
-  mode: BuildsFetchMode | undefined,
-  { term, page, pageSize }: { term: string; page: number; pageSize: number },
-): BuildsView<T> {
-  if (!data) return { items: [], total: 0, truncated: false }
-  if (mode !== 'window') return { items: data.items, total: data.total, truncated: false }
-  if (!term.trim()) {
-    return { items: pageSlice(data.items, page, pageSize), total: data.total, truncated: false }
-  }
-  const matches = data.items.filter((b) => matchesBuildSearch(b, term))
-  return {
-    items: pageSlice(matches, page, pageSize),
-    total: matches.length,
-    truncated: data.total > data.items.length,
-  }
 }
