@@ -2,8 +2,19 @@ name: s3pull
 version: 1.0.0
 type: upload
 # Hidden step queued by Skypilot.pullasset_cosstore for an s3:// / cos:// input.
-# Pulls an object (copied into local_path under its basename) or a prefix
-# (synced into local_path) with the AWS CLI. Credentials arrive as
+# Pulls an object (copied in under its basename) or a prefix (synced) with the
+# AWS CLI into a cache shared across builds:
+#
+#   local_path                    -> symlink to the current complete version
+#   .<name>.versions/<version>/   the downloaded data, never modified once live
+#   .<name>.lock/                 mkdir lock serializing pulls of this URI
+#
+# Each pull builds a new version under the lock (a prefix is synced with
+# --delete into a hard-linked copy of the current version, so objects deleted
+# upstream disappear and unchanged ones aren't re-downloaded), then swaps the
+# symlink atomically: a reader sees the old or the new version, never a
+# half-written one. The previous version is kept for readers that resolved the
+# old path; older ones are removed. Credentials arrive as
 # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in launcher_config.envs, resolved by
 # Cosstore.resolve_credentials from the secrets the store.yaml names
 # (cos_*_secret_name), as HF_TOKEN reaches hfpull.
@@ -58,7 +69,6 @@ environment_configs:
             ENDPOINT_URL="$(printf %s '{{ config.s3pull_config.endpoint_url | default("") | b64encode }}' | base64 -d)"
             REGION="$(printf %s '{{ config.s3pull_config.region | default("") | b64encode }}' | base64 -d)"
             MOCK_MARKER=".gbtest_mock_s3pull"
-            mkdir -p "${LOCAL_PATH}"
 
             # Mocked when GBTEST_MOCK_COS is truthy, matching
             # gbcommon.types.testing.is_cos_mocked (getenv_boolean). Keep identical
@@ -68,6 +78,7 @@ environment_configs:
             }
             if cos_mocked; then
                 echo "[GBTEST_MOCK_COS] mocking s3pull - skipping real download"
+                mkdir -p "${LOCAL_PATH}"
                 echo mock > "${LOCAL_PATH}/${MOCK_MARKER}"
                 echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
                 echo 's3pull end'
@@ -87,20 +98,124 @@ environment_configs:
             S3_KEY=""
             if [[ "${S3_REST}" == */* ]]; then S3_KEY="${S3_REST#*/}"; fi
 
+            # ── Shared cache layout (see the header comment) ──
+            DEST="${LOCAL_PATH%/}"
+            DEST_DIR="$(dirname "${DEST}")"
+            DEST_NAME="$(basename "${DEST}")"
+            VERSIONS_NAME=".${DEST_NAME}.versions"
+            VERSIONS="${DEST_DIR}/${VERSIONS_NAME}"
+            LOCK="${DEST_DIR}/.${DEST_NAME}.lock"
+            # A holder refreshes the lock every 30s; one untouched for the TTL is
+            # a dead holder and is reclaimed. Waiting longer than the wait limit
+            # fails the step (it retries) rather than hanging.
+            LOCK_TTL_SECONDS="${GB_S3PULL_LOCK_TTL_SECONDS:-600}"
+            LOCK_WAIT_SECONDS="${GB_S3PULL_LOCK_WAIT_SECONDS:-7200}"
+            OWNER="host:$(hostname)|pid:$$|$(date +%s)"
+            HEARTBEAT_PID=""
+            NEW_VERSION=""
+
+            # Release our lock (only if we still own it), stop the heartbeat, and
+            # drop a version that never went live.
+            s3pull_cleanup() {
+                if [ -n "${HEARTBEAT_PID}" ]; then
+                    pkill -P "${HEARTBEAT_PID}" 2>/dev/null || true
+                    kill "${HEARTBEAT_PID}" 2>/dev/null || true
+                fi
+                if [ -n "${NEW_VERSION}" ] && [ -d "${NEW_VERSION}" ]; then rm -rf "${NEW_VERSION}"; fi
+                if [ "$(cat "${LOCK}/owner" 2>/dev/null || true)" = "${OWNER}" ]; then rm -rf "${LOCK}"; fi
+            }
+            trap s3pull_cleanup EXIT
+
+            # True if the lock dir was not refreshed within the TTL.
+            s3pull_lock_stale() {
+                local now mtime
+                now="$(date +%s)"
+                mtime="$(stat -c %Y "${LOCK}" 2>/dev/null || stat -f %m "${LOCK}" 2>/dev/null || echo "${now}")"
+                [ $(( now - mtime )) -ge "${LOCK_TTL_SECONDS}" ]
+            }
+
+            # Take the per-URI lock, reclaiming a dead holder's; then keep it fresh.
+            s3pull_acquire_lock() {
+                local waited=0 grave
+                mkdir -p "${DEST_DIR}"
+                until mkdir "${LOCK}" 2>/dev/null; do
+                    if s3pull_lock_stale; then
+                        grave="${LOCK}.stale.$$.${RANDOM}"
+                        echo "s3pull: reclaiming stale lock ${LOCK}" >&2
+                        if mv "${LOCK}" "${grave}" 2>/dev/null; then rm -rf "${grave}"; fi
+                        continue
+                    fi
+                    if [ "${waited}" -ge "${LOCK_WAIT_SECONDS}" ]; then
+                        echo "ERROR: timed out after ${waited}s waiting for ${LOCK} (held by $(cat "${LOCK}/owner" 2>/dev/null || echo unknown))" >&2
+                        return 1
+                    fi
+                    sleep 2
+                    waited=$(( waited + 2 ))
+                done
+                echo "${OWNER}" > "${LOCK}/owner"
+                # Detached from our stdio so a sleeping heartbeat never holds the
+                # step's output open after it exits.
+                ( while sleep 30; do touch "${LOCK}" 2>/dev/null || exit 0; done ) </dev/null >/dev/null 2>&1 &
+                HEARTBEAT_PID=$!
+            }
+
+            # Atomically point DEST at version directory $1 (relative link target).
+            s3pull_swap_to() {
+                local link="${DEST}.swap.$$"
+                ln -sfn "${VERSIONS_NAME}/$1" "${link}"
+                python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "${link}" "${DEST}" 2>/dev/null \
+                    || mv -Tf "${link}" "${DEST}"
+            }
+
+            # A real directory at DEST (the pre-versioning layout) becomes a version.
+            s3pull_adopt_legacy_dir() {
+                if [ -d "${DEST}" ] && [ ! -L "${DEST}" ]; then
+                    mkdir -p "${VERSIONS}"
+                    mv "${DEST}" "${VERSIONS}/legacy-$$"
+                    s3pull_swap_to "legacy-$$"
+                fi
+            }
+
+            # Keep the live version ($1) and the one it replaced ($2); remove the rest.
+            s3pull_prune_versions() {
+                local keep_new="$1" keep_prev="$2" v
+                for v in "${VERSIONS}"/*; do
+                    [ -d "${v}" ] || continue
+                    case "$(basename "${v}")" in "${keep_new}"|"${keep_prev}") ;; *) rm -rf "${v}" ;; esac
+                done
+            }
+
+            s3pull_acquire_lock
+            s3pull_adopt_legacy_dir
+            PREV_VERSION="$(basename "$(readlink "${DEST}" 2>/dev/null || true)")"
+            VERSION_NAME="v$(date +%s)-$$-${RANDOM}"
+            NEW_VERSION="${VERSIONS}/${VERSION_NAME}"
+            mkdir -p "${NEW_VERSION}"
+
             # An exact object -> copy it in under its basename; otherwise treat the
-            # URI as a prefix and sync it (rclone-copy semantics, as on K8s/LSF).
+            # URI as a prefix and sync it (rclone-copy semantics, as on K8s/LSF),
+            # starting from a hard-linked copy of the live version so only changed
+            # objects download. --delete drops objects removed upstream.
             if [ -n "${S3_KEY}" ] && [[ "${S3_KEY}" != */ ]] && \
                aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3api head-object --bucket "${S3_BUCKET}" --key "${S3_KEY}" >/dev/null 2>&1; then
-              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 cp --only-show-errors "${S3_URI}" "${LOCAL_PATH}/$(basename "${S3_KEY}")"
+              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 cp --only-show-errors "${S3_URI}" "${NEW_VERSION}/$(basename "${S3_KEY}")"
             else
-              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 sync --only-show-errors "${S3_URI%/}/" "${LOCAL_PATH}/"
+              if [ -n "${PREV_VERSION}" ] && [ -d "${VERSIONS}/${PREV_VERSION}" ]; then
+                cp -al "${VERSIONS}/${PREV_VERSION}/." "${NEW_VERSION}/" 2>/dev/null \
+                  || { rm -rf "${NEW_VERSION}"; mkdir -p "${NEW_VERSION}"; }
+              fi
+              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 sync --delete --only-show-errors "${S3_URI%/}/" "${NEW_VERSION}/"
             fi
 
-            # An empty/missing prefix is an error, not a silently empty input.
-            if [ -z "$(find "${LOCAL_PATH}" -type f ! -name "${MOCK_MARKER}" -print -quit)" ]; then
+            # An empty/missing prefix is an error, not a silently empty input; the
+            # live version is left as it was.
+            if [ -z "$(find "${NEW_VERSION}" -type f -print -quit)" ]; then
               echo "ERROR: no objects found at ${S3_URI}" >&2
               exit 1
             fi
+            s3pull_swap_to "${VERSION_NAME}"
+            NEW_VERSION=""
+            s3pull_prune_versions "${VERSION_NAME}" "${PREV_VERSION}"
             echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
             echo 's3pull end'
     monitors:

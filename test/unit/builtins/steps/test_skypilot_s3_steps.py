@@ -4,14 +4,15 @@ Each test renders the step's ``run`` block through gbserver's template engine
 (as the launcher does) and executes it with bash against a stub ``aws`` on PATH
 that records its arguments and fakes downloads. This exercises the shell logic
 (object vs prefix, file vs directory, mocking, credential and empty-input
-checks) without network access or a cluster.
+checks, and s3pull's shared versioned cache and its lock) without network access
+or a cluster.
 """
 
 import os
 import stat
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import pytest
 import yaml
@@ -20,15 +21,38 @@ from gbserver.utils.template import fill_template
 
 STEPS = Path("src/gbserver/builtins/steps/skypilot")
 
-# Records each invocation; fakes `s3 cp` / `s3 sync` downloads into a local
-# destination; head-object succeeds only when STUB_HEAD_RC=0.
+# Records each invocation and fakes downloads into a local destination:
+# - head-object succeeds only when STUB_HEAD_RC=0;
+# - a download sync writes the objects named in STUB_FILES (default "f") with
+#   content STUB_CONTENT, each via a temp file + rename like the real CLI (so a
+#   hard-linked previous version is never modified); --delete removes files not
+#   in STUB_FILES; STUB_EMPTY makes the prefix empty; STUB_SLEEP pauses inside
+#   the sync, which is bracketed by sync-start/sync-end log lines.
 STUB_AWS = """#!/usr/bin/env bash
 echo "$*" >> "${STUB_LOG}"
 last="${!#}"
 case " $* " in
   *" s3api head-object "*) exit "${STUB_HEAD_RC:-1}" ;;
   *" s3 cp "*) [[ "${last}" == s3://* ]] || { mkdir -p "$(dirname "${last}")"; echo d > "${last}"; } ;;
-  *" s3 sync "*) [[ "${last}" == s3://* || -n "${STUB_EMPTY:-}" ]] || { mkdir -p "${last}"; echo d > "${last}/f"; } ;;
+  *" s3 sync "*)
+    [[ "${last}" == s3://* ]] && exit 0
+    echo "sync-start" >> "${STUB_LOG}"
+    files="${STUB_FILES:-f}"
+    [[ -n "${STUB_EMPTY:-}" ]] && files=""
+    dir="${last%/}"
+    mkdir -p "${dir}"
+    if [[ " $* " == *" --delete "* ]]; then
+      for existing in "${dir}"/*; do
+        [ -e "${existing}" ] || continue
+        [[ " ${files} " == *" $(basename "${existing}") "* ]] || rm -f "${existing}"
+      done
+    fi
+    for name in ${files}; do
+      echo "${STUB_CONTENT:-d}" > "${dir}/${name}.part" && mv "${dir}/${name}.part" "${dir}/${name}"
+    done
+    sleep "${STUB_SLEEP:-0}"
+    echo "sync-end" >> "${STUB_LOG}"
+    ;;
 esac
 exit 0
 """
@@ -40,15 +64,15 @@ def _launcher(kind: str) -> Dict:
     return data["environment_configs"]["Skypilot"]["launchers"][kind]["config"]
 
 
-def _run(
+def _prepare(
     tmp_path: Path,
     kind: str,
     s3_uri: str,
     local_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
     creds: bool = True,
-) -> subprocess.CompletedProcess:
-    """Render and execute a step's run script against the stub aws.
+) -> Tuple[str, Dict[str, str]]:
+    """Render a step's run script and build its env, with the stub aws on PATH.
 
     :param tmp_path: pytest tmp dir (holds the stub and its log).
     :param kind: ``s3pull`` or ``s3push``.
@@ -56,7 +80,7 @@ def _run(
     :param local_path: the configured local_path.
     :param extra_env: additional env vars for the script.
     :param creds: whether to set the (dummy) AWS credential env vars.
-    :returns: the completed process (stdout/stderr captured).
+    :returns: ``(script, env)``.
     """
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
@@ -78,9 +102,33 @@ def _run(
     if creds:
         env.update(AWS_ACCESS_KEY_ID="dummy-id", AWS_SECRET_ACCESS_KEY="dummy-key")
     env.update(extra_env or {})
+    return script, env
+
+
+def _run(
+    tmp_path: Path,
+    kind: str,
+    s3_uri: str,
+    local_path: Path,
+    extra_env: Optional[Dict[str, str]] = None,
+    creds: bool = True,
+) -> subprocess.CompletedProcess:
+    """Render and execute a step's run script against the stub aws.
+
+    Arguments as for :func:`_prepare`.
+
+    :returns: the completed process (stdout/stderr captured).
+    """
+    script, env = _prepare(tmp_path, kind, s3_uri, local_path, extra_env, creds)
     return subprocess.run(
         ["bash", "-c", script], env=env, capture_output=True, text=True, check=False
     )
+
+
+def _versions(dest: Path) -> list:
+    """The version directories behind an s3pull cache entry ``dest``."""
+    root = dest.parent / f".{dest.name}.versions"
+    return sorted(v.name for v in root.iterdir()) if root.exists() else []
 
 
 def _log(tmp_path: Path) -> str:
@@ -124,7 +172,7 @@ class TestS3PullScript:
         dest = tmp_path / "dest"
         result = _run(tmp_path, "s3pull", "s3://b/dir", dest)
         assert result.returncode == 0, result.stderr
-        assert "s3 sync --only-show-errors s3://b/dir/" in _log(tmp_path)
+        assert "s3 sync --delete --only-show-errors s3://b/dir/" in _log(tmp_path)
 
     def test_empty_prefix_fails(self, tmp_path):
         """Pulling nothing is an error, not an empty input."""
@@ -155,6 +203,107 @@ class TestS3PullScript:
         assert result.returncode == 0, result.stderr
         assert (dest / ".gbtest_mock_s3pull").exists()
         assert _log(tmp_path) == ""
+
+
+class TestS3PullSharedCache:
+    """local_path is a symlink to a complete version; pulls are serialized by a
+    per-URI lock; a re-pull never modifies files a reader may be using."""
+
+    def test_dest_is_a_symlink_to_a_version_and_the_lock_is_released(self, tmp_path):
+        dest = tmp_path / "cache" / "h"
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest)
+        assert result.returncode == 0, result.stderr
+        assert dest.is_symlink() and (dest / "f").exists()
+        assert len(_versions(dest)) == 1
+        assert not (dest.parent / ".h.lock").exists()
+
+    def test_repull_drops_objects_deleted_upstream(self, tmp_path):
+        """Later pulls don't see deleted objects; old versions are pruned."""
+        dest = tmp_path / "cache" / "h"
+        for files in ("a b", "a", "a"):
+            result = _run(tmp_path, "s3pull", "s3://b/dir", dest, {"STUB_FILES": files})
+            assert result.returncode == 0, result.stderr
+        assert sorted(f.name for f in dest.iterdir()) == ["a"]
+        assert len(_versions(dest)) == 2  # the live one and the one it replaced
+
+    def test_repull_never_modifies_the_previous_version(self, tmp_path):
+        """A reader of the old version keeps its content after a re-pull."""
+        dest = tmp_path / "cache" / "h"
+        _run(tmp_path, "s3pull", "s3://b/dir", dest, {"STUB_CONTENT": "one"})
+        old_file = dest.resolve() / "f"
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest, {"STUB_CONTENT": "two"})
+        assert result.returncode == 0, result.stderr
+        assert old_file.read_text().strip() == "one"
+        assert (dest / "f").read_text().strip() == "two"
+
+    def test_concurrent_pulls_are_serialized(self, tmp_path):
+        """Two simultaneous pulls of one URI never sync at the same time."""
+        dest = tmp_path / "cache" / "h"
+        procs = []
+        for _ in range(2):
+            script, env = _prepare(
+                tmp_path, "s3pull", "s3://b/dir", dest, {"STUB_SLEEP": "1"}
+            )
+            procs.append(
+                subprocess.Popen(
+                    ["bash", "-c", script],
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            )
+        for proc in procs:
+            _, err = proc.communicate(timeout=60)
+            assert proc.returncode == 0, err
+        marks = [ln for ln in _log(tmp_path).splitlines() if ln.startswith("sync-")]
+        assert marks == ["sync-start", "sync-end", "sync-start", "sync-end"]
+        assert (dest / "f").exists()
+
+    def test_stale_lock_is_reclaimed(self, tmp_path):
+        """A lock its dead holder stopped refreshing is taken over."""
+        dest = tmp_path / "cache" / "h"
+        lock = dest.parent / ".h.lock"
+        lock.mkdir(parents=True)
+        (lock / "owner").write_text("host:gone|pid:1")
+        os.utime(lock, (0, 0))
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest)
+        assert result.returncode == 0, result.stderr
+        assert "reclaiming stale lock" in result.stderr
+
+    def test_live_lock_times_out_and_is_left_alone(self, tmp_path):
+        """A held, fresh lock makes the pull wait, then fail; it isn't stolen."""
+        dest = tmp_path / "cache" / "h"
+        lock = dest.parent / ".h.lock"
+        lock.mkdir(parents=True)
+        (lock / "owner").write_text("host:other|pid:2")
+        result = _run(
+            tmp_path, "s3pull", "s3://b/dir", dest, {"GB_S3PULL_LOCK_WAIT_SECONDS": "2"}
+        )
+        assert result.returncode != 0
+        assert "timed out" in result.stderr
+        assert (lock / "owner").read_text() == "host:other|pid:2"
+
+    def test_legacy_directory_is_adopted(self, tmp_path):
+        """A real directory from the old layout becomes a version, then is synced."""
+        dest = tmp_path / "cache" / "h"
+        dest.mkdir(parents=True)
+        (dest / "stale").write_text("x")
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest, {"STUB_FILES": "new"})
+        assert result.returncode == 0, result.stderr
+        assert dest.is_symlink()
+        assert sorted(f.name for f in dest.iterdir()) == ["new"]
+
+    def test_failed_pull_keeps_the_live_version(self, tmp_path):
+        """An empty re-pull fails without touching the live version."""
+        dest = tmp_path / "cache" / "h"
+        _run(tmp_path, "s3pull", "s3://b/dir", dest, {"STUB_FILES": "a"})
+        before = _versions(dest)
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest, {"STUB_EMPTY": "1"})
+        assert result.returncode != 0
+        assert (dest / "a").exists()
+        assert _versions(dest) == before
+        assert not (dest.parent / ".h.lock").exists()
 
 
 class TestS3PushScript:

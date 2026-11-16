@@ -5843,10 +5843,14 @@ class Skypilot(Environment):
 
         Settings (endpoint, region, credential secret names) come from the
         dispatched ``assetstore``, so an environment with several Cosstores
-        (one per endpoint) pulls each URI from its own store. The download lands
-        in ``<cache>/<uri hash>`` (a directory, as on K8s/LSF; a single object
-        lands inside it under its basename), where ``<cache>`` is the storeload
-        ``cache_path``, else ``{shared_workdir}/cos_cache``.
+        (one per endpoint) pulls each URI from its own store. The binding is
+        ``<cache>/<uri hash>`` (a directory, as on K8s/LSF; a single object lands
+        inside it under its basename), where ``<cache>`` is the storeload
+        ``cache_path``, else ``{shared_workdir}/cos_cache``. The cache is shared
+        across builds: the s3pull step serializes pulls of a URI with a lock and
+        points the binding (a symlink) at a fresh, complete version, so objects
+        deleted upstream disappear and concurrent pulls never see each other's
+        partial writes (see builtins/steps/skypilot/s3pull/step.yaml).
 
         :param uri: the ``s3://`` / ``cos://`` URI to pull.
         :param binding: unused (the binding is derived from the cache path).

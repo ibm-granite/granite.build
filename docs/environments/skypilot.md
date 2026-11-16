@@ -85,8 +85,16 @@ assetstores:
       - mode: default
 ```
 
-> **S3 / COS (`s3://`, `cos://`).** A pull lands in `<cache>/<uri hash>`, a directory; a single
-> object is copied into it under its basename, and a prefix is synced into it. A push copies a
+> **S3 / COS (`s3://`, `cos://`).** A pull is bound at `<cache>/<uri hash>`, a directory; a
+> single object is copied into it under its basename, and a prefix is synced into it. The cache
+> is shared across builds:
+>
+> - **Pulls are serialized.** A per-URI lock lets one pull at a time write, so concurrent pulls
+>   never see each other's partial writes. A dead holder's lock is reclaimed after its TTL.
+> - **Readers always see a complete version.** The binding is a symlink that is swapped
+>   atomically to a fresh version, so objects deleted upstream disappear on the next pull.
+> - **One old version is kept.** The previous version stays for readers that resolved the old
+>   path, and older ones are removed. A push copies a
 > file to the exact object key, or syncs a directory under the URI as a prefix. The endpoint,
 > region and credential secret names come from the matched store's `store.yaml`. Credentials
 > resolve the way hf's `token_secretname` does: space secrets first, then the same-named env var.
