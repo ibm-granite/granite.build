@@ -513,6 +513,24 @@ def test_mocked_pull_keeps_a_file_already_at_the_path(tmp_path, monkeypatch):
     assert pulled.read_text() == "{}"
 
 
+def test_mocked_pull_tolerates_a_concurrent_mocked_pull(tmp_path, monkeypatch):
+    """Another mocked pull may create the path between the check and the mkdir."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    uri = HfURI.parse(_URI)
+    bound = uri.local_path(tmp_path / "d")
+    real_exists = Path.exists
+
+    def exists_but_lose_the_race(self, *args, **kwargs):
+        if self == bound:
+            bound.mkdir(parents=True)  # the other pull creates it first
+            return False
+        return real_exists(self, *args, **kwargs)
+
+    with patch.object(Path, "exists", exists_but_lose_the_race):
+        assert uri.pull(tmp_path / "d") is True
+    assert bound.is_dir()
+
+
 @pytest.mark.parametrize(
     "uri", ["hf:///datasets/org/repo", "hf:///buckets/org/b/some/dir"]
 )
