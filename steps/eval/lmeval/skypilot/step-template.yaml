@@ -1,7 +1,8 @@
 name: lmeval
 version: 0.1.0
 # Granite benchmarks: MMLU-ProX lite (IBM), exact match (custom-extract), and
-# INCLUDE-44, accuracy.
+# INCLUDE-44, accuracy. The generic `lm-eval` id runs any task in the pinned
+# harness -- the recipe's options pick the tasks (see USAGE.md).
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `benchmark` selects which
 # benchmark in this family to run; every steps/eval/*/ template has the same shape
@@ -75,6 +76,10 @@ config:
   # "thinking=off" (chat_template_kwargs.enable_thinking=false),
   # "answers=gold" (reference answers through the same extraction and scoring;
   # model_path may be "none", no GPU needed).
+  # lm-eval (the generic bridge) instead takes: "tasks=hellaswag,arc_easy"
+  # (required; comma-separated harness task/group ids), "mode=auto|chat|base"
+  # (auto: each task's output_type picks), "num_fewshot=5", "gen_kwargs=k=v,..."
+  # (percent-decoded values), "metric=acc_norm" (default: each task's primary).
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""
