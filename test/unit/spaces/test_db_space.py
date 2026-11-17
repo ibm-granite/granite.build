@@ -277,3 +277,55 @@ def test_relative_entry_may_not_escape_the_snapshot(rows):
     rows["x"] = _row(space=_snapshot({"space.yaml": yaml_rel}, SOURCE))
     with pytest.raises(ValueError, match="escapes its snapshot"):
         create_space(rows["x"])
+
+
+def _counting(rows, monkeypatch):
+    """Count row lookups made by db_space (the rows fixture's _get_row)."""
+    calls = []
+    real = db_space._get_row
+
+    def counted(name):
+        calls.append(name)
+        return real(name)
+
+    monkeypatch.setattr(db_space, "_get_row", counted)
+    return calls
+
+
+def test_create_space_reuses_the_loaded_row(rows, monkeypatch):
+    """The row create_space holds serves the space and its db:// base_uris."""
+    rows["x"] = _row()
+    calls = _counting(rows, monkeypatch)
+    create_space(rows["x"])
+    assert calls == []
+
+
+def test_space_from_a_bare_db_uri_still_looks_rows_up(rows, monkeypatch):
+    """Without a row (e.g. the runner's space_uri override) it reads it, as before."""
+    rows["x"] = _row()
+    calls = _counting(rows, monkeypatch)
+    space_mod.Space("db://spaces/x")
+    assert calls == ["x", "x"]  # the space and its one db:// base_uri
+
+
+def test_space_ignores_a_row_it_does_not_name(rows, monkeypatch):
+    rows["x"] = _row()
+    calls = _counting(rows, monkeypatch)
+    space_mod.Space("db://spaces/x", stored_space=_row(name="other"))
+    assert calls == ["x", "x"]
+
+
+def test_local_space_is_unaffected(tmp_path, monkeypatch):
+    """A space not served from the database never touches db_space rows."""
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "space.yaml").write_text(
+        "name: l\nsecret_manager:\n  type: env\n  config: {}\n"
+    )
+
+    def no_rows(name):
+        raise AssertionError(f"looked up row {name!r} for a local space")
+
+    monkeypatch.setattr(db_space, "_get_row", no_rows)
+    space = create_space(StoredSpace(name="l", git_repo_uri=local.as_uri()))
+    assert space.uristr == local.as_uri() and space.db_row is None

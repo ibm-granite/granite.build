@@ -19,6 +19,7 @@ from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
 from gbserver.spaces.db_space import is_db_uri, parse_db_uri, resolve_db_uri
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
+from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import GBSERVER_PROCEED_WITHOUT_SECRETS, is_debug_mode
 from gbserver.types.spaceconfig import SpaceConfig
 from gbserver.utils.logger import get_logger
@@ -52,7 +53,9 @@ def _resolve_base_uris(base_uris: List[str], space: "Space") -> List[str]:
     """
     space_dir = _space_dir_from_uri(space.uristr)
     return [
-        _resolve_one_base_uri(b, space_dir, space.uristr, space.db_space_name)
+        _resolve_one_base_uri(
+            b, space_dir, space.uristr, space.db_space_name, space.db_row
+        )
         for b in base_uris
     ]
 
@@ -80,6 +83,7 @@ def _resolve_one_base_uri(
     space_dir: Optional[Path],
     space_uri: str,
     db_space_name: Optional[str] = None,
+    db_row: Optional[StoredSpace] = None,
 ) -> str:
     """Resolve a single base_uri entry.
 
@@ -111,7 +115,8 @@ def _resolve_one_base_uri(
                 f"base_uri {base_uri!r} names another space's snapshot, which is"
                 f" not supported; a space ({space_uri!r}) uses only its own"
             )
-        return resolve_db_uri(base_uri).file_uri
+        # The space's own row, if already loaded (resolve_db_uri checks it).
+        return resolve_db_uri(base_uri, row=db_row).file_uri
     parsed = urlparse(base_uri)
     if parsed.scheme and parsed.scheme != "file":
         return base_uri
@@ -152,6 +157,7 @@ class Space:
         username: Optional[str] = None,
         force_fetch: bool = False,
         identity_uri: Optional[str] = None,
+        stored_space: Optional[StoredSpace] = None,
     ):
         """Create the instance.
 
@@ -163,13 +169,18 @@ class Space:
             identity_uri: The space's repo identity, used for secret lookup and
                 space-match checks. Defaults to ``uri``, or for a db:// URI to
                 the snapshot's source repo.
+            stored_space: The already-loaded gb_spaces row a db:// ``uri``
+                names, reused for it and its db:// base_uris instead of
+                re-reading the row. Ignored for any other URI, or a row it
+                doesn't name.
         """
         self.uristr = URI.get_uristr(uri)
         # The gb_spaces row the space is served from (db://), else None.
         self.db_space_name: Optional[str] = None
+        self.db_row = stored_space
         if is_db_uri(self.uristr):
             self.db_space_name = parse_db_uri(self.uristr).space_name
-            resolved = resolve_db_uri(self.uristr)
+            resolved = resolve_db_uri(self.uristr, row=self.db_row)
             logger.info("db space %s unpacked at %s", self.uristr, resolved.file_uri)
             self.uristr = uri = resolved.file_uri
             identity_uri = identity_uri or resolved.identity_uri

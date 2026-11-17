@@ -288,6 +288,7 @@ def create_space(
             username=username,
             force_fetch=force_fetch,
             identity_uri=_db_identity_uri(stored_space),
+            stored_space=stored_space,  # holds the archives: no re-read
         )
     uri = get_space_config_uri(stored_space, token=token)
     logger.info("for the space name %s using the URI: %s", stored_space.name, uri)

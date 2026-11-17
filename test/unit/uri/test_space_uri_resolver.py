@@ -1977,7 +1977,7 @@ class TestThreadLocalScoping:
 
 def _space(uri: str) -> SimpleNamespace:
     """What _resolve_base_uris reads from a Space."""
-    return SimpleNamespace(uristr=uri, db_space_name=None)
+    return SimpleNamespace(uristr=uri, db_space_name=None, db_row=None)
 
 
 class TestResolveBaseUris:
