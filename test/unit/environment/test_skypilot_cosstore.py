@@ -319,6 +319,15 @@ class TestPullassetCosstore:
         assert binding["binding"]["path"] == str(Path("/data/c") / uri.hash())
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty", [None, ""])
+    async def test_empty_uri_raises(self, skypilot_env, empty):
+        """An empty input URI fails clearly, as an empty push URI does."""
+        with pytest.raises(ValueError, match="Empty uri"):
+            await skypilot_env.pullasset_cosstore(
+                uri=empty, assetstore=_local_store(), storeload_config=_storeload()
+            )
+
+    @pytest.mark.asyncio
     async def test_rejects_non_cosstore(self, skypilot_env):
         """A non-Cosstore assetstore is rejected."""
         with pytest.raises(AssertionError, match="Cosstore"):
@@ -578,6 +587,32 @@ class TestPulledBindingCaching:
         from gbserver.environment.environment import Environment
 
         assert Environment._caches_pulled_binding(MagicMock(), uristr) is cached
+
+
+class TestMetadataReadOnce:
+    """Store metadata (which re-parses config and logs) is read once per operation."""
+
+    @pytest.mark.parametrize("kind", ["s3pull", "s3push"])
+    def test_one_read_per_step_config(self, kind):
+        from gbserver.environment._skypilot_cos import build_s3_step_config
+
+        store = _local_store()
+        with patch.object(Cosstore, "get_metadata", wraps=store.get_metadata) as read:
+            build_s3_step_config(kind, URI.get_uri("s3://local/in/x"), store, "p")
+        assert read.call_count == 1
+
+    def test_one_read_per_existence_check_target(self):
+        store = _local_store()
+        with patch.object(Cosstore, "get_metadata", wraps=store.get_metadata) as read:
+            assert store.get_check_target(URI.get_uri("s3://local/in/x")) is not None
+        assert read.call_count == 1
+
+    def test_helpers_still_work_without_metadata(self):
+        """Existing callers (K8s/LSF get_relpath(uri)) are unaffected."""
+        store = _local_store()
+        uri = URI.get_uri("s3://local/in/x")
+        assert store.get_relpath(uri) == "in/x"
+        assert store.get_bucket_and_key(uri) == ("gb-checkpoints", "in/x")
 
 
 class TestGetCosCacheDir:

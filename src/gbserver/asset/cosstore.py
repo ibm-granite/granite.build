@@ -6,7 +6,7 @@
 
 import ipaddress
 import os
-from typing import Dict, Optional, Self, Tuple, Union
+from typing import Any, Dict, Optional, Self, Tuple, Union
 from urllib.parse import urlparse
 
 from gbcommon.types.testing import is_cos_mocked
@@ -85,10 +85,29 @@ class Cosstore(Assetstore):
             return self.config.config[key]
         return default
 
-    def get_relpath(self: Self, uri: URI) -> str:
+    def _store_config(self: Self, uri: URI, metadata: Optional[Dict[str, Any]]) -> Dict:
+        """The ``config`` part of ``metadata``, reading it only when not given.
+
+        :param uri: the CosURI (used only when ``metadata`` is None).
+        :param metadata: :meth:`get_metadata` output already in hand, or None.
+        :returns: the store config dict.
+        """
+        return (metadata if metadata is not None else self.get_metadata(uri))["config"]
+
+    def get_relpath(
+        self: Self, uri: URI, metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Return ``uri``'s key/prefix within its (possibly overridden) bucket.
+
+        :param uri: the CosURI.
+        :param metadata: :meth:`get_metadata` output already in hand, so it is
+            not re-read (and re-logged); read when None.
+        :returns: the key/prefix ('' for a bucket-only URI).
+        :raises ValueError: if ``uri`` is not a CosURI.
+        """
         if not isinstance(uri, CosURI):
             raise ValueError(f"Expected a CosURI, got {type(uri)}")
-        cos_md = self.get_metadata(uri)["config"]
+        cos_md = self._store_config(uri, metadata)
         bucket_name = cos_md.get("cos_bucket_name") or uri.get_uri_netloc()
         full_uri = uri.get_metadata()["bucket_path"]
         if not full_uri.startswith(f"{bucket_name}/"):
@@ -140,20 +159,25 @@ class Cosstore(Assetstore):
             },
         }
 
-    def get_bucket_and_key(self: Self, uri: URI) -> Tuple[str, str]:
+    def get_bucket_and_key(
+        self: Self, uri: URI, metadata: Optional[Dict[str, Any]] = None
+    ) -> Tuple[str, str]:
         """Return the real bucket and key/prefix a CosURI addresses.
 
         The store's ``cos_bucket_name`` (when set) replaces the URI's bucket, as
         on K8s/LSF.
 
         :param uri: the CosURI.
+        :param metadata: :meth:`get_metadata` output already in hand; read when None.
         :returns: ``(bucket, key)``; key is '' for a bucket-only URI.
         :raises ValueError: if ``uri`` is not a CosURI.
         """
         if not isinstance(uri, CosURI):
             raise ValueError(f"Expected a CosURI, got {type(uri)}: {uri}")
-        bucket_name = self.get_metadata(uri)["config"].get("cos_bucket_name", "")
-        return bucket_name or uri.get_uri_netloc(), self.get_relpath(uri)
+        if metadata is None:
+            metadata = self.get_metadata(uri)
+        bucket_name = metadata["config"].get("cos_bucket_name", "")
+        return bucket_name or uri.get_uri_netloc(), self.get_relpath(uri, metadata)
 
     def _resolve_secret(self: Self, name: str) -> Optional[str]:
         """Resolve one secret exactly as ``Hfstore.resolve_token`` does.
@@ -172,7 +196,9 @@ class Cosstore(Assetstore):
             value = None
         return value
 
-    def resolve_credentials(self: Self, uri: URI) -> Optional[Tuple[str, str]]:
+    def resolve_credentials(
+        self: Self, uri: URI, metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional[Tuple[str, str]]:
         """Resolve the access key id and secret for ``uri``'s store.
 
         The secret *names* come from store.yaml (``cos_access_key_id_secret_name``
@@ -181,10 +207,11 @@ class Cosstore(Assetstore):
         are resolved by :meth:`_resolve_secret`.
 
         :param uri: the CosURI.
+        :param metadata: :meth:`get_metadata` output already in hand; read when None.
         :returns: ``(access_key_id, secret_access_key)``, or None (logged,
             naming the missing secrets but never revealing values).
         """
-        config = self.get_metadata(uri)["config"]
+        config = self._store_config(uri, metadata)
         names = (
             config["cos_access_key_id_secret_name"],
             config["cos_secret_access_key_secret_name"],
@@ -222,11 +249,12 @@ class Cosstore(Assetstore):
         :returns: the target, or None (logged) when a credential is missing.
         :raises ValueError: if the configured endpoint is not acceptable.
         """
-        credentials = self.resolve_credentials(uri)
+        metadata = self.get_metadata(uri)
+        credentials = self.resolve_credentials(uri, metadata)
         if credentials is None:
             return None
-        config = self.get_metadata(uri)["config"]
-        bucket, key = self.get_bucket_and_key(uri)
+        config = metadata["config"]
+        bucket, key = self.get_bucket_and_key(uri, metadata)
         endpoint = config.get("cos_gbserver_endpoint") or config.get("cos_endpoint")
         return CosCheckTarget(
             bucket=bucket,

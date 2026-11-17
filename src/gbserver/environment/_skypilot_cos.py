@@ -43,7 +43,9 @@ class CosSettings:
     region: str
 
 
-def resolve_cos_store_settings(cosuri: Any, assetstore: Any) -> CosSettings:
+def resolve_cos_store_settings(
+    cosuri: Any, assetstore: Any, metadata: Optional[Dict[str, Any]] = None
+) -> CosSettings:
     """Resolve a CosURI's settings from the store dispatch matched it to.
 
     Uses the dispatched ``assetstore`` (not ``Asset(cosuri)``) so the settings
@@ -51,11 +53,15 @@ def resolve_cos_store_settings(cosuri: Any, assetstore: Any) -> CosSettings:
 
     :param cosuri: the CosURI being pulled or pushed.
     :param assetstore: the dispatched Cosstore.
+    :param metadata: the store's ``get_metadata`` output already in hand, so it
+        is not re-read (and re-logged); read when None.
     :returns: the resolved :class:`CosSettings`.
     :raises ValueError: if the store's endpoint is not acceptable.
     """
-    config = assetstore.get_metadata(cosuri)["config"]
-    bucket, key = assetstore.get_bucket_and_key(cosuri)
+    if metadata is None:
+        metadata = assetstore.get_metadata(cosuri)
+    config = metadata["config"]
+    bucket, key = assetstore.get_bucket_and_key(cosuri, metadata)
     return CosSettings(
         s3_uri=f"s3://{bucket}/{key}" if key else f"s3://{bucket}",
         endpoint_url=normalize_s3_endpoint(config.get("cos_endpoint")),
@@ -63,7 +69,9 @@ def resolve_cos_store_settings(cosuri: Any, assetstore: Any) -> CosSettings:
     )
 
 
-def cos_launcher_envs(cosuri: Any, assetstore: Any) -> Dict[str, str]:
+def cos_launcher_envs(
+    cosuri: Any, assetstore: Any, metadata: Optional[Dict[str, Any]] = None
+) -> Dict[str, str]:
     """Return the step's ``launcher_config.envs`` carrying the store's credentials.
 
     Fails fast (at pull/push planning time rather than inside the step) when a
@@ -71,6 +79,8 @@ def cos_launcher_envs(cosuri: Any, assetstore: Any) -> Dict[str, str]:
 
     :param cosuri: the CosURI being pulled or pushed.
     :param assetstore: the dispatched Cosstore.
+    :param metadata: the store's ``get_metadata`` output already in hand; read
+        when None.
     :returns: ``{AWS_ACCESS_KEY_ID: ..., AWS_SECRET_ACCESS_KEY: ...}``, or {}
         when mocked.
     :raises ValueError: when a credential cannot be resolved (the message names
@@ -78,7 +88,7 @@ def cos_launcher_envs(cosuri: Any, assetstore: Any) -> Dict[str, str]:
     """
     if is_cos_mocked():
         return {}
-    credentials = assetstore.resolve_credentials(cosuri)
+    credentials = assetstore.resolve_credentials(cosuri, metadata)
     if credentials is None:
         raise ValueError(
             f"no S3/COS credentials for {cosuri}: define the store's "
@@ -151,7 +161,10 @@ def build_s3_step_config(
     """
     if kind not in ("s3pull", "s3push"):
         raise ValueError(f"unknown s3 step kind: {kind}")
-    settings = resolve_cos_store_settings(cosuri, assetstore)
+    # Read the store's metadata once for the whole config (it re-parses the
+    # store config and logs each time it is read).
+    metadata = assetstore.get_metadata(cosuri)
+    settings = resolve_cos_store_settings(cosuri, assetstore, metadata)
     step_config: Dict[str, Any] = {
         "uri": cosuri.get_uristr(cosuri),
         "s3_uri": settings.s3_uri,
@@ -170,5 +183,5 @@ def build_s3_step_config(
                 step_config[key] = value
     return {
         f"{kind}_config": step_config,
-        "launcher_config": {"envs": cos_launcher_envs(cosuri, assetstore)},
+        "launcher_config": {"envs": cos_launcher_envs(cosuri, assetstore, metadata)},
     }
