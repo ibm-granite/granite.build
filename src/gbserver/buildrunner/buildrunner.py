@@ -229,7 +229,9 @@ class BuildRunner(AbstractBuildRunner):
                 raise ValueError("Storage of build failed without error.")
             logger.info("Build successfuly stored build: %s", build_id)
 
-        # Each run of the build tries the optional git interactions afresh.
+        # A fresh git breaker for this build run. It then spans every in-place
+        # retry: once GitHub keeps failing, the rest of the run skips the PR
+        # and PR messages, and a build that started without a PR stays so.
         end_build_git_run(build_id)
         try:
             while True:

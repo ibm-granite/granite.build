@@ -760,7 +760,8 @@ GITHUB_API_RETRY_BASE_DELAY = float(
 )
 # Per build run, git/GitHub interactions that are not needed to run the build
 # (the build's PR and the messages posted to it) give up after this many
-# consecutive failures; the rest of the run skips them. Each such interaction,
+# consecutive failures; the rest of the run, in-place retries included, skips
+# them. Each such interaction,
 # its own retries included, is bounded by the deadline (seconds).
 BUILD_GIT_MAX_CONSECUTIVE_FAILURES = int(
     os.getenv(ENV_VAR_PREFIX + "_BUILD_GIT_MAX_CONSECUTIVE_FAILURES", "3"), base=10

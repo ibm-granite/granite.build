@@ -354,7 +354,8 @@ class GitAccessBreaker:
     without them. Each interaction goes through ``call``. It runs with the
     usual retries above, bounded by a deadline, and never raises. After
     ``max_failures`` consecutive failures the breaker opens and later calls in
-    the same run are skipped, so an unreachable GitHub costs a run at most
+    the same build run, in-place retries included, are skipped, so an
+    unreachable GitHub costs a run at most
     about ``max_failures * deadline`` seconds instead of stalling every message.
     """
 
