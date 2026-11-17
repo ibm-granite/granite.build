@@ -12,20 +12,24 @@ from pathlib import Path
 
 import pytest
 import yaml
+from libgbtest.step_templates import expanded_step_template
 
 from gbserver.utils.template import fill_objtemplate, fill_template
 
 _HERE = Path(__file__).resolve().parent
 _DATA = _HERE.parent / "test-data"
 _TEMPLATE_TEXT = (_HERE.parent / "step-template.yaml").read_text()
+_VALIDATE_TEXT = (_HERE.parent / "macros" / "validate.j2").read_text()
 _DEFAULTS = yaml.safe_load(_TEMPLATE_TEXT)["config"]["fms_hf_tuning_config"]
 _PARAM_RE = re.compile(r"\$\$\{([A-Z0-9_]+)\}")
 BUILDS = ["build.yaml", "aws/build.yaml", "slurm-bluevela/build.yaml"]
 _OWNED = frozenset(
     re.findall(
-        r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _TEMPLATE_TEXT)[0]
+        r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _VALIDATE_TEXT)[0]
     )
 )
+
+
 _CHAT = ("dataset_conversation_field", "instruction_template", "response_template")
 
 
@@ -193,9 +197,10 @@ def test_every_referenced_param_is_defined():
     assert not missing, sorted(missing)
 
 
-_LAUNCHER = yaml.safe_load(_TEMPLATE_TEXT)["environment_configs"]["Skypilot"][
-    "launchers"
-]["fms_hf_tuning"]["config"]
+# As `make space` renders it: gb-include lines expanded.
+_LAUNCHER = expanded_step_template(_HERE.parent / "step-template.yaml")[
+    "environment_configs"
+]["Skypilot"]["launchers"]["fms_hf_tuning"]["config"]
 _COMPUTE_DEFAULT = yaml.safe_load(_TEMPLATE_TEXT)["config"]["compute_config"]
 
 

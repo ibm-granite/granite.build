@@ -27,6 +27,7 @@ comes from #596.
 
 ```
 step-template.yaml          the step: config defaults, step-creation validation, launcher blocks
+macros/validate.j2          the validate macro; setup: and run: both gb-include it
 Makefile                    STEP_NAME, REGISTRY, IMAGE_VERSION, `make lock`; includes steps/common.mk
 Dockerfile, .dockerignore   the image: CUDA 12.8 base, uv, the hashed lock, the patch, src/
 patches/                    image build only (not published)
@@ -48,9 +49,14 @@ USAGE.md                    user docs, published as the step's README.md
 
 ## How a run works
 
-1. **Step creation.** The template's `validate` macro (repeated in `setup:` and
-   `run:`; a render test pins the copies identical) checks the config with
-   `raise_error()`, so a bad config fails before any node is provisioned.
+1. **Step creation.** The `validate` macro checks the config with `raise_error()`,
+   so a bad config fails before any node is provisioned. It is written once, in
+   `macros/validate.j2`, and pulled into both `setup:` and `run:` by `gb-include`
+   lines, which `make space` and `make publish-step` expand (see
+   [steps/README.md](../../../README.md#sharing-jinja-between-templates-gb-include)),
+   after `steps/train/shared/q.j2`, the `q()` shared with openinstruct-sft and
+   hf-peft-sft. The step does not use `steps/train/shared/trainer_args.j2`: it passes
+   `args` to its job script as JSON, not as flags, and its own `args` checks differ.
 2. **setup:** `fms_hf_tuning_guard.sh` checks the staged paths;
    `fms_hf_tuning_setup.sh` imports the whole stack.
 3. **run:** the guard again (a warm-cluster re-run renders `run:` without `setup:`),
@@ -359,7 +365,7 @@ The unit tests at `test/`'s root need no cluster, GPU or image:
 
 | Test | Pins |
 |---|---|
-| `test_skypilot_train_fms_hf_tuning_render.py` | the template under gbserver's strict renderer: identity, I/O schema, defaults, the monitor rule, identical macro copies, the `single_node` declaration (gbserver refuses 2 nodes; the template leaves `num_nodes` to it), `owned` == the job script's `OWNED`, the `docker:` prefix, every `raise_error`, every owned key refused, and the guard/run argv (base64 round trip, ClearML mode, data paths) |
+| `test_skypilot_train_fms_hf_tuning_render.py` | the template under gbserver's strict renderer: identity, I/O schema, defaults, the monitor rule, both blocks including `macros/validate.j2`, the `single_node` declaration (gbserver refuses 2 nodes; the template leaves `num_nodes` to it), `owned` == the job script's `OWNED`, the `docker:` prefix, every `raise_error`, every owned key refused, and the guard/run argv (base64 round trip, ClearML mode, data paths) |
 | `test_fms_hf_tuning_job.py` | the job script without fms-hf-tuning: value conversion and refusals on an argparse stand-in, the merge (owned keys, defaults, data_config, ClearML), output checks (adapter, single-file and sharded model, 0 tensors), the base-id rewrite, the CLI |
 | `test_fms_hf_tuning_job_upstream.py` | the same against the real parser: `EXTRA_ARGS` and `OWNED` match upstream, DiGiT-style and aLoRA configs pass, typos/bad values fail, every shipped `args` map passes (skipped without `tuning`) |
 | `test_fms_hf_tuning_entry.py` | `step_line`, the `train` wrapper, rank-0 printing, upstream's `additional_callbacks`, and a 2-step CPU run (full + LoRA) through the wrapper (the last three need `tuning`) |

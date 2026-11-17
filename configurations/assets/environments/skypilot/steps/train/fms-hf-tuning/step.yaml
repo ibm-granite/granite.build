@@ -94,9 +94,13 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
+            {#- included from steps/train/shared/q.j2 -#}
+            {#- q(v): v as the inside of a single-quoted shell word; null renders as empty (unset). Included by openinstruct-sft, hf-peft-sft and fms-hf-tuning; after an edit, re-run make publish-step in each (CI's test_published_steps_match_their_templates.py fails until then). -#}
             {%- macro q(v) -%}
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- included from steps/train/fms-hf-tuning/skypilot/macros/validate.j2 -#}
+            {#- fms-hf-tuning's config checks; setup: and run: both include this file, after the shared q.j2. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "push_to_hub_token", "push_to_hub_model_id", "push_to_hub_organization", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "use_cpu", "no_cuda", "log_level_replica", "do_dataprocessing_only"] -%}
             {%- set res = lc.get("resources") or {} -%}
@@ -136,13 +140,18 @@ environment_configs:
               --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
             bash /opt/fms-hf-tuning/fms_hf_tuning_setup.sh
           # Each block is filled on its own (no shared Jinja scope across YAML
-          # keys), so the macros repeat; run validates too, since a warm-cluster
+          # keys), so both pull in the macros; make space / make publish-step
+          # expand the include lines. run validates too, since a warm-cluster
           # re-run renders it without setup.
           run: |
             set -euo pipefail
+            {#- included from steps/train/shared/q.j2 -#}
+            {#- q(v): v as the inside of a single-quoted shell word; null renders as empty (unset). Included by openinstruct-sft, hf-peft-sft and fms-hf-tuning; after an edit, re-run make publish-step in each (CI's test_published_steps_match_their_templates.py fails until then). -#}
             {%- macro q(v) -%}
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- included from steps/train/fms-hf-tuning/skypilot/macros/validate.j2 -#}
+            {#- fms-hf-tuning's config checks; setup: and run: both include this file, after the shared q.j2. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "push_to_hub_token", "push_to_hub_model_id", "push_to_hub_organization", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "use_cpu", "no_cuda", "log_level_replica", "do_dataprocessing_only"] -%}
             {%- set res = lc.get("resources") or {} -%}

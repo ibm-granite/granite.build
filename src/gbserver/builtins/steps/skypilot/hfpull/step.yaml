@@ -436,7 +436,15 @@ environment_configs:
             if [[ -n "${HF_TYPE}" ]]; then HF_ARGS+=(--repo-type "${HF_TYPE}"); fi
             HF_PATH_IN_REPO="${HF_PATH_IN_REPO#/}"; HF_PATH_IN_REPO="${HF_PATH_IN_REPO%/}"
             if [[ -n "${HF_PATH_IN_REPO}" ]]; then
-                HF_ARGS+=(--include "${HF_PATH_IN_REPO}" --include "${HF_PATH_IN_REPO}/*")
+                # huggingface_hub < 1.0 parses --include as nargs="*" without append,
+                # so a repeated --include keeps only the LAST one and a file-scoped
+                # path_in_repo matched nothing; 1.x appends repeats and takes one value
+                # per flag. Shape the patterns for whichever CLI is installed.
+                if hf version 2>/dev/null | grep -q '^huggingface_hub version: 0\.'; then
+                    HF_ARGS+=(--include "${HF_PATH_IN_REPO}" "${HF_PATH_IN_REPO}/*")
+                else
+                    HF_ARGS+=(--include "${HF_PATH_IN_REPO}" --include "${HF_PATH_IN_REPO}/*")
+                fi
             fi
 
             # Acquire, download, and fence: if the lock was reclaimed while we

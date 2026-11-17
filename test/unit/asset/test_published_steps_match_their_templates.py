@@ -7,7 +7,11 @@
 Steps are authored at steps/<name>/<env>/step-template.yaml and PUBLISHED into
 configurations/assets/environments/<env>/steps/<name>/step.yaml, which is what a
 `space://steps/<name>` URI actually resolves to. The two are a source and a build
-product, and nothing enforced that until this file.
+product, and nothing enforced that until this file. It renders the template the way
+`make publish-step` does -- gb-include expansion through
+steps/scripts/render_step_template.py, then ${IMAGE_REF} taken from the image ref
+committed in the asset, as `make check-published` reads it -- so image steps and
+include steps are covered too.
 
 THE DRIFT THIS EXISTS TO CATCH, because it happened. vllm-server's allocation
 lifetime cap (max_lifetime_seconds plus its watchdog, ~40 lines) was added to the
@@ -30,13 +34,28 @@ the template, and in the vllm-server case it was not).
 """
 
 import pathlib
-import subprocess
+import re
 
 import pytest
+from libgbtest.step_templates import render_step_template as _load_renderer
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 STEPS_DIR = REPO_ROOT / "steps"
 ASSETS_DIR = REPO_ROOT / "configurations" / "assets" / "environments"
+
+render_step_template = _load_renderer()
+
+# check-published: sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' | head -1
+_IMAGE_REF = re.compile(r'image_id: *"docker:(.*)"')
+
+
+def _committed_image_ref(asset_text):
+    """The image ref committed in the asset, read as check-published reads it."""
+    for line in asset_text.splitlines():
+        match = _IMAGE_REF.search(line)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def _pairs():
@@ -46,8 +65,8 @@ def _pairs():
     step is covered without being added anywhere.
     """
     found = []
-    # `**`, not `*/*`: a nested step (steps/train/distill/logit-distill/skypilot) is published at
-    # steps/train/distill/logit-distill, and a one-level glob silently skipped all twelve of them.
+    # `**`, not `*/*`: a nested step (steps/distill/gold/skypilot) is published at
+    # steps/distill/gold, and a one-level glob silently skipped all twelve of them.
     for template in sorted(STEPS_DIR.glob("**/step-template.yaml")):
         name = template.parent.parent.relative_to(STEPS_DIR).as_posix()
         env = template.parent.name
@@ -65,45 +84,14 @@ def test_there_is_something_to_check():
     assert PAIRS, "no step-template.yaml / published step.yaml pairs found on disk"
 
 
-def _image_ref(template):
-    """The ${IMAGE_REF} publish-step substitutes, asked of the step's own Makefile.
-
-    Asked of make rather than re-derived here, so the value is the one publish-step
-    actually renders (REGISTRY, IMAGE_NAME and IMAGE_VERSION come from the step's
-    Makefile and common.mk). None when make is unavailable or prints nothing.
-    """
-    step_dir = template.parent
-    try:
-        out = subprocess.run(
-            ["make", "-s", "-f", "Makefile", "-f", "-", "print-image-ref"],
-            input="print-image-ref:\n\t@echo $(IMAGE_REF)\n",
-            cwd=step_dir,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=60,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out or None
-
-
 @pytest.mark.parametrize("name,env,template,asset", PAIRS)
 def test_the_published_asset_matches_its_template(name, env, template, asset):
-    template_text = template.read_text(encoding="utf-8")
     asset_text = asset.read_text(encoding="utf-8")
+    rendered = render_step_template.render(template, _committed_image_ref(asset_text))
 
-    # publish-step substitutes ${IMAGE_REF} from the step's Makefile (common.mk's
-    # render-step-template), so compare against the template as publish-step renders it.
-    if "${IMAGE_REF}" in template_text:
-        ref = _image_ref(template)
-        if ref is None:
-            pytest.skip(f"{name}: could not ask the step's Makefile for IMAGE_REF")
-        template_text = template_text.replace("${IMAGE_REF}", ref)
-
-    assert asset_text == template_text, (
-        f"{name} ({env}): the published asset and its authoring template have "
-        f"diverged.\n"
+    assert asset_text == rendered, (
+        f"{name} ({env}): the published asset and its rendered authoring template "
+        f"have diverged.\n"
         f"  template: {template.relative_to(REPO_ROOT)}\n"
         f"  asset:    {asset.relative_to(REPO_ROOT)}\n"
         "Decide which side is correct FIRST -- the asset is what the cluster runs, so "

@@ -2154,20 +2154,28 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     if pull_info.get("type"):
         cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
     path_in_repo = str(pull_info.get("path_in_repo") or "").strip("/")
-    for pattern in hf_path_patterns(path_in_repo) or []:
-        cmd += f" --include {shlex.quote(pattern)}"
-    if path_in_repo:
-        # A failed test left of `||` does not trip the setup's `set -e`, and a
-        # bare `[ -e ]` would fail with no message: report it and exit.
-        missing = (
-            f"hfpull: '{path_in_repo}' matched nothing in {pull_info['repo']} "
-            f"(type={pull_info.get('type')}, rev={pull_info.get('revision')})"
-        )
-        cmd += (
-            f"\n[ -e {shlex.quote(f'{dest}/{path_in_repo}')} ] || "
-            f"{{ echo {shlex.quote(missing)} >&2; exit 1; }}"
-        )
-    return cmd
+    if not path_in_repo:
+        return cmd
+    # huggingface_hub < 1.0 parses --include as nargs="*" without append, so a
+    # repeated --include keeps only the LAST one and a file-scoped path matched
+    # nothing; 1.x appends repeats and takes one value per flag. The step's image
+    # decides which CLI runs, so pick the form at run time.
+    file_pat, dir_pat = (shlex.quote(p) for p in hf_path_patterns(path_in_repo))
+    download = (
+        "if hf version 2>/dev/null | grep -q '^huggingface_hub version: 0\\.'; then "
+        f"{cmd} --include {file_pat} {dir_pat}; "
+        f"else {cmd} --include {file_pat} --include {dir_pat}; fi"
+    )
+    # A failed test left of `||` does not trip the setup's `set -e`, and a bare
+    # `[ -e ]` would fail with no message: report it and exit.
+    missing = (
+        f"hfpull: '{path_in_repo}' matched nothing in {pull_info['repo']} "
+        f"(type={pull_info.get('type')}, rev={pull_info.get('revision')})"
+    )
+    return (
+        f"{download}\n[ -e {shlex.quote(f'{dest}/{path_in_repo}')} ] || "
+        f"{{ echo {shlex.quote(missing)} >&2; exit 1; }}"
+    )
 
 
 def aws_credentials_present() -> bool:
