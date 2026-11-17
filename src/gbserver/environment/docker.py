@@ -472,6 +472,9 @@ class Docker(Environment):
         same repo and revision share the one mount, so their paths can't
         collide. The pull writes real files (``local_dir``), so the mount needs
         no HF cache ``blobs/`` directory.
+
+        The whole pull root is mounted, so the container also sees anything an
+        earlier pull of that repo and revision left in the shared cache.
         """
         from gbcommon.uri.hf import HfURI
 

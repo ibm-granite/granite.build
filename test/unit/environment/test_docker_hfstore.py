@@ -161,6 +161,25 @@ async def test_pullasset_hfstore_binds_a_path_inside_the_mounted_pull_root(
 
 
 @pytest.mark.asyncio
+async def test_pullasset_hfstore_binds_a_bucket_at_the_mounted_root(
+    docker_env, hf_storeload_config, tmp_path
+):
+    """A bucket syncs its path's contents into the pull root, so it is bound at
+    the root itself, which has no revision segment."""
+    with patch.object(HfURI, "pull", return_value=True):
+        binding_config, _ = await docker_env.pullasset_hfstore(
+            uri=HfURI.parse("hf:///buckets/org/b/sub"),
+            assetstore=_relpath_store(),
+            storeload_config=hf_storeload_config,
+        )
+
+    root = "/gb-hf-models/org/b"
+    assert binding_config[BINDING_KEY]["path"] == root
+    host_root = str(tmp_path / "hf-cache" / "org" / "b")
+    assert docker_env._extra_volumes == {host_root: {"bind": root, "mode": "ro"}}
+
+
+@pytest.mark.asyncio
 async def test_pullasset_hfstore_two_paths_from_one_repo_share_one_mount(
     docker_env, hf_storeload_config
 ):
