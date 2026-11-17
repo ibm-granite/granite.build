@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Status codes and titles for the dataset exceptions.
 
 These are pure value assertions — the exceptions carry the HTTP status that

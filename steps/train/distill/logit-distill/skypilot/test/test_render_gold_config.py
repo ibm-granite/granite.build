@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the gold config renderer (../src/render_gold_config.py).
 
 Run from the step directory with `make test`.

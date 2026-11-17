@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for the AI column-mapping normalisation shared by the Upload tab and the
  * HuggingFace import.

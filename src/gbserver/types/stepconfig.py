@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Types related to the step.yaml"""
 
@@ -91,6 +79,10 @@ class StepEnvironmentTypeConfig(Config):
             a step will not resolve for an environment with no ``subtype``.
             Applied by the ``SpaceURI`` resolver wherever it finds a copy of the
             step.
+        single_node: The step runs on one node only. When true, gbserver
+            resolves ``num_nodes`` from every layer the launch reads and fails
+            the step at creation unless it is 1. Enforced by the SkyPilot
+            environments; any other environment refuses a step that sets it.
     """
 
     default_launcher: Optional[str] = None
@@ -101,6 +93,8 @@ class StepEnvironmentTypeConfig(Config):
     monitors: Dict[str, StepMonitorConfig] = Field(default_factory=dict)
     # env sub-types this step is restricted to (empty = universal)
     subtypes: List[str] = Field(default_factory=list)
+    # one node only, enforced at step creation (see the docstring)
+    single_node: bool = False
 
     def select_launcher_monitors(
         self, launcher: StepLauncherConfig

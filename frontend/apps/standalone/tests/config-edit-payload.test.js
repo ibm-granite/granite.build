@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression test for the payload Step 2 builds when an edited configuration is
  * confirmed.

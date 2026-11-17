@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Requires types to be listed in types/__init__.py
 # pip install pydantic-2-mermaid 
 # From above the src directory

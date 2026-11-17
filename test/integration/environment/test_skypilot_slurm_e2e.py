@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end integration test for SLURM builds via SkyPilot.
 
 Requires a running Docker SLURM cluster (see scripts/slurm/setup-slurm.sh).

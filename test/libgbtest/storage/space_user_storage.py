@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from libgbtest.storage.storage import (
     AbstractStorageTest,
     AbstractStorageTestSupport,

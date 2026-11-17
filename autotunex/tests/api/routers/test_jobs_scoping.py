@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end proof that a caller only ever sees their own jobs over HTTP.
 
 The `job` fixture (``tests/conftest.py``) is owned by the ``user`` fixture's

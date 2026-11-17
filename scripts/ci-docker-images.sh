@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Preload the Docker images CI tests use, so the tests themselves never pull.
 #
 #   load               load the cached tarball, then pull missing images with retry

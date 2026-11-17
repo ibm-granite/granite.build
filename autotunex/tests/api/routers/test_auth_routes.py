@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The backend-for-frontend login flow.
 
 No real network anywhere: the token endpoint is an ``httpx.MockTransport`` on the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``GET /jobs/tuned-models`` over HTTP: shape, route precedence, scope and bounds.
 
 Also covers ``POST /jobs/estimate-usages`` resolving a tuned model to its base model,

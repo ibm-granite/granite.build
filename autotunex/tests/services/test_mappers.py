@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Snapshot precedence and task mapping.
 
 ``autotunex_jobs`` resolves a job's configuration name from

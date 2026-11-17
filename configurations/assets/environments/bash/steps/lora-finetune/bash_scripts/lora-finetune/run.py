@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """LoRA fine-tune a base model to prefer a chosen answer, then save the adapter.
 
 Trains a small LoRA adapter (peft) and saves ONLY the adapter to the output dir,

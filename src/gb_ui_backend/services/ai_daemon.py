@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 AI analysis daemon — analyzes builds with an LLM and writes results to gbd_meta.
 

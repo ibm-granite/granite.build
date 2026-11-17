@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for SkyPilot HPC (slurm/lsf) control-plane SSH resilience.
 
 Covers the defenses added after a bluevela launch failed with

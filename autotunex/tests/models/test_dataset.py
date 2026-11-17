@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Dataset request/response schemas.
 
 Pins the two contract properties most likely to regress: ``DatasetCreate``

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # gbfind - find the SLURM job(s) for a granite.build build_id and print their
 # tracking metadata (the reverse of gbmeta.sh, which goes jobid -> metadata).

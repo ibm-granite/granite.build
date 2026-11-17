@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the rm-server (reward model FastAPI) step asset.
 
 rm-server is a declarative SERVICE step.yaml companion to bcb-server. It launches

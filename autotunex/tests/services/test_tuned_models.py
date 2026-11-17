@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Scope rules and mapping for ``TunedModelService``, over a hand-written fake repository."""
 
 from __future__ import annotations

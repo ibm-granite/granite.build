@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # PORTED, not authored here. Upstream source of truth:
 #   path   steps/distill-corpus-prep/src/merge_shards.py

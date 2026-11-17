@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """
 The environment where the workloads run.
@@ -50,6 +38,7 @@ from typing import (
 
 if TYPE_CHECKING:
     from gbserver.resilience.retry_handler import RetryHandler, RetryStrategy
+    from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 
 from pydantic import Field
 
@@ -1151,6 +1140,32 @@ class Environment(ABC):
             if name.startswith("LLMB_")
         }
         return declared | twins
+
+    def validate_launch_config(  # pylint: disable=unused-argument
+        self: Self,
+        step_env_config: "StepEnvironmentTypeConfig",
+        launcher_config: Dict,
+        config: Dict,
+    ) -> None:
+        """Check a step's filled launch configs at step creation.
+
+        ``TargetStepRun.__init__`` calls this right after the strict launcher
+        fill, so an error fails the step "on creation", before anything is
+        launched or provisioned. An environment that resolves launch settings a
+        step can constrain overrides it; this default refuses the constraint
+        rather than ignore it.
+
+        :param step_env_config: The step's environment config for this env.
+        :param launcher_config: The filled launcher block ``config``.
+        :param config: The filled step config (step and build layers).
+        :raises ValueError: If the step sets ``single_node``, which this
+            environment does not enforce.
+        """
+        if getattr(step_env_config, "single_node", False):
+            raise ValueError(
+                f"The step sets single_node, but the {self.type} environment does "
+                "not enforce it; only the SkyPilot environments do."
+            )
 
     def launch(
         self: Self,

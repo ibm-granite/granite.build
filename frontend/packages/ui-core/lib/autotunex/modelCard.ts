@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Strips YAML front matter from a HuggingFace README so it does not render as
  * visible text.

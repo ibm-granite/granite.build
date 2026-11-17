@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import time
 from abc import abstractmethod
 from typing import Self

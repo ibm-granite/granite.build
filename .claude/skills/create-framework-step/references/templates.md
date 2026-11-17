@@ -92,6 +92,7 @@ outputs:
       type: dataset
 environment_configs:
   Skypilot:
+    # single_node: true          # one node only: gbserver refuses any other num_nodes
     default_launcher: <name>
     launchers:
       <name>:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.callbacks.logging_service — buffer/flush/destination logic."""
 
 import logging

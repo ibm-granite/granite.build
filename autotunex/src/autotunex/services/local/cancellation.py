@@ -1,5 +1,4 @@
 # src/autotunex/services/local/cancellation.py
-# Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 """Process-wide cancellation registry for in-process ``local`` runs.
 

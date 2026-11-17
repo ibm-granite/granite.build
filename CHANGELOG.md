@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requested chat template) before registering it. Build tests on local SLURM and local
   kind run MergeKit's `gradient-slerp` example on SmolLM2-135M + -Instruct, and
   `make test-mergekit` runs the real-MergeKit tests in a separate venv.
+- **`fms-hf-tuning` step (#231)**, `space://steps/train/fms-hf-tuning`: full fine-tuning, LoRA and
+  aLoRA with foundation-model-stack/fms-hf-tuning 3.2.2 (`tuning.sft_trainer`) on any SkyPilot
+  endpoint, single node, DDP or FSDP (fms-hf-tuning's FSDP1 defaults), ClearML tracking (`auto`
+  when `CLEARML_API_*` creds are present). Training data from a bound dataset, an HF id, or an
+  fms-hf-tuning `data_config`; `args` is fms-hf-tuning's JSON config, checked against its own
+  parser on the node before training starts. Registers the full model or the adapter. Custom
+  image `quay.io/granitebuild/steps/train/fms-hf-tuning/skypilot:fms-v3.2.2-5` (torch 2.8.0 /
+  CUDA 12.8, transformers 4.55.4 with the CVE-2026-5241 fix backported, flash-attn 2.8.3) with a
+  fully hashed lock. Build tests on skypilot/aws (full, aLoRA) and BlueVela SLURM (LoRA/FSDP,
+  full/FSDP with `data_config`). K8s, SkyPilot-K8s and LSF are follow-ups.
 - **`make publish-image` refuses to overwrite an existing image tag (#229).** A tag must keep
   pointing at one image, and SLURM's `slurm_image_cache` keys its `.sqsh` by tag, so a re-pushed
   tag never reached it. `publish-image` now checks the registry first and pushes only a new tag;
@@ -74,6 +84,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `recipes/evals/` that split GPU generate from CPU score. No benchmark data is committed:
   dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
   time (#460).
+
+- **`single_node` step flag (#651)** — `environment_configs.Skypilot.single_node: true` makes
+  gbserver resolve `num_nodes` from every layer the launch reads (`compute_config`, the step's
+  launcher config, the build's `launcher_config`) and fail the step at creation unless it is 1.
+  Other environments refuse the flag. The SkyPilot `openinstruct-sft`, `hf-peft-sft`, `nemo-rl`,
+  `fm-tune`, `fms-hf-tuning` and `mergekit` steps use it instead of their own Jinja `num_nodes`
+  checks: they now accept exactly what gbserver parses as 1 (hf-peft-sft newly accepts `"01"`);
+  only the count the launch would use matters, so a `compute_config.num_nodes: 2` overridden by
+  a build `launcher_config.num_nodes: 1` now passes; and nemo-rl newly checks the build's
+  `launcher_config.num_nodes`. `gb step describe` shows the flag.
+- **`num_nodes` parsing (#651)** — for every SkyPilot step, a boolean `num_nodes` (`true` used
+  to count as one node) is now refused, and a malformed count fails at step creation, with an
+  error that names the key it came from (`compute_config.num_nodes`,
+  `launchers.<name>.config.num_nodes` or `launcher_config.num_nodes`).
 
 ### Changed
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """OIDC bearer verification.
 
 No network call anywhere in this file: signing uses an in-process RSA

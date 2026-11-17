@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Render the flat YAML config the GOLD trainer (gb_steps_post_training.distillation.gold)
 consumes.
 

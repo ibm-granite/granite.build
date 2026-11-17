@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """E2E test for the event subscription REST API against a deployed GB server.
 
 Tests the full client flow:

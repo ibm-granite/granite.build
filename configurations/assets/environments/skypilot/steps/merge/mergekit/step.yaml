@@ -118,6 +118,10 @@ outputs:
 environment_configs:
   Skypilot:
     # No `subtypes:` restriction: nothing here is endpoint-specific.
+    # One node only: with more, SkyPilot runs run: on every node and the runs race on
+    # the output. gbserver refuses, at step creation, a build whose resolved num_nodes
+    # is not 1 (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
     default_launcher: mergekit
     launchers:
       mergekit:
@@ -151,8 +155,9 @@ environment_configs:
                 direct run, and for what only the node can see: the installed mergekit's
                 methods and template names, and mapping-form references);
                 test_render_and_prepare_agree keeps the two in step. The mergekit_version
-                and string-key checks, and the node and GPU checks, are render-only: they
-                concern the launch, not the recipe. #}
+                and string-key checks, and the GPU check, are render-only: they concern
+                the launch, not the recipe. gbserver itself refuses more than one node
+                (environment_configs.Skypilot.single_node). #}
             {%- macro validate(c) -%}
             {#- MergeKit 0.1.5's registered methods (mergekit.merge_methods.registry);
                 test_merge_method_list_matches_mergekit_registry keeps this list in sync.
@@ -233,11 +238,8 @@ environment_configs:
             {%- set used = [] %}
             {%- for v in values %}{% for part in v.split("+") %}{% set _ = used.append(part.split("@")[0]) %}{% endfor %}{% endfor %}
             {%- for name in input_names if bindings[name] is defined and name not in used and bindings[name].binding.path not in used %}{{ raise_error("mergekit: input " ~ name ~ " is bound, but merge_config never names it. Name each bound input in the recipe (e.g. model: " ~ name ~ "), or remove it from the target's inputs.") }}{% endfor %}
-            {#- Single node: with more, SkyPilot runs run: on every node and the runs race
-                on the output. Both sources gbserver reads num_nodes from. #}
             {%- set compute = config.compute_config if (config.compute_config is defined and config.compute_config is mapping) else {} %}
             {%- set launcher = config.launcher_config if (config.launcher_config is defined and config.launcher_config is mapping) else {} %}
-            {%- for where, src in [("compute_config", compute), ("launcher_config", launcher)] if src.get("num_nodes") is not none and (src.get("num_nodes") | string) != "" and not ((src.get("num_nodes") is number and src.get("num_nodes") == 1) or (src.get("num_nodes") | string) == "1") %}{{ raise_error("mergekit: " ~ where ~ ".num_nodes must be 1 (got '" ~ src.get("num_nodes") ~ "'); this step is single-node.") }}{% endfor %}
             {#- GPUs: gbserver requests them only from launcher_config.resources.accelerators
                 or an instance_type (issue #536), so a GPU count alone would silently get a
                 CPU-only node. "More than 0" follows gbserver's _warn_unrequested_gpus,

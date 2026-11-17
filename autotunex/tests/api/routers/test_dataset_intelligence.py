@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Dataset-intelligence endpoints, end to end over HTTP."""
 
 from __future__ import annotations

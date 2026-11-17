@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { countRecordsInBlob, parseCsv, parseJson, parseJsonl, parseParquet } from './file-parser'
 
 // Files larger than this are handed to the Web Worker to keep the main thread

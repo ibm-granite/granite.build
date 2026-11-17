@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for Shadow Residual (SR) support -- ``--tuning_algo sr``.
 
 Covers:

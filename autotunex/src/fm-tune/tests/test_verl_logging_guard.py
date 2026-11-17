@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pins driver_multi_verl's defence against dependencies silencing the trial's logging."""
 
 import logging

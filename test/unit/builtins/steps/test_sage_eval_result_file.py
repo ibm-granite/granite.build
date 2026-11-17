@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The sage-eval steps' results-file search must find SALAD-Bench's own result (#482).
 
 After the eval script, each step emits the first results file under the experiment's

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Render a recipe target's step config through the PUBLISHED step template.
 
 A recipe that calls a step owns its wiring: which values reach which config keys. A

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the openinstruct-rl (GRPO) step asset.
 
 openinstruct-rl is a declarative step.yaml under

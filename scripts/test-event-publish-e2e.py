@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """
 End-to-end test for build event notifications via RabbitMQ.
 

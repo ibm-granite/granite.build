@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Alembic migration environment.
 
 The database URL is taken from application settings (AUTOTUNEX_DATABASE_URL or

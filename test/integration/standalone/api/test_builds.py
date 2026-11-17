@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # from fastapi.testclient import TestClient
 
 import tempfile

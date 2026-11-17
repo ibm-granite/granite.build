@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``gb_ui_backend`` must not import ``gbserver``.
 
 ``granite-build-analytics`` ships ``gb_ui_backend`` and ``gbcommon`` and

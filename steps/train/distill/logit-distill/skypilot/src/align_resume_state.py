@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Rewrite a seeded checkpoint's trainer_state.json to this run's save and logging grid.
 
 HF Trainer computes ``save_steps`` and ``logging_steps`` from this run's arguments,

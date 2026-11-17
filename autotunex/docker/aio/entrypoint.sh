@@ -1,4 +1,7 @@
 #!/bin/sh
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Entrypoint for the all-in-one image (Dockerfile.aio).
 #
 # Materializes git credentials from the RUNTIME environment so that any git pull

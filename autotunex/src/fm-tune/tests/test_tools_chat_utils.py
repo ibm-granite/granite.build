@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.tools.chat_utils — chat-template plumbing and prompts.
 
 The Granite generations consume ``documents=`` incompatibly and

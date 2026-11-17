@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 'use client'
 
 import { Fragment, useMemo, useRef, useState } from 'react'

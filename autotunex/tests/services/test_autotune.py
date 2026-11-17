@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the AutotuneCore seam.
 
 The adapter's import path is exercised by injecting a fake ``autotune.catalog``

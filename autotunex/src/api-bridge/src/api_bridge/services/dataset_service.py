@@ -1,4 +1,3 @@
-# Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 
 """Dataset service for api-bridge (local copy from api/services/dataset_service.py)."""

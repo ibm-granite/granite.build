@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Factory for selecting a ChatAgentBackend implementation.
 
 get_backend() is process-wide cached (mirrors config.get_config()) so the same

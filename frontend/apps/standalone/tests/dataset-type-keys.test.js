@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * ALGORITHM_TO_DATASET_TYPE names keys in the backend's dataset-types response.
  * A key that drifts from the backend silently drops the algorithm's optional

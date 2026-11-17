@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Run one fm-tune (autotunex/src/fm-tune/main.py) tuning job.
 #
 # Shared by the bash and skypilot copies of the fm-tune step (byte-identical;

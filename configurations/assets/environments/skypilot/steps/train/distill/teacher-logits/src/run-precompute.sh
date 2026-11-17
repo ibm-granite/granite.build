@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # PORTED, not authored here. Upstream source of truth:
 #   path   steps/distill-logit-precompute/src/run-precompute.sh

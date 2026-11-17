@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for gen_smoke.py's detector and gate. Generation is injected, so none of
 this needs torch, transformers or a GPU."""
 

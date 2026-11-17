@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright Granite.Build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """An hf:// repo URI with a path in the repo pulls only that path.
 
@@ -23,8 +11,11 @@ Python ``HfURI.pull`` (bash, docker, k8s), the skypilot and LSF hfpull shell
 scripts, and the skypilot inline download line.
 """
 
+import ast
 import asyncio
 import os
+import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -35,7 +26,7 @@ from jinja2 import Environment
 
 import gbserver
 from gbcommon.types.testing import ENV_VAR_GBTEST_MOCK_HF
-from gbcommon.uri.hf import HfType, HfURI, hf_path_patterns
+from gbcommon.uri.hf import HfType, HfURI, _hfpull_lock_path, hf_path_patterns
 from gbserver.asset.hfstore import Hfstore
 from gbserver.environment.skypilot import _inline_hf_download_cmd
 
@@ -82,6 +73,357 @@ def test_local_path():
     assert bucket.local_path(dest) == dest
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "hf:///datasets/o/r/main/..",
+        "hf:///datasets/o/r/main/../../..",
+        "hf:///datasets/o/r/main/.",
+        "hf:///datasets/o/r/main/a/../../b",
+        "hf:///datasets/o/r/main/./x",
+        # owner/repo/revision are cache path segments too (Hfstore.get_relpath)
+        "hf:///datasets/../../main",
+        "hf:///o/r/..",
+        "hf:///buckets/o/b/../x",
+    ],
+)
+def test_dot_segments_are_rejected(uri):
+    # Each would bind a path outside (or the root of) the pull destination.
+    with pytest.raises(ValueError):
+        HfURI.parse(uri)
+
+
+def test_dot_segments_appended_after_parsing_are_rejected():
+    uri = HfURI.parse("hf:///datasets/o/r/main")
+    with pytest.raises(ValueError):
+        uri.append_path("./x")
+    assert uri.local_path(Path("/d")) == Path("/d")  # left unchanged
+
+
+def test_dots_inside_segment_names_are_allowed():
+    uri = HfURI.parse("hf:///datasets/o.x/r..y/v1.0/a.b/..c/x..")
+    assert uri.local_path(Path("/d")) == Path("/d/a.b/..c/x..")
+
+
+# ── #620 item 7: only characters the hfpull/hfpush steps render literally ────
+#
+# The steps put the URI, host, owner, repo, revision and path in the repo into
+# bash (single and double quotes) and Python string literals, and the path is a
+# download filter (allow_patterns / --include), so a URI that parses must hold
+# nothing any of these treats specially.
+
+# Quotes, expansions, escapes and globs; "?" and "#" would start a query or
+# fragment that silently cuts the path short.
+_UNSAFE_PATH_CHARS = ["'", '"', "$", "`", "\\", "*", "?", "[", "#"]
+
+
+@pytest.mark.parametrize("char", _UNSAFE_PATH_CHARS)
+def test_unsafe_characters_in_the_path_are_rejected(char):
+    with pytest.raises(ValueError):
+        HfURI.parse(f"hf:///datasets/o/r/main/dir/a{char}b")
+
+
+@pytest.mark.parametrize(
+    "uri",
+    ["hf:///datasets/o'x/r", "hf:///datasets/o/r'x", "hf:///datasets/o/r/ma'in"],
+)
+def test_a_quote_in_owner_repo_or_revision_is_rejected(uri):
+    with pytest.raises(ValueError):
+        HfURI.parse(uri)
+
+
+@pytest.mark.parametrize("char", _UNSAFE_PATH_CHARS)
+def test_unsafe_characters_appended_after_parsing_are_rejected(char):
+    uri = HfURI.parse("hf:///datasets/o/r/main")
+    with pytest.raises(ValueError):
+        uri.append_path(f"dir/a{char}b")
+    assert uri.local_path(Path("/d")) == Path("/d")  # left unchanged
+
+
+def test_append_path_after_the_parts_are_cached_is_checked_and_seen():
+    uri = HfURI.parse("hf:///datasets/o/r/main/a")
+    assert uri.local_path(Path("/d")) == Path("/d/a")  # caches the parts
+    with pytest.raises(ValueError):
+        uri.append_path("../x'$(id)")
+    uri.append_path("b")
+    assert uri.local_path(Path("/d")) == Path("/d/a/b")
+    assert str(uri) == "hf://huggingface.co/datasets/o/r/main/a/b"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "hf:///datasets/--cache-dir=/tmp",  # owner "--cache-dir=", repo "tmp"
+        "hf:///-o/r",
+        "hf:///o/-r",
+        "hf:///o/r/-rev",
+        "hf:///o/r/main/-file",
+        "hf:///o/r/main/dir/--x",
+    ],
+)
+def test_a_leading_dash_is_rejected(uri):
+    # The steps pass the repo id and revision to the hf CLI, which would read
+    # a leading "-" as an option.
+    with pytest.raises(ValueError):
+        HfURI.parse(uri)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "hf:///datasets/o x/r",
+        "hf:///datasets/o/r x",
+        "hf:///o/r/main --private",
+        "hf:///o/r/v:1",
+        "hf:///o/r(1)/main",
+        "hf:///buckets/o b/x",
+    ],
+)
+def test_path_only_characters_are_rejected_in_owner_repo_or_revision(uri):
+    # Space, ":" and "(" ")" are only for the path in the repo: no HF repo id or
+    # git revision has them, and the LSF hfpush step expands the revision
+    # unquoted, where a space would split it into extra CLI arguments.
+    with pytest.raises(ValueError):
+        HfURI.parse(uri)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "ev'il",
+        "$(id)",
+        "a`id`b",
+        'a"b',
+        "a b",
+        "user:pw@hub.example.com",
+        "hub.example.com:port",
+    ],
+)
+def test_unsafe_hosts_are_rejected(host):
+    # The host is rendered into HF_ENDPOINT and into the URI itself.
+    with pytest.raises(ValueError):
+        HfURI.parse(f"hf://{host}/o/r")
+
+
+def test_the_error_names_the_offending_segment():
+    with pytest.raises(ValueError, match=re.escape("'a$b'")):
+        HfURI.parse("hf:///datasets/o/r/main/dir/a$b")
+
+
+_REALISTIC = [
+    ("hf:///ibm-granite/granite-3.0-8b-instruct/main/config.json", "config.json"),
+    (
+        "hf:///datasets/my-org/my_data.v2/v1.0/data/train/part-00000-of-00004.parquet",
+        "data/train/part-00000-of-00004.parquet",
+    ),
+    (
+        "hf:///o/r/main/ckpt@step=100,lr~1e-4+fp16.bin",
+        "ckpt@step=100,lr~1e-4+fp16.bin",
+    ),
+    ("hf:///datasets/o/r/main/données/été_2024.csv", "données/été_2024.csv"),
+    ("hf:///datasets/o/r/main/数据/训练.jsonl", "数据/训练.jsonl"),
+    # Spaces, ":" and "(" ")" are the commonest characters in real HF paths.
+    (
+        "hf:///datasets/roneneldan/TinyStories/main/Evaluation prompts.yaml",
+        "Evaluation prompts.yaml",
+    ),
+    (
+        "hf:///datasets/o/r/main/Yi-1.5-9B-Chat/results_2024-09-19 01:30:30.json",
+        "Yi-1.5-9B-Chat/results_2024-09-19 01:30:30.json",
+    ),
+    (
+        "hf:///datasets/bigcode/the-stack-v2/main/data/Graphviz_(DOT)",
+        "data/Graphviz_(DOT)",
+    ),
+    (
+        "hf://hub.example.com:8443/models/o/r/v2/a/b/c/d.safetensors",
+        "a/b/c/d.safetensors",
+    ),
+    ("hf:///buckets/o/b/dir/file.txt", "dir/file.txt"),
+    # A bucket has no revision: what follows the bucket is the path.
+    ("hf:///buckets/o/b/my dir/f (1).txt", "my dir/f (1).txt"),
+]
+
+
+@pytest.mark.parametrize(("uri", "path_in_repo"), _REALISTIC)
+def test_realistic_names_still_parse(uri, path_in_repo):
+    assert HfURI.parse(uri).get_path_in_repo() == path_in_repo
+
+
+def _uris_that_parse():
+    """The realistic URIs, plus URIs with each printable ASCII character (and a
+    few non-ASCII letters) in every path segment, only in the path in the repo
+    (inside and at the start of a segment), and in the host, kept if they
+    parse -- so the render tests below cover whatever the parser admits."""
+    candidates = [uri for uri, _ in _REALISTIC]
+    for c in [chr(i) for i in range(0x20, 0x7F)] + ["é", "ß", "数"]:
+        candidates.append(f"hf:///datasets/o{c}1/r{c}2/v{c}3/d{c}4/f{c}5")
+        candidates.append(f"hf:///datasets/o/r/main/d{c}4/{c}f5")
+        candidates.append(f"hf://h{c}6.example.com/o/r")
+    uris = []
+    for candidate in candidates:
+        try:
+            uri = HfURI.parse(candidate)
+            str(uri)  # parses the parts
+        except ValueError:
+            continue
+        uris.append(uri)
+    return uris
+
+
+# Every value these scripts take from the URI is a single-quoted assignment.
+_QUOTED_ASSIGNMENT = re.compile(r"^\s*(?:export )?(\w+)='([^']*\{\{.*\}\}[^']*)'\s*$")
+_HF_SCRIPTS = {
+    "lsf-hfpull": ("lsf/hfpull/lsf_scripts/hfpull/command.sh", "hfpull_config"),
+    "sky-hfpull": ("skypilot/hfpull/step.yaml", "hfpull_config"),
+    "lsf-hfpush": ("lsf/hfpush/lsf_scripts/hfpush/command.sh", "hfpush_config"),
+    "sky-hfpush": ("skypilot/hfpush/step.yaml", "hfpush_config"),
+}
+
+
+def _step_config(key, uri):
+    """The step config the real Hfstore builder makes for *uri*.
+
+    :param key: ``"hfpull_config"`` or ``"hfpush_config"``, the script's config.
+    :param uri: The parsed HfURI.
+    :returns: The config dict the script's Jinja reads (``config.<key>.*``).
+    """
+    if key == "hfpull_config":
+        return Hfstore.build_hfpull_step_config(uri, "/cache/x")
+    return Hfstore.build_hfpush_step_config(uri, "/src/x", "out", True)
+
+
+@pytest.mark.parametrize("name", sorted(_HF_SCRIPTS))
+def test_hf_step_scripts_assign_every_value_literally(name):
+    path, key = _HF_SCRIPTS[name]
+    lines = (_STEPS / path).read_text().splitlines()
+    assignments = [
+        (m.group(1), m.group(2), ln.strip())
+        for ln in lines
+        if (m := _QUOTED_ASSIGNMENT.match(ln))
+    ]
+    assert {"HF_URI", "HF_ENDPOINT", "HF_REVISION"} <= {v for v, _, _ in assignments}
+    env = Environment()
+    script, expected = [], []
+    for uri in _uris_that_parse():
+        cfg = _step_config(key, uri)
+        ctx = {"config": {key: cfg}, "hfp": cfg}
+        for _, value, line in assignments:
+            script.append(env.from_string(line).render(ctx))
+            expected.append(env.from_string(value).render(ctx))
+        names = " ".join(f'"${{{var}}}"' for var, _, _ in assignments)
+        script.append(f"printf '%s\\0' {names}")
+    proc = subprocess.run(
+        ["bash", "-c", "\n".join(script)],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split("\0")[:-1] == expected
+
+
+def _helm_helper(chart, values):
+    """The k8s chart's ``_helpers.tpl`` command, with *values* substituted.
+
+    Go's text/template inserts ``{{ $var }}`` verbatim, so plain substitution is
+    what helm renders, and the ``{{- ... }}`` action and comment lines output
+    nothing. Any other action fails the assert, so a template change cannot
+    slip past this test.
+    """
+    text = (
+        _STEPS / "k8s" / chart / "helm-charts" / chart / "templates" / "_helpers.tpl"
+    ).read_text()
+    body = text.split("}}", 1)[1].rsplit("{{- end }}", 1)[0]
+    body = re.sub(r"\{\{-?\s*/\*.*?\*/\s*-?\}\}", "", body, flags=re.S)
+    body = "\n".join(
+        ln for ln in body.splitlines() if not ln.lstrip().startswith("{{-")
+    )
+    body = body.replace('{{ ternary "True" "False" $private }}', "True")
+    body = re.sub(r"\{\{ \$(\w+) \}\}", lambda m: values[m.group(1)], body)
+    assert "{{" not in body, body
+    return body
+
+
+def _stub_python3(tmp_path):
+    """A stub ``python3`` that appends its program (``-c`` or stdin) to $PY_LOG."""
+    bindir = tmp_path / "pybin"
+    bindir.mkdir()
+    py = bindir / "python3"
+    py.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = -c ]; then printf "%s" "$2" >> "$PY_LOG"; '
+        'else cat >> "$PY_LOG"; fi\n'
+        'printf "\\0" >> "$PY_LOG"\n'
+    )
+    py.chmod(py.stat().st_mode | stat.S_IEXEC)
+    return bindir
+
+
+def _kwargs_of(program, func):
+    """The literal keyword arguments of the ``<obj>.<func>(...)`` call in *program*.
+
+    :param program: Python source, as the stub ``python3`` recorded it.
+    :param func: The method name, e.g. ``"hfpull_step"``.
+    :returns: ``{keyword: value}``, each value ``ast.literal_eval``-ed.
+    """
+    call = next(
+        (
+            n
+            for n in ast.walk(ast.parse(program))
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == func
+        ),
+        None,
+    )
+    assert call is not None, f"no {func}(...) call in the program:\n{program}"
+    return {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
+
+
+@pytest.mark.parametrize(
+    ("chart", "func", "path_kwarg", "echoes"),
+    [
+        (
+            "hfpull",
+            "hfpull_step",
+            "dest",
+            ["Pulling HF {u} into {p}", "Pulled HF URI: {u} into cache {p}"],
+        ),
+        (
+            "hfpush",
+            "hfpush_step",
+            "source_path",
+            ["Pushing HF {u} from {p}", "Pushed HF URI: {u} for binding out"],
+        ),
+    ],
+)
+def test_k8s_helm_helpers_pass_the_uri_literally(
+    tmp_path, chart, func, path_kwarg, echoes
+):
+    uris = [str(uri) for uri in _uris_that_parse()]
+    p = "/cache/x"
+    values = {"path": p, "bindingId": "out", "resourceGroupId": ""}
+    script = "\n".join(_helm_helper(chart, {**values, "uri": u}) for u in uris)
+    log = tmp_path / "py.log"
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            **os.environ,
+            "PATH": f"{_stub_python3(tmp_path)}:{os.environ['PATH']}",
+            "PY_LOG": str(log),
+        },
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [
+        e.replace("{u}", u).replace("{p}", p) for u in uris for e in echoes
+    ]
+    programs = log.read_text(encoding="utf-8").split("\0")[:-1]
+    called = [_kwargs_of(prog, func) for prog in programs]
+    assert [(kw["uri_str"], kw[path_kwarg]) for kw in called] == [(u, p) for u in uris]
+
+
 def test_pull_filters_to_the_path_and_keeps_the_layout(tmp_path, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
 
@@ -125,6 +467,29 @@ def test_local_pull_binds_the_path(tmp_path):
     assert bound == tmp_path / "d" / _SUB
 
 
+def test_pull_evicted_before_the_path_lands_rewaits(tmp_path):
+    """Losing the lock before the path is downloaded is a re-wait, not a miss.
+
+    A peer that reclaims our lock is still writing the tree, so the path may not
+    be there yet. The pull must re-wait and retry (the #320 design), not report
+    that the path matched nothing.
+    """
+    dest = tmp_path / "d"
+    calls = []
+
+    def fake_download(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            # A peer reclaims our lock before the path has landed.
+            shutil.rmtree(_hfpull_lock_path(dest), ignore_errors=True)
+            return
+        (Path(kw["local_dir"]) / _SUB).mkdir(parents=True)
+
+    with patch("gbcommon.uri.hf.snapshot_download", side_effect=fake_download):
+        assert HfURI.parse(_URI).pull(dest) is True
+    assert len(calls) == 2
+
+
 # ── hfpull step configs and bindings ─────────────────────────────────────────
 
 
@@ -134,6 +499,13 @@ def test_hfpull_step_config_carries_the_path():
     assert cfg["path"] == "/cache/x"
     whole = Hfstore.build_hfpull_step_config(HfURI.parse("hf:///org/m"), "/c")
     assert whole["path_in_repo"] == ""
+
+
+def test_hfpull_step_config_has_no_path_for_a_bucket():
+    """A bucket is bound at dest (local_path), so the shell steps get no filter."""
+    uri = HfURI.parse("hf:///buckets/org/b/some/dir")
+    cfg = Hfstore.build_hfpull_step_config(uri, "/cache/x")
+    assert cfg["path_in_repo"] == ""
 
 
 def _hfstore():
@@ -184,6 +556,17 @@ async def test_skypilot_inline_pull_carries_the_path(skypilot_env):
     assert step is None
     assert binding["_hfpull"]["path_in_repo"] == _SUB
     assert binding["binding"]["path"].endswith(f"/main/{_SUB}")
+
+
+@pytest.mark.asyncio
+async def test_skypilot_inline_bucket_pull_has_no_path(skypilot_env):
+    binding, _ = await skypilot_env.pullasset_hfstore(
+        uri=HfURI.parse("hf:///buckets/org/b/some/dir"),
+        assetstore=_hfstore(),
+        storeload_config=_storeload(inline=True),
+    )
+    assert binding["_hfpull"]["path_in_repo"] == ""
+    assert binding["binding"]["path"] == binding["_hfpull"]["path"]
 
 
 @pytest.mark.asyncio
@@ -257,10 +640,28 @@ def test_inline_line_includes_only_the_path(tmp_path):
             "path_in_repo": f"/{_SUB}/",
         }
     )
-    _, argv = _run(tmp_path, cmd, _SUB)
+    proc, argv = _run(tmp_path, cmd, _SUB)
+    assert proc.returncode == 0, proc.stderr
     assert argv[argv.index("--include") + 1] == _SUB
     assert argv.count("--include") == 2
     assert f"{_SUB}/*" in argv
+
+
+def test_inline_line_fails_when_the_path_matches_nothing(tmp_path):
+    cmd = _inline_hf_download_cmd(
+        {
+            "repo": "org/repo",
+            "path": str(tmp_path / "dest"),
+            "revision": "main",
+            "type": "dataset",
+            "path_in_repo": _SUB,
+        }
+    )
+    # Run without `set -e`, so only the explicit exit can stop the setup.
+    proc, _ = _run(tmp_path, f"{cmd}\necho setup-continued", "")
+    assert proc.returncode != 0
+    assert "matched nothing" in proc.stderr
+    assert "setup-continued" not in proc.stdout
 
 
 def _render(text, path_in_repo):

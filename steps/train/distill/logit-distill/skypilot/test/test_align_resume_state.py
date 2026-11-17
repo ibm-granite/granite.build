@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the resume-state rewrite (../src/align_resume_state.py).
 
 Run from the step directory with `make test`.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # Generic step: packages one checkpoint-N of ANY HF Trainer / accelerate run. It was
 # ported from the distillation collection (steps/distill-hf-export/src/export_hf_model.py

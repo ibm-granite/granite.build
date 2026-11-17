@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Centralized availability flags for optional dependencies.
 
 Import a flag to check whether an optional package is installed,

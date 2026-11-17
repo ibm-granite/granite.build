@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pick-time rules for the Start Tuning wizard's "My tuned models" source: a
  * tuned output is usable as a base only when its HF repo root holds a full model.

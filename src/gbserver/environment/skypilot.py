@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SkyPilot environment backend (unmanaged mode).
 
 Manages build step execution on SkyPilot-provisioned pods/VMs using
@@ -81,6 +83,7 @@ from gbserver.utils.unwrap_errors import (
 if TYPE_CHECKING:
     from gbserver.monitoring.logfile_monitor import LogFileMonitor
     from gbserver.resilience.retry_handler import RetryStrategy
+    from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 
 logger = get_logger(__name__)
 
@@ -2125,7 +2128,7 @@ def _build_skypilot_mounts(
 
 
 def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
-    """The ``hf download`` line an inline hfpull adds to a step's setup script.
+    """The ``hf download`` lines an inline hfpull adds to a step's setup script.
 
     Every value is ``shlex.quote``d, so a ``"``, ``$`` or backtick in one can
     neither break the setup line nor be expanded by the shell. The repo and
@@ -2134,22 +2137,36 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     ``pullasset_hfstore`` refuses one containing ``$``.
 
     :param pull_info: A binding's ``_hfpull`` dict (``repo``, ``path``, and the
-        optional ``revision``, ``type`` and ``path_in_repo``; with a path in the
-        repo only it is downloaded, as ``HfURI.pull`` does).
-    :returns: The shell command line.
+        optional ``revision``, ``type`` and ``path_in_repo``). With a path in the
+        repo, only it is downloaded, and a second line exits the setup when it
+        matched nothing, as ``HfURI.pull`` does.
+    :returns: The shell command line(s).
     """
+    from gbcommon.uri.hf import hf_path_patterns
+
+    dest = str(pull_info["path"])
     cmd = (
         f"hf download {shlex.quote(str(pull_info['repo']))} "
-        f"--local-dir {shlex.quote(str(pull_info['path']))}"
+        f"--local-dir {shlex.quote(dest)}"
     )
     if pull_info.get("revision"):
         cmd += f" --revision {shlex.quote(str(pull_info['revision']))}"
     if pull_info.get("type"):
         cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
     path_in_repo = str(pull_info.get("path_in_repo") or "").strip("/")
+    for pattern in hf_path_patterns(path_in_repo) or []:
+        cmd += f" --include {shlex.quote(pattern)}"
     if path_in_repo:
-        for pattern in (path_in_repo, f"{path_in_repo}/*"):
-            cmd += f" --include {shlex.quote(pattern)}"
+        # A failed test left of `||` does not trip the setup's `set -e`, and a
+        # bare `[ -e ]` would fail with no message: report it and exit.
+        missing = (
+            f"hfpull: '{path_in_repo}' matched nothing in {pull_info['repo']} "
+            f"(type={pull_info.get('type')}, rev={pull_info.get('revision')})"
+        )
+        cmd += (
+            f"\n[ -e {shlex.quote(f'{dest}/{path_in_repo}')} ] || "
+            f"{{ echo {shlex.quote(missing)} >&2; exit 1; }}"
+        )
     return cmd
 
 
@@ -2171,62 +2188,89 @@ def aws_credentials_present() -> bool:
     return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
 
 
-def _num_nodes_from_configs(
-    compute_config: Dict,
-    launcher_config: Dict,
-    config: Dict,
-    cloud: str = "",
-) -> int:
-    """Resolve the node count for a ``sky.Task``.
+def _parse_num_nodes(value: Any, key: str) -> int:
+    """Parse one layer's ``num_nodes`` as the launch uses it.
 
-    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it
-    is resolved separately from the resource layers and is NOT read from
-    ``resources``. Precedence mirrors the cpus/memory layering (last wins):
+    Fail fast rather than fall back to one node: a bad value (an unsubstituted
+    parameter, say) would otherwise run single-node and report success, the
+    outcome the resolver exists to prevent.
 
-    1. ``config.compute_config.num_nodes`` — the portable surface. This key
-       already exists for k8s/lsf/runpod, so one build.yaml expresses a
-       multi-node request across environments.
-    2. ``launcher_config.num_nodes``
-    3. ``config.launcher_config.num_nodes`` (from build.yaml)
-
-    A ``num_nodes`` placed under ``resources`` is dropped by
-    ``sky.Resources``, silently, so it is warned about here rather than left
-    to fail as a single-node run that looks successful.
-
-    :param compute_config: The step's raw ``compute_config`` dict.
-    :param launcher_config: The resolved launcher config.
-    :param config: The step config (its ``launcher_config`` wins).
-    :param cloud: Normalized target cloud, used only for the preflight check.
-    :returns: Node count, at least 1.
-    :raises ValueError: If a ``num_nodes`` is not an integer >= 1.
+    :param value: The layer's ``num_nodes`` value (not ``None``).
+    :param key: The layer's key path, named in the error.
+    :returns: The node count, at least 1.
+    :raises ValueError: If ``value`` is not a whole number >= 1.
     """
-    num_nodes = 1
-    for source in (
-        compute_config,
-        launcher_config,
-        config.get("launcher_config", {}) or {},
-    ):
-        value = (source or {}).get("num_nodes")
-        if value is None:
-            continue
-        # Fail fast rather than fall back to one node: a bad value (an
-        # unsubstituted parameter, say) would otherwise run single-node and
-        # report success, the outcome this resolver exists to prevent.
+    try:
+        # bool subclasses int, so int(True) == 1 would let a YAML `true` (or a
+        # bad substitution) through as one node.
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = int(value)
         # int() truncates a float, so 2.5 would quietly become 2: accept a
         # float only when it is already whole (YAML's `2.0`).
-        try:
-            parsed = int(value)
-            if isinstance(value, float) and parsed != value:
-                raise ValueError
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"num_nodes={value!r} is not an integer; set compute_config."
-                "num_nodes to a whole number of nodes >= 1."
-            ) from None
-        if parsed < 1:
-            raise ValueError(f"num_nodes={parsed} is invalid; it must be >= 1.")
-        num_nodes = parsed
+        if isinstance(value, float) and parsed != value:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{key}={value!r} is not an integer; set {key} to a whole number of "
+            "nodes >= 1."
+        ) from None
+    if parsed < 1:
+        raise ValueError(f"{key}={parsed} is invalid; it must be >= 1.")
+    return parsed
 
+
+def _resolve_num_nodes(
+    compute_config: Any, launcher_config: Any, config: Dict
+) -> Tuple[int, str]:
+    """Resolve ``num_nodes`` across its layers, the last one set winning.
+
+    Precedence mirrors the cpus/memory layering:
+
+    1. ``config.compute_config.num_nodes``: the portable surface. This key
+       already exists for k8s/lsf/runpod, so one build.yaml expresses a
+       multi-node request across environments.
+    2. ``launcher_config.num_nodes``: the step's launcher block.
+    3. ``config.launcher_config.num_nodes`` (from build.yaml).
+
+    :param compute_config: The step's raw ``compute_config``.
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config (its ``launcher_config`` wins).
+    :returns: The node count (1 when no layer sets it) and the key path it came
+        from (``""`` when none did).
+    :raises ValueError: If a layer is not a mapping, or a count is not a whole
+        number >= 1.
+    """
+    num_nodes, resolved_from = 1, ""
+    for name, layer in (
+        ("compute_config", compute_config),
+        ("launchers.<name>.config", launcher_config),
+        ("launcher_config", config.get("launcher_config")),
+    ):
+        if layer is None:
+            continue
+        if not isinstance(layer, dict):
+            raise ValueError(f"{name} must be a mapping, got {type(layer).__name__}.")
+        value = layer.get("num_nodes")
+        if value is None:
+            continue
+        key = f"{name}.num_nodes"
+        num_nodes, resolved_from = _parse_num_nodes(value, key), key
+    return num_nodes, resolved_from
+
+
+def _warn_misplaced_num_nodes(
+    launcher_config: Dict, config: Dict, num_nodes: int
+) -> None:
+    """Warn about a ``num_nodes`` placed under ``resources``.
+
+    ``sky.Resources`` drops it silently, so without the warning it would fail
+    as a single-node run that looks successful.
+
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config.
+    :param num_nodes: The resolved count, named in the warning.
+    """
     # `or {}` on every layer: a present-but-null `resources:` key returns None
     # from .get(), not the default.
     misplaced = (launcher_config.get("resources") or {}).get("num_nodes") or (
@@ -2242,9 +2286,101 @@ def _num_nodes_from_configs(
             num_nodes,
         )
 
+
+def _num_nodes_from_configs(
+    compute_config: Dict,
+    launcher_config: Dict,
+    config: Dict,
+    cloud: str = "",
+) -> int:
+    """Resolve the node count for a ``sky.Task``, at launch.
+
+    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it
+    is resolved separately from the resource layers (see
+    :func:`_resolve_num_nodes`) and is NOT read from ``resources``.
+
+    :param compute_config: The step's raw ``compute_config`` dict.
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config (its ``launcher_config`` wins).
+    :param cloud: Normalized target cloud, used only for the preflight check.
+    :returns: Node count, at least 1.
+    :raises ValueError: As :func:`_resolve_num_nodes`.
+    """
+    num_nodes, _ = _resolve_num_nodes(compute_config, launcher_config, config)
+    _warn_misplaced_num_nodes(launcher_config, config, num_nodes)
     if num_nodes > 1:
         _check_multinode_supported(cloud, num_nodes)
     return num_nodes
+
+
+def validate_launch_num_nodes(
+    step_env_config: Optional["StepEnvironmentTypeConfig"],
+    launcher_config: Optional[Dict],
+    config: Any,
+    env_type: str = "Skypilot",
+) -> int:
+    """Resolve ``num_nodes`` from a step's filled configs, as its launch will.
+
+    The step-creation check behind :class:`SkypilotLaunchConfigCheck`: a
+    malformed count, or more than one node for a step that sets
+    ``single_node``, fails the step before anything is launched or
+    provisioned. The launch resolves the count again and leaves the
+    misplaced-``resources`` warning and the LSF multi-node preflight (which
+    needs the target cloud) to that pass.
+
+    :param step_env_config: The step's environment config (``None``: no flag).
+    :param launcher_config: The filled launcher block ``config``.
+    :param config: The filled step config; ``compute_config`` and the build's
+        ``launcher_config`` live here.
+    :param env_type: The step's ``environment_configs`` key, named in the
+        ``single_node`` error.
+    :returns: The resolved node count.
+    :raises ValueError: If the step config is not a mapping, as
+        :func:`_resolve_num_nodes`, or if ``single_node`` is set and the count
+        resolves to more than 1.
+    """
+    config = {} if config is None else config
+    # TargetStepRun only warns when the filled step config is not a dict, and
+    # this runs for every SkyPilot step.
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"The step config must be a mapping, got {type(config).__name__}."
+        )
+    num_nodes, resolved_from = _resolve_num_nodes(
+        config.get("compute_config"), launcher_config, config
+    )
+    if getattr(step_env_config, "single_node", False) and num_nodes != 1:
+        raise ValueError(
+            f"num_nodes resolved to {num_nodes} (from {resolved_from}), but this "
+            f"step is single-node (environment_configs.{env_type}.single_node); "
+            "set num_nodes to 1 or remove it."
+        )
+    return num_nodes
+
+
+class SkypilotLaunchConfigCheck:  # pylint: disable=too-few-public-methods
+    """``validate_launch_config`` shared by ``Skypilot`` and ``Skypilot_managed``.
+
+    Listed before ``Environment`` in both classes' bases so it overrides the
+    base method, which refuses ``single_node``.
+    """
+
+    type: str
+
+    def validate_launch_config(
+        self: Self,
+        step_env_config: "StepEnvironmentTypeConfig",
+        launcher_config: Dict,
+        config: Dict,
+    ) -> None:
+        """Resolve ``num_nodes`` as the launch will and enforce ``single_node``.
+
+        See :meth:`Environment.validate_launch_config` and
+        :func:`validate_launch_num_nodes`.
+        """
+        validate_launch_num_nodes(
+            step_env_config, launcher_config, config, env_type=self.type
+        )
 
 
 def _resolve_infra_and_zone(
@@ -2437,7 +2573,7 @@ def _merge_sbatch_export_items(
 _PROVIDER_UNSET = object()
 
 
-class Skypilot(Environment):
+class Skypilot(SkypilotLaunchConfigCheck, Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 
     # Class-level semaphore so the cap applies across all Skypilot
@@ -5647,7 +5783,7 @@ class Skypilot(Environment):
         deferred to the main step's setup phase (no separate cluster launched).
         This is required for environments without shared filesystems (e.g. AWS).
         """
-        from gbcommon.uri.hf import HfURI
+        from gbcommon.uri.hf import HfType, HfURI
         from gbserver.asset.hfstore import Hfstore
         from gbserver.environment.local_assets import get_hf_cache_dir
 
@@ -5697,7 +5833,15 @@ class Skypilot(Environment):
                 "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
                 "revision": hfuri.get_revision(),
                 "type": hfuri.get_hf_type() or "model",
-                "path_in_repo": hfuri.get_path_in_repo(),
+                # A bucket is bound at the download dir (HfURI.local_path), so
+                # it gets no filter, as in Hfstore.build_hfpull_step_config.
+                # (`hf download` has no bucket repo type, so an inline bucket
+                # pull fails either way.)
+                "path_in_repo": (
+                    ""
+                    if hfuri.get_hf_type() == HfType.BUCKET
+                    else hfuri.get_path_in_repo()
+                ),
                 "uri": str(hfuri),
                 "hf_token": hf_token,
             }

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # SPDX-License-Identifier: Apache-2.0
 #
 # Run-phase entrypoint for the nemo-rl step, invoked from the generated

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Backend-agnostic gbmcp tool policy — the actual security boundary for chat.
 
 Every gbmcp tool falls into exactly one of three buckets:

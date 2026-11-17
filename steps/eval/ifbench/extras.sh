@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # IFBench's evaluator code, where NeMo-Skills' ifbench evaluator runs it
 # (`cd /opt/benchmarks/IFBench && python -m run_eval`), set up the way ns's own
 # image does (dockerfiles/Dockerfile.nemo-skills at the pinned ns commit): the

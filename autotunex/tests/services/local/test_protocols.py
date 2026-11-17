@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the local runner's protocols, context, and reward injection."""
 
 from __future__ import annotations
