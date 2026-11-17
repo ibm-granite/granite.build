@@ -27,9 +27,9 @@ from gbcommon.types.gbenvconfig import DEFAULT_GH_DOMAIN
 from gbserver.spaces.db_space import (
     SNAPSHOT_MAX_ENTRIES,
     SNAPSHOT_MAX_UNCOMPRESSED_BYTES,
+    check_own_space_uri,
     is_db_uri,
     make_db_uri,
-    parse_db_uri,
 )
 from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
 from gbserver.spaces.repo_identity import normalize_repo_uri, same_repo
@@ -528,12 +528,10 @@ def cli(
         is_new = False
     if space_repo is None:
         space_repo = row.git_repo_uri
-    alias_of = row.space_uri if is_db_uri(row.space_uri) else None
-    if alias_of and parse_db_uri(alias_of).space_name != space_name:
-        raise click.ClickException(
-            f"space {space_name!r} is an alias of {row.space_uri}; snapshot"
-            " that space instead"
-        )
+    try:
+        check_own_space_uri(row)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
 
     # Space snapshot.
     space_src = _resolve_source(

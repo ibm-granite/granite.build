@@ -153,25 +153,6 @@ def test_load_paths_never_reach_git(no_git, monkeypatch):
     secrets_api._space_secret_manager_cache.clear()
 
 
-def test_create_spaces_clear_refuses_dangling_alias(no_git):
-    """--clear would remove an alias's target: refuse before deleting anything."""
-    _add_db_public(no_git)
-    no_git.add(
-        StoredSpace(
-            name="alias",
-            git_repo_uri=PUBLIC_GIT,
-            space_uri=db_space.make_db_uri(c.PUBLIC_SPACE_NAME),
-        )
-    )
-    spec = StoredSpace(name="alias", git_repo_uri=PUBLIC_GIT)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(create_spaces, "predefined_spaces", [spec])
-        result = CliRunner().invoke(create_spaces.cli, ["--clear"])
-    assert result.exit_code != 0
-    assert "would not exist" in result.output
-    assert {s.name for s in no_git.get_by_uuid(None)} == {"public", "alias"}
-
-
 def test_env_files_storage_error_falls_back_to_git(monkeypatch):
     """A storage error is not a db-backed space: derive from git as before."""
     monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", PUBLIC_GIT)
@@ -192,19 +173,58 @@ def test_env_files_storage_error_falls_back_to_git(monkeypatch):
         c._DERIVED_ENV_FOR_FILES_URI_CACHE.clear()
 
 
-def test_create_spaces_clear_in_prod_without_force_checks_kept_rows(no_git):
-    """PROD --clear without --force keeps the rows, so an alias of a kept row
-    is fine and is not refused as dangling."""
+def _create(specs, *args, env=None):
+    with pytest.MonkeyPatch.context() as mp:
+        if env:
+            mp.setattr(create_spaces, "LAKEHOUSE_ENVIRONMENT", env)
+        mp.setattr(create_spaces, "predefined_spaces", specs)
+        return CliRunner().invoke(create_spaces.cli, list(args))
+
+
+def test_create_spaces_refuses_another_rows_space_uri(no_git):
+    """Serving a row from another row's snapshot is not supported."""
     _add_db_public(no_git)
     spec = StoredSpace(
-        name="alias",
+        name="standalone",
         git_repo_uri=PUBLIC_GIT,
         space_uri=db_space.make_db_uri(c.PUBLIC_SPACE_NAME),
-        lakehouse_namespace="",  # the summary table can't print None
     )
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(create_spaces, "LAKEHOUSE_ENVIRONMENT", "PROD")
-        mp.setattr(create_spaces, "predefined_spaces", [spec])
-        result = CliRunner().invoke(create_spaces.cli, ["--clear"])
-    assert result.exit_code == 0, repr(result.exception)
-    assert {s.name for s in no_git.get_by_uuid(None)} == {"public", "alias"}
+    result = _create([spec], "--clear")
+    assert result.exit_code != 0
+    assert (
+        "not supported" in result.output and "db://spaces/standalone" in result.output
+    )
+    assert {s.name for s in no_git.get_by_uuid(None)} == {"public"}  # untouched
+
+
+def test_create_spaces_refuses_db_spec_without_snapshot(no_git):
+    spec = StoredSpace(
+        name="x", git_repo_uri=PUBLIC_GIT, space_uri=db_space.make_db_uri("x")
+    )
+    result = _create([spec])
+    assert result.exit_code != 0
+    assert "gbserver space-snapshot --space-name x" in result.output
+    assert no_git.get_by_uuid(None) == []
+
+
+def test_create_spaces_prod_clear_without_force_checks_kept_rows(tmp_path):
+    """PROD --clear without --force keeps its rows, so a new space that would
+    share a kept row's local secrets is still refused."""
+
+    def local_space(dirname):
+        d = tmp_path / dirname
+        d.mkdir()
+        (d / "space.yaml").write_text(
+            "name: shared\nsecret_manager:\n  type: local\n  config: {}\n"
+        )
+        return d.as_uri()
+
+    storage = get_admin_storage().space_storage  # per-test SQLite (conftest)
+    storage.add(StoredSpace(name="kept", git_repo_uri=local_space("a")))
+    spec = StoredSpace(
+        name="new", git_repo_uri=local_space("b"), lakehouse_namespace=""
+    )
+    result = _create([spec], "--clear", env="PROD")
+    assert result.exit_code != 0
+    assert "kept" in str(result.exception)
+    assert {s.name for s in storage.get_by_uuid(None)} == {"kept"}

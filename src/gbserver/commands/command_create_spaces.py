@@ -10,7 +10,7 @@ import click
 import yaml
 from pydantic import BaseModel
 
-from gbserver.spaces.db_space import is_db_uri, parse_db_uri
+from gbserver.spaces.db_space import check_own_space_uri, is_db_uri
 from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
 from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage import singleton_storage
@@ -40,24 +40,29 @@ predefined_spaces = [
 ]
 
 
-def _check_alias_targets(storage, spaces: List[StoredSpace], clear: bool) -> None:
-    """Refuse db:// aliases whose target row would not exist afterwards.
+def _check_db_specs(spaces: List[StoredSpace]) -> None:
+    """Refuse db:// specs that can't be served, before anything is changed.
+
+    A db-backed space is served from its own snapshot, which only
+    ``gbserver space-snapshot`` creates (carried over here from an existing
+    row): the spec's space_uri must name the row itself, and the row must have
+    a space snapshot.
 
     Raises:
-        click.ClickException: An alias names a row that is neither registered
-            and kept (not removed by --clear) nor among the spaces being added.
+        click.ClickException: For the first spec that can't be served.
     """
-    names = {s.name for s in spaces}
     for space in spaces:
         if not is_db_uri(space.space_uri):
             continue
-        target = parse_db_uri(cast(str, space.space_uri)).space_name
-        if target == space.name or target in names:
-            continue
-        if clear or storage.get_by_name(target) is None:
+        try:
+            check_own_space_uri(space)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+        if space.space is None or not space.space.archive:
             raise click.ClickException(
-                f"space {space.name} is served from {space.space_uri}, but"
-                f" {target} would not exist; add it to the spaces to create"
+                f"space {space.name!r} has space_uri {space.space_uri} but no"
+                " snapshot to serve; create it with `gbserver space-snapshot"
+                f" --space-name {space.name}`"
             )
 
 
@@ -190,11 +195,10 @@ def cli(
     logger.info("Working on spaces in Lakehouse %s environment", LAKEHOUSE_ENVIRONMENT)
     storage = singleton_storage.get_admin_storage().space_storage
     spaces_to_create = _keep_db_snapshots(storage, spaces_to_create)
-    # Before --clear/--replace delete anything: a refusal must not leave the
-    # table emptied, and aliases' target rows must still be readable. PROD
-    # without --force keeps its rows, so check against them.
+    # Before --clear/--replace delete anything, so a refusal never leaves the
+    # table emptied. PROD without --force keeps its rows: check against them.
     will_clear = clear and (force or LAKEHOUSE_ENVIRONMENT.lower() != "prod")
-    _check_alias_targets(storage, spaces_to_create, will_clear)
+    _check_db_specs(spaces_to_create)
     _check_local_secrets_collisions(storage, spaces_to_create, will_clear)
     if clear:
         if will_clear:

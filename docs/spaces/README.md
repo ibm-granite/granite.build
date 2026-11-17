@@ -224,9 +224,10 @@ its `space_uri` and snapshot when the spec names the same repo (e.g. the predefi
 not moved back to git. Likewise, the environment-files API reads the public space's environments
 from its snapshot.
 
-A `space_uri` of `db://spaces/<other>` makes a row an alias that is served from another row's snapshot. `GET
-/api/v1/spaces/` omits the archives (but keeps the source metadata); `GET
-/api/v1/spaces/<name>` returns them.
+Each db-backed row holds its own copy: `space_uri` is always `db://spaces/<own name>`. The
+notation could name another row, but serving a space from another's snapshot is not
+supported and is refused. `GET /api/v1/spaces/` omits the archives (but keeps the source
+metadata); `GET /api/v1/spaces/<name>` returns them.
 
 ## See also
 

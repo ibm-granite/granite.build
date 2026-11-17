@@ -135,10 +135,14 @@ def test_missing_snapshot(rows):
         resolve_db_uri("db://spaces/x/base_uri_0")
 
 
-def test_alias_uses_target_row(rows):
+def test_other_rows_space_uri_is_not_supported(rows):
+    """The notation could name another row; serving from it is not supported."""
     rows["x"] = _row()
-    alias = StoredSpace(name="alias", git_repo_uri=SOURCE, space_uri=make_db_uri("x"))
-    assert get_space_config_uri(alias) == resolve_db_uri("db://spaces/x").file_uri
+    other = StoredSpace(name="alias", git_repo_uri=SOURCE, space_uri=make_db_uri("x"))
+    with pytest.raises(ValueError, match="not supported"):
+        get_space_config_uri(other)
+    with pytest.raises(ValueError, match="not supported"):
+        create_space(other)
 
 
 def test_git_backed_unchanged():

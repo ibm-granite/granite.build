@@ -4,9 +4,10 @@
 
 """Spaces whose definitions are stored in gb_spaces instead of a git repo.
 
-A row with ``space_uri: db://spaces/<name>`` is served from the ``space``
-snapshot (StoredSpace.space) of row ``<name>`` -- normally itself; another
-name makes it an alias. Its ``git_repo_uri`` stays the space's git repo. The
+A row with ``space_uri: db://spaces/<name>`` is served from its own ``space``
+snapshot (StoredSpace.space). The notation could name another row, but serving
+one row from another's snapshot is not supported: every db-backed row holds
+its own copy. Its ``git_repo_uri`` stays the space's git repo. The
 snapshot's space.yaml names each snapshotted base_uris entry as
 ``db://spaces/<name>/base_uri_<i>`` (``base_uris[i]``), served from that row's
 ``base_uris[i]`` snapshot, in its original position.
@@ -204,10 +205,25 @@ def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri
     return ResolvedDbUri(file_uri=file_uri, identity_uri=identity_uri)
 
 
+def check_own_space_uri(stored_space: StoredSpace) -> None:
+    """Refuse a db:// space_uri naming another row (not supported).
+
+    Raises:
+        ValueError: space_uri is a db:// URI other than the row's own.
+    """
+    uri = stored_space.space_uri
+    if is_db_uri(uri) and parse_db_uri(uri or "").space_name != stored_space.name:
+        raise ValueError(
+            f"space {stored_space.name!r}: space_uri {uri!r} names another space;"
+            f" serving a space from another's snapshot is not supported, use"
+            f" {make_db_uri(stored_space.name)}"
+        )
+
+
 def _source_row(stored_space: StoredSpace) -> StoredSpace:
-    """The row holding a db-backed space's snapshots (itself, or its alias target)."""
-    name = parse_db_uri(stored_space.get_space_uri()).space_name
-    return stored_space if name == stored_space.name else _get_row(name)
+    """The row holding a db-backed space's snapshots: itself."""
+    check_own_space_uri(stored_space)
+    return stored_space
 
 
 def get_pr_repo_uri(stored_space: StoredSpace) -> Optional[str]:

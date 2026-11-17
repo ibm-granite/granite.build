@@ -104,11 +104,12 @@ def _resolve_one_base_uri(
     """
     if is_db_uri(base_uri):
         # A db-backed space's base_uris[i] snapshot (db://spaces/<n>/base_uri_<i>).
-        # Only its own row: naming another space's would bypass its access.
+        # Only its own row: another space's is not supported (and would bypass
+        # that space's access).
         if parse_db_uri(base_uri).space_name != db_space_name:
             raise ValueError(
-                f"base_uri {base_uri!r} names another space's snapshot; a space"
-                f" ({space_uri!r}) may only use its own db:// snapshots"
+                f"base_uri {base_uri!r} names another space's snapshot, which is"
+                f" not supported; a space ({space_uri!r}) uses only its own"
             )
         return resolve_db_uri(base_uri).file_uri
     parsed = urlparse(base_uri)
