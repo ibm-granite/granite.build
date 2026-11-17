@@ -55,6 +55,10 @@ outputs:
       type: model
 environment_configs:
   Skypilot:
+    # Trains on one machine (accelerate launch --num_machines 1): gbserver refuses, at
+    # step creation, a build whose resolved num_nodes is not 1 (compute_config, this
+    # launcher's config, or the build's launcher_config).
+    single_node: true
     default_launcher: openinstruct-sft
     launchers:
       openinstruct-sft:
