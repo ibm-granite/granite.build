@@ -363,19 +363,47 @@ environment_configs:
                 done
             }
 
-            # Print "ETag|size|LastModified" of the object at S3_KEY; fails (printing
-            # nothing) when S3_KEY is not an object, e.g. a prefix.
+            # Print "ETag|size|LastModified" of the object at S3_KEY.
+            # Returns 1 (printing nothing) only when S3_KEY is not an object --
+            # a key ending in "/" or a genuine not-found (404) -- so the caller
+            # treats the URI as a prefix. Any other head-object failure (403
+            # access denied, bad credentials, an unreachable endpoint) is reported
+            # with the CLI's own message and returns 2: falling through to a
+            # prefix sync would hide it behind "no objects found". (Without
+            # s3:ListBucket, S3 answers 403 even for a missing key; a prefix sync
+            # couldn't list either, so failing loudly is right there too.)
             s3pull_object_signature() {
+                local out err rc=0 errfile
                 [ -n "${S3_KEY}" ] && [[ "${S3_KEY}" != */ ]] || return 1
-                aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3api head-object --bucket "${S3_BUCKET}" \
-                    --key "${S3_KEY}" --output json 2>/dev/null \
-                  | python3 -c 'import json, sys; d = json.load(sys.stdin); print("%s|%s|%s" % (d.get("ETag", ""), d.get("ContentLength", ""), d.get("LastModified", "")))'
+                errfile="$(mktemp)"
+                out="$(aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3api head-object --bucket "${S3_BUCKET}" \
+                    --key "${S3_KEY}" --output json 2>"${errfile}")" || rc=$?
+                err="$(cat "${errfile}")"
+                rm -f "${errfile}"
+                if [ "${rc}" -ne 0 ]; then
+                    case "${err}" in
+                        *"(404)"*|*"Not Found"*|*"NoSuchKey"*) return 1 ;;
+                    esac
+                    echo "ERROR: cannot read s3://${S3_BUCKET}/${S3_KEY} (head-object exit ${rc}): ${err:-no error output}" >&2
+                    return 2
+                fi
+                printf '%s' "${out}" \
+                  | python3 -c 'import json, sys; d = json.load(sys.stdin); print("%s|%s|%s" % (d.get("ETag", ""), d.get("ContentLength", ""), d.get("LastModified", "")))' \
+                  || { echo "ERROR: unexpected head-object output for s3://${S3_BUCKET}/${S3_KEY}" >&2; return 2; }
             }
 
             s3pull_acquire_lock
             s3pull_adopt_legacy_dir
             PREV_VERSION="$(basename "$(readlink "${DEST}" 2>/dev/null || true)")"
-            OBJECT_SIG="$(s3pull_object_signature)" || OBJECT_SIG=""
+            # 0: an object (signature in OBJECT_SIG); 1: not an object, so a prefix;
+            # 2: head-object failed for another reason (already reported) -- stop.
+            SIG_RC=0
+            OBJECT_SIG="$(s3pull_object_signature)" || SIG_RC=$?
+            if [ "${SIG_RC}" -eq 1 ]; then
+              OBJECT_SIG=""
+            elif [ "${SIG_RC}" -ne 0 ]; then
+              exit 1
+            fi
 
             # An unchanged object: the live version already holds it, so keep it --
             # unless that copy is older than CACHE_MAX_AGE_DAYS, which downloads it

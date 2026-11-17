@@ -24,6 +24,7 @@ STEPS = Path("src/gbserver/builtins/steps/skypilot")
 
 # Records each invocation and fakes downloads into a local destination:
 # - head-object succeeds only when STUB_HEAD_RC=0, printing ETag STUB_ETAG;
+#   otherwise it fails with STUB_HEAD_ERR (default: a 404 Not Found);
 # - a download sync writes the objects named in STUB_FILES (default "f") with
 #   content STUB_CONTENT, each via a temp file + rename like the real CLI (so a
 #   hard-linked previous version is never modified); --delete removes files not
@@ -34,7 +35,10 @@ echo "$*" >> "${STUB_LOG}"
 last="${!#}"
 case " $* " in
   *" s3api head-object "*)
-    [[ "${STUB_HEAD_RC:-1}" == 0 ]] || exit 1
+    if [[ "${STUB_HEAD_RC:-1}" != 0 ]]; then
+      echo "${STUB_HEAD_ERR:-An error occurred (404) when calling the HeadObject operation: Not Found}" >&2
+      exit "${STUB_HEAD_RC:-254}"
+    fi
     echo "{\\"ETag\\": \\"${STUB_ETAG:-e1}\\", \\"ContentLength\\": 5, \\"LastModified\\": \\"2026-01-01T00:00:00+00:00\\"}"
     exit 0 ;;
   *" s3 cp "*) [[ "${last}" == s3://* ]] || { mkdir -p "$(dirname "${last}")"; echo d > "${last}"; } ;;
@@ -191,6 +195,38 @@ class TestS3PullScript:
         )
         assert result.returncode != 0
         assert "no objects found" in result.stderr
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            "An error occurred (403) when calling the HeadObject operation: Forbidden",
+            'Could not connect to the endpoint URL: "http://gb-s3:9000/b/dir/data.jsonl"',
+        ],
+    )
+    def test_head_object_errors_fail_loudly(self, tmp_path, error):
+        """A 403 or network error is reported, not hidden behind a prefix sync."""
+        dest = tmp_path / "cache" / "h"
+        result = _run(
+            tmp_path,
+            "s3pull",
+            "s3://b/dir/data.jsonl",
+            dest,
+            {"STUB_HEAD_RC": "254", "STUB_HEAD_ERR": error},
+        )
+        assert result.returncode != 0
+        assert "cannot read s3://b/dir/data.jsonl" in result.stderr
+        assert error in result.stderr
+        assert "no objects found" not in result.stderr
+        assert " s3 sync " not in _log(tmp_path)
+        assert not dest.exists()
+        assert not (dest.parent / ".h.lock").exists()
+
+    def test_not_found_key_is_pulled_as_a_prefix(self, tmp_path):
+        """Only a genuine 404 makes the URI a prefix."""
+        dest = tmp_path / "cache" / "h"
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest)
+        assert result.returncode == 0, result.stderr
+        assert "s3 sync --delete --only-show-errors s3://b/dir/" in _log(tmp_path)
 
     def test_missing_credentials_fail(self, tmp_path):
         """Without credentials the step fails before calling aws."""
