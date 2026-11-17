@@ -559,17 +559,6 @@ async def test_skypilot_inline_pull_carries_the_path(skypilot_env):
 
 
 @pytest.mark.asyncio
-async def test_skypilot_inline_bucket_pull_has_no_path(skypilot_env):
-    binding, _ = await skypilot_env.pullasset_hfstore(
-        uri=HfURI.parse("hf:///buckets/org/b/some/dir"),
-        assetstore=_hfstore(),
-        storeload_config=_storeload(inline=True),
-    )
-    assert binding["_hfpull"]["path_in_repo"] == ""
-    assert binding["binding"]["path"] == binding["_hfpull"]["path"]
-
-
-@pytest.mark.asyncio
 async def test_lsf_binds_the_path_under_the_download_dir():
     from gbserver.environment.lsf import Lsf
 

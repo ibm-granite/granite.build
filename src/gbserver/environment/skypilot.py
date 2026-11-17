@@ -5790,6 +5790,9 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         When ``inline: true`` is set in the storeload config, the download is
         deferred to the main step's setup phase (no separate cluster launched).
         This is required for environments without shared filesystems (e.g. AWS).
+
+        A bucket input is refused: both download paths use ``hf download``,
+        which has no bucket repo type.
         """
         from gbcommon.uri.hf import HfType, HfURI
         from gbserver.asset.hfstore import Hfstore
@@ -5802,6 +5805,16 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         self._warn_non_default_mode(storeload_config, uri)
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        if hfuri.get_hf_type() == HfType.BUCKET:
+            # Refuse here, before a cluster is launched for this input, rather
+            # than fail later on the CLI's argument parsing.
+            raise ValueError(
+                f"hf assetstore pull of '{hfuri}': hf:// bucket inputs aren't "
+                "supported on the skypilot environment, because its hfpull step "
+                "and inline download use `hf download`, which has no bucket "
+                "type. Pull the bucket in a target on a K8s, Bash or Docker "
+                "environment instead."
+            )
         shared_workdir = resolve_shared_workdir(self.config)
         cache_dir = Path(
             get_hf_cache_dir(storeload_config, default_workdir=shared_workdir)
@@ -5841,15 +5854,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
                 "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
                 "revision": hfuri.get_revision(),
                 "type": hfuri.get_hf_type() or "model",
-                # A bucket is bound at the download dir (HfURI.local_path), so
-                # it gets no filter, as in Hfstore.build_hfpull_step_config.
-                # (`hf download` has no bucket repo type, so an inline bucket
-                # pull fails either way.)
-                "path_in_repo": (
-                    ""
-                    if hfuri.get_hf_type() == HfType.BUCKET
-                    else hfuri.get_path_in_repo()
-                ),
+                "path_in_repo": hfuri.get_path_in_repo(),
                 "uri": str(hfuri),
                 "hf_token": hf_token,
             }
