@@ -60,9 +60,7 @@ class TestNonnegativityAndMatch:
     @pytest.mark.parametrize("beta", [0.0, 0.3, 0.5, 0.8, 1.0])
     @pytest.mark.parametrize("temperature", [1.0, 2.0])
     def test_jsd_is_nonnegative(self, beta, temperature):
-        loss = JSD(
-            _logits(seed=2), _logits(seed=3), beta=beta, temperature=temperature
-        )
+        loss = JSD(_logits(seed=2), _logits(seed=3), beta=beta, temperature=temperature)
         assert loss.item() >= -1e-9
 
     @pytest.mark.parametrize("beta", [0.0, 0.3, 0.5, 0.8, 1.0])
@@ -91,13 +89,17 @@ class TestStationarity:
 
     def test_kl_interpolation_is_stationary_at_the_teacher(self):
         assert (
-            _stationarity_gap(lambda s, t: JSD(s, t, beta=0.4, use_kl_interpolation=True))
+            _stationarity_gap(
+                lambda s, t: JSD(s, t, beta=0.4, use_kl_interpolation=True)
+            )
             < 1e-8
         )
 
     @pytest.mark.parametrize("on_policy", [True, False])
     def test_distillm2_is_stationary_at_the_teacher(self, on_policy):
-        assert _stationarity_gap(lambda s, t: D2(s, t, on_policy=[on_policy] * 4)) < 1e-8
+        assert (
+            _stationarity_gap(lambda s, t: D2(s, t, on_policy=[on_policy] * 4)) < 1e-8
+        )
 
     def test_adaptive_kld_is_NOT_stationary_at_the_teacher(self):
         """The property the arm violates, kept as the reason it is refused.

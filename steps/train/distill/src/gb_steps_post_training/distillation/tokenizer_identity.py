@@ -31,7 +31,6 @@ TWO FORMS, deliberately, and the preference order is not arbitrary:
      sides, so it can only compare equal for byte-identical tokenizers.
 """
 
-
 # A second copy of this module lives in
 # steps/aux/hf-export/skypilot/src/hf_export_state/tokenizer_identity.py (that
 # step depends on nothing in steps/train/distill). Both must compute the SAME

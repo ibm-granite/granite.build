@@ -4357,10 +4357,9 @@ class CustomGOLDTrainer(GOLDTrainer):
             prompt_tokenized.attention_mask == 0
         )
         completion_width = padded_completion_ids.shape[1]
-        valid_completion = (
-            torch.arange(completion_width, device=device).unsqueeze(0)
-            < torch.tensor(completion_valid_lengths, device=device).unsqueeze(1)
-        )
+        valid_completion = torch.arange(completion_width, device=device).unsqueeze(
+            0
+        ) < torch.tensor(completion_valid_lengths, device=device).unsqueeze(1)
         pad_positions[:, padding_added + prompt_width :] = ~valid_completion
         new_labels[pad_positions] = -100
         new_attention_mask[pad_positions] = 0
