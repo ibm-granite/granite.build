@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """One answer, for every step, to "has this already been done, and with what?"
 
 WHY THIS EXISTS.

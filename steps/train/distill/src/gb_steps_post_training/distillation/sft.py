@@ -11,6 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# PORTED, not authored here: imported from
+# github.com/laminair/gb-steps-distillation at commit
+# a5d59bc45524a8d75706e20d44ae1a254f273f23 (2026-10-21), path
+# gb_steps_post_training/distillation/sft.py, which carries the HuggingFace
+# notice above. Local patches are listed in steps/train/distill/src/VENDORED.md.
 
 import atexit
 

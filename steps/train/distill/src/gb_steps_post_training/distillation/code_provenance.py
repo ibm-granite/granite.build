@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Record which code a training run actually executed.
 
 WHY THIS EXISTS. The lmbda sweep's premise is that its three arms differ in lmbda and in nothing else,

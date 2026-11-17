@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Decide what a relaunch into an existing output_dir should DO, before any GPU is touched.
 
 WHY THIS FILE EXISTS.

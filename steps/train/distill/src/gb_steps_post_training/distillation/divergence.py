@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Distributional metrics between a student and its teacher, over a corpus.
 
 PORTED FROM two earlier exploratory scripts (a 337-line JSD script and a 234-line

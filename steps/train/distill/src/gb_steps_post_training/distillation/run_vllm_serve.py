@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Wrapper for trl's vllm_serve that patches compatibility bugs.
 
 Patches applied:

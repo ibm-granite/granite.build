@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """recipes/distill/: the SLURM environment template and the example site file.
 
 The template is rendered the way scripts/setup-local-space.sh renders it, by

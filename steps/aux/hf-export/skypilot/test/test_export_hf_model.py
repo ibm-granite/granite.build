@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the generic hf-export step.
 
 Ported from the distillation collection's suite (steps/distill-hf-export/test/ in

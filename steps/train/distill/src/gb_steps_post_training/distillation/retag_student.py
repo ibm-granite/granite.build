@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Retag a Granite student onto a teacher's tokenizer, transplanting special-token
 embeddings by structural role instead of mean-initializing them.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """What "already aligned" means for distill-tokenizer-align, and nothing else.
 
 step_state.py holds the mechanism -- the comparison, the atomic marker, the RUN/SKIP/REFUSE

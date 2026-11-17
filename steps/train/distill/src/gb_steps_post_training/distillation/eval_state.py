@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """What "already measured" means for distill-eval, and nothing else.
 
 step_state.py holds the mechanism -- the comparison, the atomic marker, the RUN/SKIP/REFUSE

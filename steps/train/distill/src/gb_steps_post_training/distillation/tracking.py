@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """ClearML / W&B experiment tracking: ONE place that decides whether either backend is on, and why.
 
 THE RULES THIS ENCODES (as specified for this project):

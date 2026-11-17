@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Is the vendored GraniteSWA arm in play?
 
 `gold.py`, `sft.py` and `run_vllm_serve.py` in an earlier exploratory checkout all import

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for the generic hf-export step-template.yaml."""
 
 import re

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Do the version ranges the steps DECLARE admit the environment they were VERIFIED in?
 
 Every distill-* step with a pyproject.toml states its dependencies as ranges, and every one of

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Refuse to hold an allocation waiting for weights that live on tape.
 
 BYTE-IDENTICAL across every step that reads model weights (distill-gold,

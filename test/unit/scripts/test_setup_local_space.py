@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """scripts/setup-local-space.sh, run against a throwaway GB_HOME_DIR.
 
 The script renders a $${KEY}-templated environment from a private site file,

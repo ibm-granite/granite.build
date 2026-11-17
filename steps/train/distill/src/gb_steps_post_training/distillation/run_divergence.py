@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Entrypoint: measure divergence and/or entropy of a student against a teacher on a corpus.
 
 Invoked as `python -m gb_steps_post_training.distillation.run_divergence`, the same convention

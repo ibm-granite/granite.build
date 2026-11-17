@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Resume state for distill-hf-export: is `dest` already this checkpoint, exported this way?
 
 The general contract lives in step_state.py (RUN / SKIP / REFUSE, a `.step-done.json` written

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the no-progress refusal (../src/progress_check.py).
 
 Run from the step directory with `make test`.

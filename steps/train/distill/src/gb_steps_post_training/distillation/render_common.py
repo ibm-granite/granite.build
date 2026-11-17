@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Config validation shared by every training step's config renderer.
 
 WHY THIS MODULE EXISTS. `distill-gold-train` and `distill-sft-baseline` are separate steps

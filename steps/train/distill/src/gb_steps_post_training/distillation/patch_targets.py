@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Assert every monkeypatch target still exists, and report which patches are still needed.
 
 WHY THIS EXISTS. `steps/distill-gold-train/pyproject.toml` pins nine runtime dependencies

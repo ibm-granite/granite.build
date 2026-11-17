@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Build a tokenizer *overlay*: a mirror directory holding the fast tokenizer of a model
 directory and nothing that can make transformers fall back off it.

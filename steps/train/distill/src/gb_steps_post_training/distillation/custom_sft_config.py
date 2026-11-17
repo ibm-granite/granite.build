@@ -5,6 +5,12 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
+# PORTED, not authored here: imported from
+# github.com/laminair/gb-steps-distillation at commit
+# a5d59bc45524a8d75706e20d44ae1a254f273f23 (2026-10-21), path
+# gb_steps_post_training/distillation/custom_sft_config.py, which carries the HuggingFace
+# notice above. Local patches are listed in steps/train/distill/src/VENDORED.md.
 
 from dataclasses import dataclass, field
 

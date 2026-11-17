@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Put the step's own src/ on sys.path for the unit tests.
 
 export_hf_model.py and its resume gate (src/hf_export_state/) are what the image bakes in

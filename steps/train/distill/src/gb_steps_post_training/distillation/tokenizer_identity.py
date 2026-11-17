@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """One definition of "which tokenizer is this", shared by every step that has an opinion.
 
 WHY IT IS SHARED CODE AND NOT A CONVENTION. Three steps need to agree about this:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The GPU allocation check in the six distill GPU steps (ibm-granite/granite.build#604).
 
 Each step's run script refuses to start when its container can access fewer GPUs than

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Record WHICH ROWS a training run actually had, as opposed to which rows prep emitted.
 
 WHY THIS IS A SEPARATE QUESTION FROM THE CORPUS MANIFEST.

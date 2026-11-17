@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Sourced by the GOLD launchers. Defines require_hub_kernels.
 #
 # THE PROBLEM THIS SOLVES. gold.py pre-populates transformers' hub-kernel mapping at

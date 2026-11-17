@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The vendored trainer's lmbda schedule, generation floor and stop_at_step.
 
 These pin the two local patches folded into steps/train/distill/src (see VENDORED.md there):

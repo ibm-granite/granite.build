@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Distillation prep steps: tokenizer retag, corpus prep, launchers."""
 
 # GOLD distillation source, ported out of an earlier exploratory checkout.

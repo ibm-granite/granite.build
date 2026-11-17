@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the teacher ONCE over a corpus and keep its top-K logits per assistant token.
 
 WHAT THIS IS FOR. Off-policy KD needs the teacher's distribution at every token the student is

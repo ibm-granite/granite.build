@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Refuse an attempt when the two before it made no progress.
 
 With ``train_dir`` set, the checkpoint directory survives a build-level retry, so a

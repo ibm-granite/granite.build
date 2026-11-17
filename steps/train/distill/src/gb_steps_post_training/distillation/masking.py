@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The label-masking contract, DERIVED from a tokenizer rather than hardcoded in every config.
 
 WHY THIS IS ONE STEP'S OUTPUT AND NOT A CONFIG FIELD.

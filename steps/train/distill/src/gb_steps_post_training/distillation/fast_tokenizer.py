@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Load a fast tokenizer the way every step in this collection must: never AutoTokenizer.
 
 WHY THIS MODULE EXISTS AT ALL. A Granite directory's `tokenizer_config.json` declares

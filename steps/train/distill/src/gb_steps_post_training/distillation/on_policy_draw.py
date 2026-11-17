@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Decide whether a training step draws from the teacher, identically on every rank.
 
 THIS IS PART OF THE COLLECTIVE SCHEDULE, NOT A SAMPLING DETAIL. Both call sites in

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Route training scalars into SEPARATE ClearML plots instead of one unreadable "train" plot.
 
 THE PROBLEM, measured directly (the bucket100 arm). transformers'
