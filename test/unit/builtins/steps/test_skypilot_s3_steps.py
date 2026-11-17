@@ -31,7 +31,8 @@ STEPS = Path("src/gbserver/builtins/steps/skypilot")
 #   content STUB_CONTENT, each via a temp file + rename like the real CLI (so a
 #   hard-linked previous version is never modified); --delete removes files not
 #   in STUB_FILES; STUB_EMPTY makes the prefix empty; STUB_SLEEP pauses inside
-#   the sync, which is bracketed by sync-start/sync-end log lines.
+#   the sync, which is bracketed by sync-start/sync-end log lines;
+#   STUB_RM_DURING_SYNC removes that path mid-sync (e.g. to simulate a reclaim).
 STUB_AWS = """#!/usr/bin/env bash
 echo "$*" >> "${STUB_LOG}"
 last="${!#}"
@@ -60,6 +61,7 @@ case " $* " in
     for name in ${files}; do
       echo "${STUB_CONTENT:-d}" > "${dir}/${name}.part" && mv "${dir}/${name}.part" "${dir}/${name}"
     done
+    [[ -n "${STUB_RM_DURING_SYNC:-}" ]] && rm -rf "${STUB_RM_DURING_SYNC}"
     sleep "${STUB_SLEEP:-0}"
     echo "sync-end" >> "${STUB_LOG}"
     ;;
@@ -349,6 +351,25 @@ class TestS3PullSharedCache:
         assert (lock / "owner").read_text().strip() == "host:A|pid:2"
         assert not list(dest.parent.glob(".h.lock.stale.*"))
         assert " s3 sync " not in _log(tmp_path)
+
+    def test_heartbeat_never_recreates_a_reclaimed_lock(self, tmp_path):
+        """If the lock dir vanishes mid-pull (reclaimed), the heartbeat must not
+        leave a regular file at the lock path that would block other pulls."""
+        dest = tmp_path / "cache" / "h"
+        lock = dest.parent / ".h.lock"
+        result = _run(
+            tmp_path,
+            "s3pull",
+            "s3://b/dir",
+            dest,
+            {
+                "STUB_RM_DURING_SYNC": str(lock),
+                "STUB_SLEEP": "3",
+                "GB_S3PULL_HEARTBEAT_SECONDS": "1",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert not lock.exists(), "heartbeat left something at the lock path"
 
     def test_live_lock_times_out_and_is_left_alone(self, tmp_path):
         """A held, fresh lock makes the pull wait, then fail; it isn't stolen."""

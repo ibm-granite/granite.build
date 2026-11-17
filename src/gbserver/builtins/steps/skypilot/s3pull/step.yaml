@@ -153,6 +153,7 @@ environment_configs:
             # fails the step (it retries) rather than hanging.
             LOCK_TTL_SECONDS="${GB_S3PULL_LOCK_TTL_SECONDS:-600}"
             LOCK_WAIT_SECONDS="${GB_S3PULL_LOCK_WAIT_SECONDS:-7200}"
+            HEARTBEAT_SECONDS="${GB_S3PULL_HEARTBEAT_SECONDS:-30}"
             OWNER="host:$(hostname)|pid:$$|$(date +%s)"
             HEARTBEAT_PID=""
             NEW_VERSION=""
@@ -227,9 +228,20 @@ environment_configs:
                     waited=$(( waited + 2 ))
                 done
                 echo "${OWNER}" > "${LOCK}/owner"
+                # Keep the lock fresh while we still own it. touch -c never creates
+                # the path: once the lock dir is gone (reclaimed), a plain touch
+                # would leave a regular file named like the lock, blocking every
+                # other pull's mkdir until it went stale. Checking the owner first
+                # also stops us refreshing a lock someone else took since, which
+                # would keep their lock looking alive after they died.
                 # Detached from our stdio so a sleeping heartbeat never holds the
                 # step's output open after it exits.
-                ( while sleep 30; do touch "${LOCK}" 2>/dev/null || exit 0; done ) </dev/null >/dev/null 2>&1 &
+                (
+                    while sleep "${HEARTBEAT_SECONDS}"; do
+                        [ "$(cat "${LOCK}/owner" 2>/dev/null || true)" = "${OWNER}" ] || exit 0
+                        touch -c "${LOCK}" 2>/dev/null || exit 0
+                    done
+                ) </dev/null >/dev/null 2>&1 &
                 HEARTBEAT_PID=$!
             }
 
