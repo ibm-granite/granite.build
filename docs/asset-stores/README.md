@@ -59,9 +59,10 @@ Notes:
   (`hf:///org/model/main/config.json`) is bound at that file, so `binding.path` is a file, not a
   directory. A path that matches nothing in the repo fails the pull. A dataset repo needs the
   `datasets/` type segment (`hf:///datasets/org/repo/...`); without it the URI names a model repo.
-  Bucket inputs (`hf:///buckets/org/name[/prefix]`) work on the K8s, Bash and Docker environments.
-  Skypilot refuses them before launching a cluster for them, because its hfpull step and inline
-  download use `hf download`, which has no bucket type.
+  Bucket inputs (`hf:///buckets/org/name[/prefix]`) work on the `K8s`, `Bash` and `Docker`
+  environment types. Any `Skypilot` environment, whatever its cloud (including `kubernetes`),
+  refuses them before launching a cluster for them, because its hfpull step and inline download
+  use `hf download`, which has no bucket type.
 - **Env-local (`env://`)** models an artifact that already lives on a filesystem the worker can see, so
   the store resolves the path directly and transfers nothing. Common on bare-metal HPC backends (e.g.
   LSF/SLURM with shared GPFS), but supported by **all** environment classes and registered
