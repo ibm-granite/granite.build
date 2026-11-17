@@ -642,6 +642,70 @@ class TestS3PullLeases:
         assert not (mocked.parent / ".m.leases").exists()
 
 
+def _run_link(run_dir: Path) -> Path:
+    """The per-run binding Skypilot.pullasset_cosstore would choose."""
+    return run_dir / ".gb_inputs" / "h"
+
+
+class TestS3PullRunLink:
+    """Consumers are bound to a per-run link pinned to the version their run
+    leased, so another build's re-pull can't switch them to new data mid-run."""
+
+    def _pull(self, tmp_path, dest, run_id, extra=None, uri="s3://b/dir"):
+        run_dir = tmp_path / "runs" / run_id
+        env = {**_lease_env(run_dir, run_id), **(extra or {})}
+        result = _run(
+            tmp_path,
+            "s3pull",
+            uri,
+            dest,
+            env,
+            step_config={"run_link": str(_run_link(run_dir))},
+        )
+        assert result.returncode == 0, result.stderr
+        return _run_link(run_dir), result
+
+    def test_link_points_at_the_leased_version(self, tmp_path):
+        dest = tmp_path / "cache" / "h"
+        link, result = self._pull(tmp_path, dest, "trA")
+        assert link.is_symlink()
+        assert link.resolve() == dest.resolve()
+        lease = (dest.parent / ".h.leases" / "trA").read_text().splitlines()
+        assert lease[1] == link.resolve().name
+        assert f"to path {link}" in result.stdout
+
+    def test_link_keeps_its_version_when_another_run_repulls(self, tmp_path):
+        """The reported bug: upstream changes and run B re-pulls while run A runs."""
+        dest = tmp_path / "cache" / "h"
+        link_a, _ = self._pull(tmp_path, dest, "trA", {"STUB_CONTENT": "one"})
+        self._pull(tmp_path, dest, "trB", {"STUB_CONTENT": "two"})
+        assert (dest / "f").read_text().strip() == "two"
+        assert (link_a / "f").read_text().strip() == "one"
+
+    def test_repull_by_the_same_run_repoints_its_link(self, tmp_path):
+        dest = tmp_path / "cache" / "h"
+        self._pull(tmp_path, dest, "trA", {"STUB_CONTENT": "one"})
+        link, _ = self._pull(tmp_path, dest, "trA", {"STUB_CONTENT": "two"})
+        assert (link / "f").read_text().strip() == "two"
+
+    def test_unchanged_object_path_creates_the_link(self, tmp_path):
+        dest = tmp_path / "cache" / "h"
+        env = {"STUB_HEAD_RC": "0", "STUB_ETAG": "e1"}
+        self._pull(tmp_path, dest, "trA", env, uri="s3://b/dir/model.bin")
+        link, result = self._pull(
+            tmp_path, dest, "trB", env, uri="s3://b/dir/model.bin"
+        )
+        assert "is unchanged" in result.stdout
+        assert (link / "model.bin").exists()
+
+    def test_mock_writes_the_marker_where_consumers_look(self, tmp_path):
+        dest = tmp_path / "cache" / "h"
+        link, _ = self._pull(
+            tmp_path, dest, "trA", {"GBTEST_MOCK_COS": "true"}, uri="s3://b/k"
+        )
+        assert (link / ".gbtest_mock_s3pull").exists()
+
+
 class TestS3PushScript:
     def test_directory_is_synced(self, tmp_path):
         """A directory source is synced under the URI as a prefix."""

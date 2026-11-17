@@ -20,7 +20,11 @@ type: upload
 # older than cache_max_age_days.
 #
 # Leases: under the lock, each pull records that its target run reads the live
-# version, in .<name>.leases/<GB_TARGETRUN_ID> (run dir, pinned version, time).
+# version, in .<name>.leases/<GB_TARGETRUN_ID> (run dir, pinned version, time),
+# and points run_link -- the run's own binding, <run workdir>/.gb_inputs/<name>
+# -- at that version. The run's steps read through run_link, so they keep
+# reading the version they leased even when another build's pull re-points
+# local_path meanwhile.
 # A lease is live while its run dir ($GB_BUILD_WORKDIR, removed at build end)
 # exists -- so a crashed build's lease stays live -- unless lease_max_age_days
 # (default 0 = never) has passed. Pruning keeps every leased version, and
@@ -55,6 +59,10 @@ config:
     # Treat a reader lease older than this many days as dead; 0 (default) means
     # a lease lasts as long as its run dir. Storeload key: lease_max_age_days.
     lease_max_age_days: 0
+    # The run's binding, set by Skypilot.pullasset_cosstore when the run has a
+    # workdir; s3pull points it at the version this run leases. '' = consumers
+    # read local_path (the shared cache entry) directly.
+    run_link: ''
   compute_config:
     num_cpus_per_node: 2
     num_gpus_per_node: 0
@@ -100,6 +108,9 @@ environment_configs:
               echo "s3pull: invalid lease_max_age_days '${LEASE_MAX_AGE_DAYS}'; using 0" >&2
               LEASE_MAX_AGE_DAYS=0
             fi
+            RUN_LINK="$(printf %s '{{ config.s3pull_config.run_link | default("") | b64encode }}' | base64 -d)"
+            # The path consumers are bound to.
+            BINDING_PATH="${RUN_LINK:-${LOCAL_PATH}}"
             MOCK_MARKER=".gbtest_mock_s3pull"
 
             # Mocked when GBTEST_MOCK_COS is truthy, matching
@@ -110,9 +121,9 @@ environment_configs:
             }
             if cos_mocked; then
                 echo "[GBTEST_MOCK_COS] mocking s3pull - skipping real download"
-                mkdir -p "${LOCAL_PATH}"
-                echo mock > "${LOCAL_PATH}/${MOCK_MARKER}"
-                echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
+                mkdir -p "${BINDING_PATH}"
+                echo mock > "${BINDING_PATH}/${MOCK_MARKER}"
+                echo "Pulled S3 URI: ${S3_URI} to path ${BINDING_PATH}"
                 echo 's3pull end'
                 exit 0
             fi
@@ -196,12 +207,18 @@ environment_configs:
                 HEARTBEAT_PID=$!
             }
 
+            # Atomically make link $2 point at $1 (a new link renamed over it), so a
+            # reader resolving $2 sees the old target or the new one, never none.
+            s3pull_replace_link() {
+                local tmp="$2.swap.$$"
+                ln -sfn "$1" "${tmp}"
+                python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "${tmp}" "$2" 2>/dev/null \
+                    || mv -Tf "${tmp}" "$2"
+            }
+
             # Atomically point DEST at version directory $1 (relative link target).
             s3pull_swap_to() {
-                local link="${DEST}.swap.$$"
-                ln -sfn "${VERSIONS_NAME}/$1" "${link}"
-                python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "${link}" "${DEST}" 2>/dev/null \
-                    || mv -Tf "${link}" "${DEST}"
+                s3pull_replace_link "${VERSIONS_NAME}/$1" "${DEST}"
             }
 
             # A real directory at DEST (the pre-versioning layout) becomes a version.
@@ -268,6 +285,19 @@ environment_configs:
                 printf '%s\n%s\n%s\n' "${LEASE_RUN_DIR}" "${version}" "$(date +%s)" > "${tmp}"
                 mv -f "${tmp}" "${leases}/${LEASE_ID}"
                 echo "s3pull: lease ${LEASE_ID} on ${version} (run dir ${LEASE_RUN_DIR})"
+            }
+
+            # Point the run's binding (RUN_LINK) at DEST's live version -- the one
+            # this run just leased -- by its absolute path, so the run's steps keep
+            # reading it after other builds re-point DEST. No-op without RUN_LINK.
+            s3pull_link_run() {
+                [ -n "${RUN_LINK}" ] || return 0
+                local version target
+                version="$(basename "$(readlink "${DEST}")")"
+                target="$(cd "${VERSIONS}/${version}" && pwd -P)"
+                mkdir -p "$(dirname "${RUN_LINK}")"
+                s3pull_replace_link "${target}" "${RUN_LINK}"
+                echo "s3pull: ${RUN_LINK} -> ${target}"
             }
 
             # Keep the live version ($1), the one it replaced ($2), and every
@@ -415,8 +445,9 @@ environment_configs:
                && [ -n "${LIVE_EPOCH}" ] && ! s3pull_too_old "${LIVE_EPOCH}"; then
               echo "s3pull: ${S3_URI} is unchanged; keeping the cached copy"
               s3pull_take_lease
+              s3pull_link_run
               s3pull_evict_old_entries || true
-              echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
+              echo "Pulled S3 URI: ${S3_URI} to path ${BINDING_PATH}"
               echo 's3pull end'
               exit 0
             fi
@@ -449,9 +480,10 @@ environment_configs:
             s3pull_swap_to "${VERSION_NAME}"
             NEW_VERSION=""
             s3pull_take_lease
+            s3pull_link_run
             s3pull_prune_versions "${VERSION_NAME}" "${PREV_VERSION}"
             s3pull_evict_old_entries || true
-            echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
+            echo "Pulled S3 URI: ${S3_URI} to path ${BINDING_PATH}"
             echo 's3pull end'
     monitors:
       skypilot_monitor:

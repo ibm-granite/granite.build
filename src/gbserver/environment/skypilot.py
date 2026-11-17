@@ -1579,6 +1579,23 @@ from gbserver.environment._skypilot_ssh import (
 )
 
 
+def _s3_run_link(setup_config: Optional[Dict], uri_hash: str) -> str:
+    """The per-run path an s3:// input is bound to, or '' without a run workdir.
+
+    ``<run workdir>/.gb_inputs/<uri hash>``, where the run workdir is the target
+    run's ``$GB_BUILD_WORKDIR`` that ``setup_skypilot`` publishes as
+    ``setup_config.skypilot.build_workdir``. s3pull points it at the version the
+    run leased; it lives in the run dir, so it goes away with the lease.
+
+    :param setup_config: the consuming target's setup config (may be None).
+    :param uri_hash: the input URI's hash (its cache entry name).
+    :returns: the link path, or '' when there is no per-run workdir.
+    """
+    sky = (setup_config or {}).get("skypilot") or {}
+    workdir = sky.get("build_workdir") if isinstance(sky, dict) else None
+    return os.path.join(workdir, ".gb_inputs", uri_hash) if workdir else ""
+
+
 def _escapes_parent(rel_path: str) -> bool:
     """Return whether a *relative* path climbs out of its base via ``..``.
 
@@ -6038,7 +6055,11 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
 
         Settings (endpoint, region, credential secret names) come from the
         dispatched ``assetstore``, so an environment with several Cosstores
-        (one per endpoint) pulls each URI from its own store. The binding is
+        (one per endpoint) pulls each URI from its own store. With a per-run
+        workdir (``shared_workdir``), the binding is
+        ``<run workdir>/.gb_inputs/<uri hash>``, a link s3pull points at the
+        version this run leased, so every step of the run reads that one version
+        even when other builds re-pull the URI. The shared cache entry is
         ``<cache>/<uri hash>`` (a directory, as on K8s/LSF; a single object lands
         inside it under its basename), where ``<cache>`` is the storeload
         ``cache_path``, else ``{shared_workdir}/cos_cache``. The cache is shared
@@ -6079,13 +6100,19 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         cache_dir = self._worker_cache_dir(
             storeload_config, get_cos_cache_dir, "s3/cos", uri
         )
-        binding_path = str(Path(cache_dir) / cosuri.hash())
+        cache_entry = str(Path(cache_dir) / cosuri.hash())
+        # Bind consumers to a per-run link that s3pull points at the version it
+        # leased, not at the shared cache entry: another build's pull re-points
+        # the shared entry, and a running job must not switch versions mid-run.
+        run_link = _s3_run_link(kwargs.get("setup_config"), cosuri.hash())
+        binding_path = run_link or cache_entry
         step_uri = resolve_step_uri(storeload_config, DEFAULT_S3PULL_STEP_URI)
         step_config = build_s3_step_config(
             "s3pull",
             cosuri,
             assetstore,
-            binding_path,
+            cache_entry,
+            run_link=run_link,
             cache_max_age_days=store_nonneg_int(storeload_config, "cache_max_age_days"),
             lease_max_age_days=store_nonneg_int(storeload_config, "lease_max_age_days"),
         )

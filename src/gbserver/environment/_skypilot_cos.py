@@ -150,6 +150,7 @@ def build_s3_step_config(
     binding_id: str = "",
     cache_max_age_days: Optional[int] = None,
     lease_max_age_days: Optional[int] = None,
+    run_link: str = "",
 ) -> Dict[str, Any]:
     """Build the config dict for an s3pull or s3push step.
 
@@ -164,6 +165,9 @@ def build_s3_step_config(
         than this many days ago (0 disables); None keeps the step's default.
     :param lease_max_age_days: s3pull only: treat reader leases older than this
         many days as dead (0 = never); None keeps the step's default.
+    :param run_link: s3pull only: the per-run path consumers are bound to, which
+        s3pull points at the version it leases ('' = none; consumers then read
+        ``local_path``, the shared cache entry).
     :returns: ``{"<kind>_config": {...}, "launcher_config": {"envs": {...}}}``.
     :raises ValueError: for an unknown kind, a bad endpoint or missing credentials.
     """
@@ -189,6 +193,8 @@ def build_s3_step_config(
         ):
             if value is not None:
                 step_config[key] = value
+        if run_link:
+            step_config["run_link"] = run_link
     return {
         f"{kind}_config": step_config,
         "launcher_config": {"envs": cos_launcher_envs(cosuri, assetstore, metadata)},

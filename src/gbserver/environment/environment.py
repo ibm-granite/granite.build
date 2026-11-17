@@ -1646,7 +1646,11 @@ class Environment(ABC):
         return Environment._is_cached_uri(uristr)
 
     def pullasset(
-        self: Self, task_group: TaskGroup, uri: URI, binding: Optional[Any] = None
+        self: Self,
+        task_group: TaskGroup,
+        uri: URI,
+        binding: Optional[Any] = None,
+        setup_config: Optional[Dict] = None,
     ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
         """Pull an asset and make it available in the environment for the workload.
 
@@ -1654,6 +1658,14 @@ class Environment(ABC):
         ``asset_bindings`` cache (see :meth:`_is_cached_uri`): its pull is
         no-transfer, and an environment may need to act on every pull of it
         (Docker mounts the path into the consumer's container).
+
+        :param task_group: the task group to run the pull in (or None).
+        :param uri: the asset to pull.
+        :param binding: an existing binding, if any.
+        :param setup_config: the consuming target's setup config, forwarded to
+            the store's ``pullasset_*`` (e.g. Skypilot binds s3:// inputs under
+            the run's workdir from it).
+        :returns: a task yielding ``(binding_config, pull step config or None)``.
         """
 
         async def pullasset_as_binding() -> (
@@ -1693,6 +1705,7 @@ class Environment(ABC):
                     storeload_config=storeload_config,
                     assetstore=assetstore,
                     secrets=assetstore.get_secrets(),
+                    setup_config=setup_config,
                 )
                 if self._caches_pulled_binding(uristr):
                     self.asset_bindings[uristr] = local_binding

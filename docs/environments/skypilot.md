@@ -97,6 +97,12 @@ assetstores:
 >   never see each other's partial writes. A dead holder's lock is reclaimed after its TTL.
 > - **Readers always see a complete version.** The binding is a symlink that is swapped
 >   atomically to a fresh version, so objects deleted upstream disappear on the next pull.
+> - **Each run reads one version.** Consumers aren't bound to the shared `<cache>/<uri hash>`
+>   link, which other builds' pulls re-point. They're bound to a per-run link,
+>   `<run workdir>/.gb_inputs/<uri hash>`, which `s3pull` points at the version that run leased.
+>   A long job therefore never mixes files from two versions when upstream changes mid-run.
+>   Without a `shared_workdir` there's no per-run workdir, and consumers read the cache entry
+>   directly.
 > - **Readers hold leases.** Each pull, under the lock, records a lease for its target run in
 >   `<cache>/.<hash>.leases/<targetrun id>`, naming the run's workdir and the version it reads.
 >   Every target that reads an input runs its own `s3pull`; the repeat pull is cheap, because

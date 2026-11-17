@@ -375,6 +375,61 @@ class TestPullassetCosstore:
             )
 
     @pytest.mark.asyncio
+    async def test_binds_to_the_per_run_link_with_a_run_workdir(self, skypilot_env):
+        """With the run's workdir in setup_config, consumers get the per-run link;
+        s3pull still fills the shared cache entry and points the link at it."""
+        uri = URI.get_uri("s3://local/in")
+        binding, step = await skypilot_env.pullasset_cosstore(
+            uri=uri,
+            assetstore=_local_store(),
+            storeload_config=_storeload(),
+            setup_config={"skypilot": {"build_workdir": "/shared/builds/b/runs/r"}},
+        )
+        link = f"/shared/builds/b/runs/r/.gb_inputs/{uri.hash()}"
+        assert binding == {"binding": {"path": link}}
+        assert step.config["s3pull_config"]["run_link"] == link
+        assert step.config["s3pull_config"]["local_path"] == str(
+            Path("/shared/gbroot/cos_cache") / uri.hash()
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_run_workdir_binds_to_the_cache_entry(self, skypilot_env):
+        uri = URI.get_uri("s3://local/in")
+        binding, step = await skypilot_env.pullasset_cosstore(
+            uri=uri, assetstore=_local_store(), storeload_config=_storeload()
+        )
+        assert binding["binding"]["path"] == str(
+            Path("/shared/gbroot/cos_cache") / uri.hash()
+        )
+        assert "run_link" not in step.config["s3pull_config"]
+
+    @pytest.mark.asyncio
+    async def test_pullasset_forwards_the_targets_setup_config(
+        self, skypilot_env, monkeypatch
+    ):
+        """Environment.pullasset hands the consuming target's setup_config on."""
+        from types import SimpleNamespace
+
+        from gbserver.environment.environment import Environment
+
+        uri = URI.get_uri("s3://local/in")
+        skypilot_env.supported_assetstores = {
+            _local_store(): SimpleNamespace(pull=[_storeload()])
+        }
+        ready = asyncio.Event()
+        ready.set()
+        monkeypatch.setattr(
+            Environment._thread_local,
+            "asset_events",
+            {URI.get_uristr(uri): ready},
+            raising=False,
+        )
+        binding, _ = await skypilot_env.pullasset(
+            None, uri, setup_config={"skypilot": {"build_workdir": "/w"}}
+        )
+        assert binding["binding"]["path"] == f"/w/.gb_inputs/{uri.hash()}"
+
+    @pytest.mark.asyncio
     async def test_rejects_non_cosstore(self, skypilot_env):
         """A non-Cosstore assetstore is rejected."""
         with pytest.raises(AssertionError, match="Cosstore"):
