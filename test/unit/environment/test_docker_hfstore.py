@@ -132,6 +132,78 @@ async def test_pullasset_hfstore_multiple_models_accumulate(docker_env, tmp_path
     assert docker_env._extra_volumes[path2]["bind"] == "/gb-hf-models/org2/model2/main"
 
 
+def _relpath_store():
+    """A store mock whose get_relpath is Hfstore's own (owner/repo/revision)."""
+    store = MagicMock()
+    store.get_secrets.return_value = {}
+    store.get_relpath.side_effect = lambda uri: Hfstore.get_relpath(store, uri)
+    return store
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["data/train", "config.json"])
+async def test_pullasset_hfstore_binds_a_path_inside_the_mounted_pull_root(
+    docker_env, hf_storeload_config, tmp_path, path
+):
+    """The pull root is mounted, and the input is bound at its path inside it,
+    whether the path names a directory or a single file."""
+    with patch.object(HfURI, "pull", return_value=True):
+        binding_config, _ = await docker_env.pullasset_hfstore(
+            uri=HfURI.parse(f"hf:///org/repo/main/{path}"),
+            assetstore=_relpath_store(),
+            storeload_config=hf_storeload_config,
+        )
+
+    root = "/gb-hf-models/org/repo/main"
+    assert binding_config[BINDING_KEY]["path"] == f"{root}/{path}"
+    host_root = str(tmp_path / "hf-cache" / "org" / "repo" / "main")
+    assert docker_env._extra_volumes == {host_root: {"bind": root, "mode": "ro"}}
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_two_paths_from_one_repo_share_one_mount(
+    docker_env, hf_storeload_config
+):
+    """Two paths from the same repo and revision don't collide: there is one
+    mount, and each input is bound at its own path."""
+    store = _relpath_store()
+    bindings = []
+    with patch.object(HfURI, "pull", return_value=True):
+        for path in ("train", "test"):
+            binding_config, _ = await docker_env.pullasset_hfstore(
+                uri=HfURI.parse(f"hf:///datasets/org/repo/main/{path}"),
+                assetstore=store,
+                storeload_config=hf_storeload_config,
+            )
+            bindings.append(binding_config[BINDING_KEY]["path"])
+
+    assert bindings == [
+        "/gb-hf-models/org/repo/main/train",
+        "/gb-hf-models/org/repo/main/test",
+    ]
+    assert len(docker_env._extra_volumes) == 1
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_ignores_a_blobs_dir_beside_the_repo(
+    docker_env, hf_storeload_config, tmp_path
+):
+    """A pull writes real files (``local_dir``), not an HF cache, so a ``blobs``
+    dir nearby, e.g. the owner's repo named ``blobs``, changes nothing."""
+    (tmp_path / "hf-cache" / "org" / "blobs").mkdir(parents=True)
+    with patch.object(HfURI, "pull", return_value=True):
+        binding_config, _ = await docker_env.pullasset_hfstore(
+            uri=HfURI.parse("hf:///org/repo/main"),
+            assetstore=_relpath_store(),
+            storeload_config=hf_storeload_config,
+        )
+
+    root = "/gb-hf-models/org/repo/main"
+    assert binding_config[BINDING_KEY]["path"] == root
+    host_root = str(tmp_path / "hf-cache" / "org" / "repo" / "main")
+    assert docker_env._extra_volumes == {host_root: {"bind": root, "mode": "ro"}}
+
+
 # ---------------------------------------------------------------------------
 # _resolve_host_path tests
 # ---------------------------------------------------------------------------

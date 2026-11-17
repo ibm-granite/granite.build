@@ -1,0 +1,43 @@
+granite.build:
+  name: path_in_repo_docker-test
+  # Single docker target with two hf:// inputs from the same repo and revision,
+  # each naming one file. The pull root is mounted once in the container, and
+  # each input is bound at its own file inside it, so the two can't collide.
+  #
+  # This is an extended/nightly test (see the @extended_testing_only marker on
+  # the test class): it performs a REAL HuggingFace pull of two small files of a
+  # public model.
+  targets:
+    image-run:
+      environment_uri: space://environments/docker
+      inputs:
+        hf_config:
+          uri: hf:///ibm-granite/granite-4.0-350m/main/config.json
+        hf_generation_config:
+          uri: hf:///ibm-granite/granite-4.0-350m/main/generation_config.json
+      steps:
+        - step_uri: space://steps/command
+          config:
+            command_config:
+              # Public quay.io image with bash (the docker `command` step runs
+              # `bash -c <command>`), as in docker/1step.
+              # Each binding must be a non-empty regular file with its own name,
+              # at a path of its own. Under `set -e` any failed
+              # test fails the build. The leading `sleep 5` keeps the build in
+              # RUNNING long enough for the runner_cancellation test (as in
+              # docker/1step).
+              # NOTE: this is a folded (>-) scalar, so an inline `#` here would
+              # fold into the single command line and comment out the rest.
+              image: quay.io/fedora/fedora-minimal:42
+              command: >-
+                set -e;
+                sleep 5;
+                a="{{ bindings.hf_config.binding.path }}";
+                b="{{ bindings.hf_generation_config.binding.path }}";
+                echo "hf input paths: $a $b";
+                test -f "$a"; test -s "$a"; test "$(basename "$a")" = config.json;
+                test -f "$b"; test -s "$b"; test "$(basename "$b")" = generation_config.json;
+                test "$a" != "$b"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

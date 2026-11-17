@@ -53,6 +53,15 @@ def get_hf_cache_dir(storeload_config, default_workdir: Optional[str] = None) ->
     return os.path.join(os.path.expanduser("~"), ".cache", "gbserver", "hf")
 
 
+def hf_pull_dest(hfuri, storeload_config) -> Path:
+    """The default pull root for *hfuri*: ``<cache_dir>/<owner>/<repo>/<revision>``.
+
+    A path in the repo lands under it (see ``HfURI.local_path``).
+    """
+    p = hfuri._parts()
+    return Path(get_hf_cache_dir(storeload_config)) / p.owner / p.repo / p.revision
+
+
 def pull_asset_hfstore(
     uri,
     assetstore,
@@ -98,9 +107,7 @@ def pull_asset_hfstore(
         hfuri.secrets = {**(hfuri.secrets or {}), **(assetstore.get_secrets() or {})}
 
     if dest is None:
-        cache_dir = Path(get_hf_cache_dir(storeload_config))
-        p = hfuri._parts()
-        dest = cache_dir / p.owner / p.repo / p.revision
+        dest = hf_pull_dest(hfuri, storeload_config)
     dest.mkdir(parents=True, exist_ok=True)
 
     if not hfuri.pull(dest):

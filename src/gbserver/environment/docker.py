@@ -35,6 +35,7 @@ from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.local_assets import (
     get_hf_cache_dir,
+    hf_pull_dest,
     pull_asset_hfstore,
     push_asset_hfstore,
 )
@@ -461,46 +462,33 @@ class Docker(Environment):
         secrets: Optional[dict] = None,
         **kwargs,
     ) -> Tuple[Dict, None]:
-        """Download an HF model snapshot and bind as a container volume mount.
+        """Download an HF snapshot and bind it through a container volume mount.
 
-        HuggingFace ``snapshot_download`` stores files in a ``blobs/`` directory
-        and creates symlinks from ``snapshots/<rev>/`` into ``blobs/``.  When the
-        local path is inside an HF cache (has a sibling ``blobs/`` directory two
-        levels up), we mount the entire ``models--<owner>--<repo>`` directory so
-        the symlinks resolve inside the container.  Otherwise we mount the
-        snapshot directory directly (non-HF-cache paths, tests, etc.).
+        The pull root (``<cache_dir>/<owner>/<repo>/<revision>``) is mounted
+        read-only at ``/gb-hf-models/<owner>/<repo>/<revision>``, and the input
+        is bound where its content lands inside it (``HfURI.local_path``): the
+        root itself, or ``<root>/<path_in_repo>`` when the URI names a path in
+        the repo, whether that is a directory or a single file. Inputs from the
+        same repo and revision share the one mount, so their paths can't
+        collide. The pull writes real files (``local_dir``), so the mount needs
+        no HF cache ``blobs/`` directory.
         """
+        from gbcommon.uri.hf import HfURI
+
         self._warn_non_default_mode(storeload_config, uri)
         assert assetstore is not None, "assetstore is required for hfstore loading"
-        local_path = pull_asset_hfstore(uri, assetstore, storeload_config)
-        relpath = assetstore.get_relpath(uri)
-        container_path = f"{_HF_MODELS_MOUNT}/{relpath}"
-
-        local_path_obj = Path(local_path)
-        # Detect HF cache layout: local_path is .../models--org--repo/snapshots/<rev>/
-        # and the sibling blobs/ directory exists two levels up.
-        model_root = local_path_obj.parent.parent
-        if (model_root / "blobs").is_dir():
-            # HF cache with symlinks — mount the whole model root so symlinks
-            # (snapshots/<rev>/file -> ../../blobs/<hash>) resolve correctly.
-            snapshot_subpath = local_path_obj.relative_to(model_root)
-            container_model_root = f"{_HF_MODELS_MOUNT}/{relpath}-cache"
-            container_snapshot = f"{container_model_root}/{snapshot_subpath}"
-            self._extra_volumes[str(model_root)] = {
-                "bind": container_model_root,
-                "mode": "ro",
-            }
-            container_path = container_snapshot
-        else:
-            # Non-HF-cache path — mount the directory directly.
-            self._extra_volumes[str(local_path)] = {
-                "bind": container_path,
-                "mode": "ro",
-            }
+        hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
+        assert isinstance(hfuri, HfURI), f"expected HfURI, got: {type(hfuri)}"
+        dest = hf_pull_dest(hfuri, storeload_config)
+        pull_asset_hfstore(hfuri, assetstore, storeload_config, dest=dest)
+        container_root = f"{_HF_MODELS_MOUNT}/{assetstore.get_relpath(hfuri)}"
+        self._extra_volumes[str(dest)] = {"bind": container_root, "mode": "ro"}
 
         from gbserver.environment.environment import BINDING_KEY
 
-        binding_config = {BINDING_KEY: {"path": container_path}}
+        binding_config = {
+            BINDING_KEY: {"path": str(hfuri.local_path(Path(container_root)))}
+        }
         return binding_config, None
 
     # ------------------------------------------------------------------
