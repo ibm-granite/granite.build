@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Swapping the storage factory rebuilds cached admin storage from the new one."""
 
 import pytest

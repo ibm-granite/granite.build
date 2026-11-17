@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # pylint: disable=line-too-long  # Office Open XML literals read best unbroken.
 """Render the steps inventory tables as a PowerPoint deck: one table slide per category.
 

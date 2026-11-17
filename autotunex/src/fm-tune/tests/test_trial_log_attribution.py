@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression tests for per-trial log attribution under concurrent trials.
 
 The driver process funnels *every* trial's output through one root-logger

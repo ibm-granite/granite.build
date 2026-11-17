@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Test mode configuration for mock vs. live test execution.
 
 Controls which external services are mocked vs. live-connected per test.

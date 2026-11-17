@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 trap 'EC=$?; echo "s3push failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
 

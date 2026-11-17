@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Smoke test: the package imports and reports a version."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SkyPilot managed jobs environment backend.
 
 Manages build step execution using SkyPilot's managed jobs controller
@@ -66,6 +68,7 @@ from gbserver.environment._skypilot_ssh import (
 # Shared file_mounts builder — keeps the unmanaged and managed launchers in sync
 # (relative-source resolution against the step.yaml dir, bucket sub-path handling).
 from gbserver.environment.skypilot import (
+    SkypilotLaunchConfigCheck,
     _abort_shielded_request,
     _build_skypilot_mounts,
     _get_step_skypilot_config,
@@ -78,7 +81,7 @@ from gbserver.environment.skypilot import (
 )
 
 
-class Skypilot_managed(Environment):
+class Skypilot_managed(SkypilotLaunchConfigCheck, Environment):
     """SkyPilot environment — managed jobs with in-cluster controller."""
 
     def __init__(

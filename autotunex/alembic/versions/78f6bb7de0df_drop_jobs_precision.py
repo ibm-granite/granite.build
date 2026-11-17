@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Backfill ``jobs.precision`` into ``config_snapshot``, then drop it.
 
 ``precision`` was ``VARCHAR(50) NOT NULL`` with no server default, so dropping it

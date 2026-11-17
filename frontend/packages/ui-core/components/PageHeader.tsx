@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 'use client'
 
 import { Breadcrumb, BreadcrumbItem } from '@carbon/react'

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # install-prereqs.sh -- Install the host tools setup-kind.sh needs beyond docker.
 #
 # Run by `make kube-setup` before setup-kind.sh, so `make extended-tests-setup`

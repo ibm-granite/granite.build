@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Launch 26 evals (25 sage + 1 BFCL) via granite.build on AWS L40S spot instances.
 #
 # This is the granite.build equivalent of gbansible/skypilot/run_all_evals.sh.

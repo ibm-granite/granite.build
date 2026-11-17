@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for BLDS fidelity_schedule validation and top-rung injection.
 
 The schedule's final entry — the "top rung" — defines the most-expensive

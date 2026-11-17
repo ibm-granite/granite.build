@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import asyncio
 import enum
 from unittest.mock import AsyncMock, MagicMock, patch

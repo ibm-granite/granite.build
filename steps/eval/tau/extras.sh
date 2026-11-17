@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # τ³-bench task data: data/tau2 of the tau2-bench commit the `tau` extra pins
 # (the wheel has no data). Same layout as granite_evals.benchmarks.tau.fetch_data:
 # /opt/tau2-data/<commit>/{data,.granite-commit}.

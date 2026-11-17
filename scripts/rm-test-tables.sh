@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 if [ -z "$LAKEHOUSE_ENVIRONMENT" ]; then
     # Require this really only logging
     echo LAKEHOUSE_ENVIORNMENT env var must be set

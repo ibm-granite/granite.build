@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Reserved LH table names and non-destructive LH pushes.
 
 Every LH namespace holds model/fileset metadata in physical tables named

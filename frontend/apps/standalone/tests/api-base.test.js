@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * In standalone (production) builds with no *_API_URL baked in, API calls must
  * resolve to relative same-origin paths so gbserver serves/proxies them.

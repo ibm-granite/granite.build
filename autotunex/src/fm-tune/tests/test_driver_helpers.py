@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for pure helper functions inside autotune.trainers.
 
 These avoid running real training. They cover:

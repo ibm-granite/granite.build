@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """In-memory mock LineageService for testing WandBLineageStore event-building
 logic without hitting the real wandb API."""
 

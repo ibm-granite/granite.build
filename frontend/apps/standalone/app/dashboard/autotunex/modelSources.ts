@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ModelSource, WizardModelSource } from '@granite-build/ui-core/types'
 
 export const MODEL_SOURCE_LABELS: Record<WizardModelSource, string> = {

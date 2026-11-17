@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Rewrite gbserver-unreachable failures from gbcli into actionable messages.
 
 Several `gbcli` call paths (e.g. `get_remote_spaces()` in `gbcli/utils/gbserver.py`)

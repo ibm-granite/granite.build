@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for the lineage index graph helpers: how a node seeds an expansion
  * through POST /lineage/graph, how deep to ask, and how an expansion merges into

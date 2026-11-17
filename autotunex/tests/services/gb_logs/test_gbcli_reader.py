@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for GbcliLogReader, driven through a faked ``gbcli`` package.
 
 ``GbcliLogReader`` imports gbcli lazily, inside ``_fetch``, so registering fake

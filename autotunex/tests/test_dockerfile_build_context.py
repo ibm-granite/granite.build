@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``autotunex/Dockerfile`` and ``Dockerfile.aio`` build from the repository root.
 
 Both install granite.build from the checkout they are built from (issue #489), so

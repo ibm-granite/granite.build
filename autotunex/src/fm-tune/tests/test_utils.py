@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.utils — pure-logic functions (no model loading, no GPU)."""
 
 import json

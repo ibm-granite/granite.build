@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """General utility functions."""
 
 from typing import Literal, Optional

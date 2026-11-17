@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pins autotune/trainers/_verl_cleanup.py: find every Ray resource a verl trainer holds."""
 
 from autotune.trainers._verl_cleanup import collect_ray_resources

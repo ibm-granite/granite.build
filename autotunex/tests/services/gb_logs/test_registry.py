@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for get_gb_log_reader selection.
 
 ``tests/conftest.py``'s ``make_settings`` does not accept ``job_backend`` (or the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.rewards.gsm8k_reward — pure regex/numeric scoring logic."""
 
 import pytest

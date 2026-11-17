@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """owner_id scoping at the SQL layer.
 
 ``list`` must apply the same filter to its total-count statement as to the

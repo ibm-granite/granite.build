@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pins autotune/trainers/_peft_fsdp.py: a no-grad adapter toggle must not flip requires_grad."""
 
 import pytest

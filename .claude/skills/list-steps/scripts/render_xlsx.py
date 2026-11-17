@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Render the steps inventory tables as an Excel workbook: one sheet per category.
 
 Requires XlsxWriter (BSD-2-Clause): `pip install -r requirements.txt` next to this file.

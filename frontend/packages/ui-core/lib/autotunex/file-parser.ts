@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared file-parsing logic used by both the main thread (small files) and the
 // Web Worker (large files) — a single implementation avoids the two paths
 // silently drifting apart on edge cases.

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # teardown-slurm.sh -- Clean teardown of the Docker SLURM cluster.
 #
 # This script:

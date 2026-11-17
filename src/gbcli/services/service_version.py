@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from gbcli.utils.gbconstants import GBSERVER_INSTANCE, USER_NOT_LOGGED_IN_ERROR_MESSAGE
 from gbcli.utils.gbserver import get_server_version, make_gbserver_call
 from gbcommon.types.gbenvconfig import is_standalone

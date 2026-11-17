@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """RoutingAuthenticator's four dispatch rules.
 
 Each credential kind has its own transport (Authorization: Bearer, X-API-Key,

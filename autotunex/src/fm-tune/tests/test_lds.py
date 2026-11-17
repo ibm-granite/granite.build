@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.lds — Limited Discrepancy Search."""
 
 import pytest

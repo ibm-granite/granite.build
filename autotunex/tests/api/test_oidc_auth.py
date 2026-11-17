@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """OIDC bearer authentication, proven through the real ASGI stack.
 
 Builds the app with a real ``OidcBearerVerifier`` but a stubbed key resolver —

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for build_sources.py: the quota maths, the rename, and the refusals."""
 
 import json

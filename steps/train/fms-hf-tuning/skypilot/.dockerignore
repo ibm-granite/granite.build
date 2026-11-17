@@ -1,0 +1,3 @@
+# Keep local test artefacts out of the image (COPY src/ would ship them).
+**/__pycache__
+**/*.pyc

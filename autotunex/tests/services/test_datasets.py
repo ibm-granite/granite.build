@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for DatasetService, isolated from the database and real storage.
 
 Hand-written Protocol fakes (a type-level assertion catches drift). Covers

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Locate, launch, probe, and stop a local ``gbserver standalone`` process.
 
 gbmcp and gbserver ship in the same distribution, so the ``gbserver`` executable

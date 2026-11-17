@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SqlAlchemyJobRepository status + gb_task write methods, against real SQLite."""
 
 from __future__ import annotations

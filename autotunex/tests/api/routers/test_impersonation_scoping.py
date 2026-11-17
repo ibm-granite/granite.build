@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end proof that ownership scoping follows the impersonation overlay.
 
 While an admin impersonates another user (a real admin principal via

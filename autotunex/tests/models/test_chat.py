@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Schema tests for the chat API contract."""
 
 from __future__ import annotations

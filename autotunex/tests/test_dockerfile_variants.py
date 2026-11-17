@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``autotunex/Dockerfile``'s device stages stay wired the way a plain build expects.
 
 A plain ``docker build -f autotunex/Dockerfile .`` must keep producing the CPU image.

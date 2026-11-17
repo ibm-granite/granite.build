@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The PEFT adapter-load CPU guard must wrap all of ``train()``, not just resume.
 
 Under ``-gpu mode=exclusive_process``, PEFT resolves its load device via

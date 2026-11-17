@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """InProcessDatasetUploadRunner terminal transitions, isolated with a fake backend.
 
 The runner opens its OWN session (the request session is gone by the time it

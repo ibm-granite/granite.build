@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Image setup for the `judged` extra (profbench, gdpval).
 # ProfBench's scripts are not a package: bake the pinned commit's files into
 # /opt/profbench/<commit>, verified by sha256 (same pins as

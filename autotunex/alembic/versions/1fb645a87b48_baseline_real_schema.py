@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Baseline: the real AutoTuneX schema.
 
 Creates every table as ``resources/autotunex_schema.sql`` declares it, including

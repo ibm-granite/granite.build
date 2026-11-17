@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests that optional IBM/RabbitMQ packages are present in the full IBM venv."""
 
 import pytest
