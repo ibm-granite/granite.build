@@ -1234,7 +1234,13 @@ class HfURI(URI):
         if is_hf_mocked():
             bound = self.local_path(dest)
             if bound != Path(dest) and not bound.exists():
-                bound.mkdir(parents=True, exist_ok=True)
+                try:
+                    bound.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    logger.error(
+                        "mocked HF pull of %s: cannot create %s: %s", self, bound, e
+                    )
+                    return False
             return True
         try:
             # Normalize so the lock-path derivation below tolerates a str dest,

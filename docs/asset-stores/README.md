@@ -57,8 +57,8 @@ Notes:
   directory). The repo layout is kept under the download dir, and the input is bound at the path
   itself, so a step sees the named directory, not the repo root. A path that names a single file
   (`hf:///org/model/main/config.json`) is bound at that file, so `binding.path` is a file, not a
-  directory. A path that matches nothing in the repo fails the pull. A dataset repo needs the `datasets/` type segment
-  (`hf:///datasets/org/repo/...`); without it the URI names a model repo.
+  directory. A path that matches nothing in the repo fails the pull. A dataset repo needs the
+  `datasets/` type segment (`hf:///datasets/org/repo/...`); without it the URI names a model repo.
   Bucket inputs (`hf:///buckets/org/name[/prefix]`) work on the K8s, Bash and Docker environments.
   Skypilot refuses them before launching a cluster for them, because its hfpull step and inline
   download use `hf download`, which has no bucket type.

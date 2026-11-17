@@ -531,6 +531,14 @@ def test_mocked_pull_tolerates_a_concurrent_mocked_pull(tmp_path, monkeypatch):
     assert bound.is_dir()
 
 
+def test_mocked_pull_returns_false_when_the_path_cannot_be_made(tmp_path, monkeypatch):
+    """A file where a parent directory should be fails the pull, as a live one does."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    (tmp_path / "data").write_text("x")
+    uri = HfURI.parse("hf:///datasets/o/r/main/data/train")
+    assert uri.pull(tmp_path) is False
+
+
 @pytest.mark.parametrize(
     "uri", ["hf:///datasets/org/repo", "hf:///buckets/org/b/some/dir"]
 )
@@ -877,6 +885,9 @@ def test_mocked_hfpull_script_creates_the_bound_path(tmp_path, script, path_in_r
     assert proc.returncode == 0, proc.stderr
     assert "mocking hfpull" in proc.stdout
     assert (dest / path_in_repo.strip("/")).is_dir()
+    if not path_in_repo:
+        # A whole-repo mock makes only HF_DEST, holding just the mock marker.
+        assert [p.name for p in dest.iterdir()] == [".gbtest_mock_hfpull"]
 
 
 @_SCRIPTS
