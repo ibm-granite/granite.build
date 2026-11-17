@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Held-out NLI sources must preserve label meaning and the Granite SFT schema."""
 
 import json

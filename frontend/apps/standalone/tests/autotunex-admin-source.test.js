@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Every AutoTuneX screen must take "is this caller an admin?" from AutoTuneX
  * (`useAutotunexIsAdmin`, backed by GET /api/v1/auth/me), never from gbserver's

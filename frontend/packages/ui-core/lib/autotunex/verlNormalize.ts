@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // verl RL rows carry three *structured* fields:
 //   - `prompt`       : a chat-message list  [{ role, content }, ...]
 //   - `reward_model` : an object            { style, ground_truth }

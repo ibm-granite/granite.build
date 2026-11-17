@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """LocalStorageBackend against a real temp directory.
 
 persist moves staged files into ``<root>/<id>/``; preview reads bounded rows;

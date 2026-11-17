@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SkyPilot environment backend (unmanaged mode).
 
 Manages build step execution on SkyPilot-provisioned pods/VMs using

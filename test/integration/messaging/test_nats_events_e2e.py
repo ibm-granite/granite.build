@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end test: publish and subscribe to build events via NATS.
 
 Requires nats-server on PATH and nats-py installed. Skipped otherwise.

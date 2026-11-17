@@ -1,4 +1,3 @@
-# Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 """Add users.last_login_at.
 

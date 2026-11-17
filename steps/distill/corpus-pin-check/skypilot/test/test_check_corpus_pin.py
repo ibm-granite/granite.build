@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for check_corpus_pin.py: what is compared, and that all of it is reported."""
 
 import json

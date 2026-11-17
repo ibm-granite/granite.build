@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Configuration endpoints, end to end over HTTP.
 
 Unlike jobs, configurations are the resource this API creates, updates and

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for TrialService, isolated from the database.
 
 Mirrors ``test_metrics.py``: hand-written fakes for the two repositories the

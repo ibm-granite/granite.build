@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SkyPilot managed jobs environment backend.
 
 Manages build step execution using SkyPilot's managed jobs controller

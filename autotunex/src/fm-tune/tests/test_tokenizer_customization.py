@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for tokenizer customization (get_tokenizer, resize_model_embeddings, extract_tokenizer_kwargs)."""
 
 import pytest

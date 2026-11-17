@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """ApiKeyVerifier: digest match only, never a raw-key comparison.
 
 The verifier never touches the database — a key mapped to an email with no

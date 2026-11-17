@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.lsf.worker_entry GPU-count guard.
 
 The guard runs before ``ray start`` and fails fast when a host can't back the

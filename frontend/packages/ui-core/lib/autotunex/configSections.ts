@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ConfigData, ConfigForm, TuningGoal } from '../../types'
 
 // Canonical tab order for advanced mode (ensures consistent ordering regardless of Object.keys order).

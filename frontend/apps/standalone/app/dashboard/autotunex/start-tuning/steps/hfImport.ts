@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure decision logic for the HuggingFace dataset-import flow.
  *

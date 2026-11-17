@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Client-side Builds search over a bounded window of recent builds.
  *

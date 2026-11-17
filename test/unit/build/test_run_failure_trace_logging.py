@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for single-record failure-traceback logging (gbserver.build.run).
 
 The log pipeline ingests one record per LINE, so a multi-line trace is split into

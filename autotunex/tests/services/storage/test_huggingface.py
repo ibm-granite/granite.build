@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """HuggingFaceStorageBackend: llmb auth + artifact push, subprocess faked.
 
 ``subprocess.run`` is faked so no real ``llmb`` is needed; the train/validation

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Assembly helpers shared by the remote granite.build spec builders."""
 
 from __future__ import annotations

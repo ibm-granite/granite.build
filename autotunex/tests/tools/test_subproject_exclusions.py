@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The self-contained sibling subprojects under ``src/`` stay out of the root toolchain.
 
 ``src/api-bridge/`` and ``src/fm-tune/`` each carry their own ruff/mypy config and are

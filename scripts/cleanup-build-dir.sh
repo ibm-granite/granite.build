@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 usage() {
   cat <<'EOF'
 Remove old granite.build build directories, whose names contain the build id

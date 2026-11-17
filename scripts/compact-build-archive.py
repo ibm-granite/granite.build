@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Recommended to run this with "export GBSERVER_KEEP_UPDATED_TIME=TRUE"
 import sys
 

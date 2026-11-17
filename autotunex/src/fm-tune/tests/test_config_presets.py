@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The preset configs stay in step with ``autotune.yaml``.
 
 Each file under ``autotune/configs/`` is a full, self-contained copy of the base

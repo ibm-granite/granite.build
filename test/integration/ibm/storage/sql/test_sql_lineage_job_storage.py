@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Lineage SQL storage tests against the hosted PostgreSQL (GBSERVER_SQL_* from the environment).
 
 The test bodies live in test/unit/storage/postgres/test_postgres_lineage_job_storage.py,

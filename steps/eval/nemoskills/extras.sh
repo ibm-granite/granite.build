@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # NeMo-Skills family image setup (runs as root during the build; README.md).
 # Everything fetched here is pinned by commit and/or sha256 and verified.
 

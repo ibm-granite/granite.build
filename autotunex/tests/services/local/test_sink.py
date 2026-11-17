@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """DbTrialSink persistence driven from a worker thread, and id coercion.
 
 The sink is worker-thread only: every test that persists drives it through

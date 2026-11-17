@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for autotune.device — the platform-decision module.
 
 All tests monkeypatch torch so they pass on CI with no GPU and on a Mac.

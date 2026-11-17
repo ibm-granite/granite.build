@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Framework-agnostic dashboard data tools — parallel to ui_actions.py.
 
 None of these touch gbmcp or its allowlist; they wrap gb_ui_backend's own

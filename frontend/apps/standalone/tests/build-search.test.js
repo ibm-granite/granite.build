@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for the Builds page's client-side search (packages/ui-core/lib/buildSearch.ts)
  * and the page clamp DatasetList uses.

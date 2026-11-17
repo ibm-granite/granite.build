@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression test for the model ComboBox on the Start Tuning wizard: editing the
  * model name that was already displayed used to wipe the whole field.

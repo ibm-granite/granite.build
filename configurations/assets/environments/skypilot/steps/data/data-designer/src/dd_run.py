@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 # SPDX-License-Identifier: Apache-2.0
 """Run one NeMo Data Designer generation for the data-designer step.
 

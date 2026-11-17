@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for --model_at_root: promote_model_to_root / resolve_keep_diagnostics.
 
 Pure filesystem logic — no Ray, Torch, or GPU needed.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The Data Processing window ceiling, and why it is where it is.
 
 The page could not reach past 30 days, which made the pipelines users were

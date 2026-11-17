@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # A script that assumes you are oc logged in and then captures all logs from all gb-build-runner pods
 # Creates gb-build-runner-<build-id>-<hash>.txt files
 # Usage: get-runner-logs.sh

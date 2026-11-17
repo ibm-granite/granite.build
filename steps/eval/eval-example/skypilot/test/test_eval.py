@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the exemplar eval entrypoint (../src/eval.sh).
 
 Run from the step directory with `make test` (pytest recurses the whole tree).

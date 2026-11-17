@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 'use client'
 
 import { Tabs, TabList, Tab, TabPanels, TabPanel, FormLabel, InlineNotification, Modal } from '@carbon/react'

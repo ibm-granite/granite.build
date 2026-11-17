@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Runs the agentic tool-calling loop against any OpenAI-compatible chat
 completions endpoint — RITS, Ollama, OpenAI itself, or any self-hosted
 equivalent — via the existing LLMClient (services/llm_client.py), which

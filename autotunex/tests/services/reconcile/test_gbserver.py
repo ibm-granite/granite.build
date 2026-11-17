@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """GbServerStatusReader against httpx.MockTransport: 200/404/401/timeout/malformed."""
 
 from __future__ import annotations

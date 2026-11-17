@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Schema tests for the dataset-intelligence contracts."""
 
 from __future__ import annotations

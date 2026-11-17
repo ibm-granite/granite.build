@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression test for the "Num GPUs per trial" → "Max concurrent trials"
  * derivation in the Step 2 config editor (General tab and the generic

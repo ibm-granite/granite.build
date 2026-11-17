@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared asset I/O helpers for local execution environments (Bash, Docker, …).
 
 Provides standalone async functions for common HuggingFace push/pull operations

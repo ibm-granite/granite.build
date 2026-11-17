@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for :mod:`autotunex.services.chat.context`."""
 
 from __future__ import annotations

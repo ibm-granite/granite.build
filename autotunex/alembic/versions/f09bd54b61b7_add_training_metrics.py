@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Add training_metrics table.
 
 Revision ID: f09bd54b61b7

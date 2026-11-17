@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Table-level tests for ``training_metrics``."""
 
 from __future__ import annotations

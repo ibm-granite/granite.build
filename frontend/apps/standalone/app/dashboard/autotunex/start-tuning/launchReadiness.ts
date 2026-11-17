@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The first step before `lastStepIndex` whose own Next gate fails, or null.
  *

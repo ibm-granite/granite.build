@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # setup-kind.sh -- Bring up a local kind Kubernetes cluster for SkyPilot.
 #
 # The Kubernetes counterpart of scripts/slurm/setup-slurm.sh: it stands up the

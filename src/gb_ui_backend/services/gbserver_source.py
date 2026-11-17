@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 GbserverSource — reads build data directly from gbserver's database.
 

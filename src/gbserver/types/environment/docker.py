@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Types related to the Docker execution environment."""
 
 from typing import Dict, Optional

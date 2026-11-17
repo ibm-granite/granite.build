@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 messaging package initializer
 Automatically discovers all concrete MessagingBase subclasses in

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { PageHeader } from '@granite-build/ui-core/components/PageHeader'
 import { StartTuningWizard } from './StartTuningWizard'
 

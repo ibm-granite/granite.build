@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pin ``tokenize_batch_arrays`` / ``tokenize_batch`` to the original per-row implementation.
 
 The vectorized version exists for Ray Data throughput (see the ``ray_data``

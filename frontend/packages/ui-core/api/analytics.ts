@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * API client for the analytics routes (/api/analytics/*), served by
  * gbserver itself at the same origin — no separate URL config needed.

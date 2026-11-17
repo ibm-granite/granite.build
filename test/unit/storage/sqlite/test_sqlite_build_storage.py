@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 
 import integration.ibm.storage.sql.test_sql_build_storage as HIDE_FROM_PYTEST  # Doing it this way keeps pytest from also adding TestSQLBuildStorage tests as part of this file.

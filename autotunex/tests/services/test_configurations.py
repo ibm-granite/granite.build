@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for ConfigurationService, isolated from the database.
 
 The fake repository below is a plain class, not a mock: because the seam is a
