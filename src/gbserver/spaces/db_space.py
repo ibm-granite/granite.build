@@ -144,6 +144,8 @@ def portable_uri(uri: str) -> str:
     if cached is None:
         return uri
     space_name, slot, subpath = cached
+    if not _is_slot(slot):
+        return uri  # not a layout this module writes
     ref = DbUri(space_name=space_name, slot=slot)
     db_uri = make_db_uri(space_name, ref.base_uri_index)
     return db_uri + (f"#subdirectory={subpath}" if subpath else "")
@@ -173,6 +175,8 @@ class ResolvedDbUri:
     # The snapshot's source repo, as GitURI.get_gb_space_config_uri would give
     # it (git+ssh://host/o/r.git@<ref>); file_uri when the source is unknown.
     identity_uri: str
+    # Keeps the unpacked copy from being pruned; keep it while file_uri is used.
+    lease: Optional[snapshot_cache.Lease] = None
 
 
 def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri:
@@ -188,9 +192,10 @@ def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri
     snapshot = _get_snapshot(row, ref)
     label = f"space {row.name!r} {ref.slot} snapshot"
     assert snapshot.archive is not None  # _get_snapshot checked
-    path = snapshot_cache.materialize(
+    lease = snapshot_cache.materialize(
         row.name, ref.slot, snapshot.archive, _unpacker(snapshot, label), label
     )
+    path = lease.path
     root = path.resolve()
     if ref.subdirectory:
         # Contained: '..' or an absolute path would reach another copy (or
@@ -204,7 +209,7 @@ def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri
         if snapshot.source_uri
         else file_uri
     )
-    return ResolvedDbUri(file_uri=file_uri, identity_uri=identity_uri)
+    return ResolvedDbUri(file_uri=file_uri, identity_uri=identity_uri, lease=lease)
 
 
 def check_own_space_uri(stored_space: StoredSpace) -> None:

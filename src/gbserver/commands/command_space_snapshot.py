@@ -13,7 +13,6 @@ import contextvars
 import io
 import os
 import posixpath
-import re
 import subprocess
 import tempfile
 import urllib.parse
@@ -42,7 +41,7 @@ from gbserver.types.constants import (
     SPACE_REPO_CONFIG_BRANCH_NAME,
 )
 from gbserver.types.context import CliEnvironment, pass_environment
-from gbserver.utils.git_retry import GIT_STALL_ENV
+from gbserver.utils.git_retry import GIT_STALL_ENV, redact_credentials, run_git
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_utc_time
 
@@ -93,24 +92,16 @@ def _git(args: List[str], cwd: Optional[Path] = None) -> bytes:
             GIT_CONFIG_VALUE_0=f"Authorization: token {GBSERVER_GITHUB_TOKEN}",
         )
     timeout = _git_timeout.get()
+    shown = redact_credentials(" ".join(args))
     try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            env=env,
-            check=False,
-            capture_output=True,
-            timeout=timeout,
-        )
+        result = run_git(["git", *args], timeout=timeout, cwd=cwd, env=env)
     except subprocess.TimeoutExpired as e:
-        shown = " ".join(re.sub(r"//[^@/]+@", "//****@", a) for a in args)
         raise click.ClickException(
             f"git {shown} took longer than {timeout:g}s (--git-timeout)"
         ) from e
     if result.returncode != 0:
-        raise click.ClickException(
-            f"git {' '.join(args)} failed: {result.stderr.decode(errors='replace').strip()}"
-        )
+        stderr = redact_credentials(result.stderr.decode(errors="replace").strip())
+        raise click.ClickException(f"git {shown} failed: {stderr}")
     return result.stdout
 
 

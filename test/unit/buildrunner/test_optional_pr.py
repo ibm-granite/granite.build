@@ -164,7 +164,7 @@ def test_pr_clone_is_killed_at_the_deadline(monkeypatch):
         assert kwargs["env"]["GIT_HTTP_LOW_SPEED_LIMIT"]
         raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
 
-    monkeypatch.setattr(build_setup.subprocess, "run", stall)
+    monkeypatch.setattr(build_setup, "run_git", stall)
     monkeypatch.setattr(build_setup, "BUILD_GIT_OPERATION_DEADLINE", 7)
     with pytest.raises(GitCommandError) as exc:
         BuildSetup._clone_repo_with_retry(

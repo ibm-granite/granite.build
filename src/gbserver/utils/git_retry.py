@@ -8,14 +8,18 @@ Retry logic for Git and GitHub API operations with transient error detection.
 
 import contextvars
 import logging
+import os
 import random
+import re
 import shutil
+import signal
+import subprocess
 import threading
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator, Optional, Tuple, TypeVar
+from typing import Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 
 import requests
 from git.exc import GitCommandError, GitError
@@ -164,6 +168,45 @@ def cleanup_failed_clone(retry_state):
         if path_obj.exists():
             logger.warning("Cleaning up partial clone directory before retry: %s", path)
             shutil.rmtree(path_obj, ignore_errors=True)
+
+
+_CREDENTIALS = re.compile(r"(//)[^@/\s]+@")
+
+
+def redact_credentials(text: str) -> str:
+    """Mask the userinfo (e.g. a token) of every URL in ``text``."""
+    return _CREDENTIALS.sub(r"\1****@", text)
+
+
+def run_git(
+    cmd: List[str],
+    timeout: float,
+    cwd: Optional[Path] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> "subprocess.CompletedProcess[bytes]":
+    """Run a git command; on timeout kill its whole process group and re-raise.
+
+    In its own session, so git's helpers (git-remote-https, index-pack) die
+    with it instead of writing into a directory a retry is about to reuse.
+
+    Raises:
+        subprocess.TimeoutExpired: The command ran longer than ``timeout``.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 # For git commands that must not hang: abandon a transfer that stalls (under

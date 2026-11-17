@@ -18,6 +18,7 @@ from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
 from gbserver.spaces.db_space import is_db_uri, parse_db_uri, resolve_db_uri
+from gbserver.spaces.snapshot_cache import Lease
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import GBSERVER_PROCEED_WITHOUT_SECRETS, is_debug_mode
@@ -54,7 +55,12 @@ def _resolve_base_uris(base_uris: List[str], space: "Space") -> List[str]:
     space_dir = _space_dir_from_uri(space.uristr)
     return [
         _resolve_one_base_uri(
-            b, space_dir, space.uristr, space.db_space_name, space.db_row
+            b,
+            space_dir,
+            space.uristr,
+            space.db_space_name,
+            space.db_row,
+            space.snapshot_leases,
         )
         for b in base_uris
     ]
@@ -84,6 +90,7 @@ def _resolve_one_base_uri(
     space_uri: str,
     db_space_name: Optional[str] = None,
     db_row: Optional[StoredSpace] = None,
+    leases: Optional[List[Lease]] = None,
 ) -> str:
     """Resolve a single base_uri entry.
 
@@ -116,7 +123,10 @@ def _resolve_one_base_uri(
                 f" not supported; a space ({space_uri!r}) uses only its own"
             )
         # The space's own row, if already loaded (resolve_db_uri checks it).
-        return resolve_db_uri(base_uri, row=db_row).file_uri
+        db = resolve_db_uri(base_uri, row=db_row)
+        if leases is not None and db.lease:
+            leases.append(db.lease)
+        return db.file_uri
     parsed = urlparse(base_uri)
     if parsed.scheme and parsed.scheme != "file":
         return base_uri
@@ -177,10 +187,16 @@ class Space:
         self.uristr = URI.get_uristr(uri)
         # The gb_spaces row the space is served from (db://), else None.
         self.db_space_name: Optional[str] = None
+        # Only while constructing: it carries every archive.
         self.db_row = stored_space
+        # Holds on the unpacked db:// snapshots this space serves from, so they
+        # aren't pruned while it lives (base_uris resolve lazily, mid-build).
+        self.snapshot_leases: List[Lease] = []
         if is_db_uri(self.uristr):
             self.db_space_name = parse_db_uri(self.uristr).space_name
             resolved = resolve_db_uri(self.uristr, row=self.db_row)
+            if resolved.lease:
+                self.snapshot_leases.append(resolved.lease)
             logger.info("db space %s unpacked at %s", self.uristr, resolved.file_uri)
             self.uristr = uri = resolved.file_uri
             identity_uri = identity_uri or resolved.identity_uri
@@ -227,6 +243,7 @@ class Space:
             # current pull does.)
             if not is_debug_mode():
                 shutil.rmtree(tmppath, ignore_errors=True)
+            self.db_row = None
 
     def get_secrets(self: Self) -> Dict[str, str]:
         """Returns the cached secrets for the space."""

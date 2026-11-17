@@ -97,3 +97,43 @@ def test_registry_is_bounded(monkeypatch):
     assert len(git_retry._breakers) <= 3
     for i in range(10):
         end_build_git_run(f"bounded-{i}")
+
+
+def test_run_git_kills_the_whole_process_group(tmp_path):
+    """A timed-out command's children (git's helpers) die with it."""
+    import os
+    import subprocess
+    import time
+
+    pidfile = tmp_path / "child.pid"
+    script = f"sleep 30 & echo $! > {pidfile}; wait"
+    with pytest.raises(subprocess.TimeoutExpired):
+        git_retry.run_git(["sh", "-c", script], timeout=0.5)
+    child = int(pidfile.read_text())
+    for _ in range(50):  # the kill is immediate; allow for reaping
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("background child survived the timeout")
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("https://tok@h/o/r.git", "https://****@h/o/r.git"),
+        (
+            "fatal: 'https://u:p@h/o/r/' not found",
+            "fatal: 'https://****@h/o/r/' not found",
+        ),
+        (
+            "ssh://git@h:22/o/r and https://x@y/z",
+            "ssh://****@h:22/o/r and https://****@y/z",
+        ),
+        ("no url here", "no url here"),
+    ],
+)
+def test_redact_credentials(text, expected):
+    assert git_retry.redact_credentials(text) == expected

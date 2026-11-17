@@ -4,9 +4,10 @@
 
 """The db-space snapshot cache stays correct with many threads and processes:
 copies are never lost or replaced under a reader, damaged or dead ones are
-never served, and nothing a live process holds is pruned."""
+never served, and nothing a live lease holds is pruned."""
 
 import fcntl
+import gc
 import os
 import subprocess
 import sys
@@ -18,7 +19,12 @@ import pytest
 
 import gbserver.spaces.db_space as db_space
 from gbserver.spaces import snapshot_cache
-from gbserver.spaces.snapshot_cache import key_dir, materialize, parse_cached_path
+from gbserver.spaces.snapshot_cache import (
+    get_cache_root,
+    key_dir,
+    materialize,
+    parse_cached_path,
+)
 
 SRC = str(Path(snapshot_cache.__file__).resolve().parents[2])
 
@@ -56,16 +62,16 @@ def _child(root: Path, content: str, hold: bool, delay: float = 0.0):
     """A separate process that materializes ``content`` and prints the copy."""
     script = textwrap.dedent(f"""
         import sys, threading
-        from pathlib import Path
         from gbserver.spaces.snapshot_cache import materialize
 
         def extract(dest):
             threading.Event().wait({delay})
             (dest / "a.txt").write_text({content!r})
 
-        print(materialize("x", "space", {content!r}, extract, "child"), flush=True)
+        lease = materialize("x", "space", {content!r}, extract, "child")
+        print(lease.path, flush=True)
         if {hold}:
-            sys.stdin.readline()  # keep holding until told to exit
+            sys.stdin.readline()  # keep the lease until told to exit
         """)
     env = dict(os.environ, PYTHONPATH=SRC, GBSERVER_DB_SPACE_CACHE_DIR=str(root))
     return subprocess.Popen(
@@ -79,16 +85,33 @@ def _child(root: Path, content: str, hold: bool, delay: float = 0.0):
 
 def test_reused_while_unchanged(cache):
     first = _get("v1")
-    assert _get("v1") == first
-    assert _copies() == [first]
-    assert (first / "a.txt").read_text() == "v1"
+    second = _get("v1")
+    assert second.path == first.path and _copies() == [first.path]
+    assert (first.path / "a.txt").read_text() == "v1"
 
 
-def test_refresh_prunes_superseded_copy_nobody_holds(cache):
+def test_released_copy_is_pruned_after_a_refresh(cache):
     old = _get("v1")
-    snapshot_cache.release_holds()  # as if every process using it had exited
+    old_path = old.path
+    old.release()  # nothing uses it any more
     new = _get("v2")
-    assert _copies() == [new] and not old.exists()
+    assert _copies() == [new.path] and not old_path.exists()
+
+
+def test_garbage_collected_lease_releases(cache):
+    old_path = _get("v1").path  # the lease is dropped at once
+    gc.collect()
+    new = _get("v2")
+    assert _copies() == [new.path] and not old_path.exists()
+
+
+def test_leased_copy_is_kept(cache):
+    old = _get("v1")
+    new = _get("v2")
+    assert set(_copies()) == {old.path, new.path}
+    old.release()
+    _get("v3")
+    assert not old.path.exists()
 
 
 def test_copy_held_by_another_process_is_kept(cache):
@@ -97,23 +120,22 @@ def test_copy_held_by_another_process_is_kept(cache):
     try:
         new = _get("v2")
         assert old.exists() and (old / "a.txt").read_text() == "v1"
-        assert set(_copies()) == {old, new}
+        assert set(_copies()) == {old, new.path}
     finally:
         holder.communicate("\n", timeout=30)
-    _get("v2")  # the holder exited: the OS dropped its lock
+    _get("v3")  # the holder exited: the OS dropped its lock
     assert not old.exists()
 
 
 def test_concurrent_processes_get_complete_copies(cache):
     children = [_child(cache, "v1", hold=False, delay=0.3) for _ in range(6)]
-    paths = [Path(c.communicate(timeout=60)[0].strip()) for c in children]
+    outputs = [c.communicate(timeout=60)[0].strip() for c in children]
     assert all(c.returncode == 0 for c in children)
-    for path in paths:
-        # Each returned copy was complete when returned; a spare from a lost
-        # race may since have been pruned, but the winner is always there.
-        assert path.parent == key_dir("x", "space")
+    assert all(Path(o).parent == key_dir("x", "space") for o in outputs)
     final = _get("v1")
-    assert _copies() == [final] and (final / "a.txt").read_text() == "v1"
+    assert (final.path / "a.txt").read_text() == "v1"
+    _get("v2").release()  # publishing prunes the unheld spares
+    assert len([p for p in _copies() if p.name.startswith(final.path.name[:32])]) == 1
 
 
 def test_concurrent_threads_share_one_copy(cache):
@@ -127,40 +149,56 @@ def test_concurrent_threads_share_one_copy(cache):
         t.start()
     for t in threads:
         t.join()
-    assert len(set(results)) == 1 and _copies() == [results[0]]
+    assert len({r.path for r in results}) == 1 and _copies() == [results[0].path]
     assert not any(p.name.startswith(".tmp-") for p in key_dir("x", "space").iterdir())
 
 
 def test_damaged_copy_is_never_served(cache):
-    old = _get("v1", files={"a.txt": "v1", "b.txt": "b"})
-    (old / "b.txt").unlink()  # e.g. a cleaner deleted files, marker left behind
-    new = _get("v1", files={"a.txt": "v1", "b.txt": "b"})
-    assert new != old and (new / "b.txt").is_file()
-    assert old.exists()  # still held by this process: not pulled from under it
-    snapshot_cache.release_holds()
-    _get("v1", files={"a.txt": "v1", "b.txt": "b"})
-    assert not old.exists()
+    files = {"a.txt": "v1", "b.txt": "b"}
+    old = _get("v1", files=files)
+    (old.path / "b.txt").unlink()  # e.g. a cleaner deleted files, marker left
+    new = _get("v1", files=files)
+    assert new.path != old.path and (new.path / "b.txt").is_file()
+    assert old.path.exists()  # still leased: not pulled from under its user
+    old.release()
+    _get("v2")
+    assert not old.path.exists()
+
+
+def test_files_added_to_a_copy_do_not_damage_it(cache):
+    first = _get("v1")
+    (first.path / "__pycache__").mkdir()
+    (first.path / "__pycache__" / "m.pyc").write_text("compiled")
+    assert _get("v1").path == first.path
 
 
 def test_dead_extraction_is_removed_live_one_kept(cache):
     keydir = key_dir("x", "space")
     dead = keydir / ".tmp-dead"
-    dead.mkdir()
-    (dead / ".gb-writing").touch()
-    live = keydir / ".tmp-live"
-    live.mkdir()
-    fd = os.open(live / ".gb-writing", os.O_RDWR | os.O_CREAT)
-    fcntl.flock(fd, fcntl.LOCK_EX)  # its writer is still running
+    dead.mkdir()  # its writer crashed: no lock held
+    (keydir / ".tmp-dead.lock").touch()
+    live_lock = keydir / ".tmp-live.lock"  # taken before its dir exists
+    fd = os.open(live_lock, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(fd, fcntl.LOCK_EX)
     try:
         _get("v1")
-        assert not dead.exists() and live.exists()
+        assert not dead.exists() and not (keydir / ".tmp-dead.lock").exists()
+        assert live_lock.exists()
     finally:
         os.close(fd)
 
 
+def test_dot_names_stay_inside_the_root(cache):
+    for name in (".", "..", "a/../b"):
+        path = _get("v1", space=name).path
+        assert get_cache_root().resolve() in path.resolve().parents
+        assert parse_cached_path(path)[0] == name
+    assert len({_get("v1", space=n).path.parent.parent for n in (".", "..")}) == 2
+
+
 def test_identical_archives_in_two_spaces_stay_apart(cache):
-    a = _get("same", space="a")
-    b = _get("same", space="b")
+    a = _get("same", space="a").path
+    b = _get("same", space="b").path
     assert a != b
     assert db_space.portable_uri((a / "env").as_uri()) == (
         "db://spaces/a#subdirectory=env"
@@ -169,12 +207,18 @@ def test_identical_archives_in_two_spaces_stay_apart(cache):
 
 
 def test_cached_path_names_space_and_slot(cache):
-    copy = _get("v1", space="a/b", slot="base_uri_3")
+    copy = _get("v1", space="a/b", slot="base_uri_3").path
     assert parse_cached_path(copy / "steps" / "x") == ("a/b", "base_uri_3", "steps/x")
     assert db_space.portable_uri((copy / "steps").as_uri()) == (
         "db://spaces/a%2Fb/base_uri_3#subdirectory=steps"
     )
     assert parse_cached_path(cache.parent) is None
+
+
+def test_stray_path_under_the_root_is_left_alone(cache):
+    stray = cache / "s-x" / "not-a-slot" / "copy"
+    stray.mkdir(parents=True)
+    assert db_space.portable_uri(stray.as_uri()) == stray.as_uri()
 
 
 def test_failed_extraction_leaves_nothing(cache):
@@ -184,7 +228,7 @@ def test_failed_extraction_leaves_nothing(cache):
 
     with pytest.raises(ValueError, match="bad zip"):
         materialize("x", "space", "v1", broken, "test")
-    assert _copies() == []
+    assert list(key_dir("x", "space").iterdir()) == [key_dir("x", "space") / ".lock"]
 
 
 def test_cache_root_must_be_private(tmp_path, monkeypatch):

@@ -8,7 +8,6 @@ Watch the admin metadata tables for new builds, cancellations, etc.
 """
 
 import os
-import re
 import shutil
 import subprocess
 import threading
@@ -44,6 +43,8 @@ from gbserver.utils.git_retry import (
     GIT_STALL_ENV,
     get_build_git_breaker,
     git_clone_retry,
+    redact_credentials,
+    run_git,
 )
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import normalize_to_filename
@@ -381,27 +382,23 @@ class BuildSetup:
         timed out. Errors keep GitCommandError so the retry policy still applies,
         with the token in ``url`` redacted.
         """
-        shown = re.sub(r"//[^@/]+@", "//****@", url)
         cmd = ["git", "clone", "--quiet", "--no-checkout", "--branch", branch]
         if depth:
             cmd += ["--depth", str(depth)]
+        shown = [*cmd, redact_credentials(url)]
         try:
-            result = subprocess.run(
+            result = run_git(
                 [*cmd, url, str(to_path)],
-                capture_output=True,
-                text=True,
                 timeout=BUILD_GIT_OPERATION_DEADLINE,
                 env={**os.environ, **GIT_STALL_ENV},
-                check=False,
             )
         except subprocess.TimeoutExpired as e:
             raise GitCommandError(
-                [*cmd, shown], "timed out", f"no result in {e.timeout}s"
+                shown, "timed out", f"no result in {e.timeout}s"
             ) from e
         if result.returncode != 0:
-            raise GitCommandError(
-                [*cmd, shown], result.returncode, result.stderr.replace(url, shown)
-            )
+            stderr = result.stderr.decode(errors="replace")
+            raise GitCommandError(shown, result.returncode, redact_credentials(stderr))
         repo = Repo(to_path)
         repo.git.update_environment(**GIT_STALL_ENV)
         return repo

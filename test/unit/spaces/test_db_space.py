@@ -338,3 +338,22 @@ def test_local_uri(rows):
     )
     assert db_space.local_uri("git+ssh://h/o/r.git") == "git+ssh://h/o/r.git"
     assert db_space.local_uri("file:///tmp/x") == "file:///tmp/x"
+
+
+def test_space_holds_its_snapshots_until_dropped(rows):
+    """A Space's copies (its own and its db:// base_uris) aren't pruned while it
+    lives; once it's gone, a newer snapshot's publish prunes them."""
+    import gc
+
+    rows["x"] = _row()
+    space = create_space(rows["x"])
+    held = [lease.path for lease in space.snapshot_leases]
+    assert len(held) == 2 and space.db_row is None  # the row isn't kept
+    rows["x"] = _row(space=_snapshot({"space.yaml": SPACE_YAML + "#v2\n"}, SOURCE))
+    create_space(rows["x"])
+    assert all(p.exists() for p in held)  # still leased by `space`
+    del space
+    gc.collect()
+    rows["x"] = _row(space=_snapshot({"space.yaml": SPACE_YAML + "#v3\n"}, SOURCE))
+    create_space(rows["x"])
+    assert not held[0].exists()

@@ -343,7 +343,7 @@ def test_token_header_scoped_to_ghe_host(monkeypatch):
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(cmd, "GBSERVER_GITHUB_TOKEN", "tok")
-    monkeypatch.setattr(cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(cmd, "run_git", fake_run)
     cmd._git(["status"])
     assert seen["GIT_CONFIG_KEY_0"] == (
         f"http.https://{cmd.DEFAULT_GH_DOMAIN}/.extraHeader"
@@ -614,7 +614,7 @@ def test_git_command_is_killed_at_git_timeout(monkeypatch):
         seen.update(timeout=timeout, env=env)
         raise subprocess.TimeoutExpired(args, timeout)
 
-    monkeypatch.setattr(cmd.subprocess, "run", hang)
+    monkeypatch.setattr(cmd, "run_git", hang)
     token = cmd._git_timeout.set(42)
     try:
         with pytest.raises(click.ClickException) as exc:
