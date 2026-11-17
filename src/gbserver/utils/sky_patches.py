@@ -36,6 +36,7 @@ import os
 import shutil
 import sys
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import sky
@@ -519,6 +520,60 @@ def replace_file_atomically(src: Any, dst_dir: Any) -> None:
             os.unlink(tmp)
 
 
+#: Directory under ``~/.sky`` holding gbserver's per-instance kubeconfigs
+#: (``gbserver.environment.skypilot_kube``). Defined here so the server side
+#: never imports ``gbserver.environment``.
+GBSERVER_KUBE_DIR = "gbserver-kube"
+
+#: Why this process's ``kube_configs`` patches failed, or None if applied.
+#: Reported by :func:`kubeconfig_forwarding_endpoint`, so a failure refuses
+#: ``kube_configs`` only, instead of stopping the server for every build.
+_KUBE_PATCH_ERROR: Optional[str] = None
+
+
+def carries_instance_kubeconfig(kubeconfig: Optional[str]) -> bool:
+    """Whether a ``KUBECONFIG`` value includes a gbserver instance kubeconfig."""
+    for entry in (kubeconfig or "").split(os.pathsep):
+        parent = Path(entry).parent
+        if entry and parent.name == GBSERVER_KUBE_DIR and parent.parent.name == ".sky":
+            return True
+    return False
+
+
+def _refuse_instance_credential_upload() -> None:
+    """Never upload a kubeconfig that includes a gbserver instance kubeconfig.
+
+    SkyPilot uploads the request's kubeconfig to a cluster when the effective
+    ``remote_identity`` is ``LOCAL_CREDENTIALS``, for a controller, and to a VM
+    on another cloud (it skips that only for ``NO_UPLOAD``), flattening several
+    files into a temporary file it never removes. That
+    setting can come from the host-shared ``~/.sky/config.yaml`` (another
+    environment's ``cloud_config``, read again for each request), a workspace or
+    a per-context block, so checking it beforehand can't be complete. This is
+    the one place the credentials leave, so the refusal goes here.
+    """
+    from sky.clouds import kubernetes as kube_cloud
+
+    orig = kube_cloud.Kubernetes.get_credential_file_mounts
+
+    @functools.wraps(orig)
+    def get_credential_file_mounts(self: Any) -> dict:
+        if carries_instance_kubeconfig(os.environ.get("KUBECONFIG")):
+            raise exceptions.InvalidCloudConfigs(
+                "kube_configs credentials are never uploaded: this launch would "
+                "copy the request's kubeconfig to the cluster (remote_identity "
+                "resolves to LOCAL_CREDENTIALS, the cluster is a controller, or "
+                "the launch targets a cloud other than Kubernetes). Use the default "
+                "SERVICE_ACCOUNT remote_identity and launch kube_configs "
+                "environments on Kubernetes only."
+            )
+        return orig(self)
+
+    setattr(
+        kube_cloud.Kubernetes, "get_credential_file_mounts", get_credential_file_mounts
+    )
+
+
 #: Modules whose request-scoped caches hold Kubernetes clients or per-context
 #: lookups (``sky.adaptors.kubernetes``, ``sky.provision.kubernetes.utils``).
 _KUBE_CACHE_MODULE_MARKER = "kubernetes"
@@ -540,7 +595,9 @@ def _kubeconfig_keyed(cached: Any) -> Callable:
     inner = cached.__wrapped__
     params = cached.cache_parameters()
     keyed = functools.lru_cache(maxsize=params["maxsize"], typed=params["typed"])(
-        lambda kubeconfig, *args, **kwargs: inner(*args, **kwargs)
+        # Private name: a cached function called with its own ``kubeconfig=``
+        # keyword must not clash with the key.
+        lambda _gb_kubeconfig, *args, **kwargs: inner(*args, **kwargs)
     )
 
     @functools.wraps(inner)
@@ -551,9 +608,10 @@ def _kubeconfig_keyed(cached: Any) -> Callable:
     wrapper.cache_info = keyed.cache_info  # type: ignore[attr-defined]
     wrapper.cache_parameters = keyed.cache_parameters  # type: ignore[attr-defined]
     wrapper.gbserver_kubeconfig_keyed = True  # type: ignore[attr-defined]
-    annotations._register_functions_need_reload_cache(
-        wrapper
-    )  # pylint: disable=protected-access
+    register = (
+        annotations._register_functions_need_reload_cache  # pylint: disable=protected-access
+    )
+    register(wrapper)
     return wrapper
 
 
@@ -565,7 +623,8 @@ def _rebind(cached: Any, replacement: Callable) -> None:
     closure holds it (SkyPilot's ``_api_logging_decorator``).
 
     :raises RuntimeError: If no binding is found, so an upgrade that changes
-        how a cache is bound stops the server instead of leaving it unkeyed.
+        how a cache is bound refuses ``kube_configs`` instead of leaving it
+        unkeyed (:func:`_patch_for_kube_configs`).
     """
     owner: Any = sys.modules[cached.__module__]
     *path, name = cached.__qualname__.split(".")
@@ -612,18 +671,18 @@ def import_kube_modules() -> None:
 
 def kube_request_caches() -> list:
     """SkyPilot's request-scoped caches in Kubernetes modules, as registered."""
+    # pylint: disable=protected-access
+    registry = annotations._FUNCTIONS_NEED_RELOAD_CACHE
+    lru_wrapper = functools._lru_cache_wrapper
+    # pylint: enable=protected-access
     found = []
-    for ref in list(
-        annotations._FUNCTIONS_NEED_RELOAD_CACHE
-    ):  # pylint: disable=protected-access
+    for ref in list(registry):
         func = ref()
         module = getattr(func, "__module__", "") or ""
         if (
             func is not None
             and _KUBE_CACHE_MODULE_MARKER in module.split(".")
-            and isinstance(
-                func, functools._lru_cache_wrapper
-            )  # pylint: disable=protected-access
+            and isinstance(func, lru_wrapper)
         ):
             found.append(func)
     return found
@@ -639,6 +698,29 @@ def _patch_kube_caches_by_kubeconfig() -> None:
     import_kube_modules()
     for cached in kube_request_caches():
         _rebind(cached, _kubeconfig_keyed(cached))
+
+
+def _patch_for_kube_configs() -> None:
+    """The patches ``kube_configs`` needs; a failure refuses only ``kube_configs``.
+
+    Recorded in :data:`_KUBE_PATCH_ERROR` and logged rather than raised: these
+    run in every API server process, and raising would stop every SkyPilot
+    build (SLURM, LSF, AWS, Kubernetes), not just the ones using
+    ``kube_configs``. A partly applied cache patch is harmless for the rest:
+    without ``kube_configs``, keying by ``KUBECONFIG`` returns what the
+    original cache would.
+    """
+    global _KUBE_PATCH_ERROR  # pylint: disable=global-statement
+    try:
+        _refuse_instance_credential_upload()
+        _patch_kube_caches_by_kubeconfig()
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        _KUBE_PATCH_ERROR = f"{type(e).__name__}: {e}"
+        logger.error(
+            "sky_patches: the kube_configs patches failed, so kube_configs "
+            "environments will be refused: %s",
+            _KUBE_PATCH_ERROR,
+        )
 
 
 @functools.cache
@@ -663,7 +745,7 @@ def apply() -> None:
     _patch_backend()
     _patch_aws_host_image()
     _patch_misc()
-    _patch_kube_caches_by_kubeconfig()
+    _patch_for_kube_configs()
 
 
 def ensure_plugin_config(gb_home: str) -> None:
@@ -706,14 +788,28 @@ def server_has_patches() -> bool:
 KUBECONFIG_FORWARDING_ROUTE = "/gbserver/kubeconfig-forwarding"
 
 
-def kubeconfig_forwarding_endpoint() -> dict[str, bool]:
-    """Server side: whether this API server keeps a forwarded ``KUBECONFIG``.
+def kubeconfig_forwarding_endpoint() -> dict[str, Any]:
+    """Server side: whether this API server applies a forwarded ``KUBECONFIG`` safely.
 
     ``executor._sanitize_request_env_vars`` keeps ``KUBECONFIG`` from a loopback
     request only when mount containment isn't enforced (a non-deployed server
-    bound to loopback, unless an operator forces it).
+    bound to loopback, unless an operator forces it). It is also not safe when
+    the ``kube_configs`` patches failed (:func:`_patch_for_kube_configs`).
+
+    :returns: ``{"forwarded": bool}``, plus ``"reason"`` when False.
     """
-    return {"forwarded": not server_common.should_enforce_mount_containment()}
+    if server_common.should_enforce_mount_containment():
+        return {
+            "forwarded": False,
+            "reason": "the server enforces mount containment (deployed, not bound "
+            "to loopback, or SKYPILOT_SERVER_ENFORCE_MOUNT_CONTAINMENT set)",
+        }
+    if _KUBE_PATCH_ERROR is not None:
+        return {
+            "forwarded": False,
+            "reason": f"gbserver's kube_configs patches failed ({_KUBE_PATCH_ERROR})",
+        }
+    return {"forwarded": True}
 
 
 class SkyPatchesPlugin(sky_plugins.BasePlugin):

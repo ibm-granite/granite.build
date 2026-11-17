@@ -75,6 +75,8 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("KUBECONFIG", str(tmp_path / "user-kubeconfig"))
     monkeypatch.delenv("SKYPILOT_IN_CLUSTER_CONTEXT_NAME", raising=False)
+    # Each test's home gets its own owner lock, as one process's home would.
+    monkeypatch.setattr(sk, "_OWNER_LOCK", None)
 
 
 @pytest.fixture
@@ -304,6 +306,145 @@ class TestInstanceFile:
         kept = {k for k, f in files.items() if f.exists()}
         assert kept == {"mine", "mine_tmp", "other_host", "other"}
 
+    @staticmethod
+    def _owner(d, key, held):
+        """A fake owner ``key`` with one instance file; its lock fd if ``held``."""
+        import fcntl
+
+        (d / f"{key}-i.yaml").write_text("x")
+        lock = d / f"{key}.lock"
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        if held:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            return fd
+        os.close(fd)
+        return None
+
+    def test_sweep_follows_the_owner_lock_not_the_pid(self, tmp_path):
+        """Live: the lock is held, whatever its pid means here (another pid
+        namespace, daw3rd's case). Gone: the lock is free, even if its pid now
+        runs here (a restarted container, the review's case)."""
+        d = tmp_path / ".sky" / sk.KUBE_DIR
+        d.mkdir(parents=True)
+        host = sk._host_id()
+        me = sk._process_tag()
+        live = self._owner(d, f"{host}-999999999-1-aaaa", held=True)
+        self._owner(d, f"{me}-bbbb", held=False)  # pid alive here, owner gone
+        # Another host's lock may live on a filesystem that doesn't share
+        # locks with this one: free-looking, but never judged here.
+        self._owner(d, "deadbeef-999999999-1-cccc", held=False)
+        try:
+            sk.sweep_stale_instance_files(d)
+            names = sorted(p.name for p in d.iterdir())
+        finally:
+            os.close(live)
+        assert names == sorted(
+            [
+                f"{host}-999999999-1-aaaa-i.yaml",
+                f"{host}-999999999-1-aaaa.lock",
+                "deadbeef-999999999-1-cccc-i.yaml",
+                "deadbeef-999999999-1-cccc.lock",
+            ]
+        )
+
+    def test_sweep_keeps_files_it_cannot_judge(self, tmp_path, monkeypatch):
+        """No locking on this filesystem, or another host's files: keep."""
+        import errno
+
+        d = tmp_path / ".sky" / sk.KUBE_DIR
+        d.mkdir(parents=True)
+        self._owner(d, f"{sk._host_id()}-999999999-1-aaaa", held=False)
+        self._owner(d, "deadbeef-999999999-1-cccc", held=False)
+
+        def no_locks(fd, op):
+            raise OSError(errno.ENOLCK, "no locks")
+
+        monkeypatch.setattr(sk.fcntl, "flock", no_locks)
+        sk.sweep_stale_instance_files(d)
+        assert len(list(d.iterdir())) == 4
+
+    def test_owner_lock_survives_a_concurrent_sweep(self, tmp_path, monkeypatch):
+        """A sweep removing the lock file between create and lock: retry."""
+        import fcntl
+
+        d = tmp_path / ".sky" / sk.KUBE_DIR
+        d.mkdir(parents=True)
+        real = fcntl.flock
+        calls = []
+
+        def racing_flock(fd, op):
+            if not calls:  # first lock: a sweep removed the file meanwhile
+                (d / f"{sk._owner_key()}.lock").unlink()
+            calls.append(op)
+            return real(fd, op)
+
+        monkeypatch.setattr(sk.fcntl, "flock", racing_flock)
+        sk.hold_owner_lock(d)
+        lock = Path(sk._OWNER_LOCK[2])
+        assert len(calls) == 2 and lock.exists()
+        assert os.fstat(sk._OWNER_LOCK[1]).st_ino == lock.stat().st_ino
+
+    def test_sweep_skips_a_lock_replaced_while_taking_it(self, tmp_path, monkeypatch):
+        import fcntl
+
+        d = tmp_path / ".sky" / sk.KUBE_DIR
+        d.mkdir(parents=True)
+        key = f"{sk._host_id()}-999999999-1-aaaa"
+        self._owner(d, key, held=False)
+        real = fcntl.flock
+
+        def replacing_flock(fd, op):
+            real(fd, op)
+            lock = d / f"{key}.lock"  # a new owner's file now has the name
+            lock.unlink()
+            lock.write_text("")
+
+        monkeypatch.setattr(sk.fcntl, "flock", replacing_flock)
+        sk.sweep_stale_instance_files(d)
+        assert (d / f"{key}-i.yaml").exists()
+
+    @pytest.mark.parametrize("ends", ["killed", "running", "exits"])
+    def test_real_processes(self, tmp_path, ends):
+        """A killed gbserver's files are swept; a running one's are kept; a
+        normal exit removes its own lock file."""
+        import signal
+        import subprocess
+        import sys
+
+        code = (
+            "import os, signal, sys, time\n"
+            "from gbserver.environment import skypilot_kube as sk\n"
+            "p = sk.instance_kubeconfig_path('x')\n"
+            "sk.write_instance_kubeconfig({'a': 1}, p)\n"
+            "print(p.name, flush=True)\n"
+            f"mode = {ends!r}\n"
+            "if mode == 'killed': os.kill(os.getpid(), signal.SIGKILL)\n"
+            "if mode == 'running': time.sleep(60)\n"
+        )
+        env = {**os.environ, "HOME": str(tmp_path)}
+        child = subprocess.Popen(
+            [sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, text=True
+        )
+        name = child.stdout.readline().strip()
+        d = tmp_path / ".sky" / sk.KUBE_DIR
+        try:
+            if ends != "running":
+                child.wait(timeout=30)
+            before = sorted(p.name for p in d.iterdir())
+            sk.sweep_stale_instance_files(d)
+            left = sorted(p.name for p in d.iterdir())
+        finally:
+            if child.poll() is None:
+                child.send_signal(signal.SIGKILL)
+                child.wait()
+        key = name[: -len("-x.yaml")]
+        if ends == "running":
+            assert left == sorted([name, f"{key}.lock"])
+        else:
+            assert left == []
+        if ends == "exits":  # removed by the process itself, before any sweep
+            assert before == []
+
     def test_existing_directory_is_tightened_to_0700(self, tmp_path):
         path = sk.instance_kubeconfig_path("abc")
         path.parent.mkdir(parents=True, mode=0o755)
@@ -314,12 +455,29 @@ class TestInstanceFile:
         assert not list(path.parent.glob("*.tmp"))
 
     def test_concurrent_writes_never_collide(self, tmp_path):
-        import concurrent.futures
+        import threading
+        import time
 
         path = sk.instance_kubeconfig_path("same")
         doc = _build(_kubeconfig())
-        with concurrent.futures.ThreadPoolExecutor(8) as ex:
-            list(ex.map(lambda _: sk.write_instance_kubeconfig(doc, path), range(64)))
+
+        errors = []
+
+        def write():
+            try:
+                sk.write_instance_kubeconfig(doc, path)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                errors.append(e)
+
+        # Daemon threads and a deadline: a failure, not a hang, if two threads
+        # ever take the owner lock at once.
+        threads = [threading.Thread(target=write, daemon=True) for _ in range(64)]
+        for t in threads:
+            t.start()
+        deadline = time.monotonic() + 30
+        for t in threads:
+            t.join(timeout=max(0, deadline - time.monotonic()))
+        assert not any(t.is_alive() for t in threads) and not errors
         assert yaml.safe_load(path.read_text()) == doc
 
     def test_file_removed_when_the_instance_is_collected(self, local_server):
@@ -508,6 +666,17 @@ class TestEnvironmentInstance:
         assert len(set(results)) == 1 and results[0]
         assert len(list(env._kube_file.parent.glob("*.yaml"))) == 1
 
+    def test_teardown_keeps_the_file_when_validation_would_now_fail(
+        self, local_server, monkeypatch
+    ):
+        """Teardown must reach the cluster even if a setting changed since launch."""
+        env = _env()
+        launched = env._kube_request_kubeconfig(True)
+        monkeypatch.setenv("SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS", "60")
+        with pytest.raises(ValueError, match="REFRESH_INTERVAL"):
+            env._kube_request_kubeconfig(True)  # a new launch is still refused
+        assert env._kube_request_kubeconfig(False) == launched
+
     def test_missing_file_is_rewritten(self, local_server):
         env = _env()
         env._kube_request_kubeconfig(True)
@@ -598,13 +767,15 @@ class TestEnvironmentInstance:
         with pytest.raises(ValueError, match="LOCAL_CREDENTIALS"):
             _env({**_config(), "cloud_config": cloud_config})._kube_config_entries()
 
-    def test_local_credentials_in_host_config_refused(self, tmp_path):
+    def test_host_config_does_not_decide(self, tmp_path):
+        """The host-shared file is rewritten by other envs: it can't be checked
+        once, and another env's value mustn't refuse this one. The server
+        plugin refuses the upload itself (TestCredentialUpload)."""
         (tmp_path / ".sky").mkdir()
         (tmp_path / ".sky" / "config.yaml").write_text(
             yaml.safe_dump({"kubernetes": {"remote_identity": "LOCAL_CREDENTIALS"}})
         )
-        with pytest.raises(ValueError, match="LOCAL_CREDENTIALS"):
-            _env()._kube_config_entries()
+        assert _env()._kube_config_entries()
 
     def test_service_account_is_fine(self):
         cfg = {**_config()}
@@ -634,9 +805,11 @@ class TestEnvironmentInstance:
 
 
 class TestServerPrecondition:
-    def _response(self, ok=True, forwarded=True):
+    def _response(self, ok=True, forwarded=True, reason=None):
         r = MagicMock(ok=ok)
         r.json.return_value = {"forwarded": forwarded}
+        if reason:
+            r.json.return_value["reason"] = reason
         return r
 
     def test_remote_server_refused(self, monkeypatch):
@@ -662,11 +835,20 @@ class TestServerPrecondition:
         if ok:
             sk.check_server_forwards_kubeconfig("e")
         else:
-            from sky.skylet import constants
-
-            with pytest.raises(ValueError, match="does not apply") as e:
+            with pytest.raises(ValueError, match="can't apply"):
                 sk.check_server_forwards_kubeconfig("e")
-            assert constants.ENV_VAR_ENFORCE_MOUNT_CONTAINMENT in str(e.value)
+
+    def test_servers_reason_is_reported(self, monkeypatch):
+        from sky.server import common
+
+        monkeypatch.setattr(common, "is_api_server_local", lambda *a: True)
+        monkeypatch.setattr(
+            common,
+            "make_authenticated_request",
+            lambda *a, **k: self._response(True, False, "patches failed (boom)"),
+        )
+        with pytest.raises(ValueError, match=r"patches failed \(boom\)"):
+            sk.check_server_forwards_kubeconfig("e")
 
     @pytest.mark.parametrize(
         "flag,forwarded", [("0", True), ("1", False), (None, False)]
@@ -682,7 +864,11 @@ class TestServerPrecondition:
             monkeypatch.setenv(constants.ENV_VAR_ENFORCE_MOUNT_CONTAINMENT, flag)
         from gbserver.utils import sky_patches
 
-        assert sky_patches.kubeconfig_forwarding_endpoint() == {"forwarded": forwarded}
+        got = sky_patches.kubeconfig_forwarding_endpoint()
+        assert got["forwarded"] is forwarded
+        assert ("reason" in got) is not forwarded
+        if not forwarded:
+            assert constants.ENV_VAR_ENFORCE_MOUNT_CONTAINMENT in got["reason"]
 
     def test_plugin_serves_the_endpoint(self):
         from gbserver.utils import sky_patches
@@ -717,7 +903,7 @@ class TestServerPrecondition:
         r.json.side_effect = ValueError("not json")
         monkeypatch.setattr(common, "is_api_server_local", lambda *a: True)
         monkeypatch.setattr(common, "make_authenticated_request", lambda *a, **k: r)
-        with pytest.raises(ValueError, match="does not apply"):
+        with pytest.raises(ValueError, match="can't apply"):
             sk.check_server_forwards_kubeconfig("e")
 
 
@@ -773,6 +959,7 @@ class TestServerClientCaches:
         """
         got = self._probe("guard")
         assert got["count"] >= 19 and got["unkeyed"] == [], got
+        assert got["patch_error"] is None and got["upload_refused"] is True, got
 
     def test_refresh_interval_env_var_refused(self, monkeypatch):
         """SkyPilot's refresh rebuilds clients from os.environ at refresh time."""
@@ -793,6 +980,70 @@ class TestServerClientCaches:
                 sky_patches._rebind(orphan, lambda: 3)
         finally:
             del globals()["no_such_binding_xyz"]
+
+    def test_patch_failure_refuses_only_kube_configs(self, monkeypatch):
+        """A failed rebind must not stop the API server for every build."""
+        from sky.skylet import constants
+
+        from gbserver.utils import sky_patches
+
+        def fail():
+            raise RuntimeError("can't rebind x")
+
+        monkeypatch.setattr(sky_patches, "_KUBE_PATCH_ERROR", None)
+        monkeypatch.setattr(
+            sky_patches, "_refuse_instance_credential_upload", lambda: None
+        )
+        monkeypatch.setattr(sky_patches, "_patch_kube_caches_by_kubeconfig", fail)
+        monkeypatch.setenv(constants.ENV_VAR_ENFORCE_MOUNT_CONTAINMENT, "0")
+        sky_patches._patch_for_kube_configs()  # doesn't raise
+        got = sky_patches.kubeconfig_forwarding_endpoint()
+        assert got["forwarded"] is False and "can't rebind x" in got["reason"]
+
+    def test_keyed_cache_accepts_a_kubeconfig_keyword(self):
+        import functools
+
+        from gbserver.utils import sky_patches
+
+        cached = functools.lru_cache()(lambda kubeconfig=None: kubeconfig)
+        assert sky_patches._kubeconfig_keyed(cached)(kubeconfig="k") == "k"
+
+
+class TestCredentialUpload:
+    """The server plugin never uploads a kubeconfig holding an instance's file."""
+
+    @pytest.fixture
+    def guarded(self, monkeypatch):
+        from sky.clouds import kubernetes as kube_cloud
+
+        from gbserver.utils import sky_patches
+
+        monkeypatch.setattr(
+            kube_cloud.Kubernetes,
+            "get_credential_file_mounts",
+            lambda self: {"~/.kube/config": "merged"},
+        )
+        sky_patches._refuse_instance_credential_upload()
+        return kube_cloud.Kubernetes
+
+    def test_instance_file_is_never_uploaded(self, guarded, monkeypatch):
+        from sky import exceptions
+
+        path = sk.instance_kubeconfig_path("abc")
+        monkeypatch.setenv("KUBECONFIG", sk.request_kubeconfig(path))
+        with pytest.raises(exceptions.InvalidCloudConfigs, match="never uploaded"):
+            guarded.get_credential_file_mounts(None)
+
+    def test_other_kubeconfigs_upload_as_before(self, guarded, tmp_path, monkeypatch):
+        monkeypatch.setenv("KUBECONFIG", str(tmp_path / "user-kubeconfig"))
+        assert guarded.get_credential_file_mounts(None) == {"~/.kube/config": "merged"}
+
+    def test_server_and_client_agree_on_the_directory(self):
+        from gbserver.utils import sky_patches
+
+        assert sky_patches.GBSERVER_KUBE_DIR == sk.KUBE_DIR
+        assert sky_patches.carries_instance_kubeconfig(sk.unresolvable_kubeconfig())
+        assert not sky_patches.carries_instance_kubeconfig(None)
 
 
 # --------------------------------------------------------------------------- #

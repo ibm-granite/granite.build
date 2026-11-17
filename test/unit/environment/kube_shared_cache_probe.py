@@ -21,7 +21,8 @@ cluster each request's ``core_api("X")`` client points at.
 ``guard``: list SkyPilot's request-scoped Kubernetes caches, apply the patches,
 and print any binding that still reaches an unkeyed cache (checked on the
 binding itself: the module attribute, the classmethod's function, or the
-closure cells of an outer decorator).
+closure cells of an outer decorator). Also prints any recorded patch error, and
+whether uploading a kubeconfig that includes an instance file is refused.
 
 ``paths`` (patched): per-request results for a zero-argument cache (the current
 context), a cache taking a context (its namespace), and that SkyPilot's
@@ -68,7 +69,28 @@ if mode == "guard":
         keyed = _reaches(fn, lambda o: getattr(o, "gbserver_kubeconfig_keyed", False))
         if still_original or not keyed:
             unkeyed.append(f"{module}.{qualname}")
-    print(json.dumps({"count": len(names), "unkeyed": unkeyed}))
+    # The credential-upload refusal is in place on the real class too.
+    from sky import exceptions
+    from sky.clouds import kubernetes as kube_cloud
+
+    os.environ["KUBECONFIG"] = os.path.join(
+        tempfile.gettempdir(), ".sky", sky_patches.GBSERVER_KUBE_DIR, "x.yaml"
+    )
+    try:
+        kube_cloud.Kubernetes.get_credential_file_mounts(None)
+        upload_refused = False
+    except exceptions.InvalidCloudConfigs:
+        upload_refused = True
+    print(
+        json.dumps(
+            {
+                "count": len(names),
+                "unkeyed": unkeyed,
+                "patch_error": sky_patches._KUBE_PATCH_ERROR,
+                "upload_refused": upload_refused,
+            }
+        )
+    )
     sys.exit(0)
 
 patched = mode in ("patched", "paths")

@@ -138,9 +138,10 @@ def _api_server_started_before_kubeconfig_changes() -> None:
 
 def _remove_this_process_kubeconfigs() -> None:
     """Drop the instance kubeconfigs this test process wrote (they hold kind creds)."""
-    from gbserver.environment.skypilot_kube import KUBE_DIR
+    from gbserver.environment.skypilot_kube import KUBE_DIR, _process_tag
 
-    for path in (Path.home() / ".sky" / KUBE_DIR).glob(f"{os.getpid()}-*.yaml"):
+    # Names are <host>-<pid>-<start>-<nonce>-<id>.yaml (instance_kubeconfig_path).
+    for path in (Path.home() / ".sky" / KUBE_DIR).glob(f"{_process_tag()}-*.yaml"):
         path.unlink(missing_ok=True)
 
 

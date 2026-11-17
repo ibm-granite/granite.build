@@ -38,15 +38,19 @@ only; gbserver's ``sky_patches`` server plugin keys them by ``KUBECONFIG`` too
 context name never share a client, even on the server's shared threads.
 """
 
+import atexit
 import base64
 import binascii
 import contextvars
 import copy
+import fcntl
 import hashlib
 import os
 import re
+import secrets
 import socket
 import tempfile
+import threading
 import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -202,17 +206,14 @@ def _check_fields(kind: str, context: str, body: Any, allowed: frozenset) -> Non
         )
 
 
-def extract_kube_context(kubeconfig_text: Any, context: str) -> Dict[str, Dict]:
-    """Pull one context, with its cluster and user, out of a kubeconfig secret.
+def _load_kubeconfig_doc(kubeconfig_text: Any, context: str) -> Dict[str, Any]:
+    """Parse a kubeconfig secret and check its sections are lists.
 
-    The cluster and user are renamed ``gbserver/<context>``, and only their
-    checked bodies are kept (a sibling ``exec`` next to ``user:`` is dropped).
-
-    :param kubeconfig_text: The secret's value: a kubeconfig document (YAML).
-    :param context: The context to extract.
-    :returns: ``{"context": ..., "cluster": ..., "user": ...}`` list entries.
-    :raises ValueError: If the text isn't a valid kubeconfig defining the
-        context and its cluster and user. Never includes the text itself.
+    :param kubeconfig_text: The secret's value (YAML).
+    :param context: The context being extracted (for messages only).
+    :returns: The parsed document.
+    :raises ValueError: If it isn't a kubeconfig-shaped mapping. Never includes
+        the text itself.
     """
     if not isinstance(kubeconfig_text, (str, bytes)):
         raise ValueError(f"kubeconfig for context '{context}' is not text")
@@ -230,6 +231,18 @@ def extract_kube_context(kubeconfig_text: Any, context: str) -> Dict[str, Dict]:
             raise ValueError(
                 f"kubeconfig for context '{context}': '{section}' is not a list"
             )
+    return doc
+
+
+def _context_refs(doc: Dict[str, Any], context: str) -> Dict[str, Any]:
+    """The checked body of ``context`` in ``doc``: its cluster, user and namespace.
+
+    :param doc: A parsed kubeconfig (:func:`_load_kubeconfig_doc`).
+    :param context: The context to look up.
+    :returns: The context's ``context:`` mapping.
+    :raises ValueError: If the context is missing, has unexpected fields, lacks
+        a cluster or user, or has an invalid namespace.
+    """
     ctx = _named(doc.get("contexts"), context)
     if ctx is None:
         raise ValueError(f"kubeconfig does not define context '{context}'")
@@ -244,6 +257,23 @@ def extract_kube_context(kubeconfig_text: Any, context: str) -> Dict[str, Dict]:
             f"kubeconfig context '{context}': namespace is not a valid Kubernetes "
             "namespace name (lowercase letters, digits and -, at most 63)"
         )
+    return refs
+
+
+def extract_kube_context(kubeconfig_text: Any, context: str) -> Dict[str, Dict]:
+    """Pull one context, with its cluster and user, out of a kubeconfig secret.
+
+    The cluster and user are renamed ``gbserver/<context>``, and only their
+    checked bodies are kept (a sibling ``exec`` next to ``user:`` is dropped).
+
+    :param kubeconfig_text: The secret's value: a kubeconfig document (YAML).
+    :param context: The context to extract.
+    :returns: ``{"context": ..., "cluster": ..., "user": ...}`` list entries.
+    :raises ValueError: If the text isn't a valid kubeconfig defining the
+        context and its cluster and user. Never includes the text itself.
+    """
+    doc = _load_kubeconfig_doc(kubeconfig_text, context)
+    refs = _context_refs(doc, context)
     cluster = _named(doc.get("clusters"), refs["cluster"])
     user = _named(doc.get("users"), refs["user"])
     if cluster is None or user is None:
@@ -369,6 +399,44 @@ def _check_user_collisions(
 # --------------------------------------------------------------------------- #
 
 
+def _check_entry_names(
+    entry: KubeConfigEntry, seen: Set[str], secrets: Dict[str, str], env_name: str
+) -> None:
+    """Check one ``kube_configs`` entry's context name and secret reference.
+
+    :param entry: The entry.
+    :param seen: Context names of the entries before it.
+    :param secrets: Secret name -> value.
+    :param env_name: For error messages.
+    :raises ValueError: On a bad, reserved or repeated context name, or a secret
+        that isn't in the space. The configured secret value is never echoed:
+        it might be a pasted kubeconfig.
+    """
+    if not _KUBE_CONTEXT_NAME_RE.fullmatch(entry.context):
+        raise ValueError(
+            f"environment '{env_name}': kube_configs context name "
+            f"{entry.context!r} may use only letters, digits and . _ : @ / + = - "
+            "(starting with a letter or digit)"
+        )
+    if reserved_kube_context(entry.context):
+        raise ValueError(
+            f"environment '{env_name}': kube_configs context name "
+            f"'{entry.context}' is reserved (SkyPilot's in-cluster context, an "
+            "ssh-* name, or gbserver's placeholder)"
+        )
+    if entry.context in seen:
+        raise ValueError(
+            f"environment '{env_name}': kube_configs lists context "
+            f"'{entry.context}' more than once"
+        )
+    if entry.kubeconfig not in secrets:
+        raise ValueError(
+            f"environment '{env_name}': kube_configs context '{entry.context}' "
+            "names a secret (its 'kubeconfig' value) that is not in the "
+            "space's secrets; set it to the secret's name"
+        )
+
+
 def build_instance_kubeconfig(
     entries: List[KubeConfigEntry], secrets: Dict[str, str], env_name: str
 ) -> Dict[str, Any]:
@@ -393,31 +461,8 @@ def build_instance_kubeconfig(
     }
     seen: Set[str] = set()
     for entry in entries:
-        if not _KUBE_CONTEXT_NAME_RE.fullmatch(entry.context):
-            raise ValueError(
-                f"environment '{env_name}': kube_configs context name "
-                f"{entry.context!r} may use only letters, digits and . _ : @ / + = - "
-                "(starting with a letter or digit)"
-            )
-        if reserved_kube_context(entry.context):
-            raise ValueError(
-                f"environment '{env_name}': kube_configs context name "
-                f"'{entry.context}' is reserved (SkyPilot's in-cluster context, an "
-                "ssh-* name, or gbserver's placeholder)"
-            )
-        if entry.context in seen:
-            raise ValueError(
-                f"environment '{env_name}': kube_configs lists context "
-                f"'{entry.context}' more than once"
-            )
+        _check_entry_names(entry, seen, secrets, env_name)
         seen.add(entry.context)
-        if entry.kubeconfig not in secrets:
-            # The configured value isn't echoed: it might be a pasted kubeconfig.
-            raise ValueError(
-                f"environment '{env_name}': kube_configs context '{entry.context}' "
-                "names a secret (its 'kubeconfig' value) that is not in the "
-                "space's secrets; set it to the secret's name"
-            )
         parts = extract_kube_context(secrets[entry.kubeconfig], entry.context)
         _check_user_collisions(parts, user, env_name)
         doc["contexts"].append(parts["context"])
@@ -430,12 +475,27 @@ def build_instance_kubeconfig(
     return doc
 
 
-_PROCESS_TAG: Optional[str] = None
+#: This process's owner key, ``<host>-<pid>-<start>-<nonce>`` (see
+#: :func:`_owner_key`), and the lock it holds while it runs:
+#: ``(pid, fd, lock path)``. Recomputed after a fork.
+_OWNER_KEY: Optional[str] = None
+_OWNER_LOCK: Optional[tuple] = None
+#: Serializes taking the owner lock: a second open of the lock file in this
+#: process is a separate lock and would wait on the first forever.
+_OWNER_LOCK_MUTEX = threading.Lock()
+
+#: Suffix of an owner's lock file, ``<owner key>.lock``, beside its files.
+_LOCK_SUFFIX = ".lock"
 
 
 def _host_id() -> str:
-    """A short id of this host, so processes on other hosts (or containers with
-    their own pid namespace) sharing the home directory are never judged here."""
+    """A short id of this host's name.
+
+    Not the liveness test (that's the owner lock, :func:`sweep_stale_instance_files`),
+    but a limit on it: a sweep only judges files from a host of the same name,
+    so a host whose filesystem doesn't share locks with another's (an NFS
+    ``nolock`` mount, say) never removes that host's live files.
+    """
     return hashlib.sha256(socket.gethostname().encode()).hexdigest()[:8]
 
 
@@ -452,16 +512,98 @@ def _process_tag(pid: Optional[int] = None) -> Optional[str]:
         return None
 
 
-def instance_kubeconfig_path(instance_id: str, home: Optional[Path] = None) -> Path:
-    """Where an environment instance's kubeconfig lives: ``<host>-<pid>-<start>-<id>.yaml``.
+def _owner_key() -> str:
+    """This process's owner key: ``<host>-<pid>-<start>-<nonce>``.
 
-    The process tag lets :func:`sweep_stale_instance_files` tell a running
-    gbserver's files from ones left by a stopped one.
+    The random nonce makes it unique even for two processes that share a
+    hostname, pid and start second (pid 1 in two containers), so each has its
+    own lock file. Recomputed in a forked child.
     """
-    global _PROCESS_TAG  # pylint: disable=global-statement
-    if _PROCESS_TAG is None or _PROCESS_TAG.split("-")[1] != str(os.getpid()):
-        _PROCESS_TAG = _process_tag()
-    return _home(home) / ".sky" / KUBE_DIR / f"{_PROCESS_TAG}-{instance_id}.yaml"
+    global _OWNER_KEY  # pylint: disable=global-statement
+    if _OWNER_KEY is None or _OWNER_KEY.split("-")[1] != str(os.getpid()):
+        _OWNER_KEY = f"{_process_tag()}-{secrets.token_hex(4)}"
+    return _OWNER_KEY
+
+
+def hold_owner_lock(directory: Path) -> None:
+    """Hold this process's owner lock in ``directory`` for as long as it runs.
+
+    Taken before this process writes any instance file there. The kernel
+    releases it when the process dies, however it dies, which is what
+    :func:`sweep_stale_instance_files` tests. Idempotent per process.
+
+    A sweep may remove a lock file between this process creating and locking
+    it; then the lock is on a file no longer in the directory, so this checks
+    after locking that the path is still the file it holds, and retries if not.
+    If the filesystem can't lock, the file is left unlocked: a sweep then
+    can't take it either, and keeps this process's files.
+    """
+    with _OWNER_LOCK_MUTEX:
+        _hold_owner_lock(directory)
+
+
+def _hold_owner_lock(directory: Path) -> None:
+    """:func:`hold_owner_lock`, with :data:`_OWNER_LOCK_MUTEX` held."""
+    global _OWNER_LOCK  # pylint: disable=global-statement
+    if _OWNER_LOCK is not None and _OWNER_LOCK[0] == os.getpid():
+        return
+    path = directory / f"{_owner_key()}{_LOCK_SUFFIX}"
+    while True:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if os.fstat(fd).st_ino == os.stat(path).st_ino:
+                break
+        except FileNotFoundError:
+            pass  # removed by a sweep after we opened it: retry
+        except OSError as e:
+            logger.debug("can't lock %s (%s); sweeps will keep its files", path, e)
+            break
+        os.close(fd)
+    _OWNER_LOCK = (os.getpid(), fd, path)
+    atexit.register(_release_owner_lock, os.getpid())
+
+
+def _release_owner_lock(pid: int) -> None:
+    """At exit: remove this process's files, then its lock file, then release the lock.
+
+    The files go first, while the lock is still held: atexit runs this before
+    the instances' own finalizers, and a file without its lock would be judged
+    by the older pid check meanwhile.
+    """
+    global _OWNER_LOCK  # pylint: disable=global-statement
+    if _OWNER_LOCK is None or _OWNER_LOCK[0] != pid or os.getpid() != pid:
+        return
+    _, fd, path = _OWNER_LOCK
+    _OWNER_LOCK = None
+    lock = Path(path)
+    for owned in lock.parent.glob(f"{lock.name[: -len(_LOCK_SUFFIX)]}-*"):
+        _remove_quietly(owned)
+    lock.unlink(missing_ok=True)
+    os.close(fd)
+
+
+def _reset_owner_lock_in_child() -> None:
+    """After a fork: a fresh mutex (another thread may have held the parent's).
+
+    The child takes its own owner lock on its first write; the parent's
+    stays shared with it, so the parent's files are kept while the child runs.
+    """
+    global _OWNER_LOCK_MUTEX  # pylint: disable=global-statement
+    _OWNER_LOCK_MUTEX = threading.Lock()
+
+
+os.register_at_fork(after_in_child=_reset_owner_lock_in_child)
+
+
+def instance_kubeconfig_path(instance_id: str, home: Optional[Path] = None) -> Path:
+    """Where an instance's kubeconfig lives: ``<owner key>-<id>.yaml``.
+
+    The owner key (:func:`_owner_key`) names the owner lock that lets
+    :func:`sweep_stale_instance_files` tell a running gbserver's files from
+    ones left by a stopped one.
+    """
+    return _home(home) / ".sky" / KUBE_DIR / f"{_owner_key()}-{instance_id}.yaml"
 
 
 def write_instance_kubeconfig(doc: Dict[str, Any], path: Path) -> None:
@@ -473,6 +615,7 @@ def write_instance_kubeconfig(doc: Dict[str, Any], path: Path) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
+    hold_owner_lock(path.parent)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.stem}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -493,30 +636,82 @@ def remove_when_collected(owner: Any, path: Path) -> None:
     weakref.finalize(owner, path.unlink, missing_ok=True)
 
 
+def _take_lock_of_gone_owner(lock: Path) -> Optional[int]:
+    """Take ``lock`` if its owner is gone; the fd, or None to keep its files.
+
+    Kept (None) when the lock is held (the owner runs), when locking fails (we
+    can't tell), and when the path no longer names the file we locked (it was
+    replaced or removed meanwhile).
+    """
+    try:
+        fd = os.open(lock, os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if os.fstat(fd).st_ino == os.stat(lock).st_ino:
+            return fd
+    except OSError:  # held (BlockingIOError), removed, or no locking here
+        pass
+    os.close(fd)
+    return None
+
+
 def sweep_stale_instance_files(directory: Optional[Path] = None) -> None:
     """Remove instance files (and temporary files) of gbserver processes that are gone.
 
-    A file belongs to the process ``<host>-<pid>-<start>`` in its name; it's
-    stale when it's from this host and that pid no longer runs, or runs with a
-    different start time (a reused pid). Files of other running gbserver
-    processes sharing the home dir, and any from another host, are kept.
+    A file ``<owner key>-<id>.yaml`` belongs to the process holding the lock
+    ``<owner key>.lock`` (:func:`hold_owner_lock`). The kernel releases that
+    lock when the process dies, so the file is stale exactly when the lock can
+    be taken: across pid namespaces, container restarts and reused pids alike.
+    Its files are removed while the lock is held, then the lock file.
+
+    Anything uncertain is kept: a held lock, a filesystem that can't lock, a
+    file from a host of another name (:func:`_host_id`). Files of earlier
+    versions, with no lock file, are judged as before: stale when their
+    ``<host>-<pid>-<start>`` process no longer runs.
     """
     directory = directory or _home(None) / ".sky" / KUBE_DIR
     if not directory.is_dir():
         return
     host = _host_id()
+    by_lock: Dict[Path, List[Path]] = {}
     for path in directory.iterdir():
-        parts = path.name.split("-", 3)
+        if path.name.endswith(_LOCK_SUFFIX):
+            continue
+        parts = path.name.split("-", 4)
         if len(parts) < 4 or parts[0] != host:
             continue
         if not parts[1].isdigit() or not parts[2].isdigit():
             continue
-        if _process_tag(int(parts[1])) == "-".join(parts[:3]):
+        lock = directory / ("-".join(parts[:4]) + _LOCK_SUFFIX)
+        if len(parts) == 5 and lock.exists():
+            by_lock.setdefault(lock, []).append(path)
+        elif _process_tag(int(parts[1])) != "-".join(parts[:3]):
+            _remove_quietly(path)
+    for path in directory.glob(f"{host}-*{_LOCK_SUFFIX}"):
+        by_lock.setdefault(path, [])
+    for lock, files in by_lock.items():
+        if _OWNER_LOCK is not None and Path(_OWNER_LOCK[2]) == lock:
+            continue  # this process's own
+        fd = _take_lock_of_gone_owner(lock)
+        if fd is None:
             continue
         try:
-            path.unlink()
-        except OSError as e:
-            logger.debug("could not remove stale kubeconfig %s: %s", path, e)
+            for path in files:
+                _remove_quietly(path)
+            _remove_quietly(lock)
+        finally:
+            os.close(fd)
+
+
+def _remove_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.debug("could not remove stale kubeconfig %s: %s", path, e)
 
 
 def unresolvable_kubeconfig() -> str:
@@ -554,6 +749,10 @@ def set_request_kubeconfig(value: Optional[str]) -> contextvars.Token:
 
 
 def reset_request_kubeconfig(token: contextvars.Token) -> None:
+    """Restore the ``KUBECONFIG`` in force before :func:`set_request_kubeconfig`.
+
+    :param token: The token that call returned.
+    """
     _REQUEST_KUBECONFIG.reset(token)
 
 
@@ -594,29 +793,6 @@ def install() -> None:
     _INSTALLED = True
 
 
-def _enforce_env_var() -> str:
-    from sky.skylet import constants
-
-    return constants.ENV_VAR_ENFORCE_MOUNT_CONTAINMENT
-
-
-def host_remote_identities(home: Optional[Path] = None) -> List[str]:
-    """``kubernetes.remote_identity`` values in the host's ``~/.sky/config.yaml``.
-
-    A value may be one string or a list of ``{cluster-pattern: value}`` maps;
-    returns every value. Unreadable files read as none.
-    """
-    try:
-        doc = yaml.safe_load(
-            (_home(home) / ".sky" / "config.yaml").read_text(encoding="utf-8")
-        )
-    except (OSError, yaml.YAMLError, RecursionError):
-        return []
-    k8s = doc.get("kubernetes") if isinstance(doc, dict) else None
-    value = k8s.get("remote_identity") if isinstance(k8s, dict) else None
-    return remote_identity_values(value)
-
-
 def remote_identity_values(value: Any) -> List[str]:
     """Every value in a ``remote_identity`` setting (a string, or pattern maps)."""
     if isinstance(value, str):
@@ -649,14 +825,14 @@ def check_server_forwards_kubeconfig(env_name: str) -> None:
         "GET", KUBECONFIG_FORWARDING_ROUTE, retry=False
     )
     try:
-        forwarded = response.ok and response.json().get("forwarded") is True
+        body = response.json() if response.ok else {}
     except ValueError:  # not JSON: an old server, or no gbserver plugin
-        forwarded = False
-    if not forwarded:
+        body = {}
+    if not isinstance(body, dict) or body.get("forwarded") is not True:
+        reason = body.get("reason") if isinstance(body, dict) else None
         raise ValueError(
-            f"environment '{env_name}': the SkyPilot API server does not apply "
-            "per-request KUBECONFIG (it is deployed, not bound to loopback, or "
-            f"{_enforce_env_var()} is set), so kube_configs "
-            "credentials would be ignored. Restart it as a local server "
-            "(`sky api stop`; gbserver starts it again)."
+            f"environment '{env_name}': the SkyPilot API server can't apply "
+            f"per-request KUBECONFIG safely ({reason or 'no gbserver plugin answer'}), "
+            "so kube_configs credentials would be ignored or exposed. Restart "
+            "it as a local server (`sky api stop`; gbserver starts it again)."
         )

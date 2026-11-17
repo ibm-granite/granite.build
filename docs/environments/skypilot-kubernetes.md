@@ -57,7 +57,8 @@ environment or the `kubectl`/`helm` commands it runs. Two spaces can use the sam
 different credentials, and `allowed_contexts: all` only ever means your contexts plus the instance's own.
 SkyPilot's API server caches its Kubernetes clients by context name; gbserver's `sky_patches` server plugin
 keys those caches by `KUBECONFIG` too, so requests the server runs side by side on shared threads (launch
-validation, `sky logs`) never get each other's client.
+validation, `sky logs`) never get each other's client. If the plugin can't apply that (after a SkyPilot
+upgrade, say), it logs why and only `kube_configs` environments are refused; other builds are unaffected.
 
 - **Static credentials only.** A secret's `user` may hold only `token`, `client-certificate-data`,
   `client-key-data`, or `username`/`password`; its `cluster` only `server`, `certificate-authority-data`
@@ -75,8 +76,11 @@ validation, `sky logs`) never get each other's client.
 - **Rotation.** An instance reads its secrets once, so a rotated secret takes effect with the next build.
 - **Lifetime.** A file is removed when its environment instance is released (normally when its build
   finishes) or gbserver exits; files left by a gbserver that crashed are removed when gbserver next starts
-  a SkyPilot environment. Files belonging to another running gbserver sharing the home directory, or to
-  another host, are kept.
+  a SkyPilot environment. Each gbserver holds a file lock beside its files while it runs, and only files
+  whose lock is free are removed, so another running gbserver's files (in another container, say) are kept.
+  When that can't be told (a filesystem without locking, or files from another host), they're kept too.
+- **Teardown.** Once an instance has its file, polls, cleanup and teardown reuse it without checking the
+  configuration again, so a setting changed mid-build can't stop `sky.down` from reaching the cluster.
 
 Limits:
 - **Local API server only.** `kube_configs` is refused unless gbserver's SkyPilot API server is local,
@@ -89,10 +93,13 @@ Limits:
   the server's own.
 - **Background server work** (e.g. the API server's periodic status refresh) uses the server's own
   environment, so it doesn't see these contexts; gbserver's own requests do.
-- **No `remote_identity: LOCAL_CREDENTIALS`.** It's refused for `kube_configs` environments (in the
-  environment's `cloud_config` or the host's `~/.sky/config.yaml`): SkyPilot would flatten each request's
-  kubeconfig, credentials included, into a temporary file it never removes. The Kubernetes default,
-  `SERVICE_ACCOUNT`, uploads no credentials.
+- **No `remote_identity: LOCAL_CREDENTIALS`.** SkyPilot would flatten each request's kubeconfig,
+  credentials included, into a temporary file it never removes, and upload it to the cluster. The setting
+  can come from the environment's `cloud_config`, but also from `~/.sky/config.yaml` (which other
+  environments rewrite), a workspace or a per-context block, so gbserver's `sky_patches` plugin refuses
+  the upload itself: a launch whose kubeconfig includes an instance file fails instead. An environment
+  that sets it in its own `cloud_config` is refused up front. The Kubernetes default, `SERVICE_ACCOUNT`,
+  uploads no credentials.
 - **No exec-based auth** (e.g. `aws eks get-token`): use a static token or client certificate.
 
 ### No `cluster_ssh_configs` or `aws_credentials`
