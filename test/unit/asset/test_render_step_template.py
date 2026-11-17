@@ -78,19 +78,34 @@ class TestExpand:
             "run: |\n    set -e\n    {#- gb-include ../../shared/m.j2 -#}\n    echo\n",
         )
         assert rst.expand(t, root=steps) == (
-            "run: |\n    set -e\n    {%- macro a() -%}\n      x\n"
+            "run: |\n    set -e\n"
+            "    {#- included from steps/train/shared/m.j2 -#}\n"
+            "    {%- macro a() -%}\n      x\n"
             "    {%- endmacro %}\n    echo\n"
         )
 
     def test_empty_lines_stay_empty(self, steps):
         _write(steps / "train" / "shared" / "m.j2", "a\n\nb\n")
         t = _template(steps, "  {#- gb-include ../../shared/m.j2 -#}\n")
-        assert rst.expand(t, root=steps) == "  a\n\n  b\n"
+        assert rst.expand(t, root=steps) == (
+            "  {#- included from steps/train/shared/m.j2 -#}\n  a\n\n  b\n"
+        )
 
     def test_path_is_relative_to_the_template(self, steps):
         _write(steps / "train" / "foo" / "skypilot" / "macros" / "v.j2", "local\n")
         t = _template(steps, "{#- gb-include macros/v.j2 -#}\n")
-        assert rst.expand(t, root=steps) == "local\n"
+        assert rst.expand(t, root=steps) == (
+            "{#- included from steps/train/foo/skypilot/macros/v.j2 -#}\nlocal\n"
+        )
+
+    @pytest.mark.parametrize("ending", [" \n", "\t\n", "\r\n", "  \r\n"])
+    def test_trailing_whitespace_and_crlf_are_accepted(self, steps, ending):
+        """A marker that reads correctly is not refused for invisible characters."""
+        _write(steps / "train" / "shared" / "m.j2", "x\n")
+        t = _template(steps, "  {#- gb-include ../../shared/m.j2 -#}" + ending)
+        assert rst.expand(t, root=steps) == (
+            "  {#- included from steps/train/shared/m.j2 -#}\n  x\n"
+        )
 
     def test_a_template_without_markers_is_unchanged(self, steps):
         text = (
@@ -151,10 +166,17 @@ class TestRefuse:
         msg = self._error(steps, f"a\n{line}\n")
         assert "malformed gb-include line" in msg and "step-template.yaml:2" in msg
 
-    def test_trailing_whitespace_is_shown(self, steps):
-        _write(steps / "train" / "shared" / "m.j2", "x\n")
-        msg = self._error(steps, "{#- gb-include ../../shared/m.j2 -#} \n")
-        assert "malformed gb-include line" in msg and "-#} '" in msg
+    def test_a_template_that_is_not_utf8(self, steps):
+        t = _template(steps, "")
+        t.write_bytes(b"name: \xff\n")
+        with pytest.raises(rst.IncludeError) as exc:
+            rst.expand(t, root=steps)
+        assert str(exc.value).startswith(f"{t}: not valid UTF-8")
+
+    def test_an_include_that_is_not_utf8(self, steps):
+        (steps / "train" / "shared" / "m.j2").write_bytes(b"\xff\n")
+        msg = self._error(steps, "a\n{#- gb-include ../../shared/m.j2 -#}\n")
+        assert "step-template.yaml:2: ../../shared/m.j2 is not valid UTF-8" in msg
 
 
 class TestRender:
@@ -162,7 +184,8 @@ class TestRender:
         _write(steps / "train" / "shared" / "m.j2", "image: ${IMAGE_REF}\n")
         t = _template(steps, "a: ${IMAGE_REF}\n{#- gb-include ../../shared/m.j2 -#}\n")
         assert rst.render(t, "q.io/o/i:t", root=steps) == (
-            "a: q.io/o/i:t\nimage: q.io/o/i:t\n"
+            "a: q.io/o/i:t\n{#- included from steps/train/shared/m.j2 -#}\n"
+            "image: q.io/o/i:t\n"
         )
 
     @pytest.mark.parametrize(
@@ -226,6 +249,21 @@ class TestCli:
         assert "resolves outside" in proc.stderr
         assert not out.exists()
 
+    def test_a_file_that_is_not_utf8_is_named_not_a_traceback(self, steps, tmp_path):
+        t = _template(steps, "")
+        t.write_bytes(b"name: \xff\n")
+        out = tmp_path / "step.yaml"
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), str(t), str(out)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 1
+        assert proc.stderr.startswith(f"render_step_template: {t}: not valid UTF-8")
+        assert "Traceback" not in proc.stderr
+        assert not out.exists()
+
 
 COMMON_MK = REPO_ROOT / "steps" / "common.mk"
 _MAKE_VARS = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
@@ -269,7 +307,8 @@ def test_make_space_expands_markers(tmp_path):
     assert proc.returncode == 0, proc.stderr
     rendered = step / "space" / "steps" / "train" / "foo" / "step.yaml"
     assert rendered.read_text() == (
-        "name: foo\nrun: |\n  {%- macro hi() -%}hi{%- endmacro %}\n  {{ hi() }}\n"
+        "name: foo\nrun: |\n  {#- included from steps/train/shared/m.j2 -#}\n"
+        "  {%- macro hi() -%}hi{%- endmacro %}\n  {{ hi() }}\n"
     )
 
 

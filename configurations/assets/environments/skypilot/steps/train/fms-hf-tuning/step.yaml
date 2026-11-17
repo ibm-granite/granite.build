@@ -94,6 +94,7 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
+            {#- included from steps/train/fms-hf-tuning/skypilot/macros/validate.j2 -#}
             {#- fms-hf-tuning's q() and config checks; setup: and run: both include this file. -#}
             {%- macro q(v) -%}
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
@@ -142,6 +143,7 @@ environment_configs:
           # re-run renders it without setup.
           run: |
             set -euo pipefail
+            {#- included from steps/train/fms-hf-tuning/skypilot/macros/validate.j2 -#}
             {#- fms-hf-tuning's q() and config checks; setup: and run: both include this file. -#}
             {%- macro q(v) -%}
             {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}

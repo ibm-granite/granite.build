@@ -101,6 +101,7 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
+            {#- included from steps/train/shared/trainer_args.j2 -#}
             {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
@@ -131,6 +132,7 @@ environment_configs:
             {%- macro render_args(args) -%}
             {% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
             {%- endmacro %}
+            {#- included from steps/train/hf-peft-sft/skypilot/macros/validate.j2 -#}
             {#- hf-peft-sft's config checks; setup: and run: both include this file. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}
@@ -185,6 +187,7 @@ environment_configs:
           # re-run renders it without setup.
           run: |
             set -euo pipefail
+            {#- included from steps/train/shared/trainer_args.j2 -#}
             {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
@@ -215,6 +218,7 @@ environment_configs:
             {%- macro render_args(args) -%}
             {% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
             {%- endmacro %}
+            {#- included from steps/train/hf-peft-sft/skypilot/macros/validate.j2 -#}
             {#- hf-peft-sft's config checks; setup: and run: both include this file. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["output_dir", "report_to", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "resume_from_checkpoint", "save_strategy", "bf16", "fp16", "fsdp", "fsdp_config", "deepspeed", "gradient_checkpointing_kwargs", "model_name_or_path", "method", "distributed", "mixed_precision", "dataset_path", "dataset_split", "dataset_config", "lora_r", "lora_alpha", "lora_dropout", "lora_target_modules", "lora_modules_to_save", "alora_invocation_string", "base_model_id"] -%}

@@ -533,15 +533,17 @@ marker line:
             {#- gb-include macros/validate.j2 -#}
 ```
 
-The render replaces each marker line with the file's lines, indented like the marker,
-so the published `step.yaml` is self-contained and gbserver sees ordinary inline
-macros. The rules:
+The render replaces each marker line with a `{#- included from steps/<file> -#}`
+comment and then the file's lines, all indented like the marker, so the published
+`step.yaml` is self-contained, names where each block came from, and gbserver sees
+ordinary inline macros. The rules:
 
-* The marker is a whole line, `{#- gb-include <path> -#}`, indented with spaces. Any
-  other `{#` comment naming `gb-include` (a typo, tab indentation, or a marker after
-  other text on the line) fails the render, so a typo can't pass as a plain Jinja
-  comment. (An unexpanded marker is just a comment, and the strict fill would then
-  fail on the undefined macro.)
+* The marker is a whole line, `{#- gb-include <path> -#}`, indented with spaces;
+  trailing whitespace and a CRLF ending are ignored. Any other `{#` comment naming
+  `gb-include` (a typo, tab indentation, or a marker after other text on the line)
+  fails the render, so a typo can't pass as a plain Jinja comment. (An unexpanded
+  marker is just a comment, and the strict fill would then fail on the undefined
+  macro.)
 * `<path>` is relative to the file holding the marker and must resolve, after
   symlinks, to a file under `steps/`.
 * Included files hold Jinja only (macros and comments) and can't include other files.

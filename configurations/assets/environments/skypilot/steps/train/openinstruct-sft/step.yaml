@@ -85,6 +85,7 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
+            {#- included from steps/train/shared/trainer_args.j2 -#}
             {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
@@ -115,6 +116,7 @@ environment_configs:
             {%- macro render_args(args) -%}
             {% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
             {%- endmacro %}
+            {#- included from steps/train/openinstruct-sft/skypilot/macros/validate.j2 -#}
             {#- openinstruct-sft's config checks; setup: and run: both include this file. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir", "dataset_cache_mode", "no_push_to_hub", "no_try_launch_beaker_eval_jobs", "no_try_auto_save_to_beaker"] -%}
@@ -150,6 +152,7 @@ environment_configs:
           # re-run renders it without setup.
           run: |
             set -euo pipefail
+            {#- included from steps/train/shared/trainer_args.j2 -#}
             {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
             {%- macro q(v) -%}
             {{ v | string | replace("'", "'\"'\"'") }}
@@ -180,6 +183,7 @@ environment_configs:
             {%- macro render_args(args) -%}
             {% for k, v in args.items() %}{% if v is not none %}'--{{ q(k) }}' {% if v is sameas true or v is sameas false %}'{{ v | lower }}' {% elif v is iterable and v is not string %}{% for x in v %}'{{ q(x) }}' {% endfor %}{% else %}'{{ q(v) }}' {% endif %}{% endif %}{% endfor %}
             {%- endmacro %}
+            {#- included from steps/train/openinstruct-sft/skypilot/macros/validate.j2 -#}
             {#- openinstruct-sft's config checks; setup: and run: both include this file. -#}
             {%- macro validate(c, bound, lc) -%}
             {%- set owned = ["model_name_or_path", "output_dir", "dataset_name", "dataset_mixer", "dataset_mixer_list", "dataset_mixer_list_splits", "with_tracking", "report_to", "wandb_entity", "push_to_hub", "try_launch_beaker_eval_jobs", "try_auto_save_to_beaker", "do_not_randomize_output_dir", "resume_from_checkpoint", "dataset_local_cache_dir", "dataset_cache_mode", "no_push_to_hub", "no_try_launch_beaker_eval_jobs", "no_try_auto_save_to_beaker"] -%}
