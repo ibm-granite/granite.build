@@ -171,6 +171,22 @@ class TestPullassetHfstore:
         assert step_config.step_uri == "space://steps/hfpull"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("inline", [False, True])
+    async def test_refuses_a_bucket_input(self, skypilot_env, inline):
+        """`hf download` has no bucket repo type, so a bucket input is refused
+        before anything is launched, by the hfpull step and inline alike."""
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {"cache_path": "/data/cache", "inline": inline}
+
+        with pytest.raises(ValueError, match="bucket inputs aren't supported"):
+            await skypilot_env.pullasset_hfstore(
+                uri=HfURI.parse("hf:///buckets/myorg/mybucket/some/dir"),
+                assetstore=_hfstore_mock(),
+                storeload_config=storeload_config,
+            )
+
+    @pytest.mark.asyncio
     async def test_rejects_wrong_assetstore_type(self, skypilot_env, mock_hfuri):
         """pullasset_hfstore raises AssertionError if assetstore is not Hfstore."""
         storeload_config = MagicMock()

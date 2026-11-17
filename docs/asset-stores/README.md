@@ -58,6 +58,9 @@ Notes:
   itself, so a step sees the named directory, not the repo root. A path that matches nothing in the
   repo fails the pull. A dataset repo needs the `datasets/` type segment
   (`hf:///datasets/org/repo/...`); without it the URI names a model repo.
+  Bucket inputs (`hf:///buckets/org/name[/prefix]`) work on k8s, bash and docker. Skypilot refuses
+  them before launching anything: its hfpull step and inline download use `hf download`, which has
+  no bucket type.
 - **Env-local (`env://`)** models an artifact that already lives on a filesystem the worker can see, so
   the store resolves the path directly and transfers nothing. Common on bare-metal HPC backends (e.g.
   LSF/SLURM with shared GPFS), but supported by **all** environment classes and registered
