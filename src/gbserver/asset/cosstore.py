@@ -267,7 +267,9 @@ class Cosstore(Assetstore):
         """
         endpoint = self.configured("cos_endpoint")
         if not endpoint:
-            base = (self.config.base_uri or self.config.uri_regex) if self.config else ""
+            base = (
+                (self.config.base_uri or self.config.uri_regex) if self.config else ""
+            )
             raise ValueError(
                 f"the S3/COS store for '{base}' sets no cos_endpoint; set it in its "
                 "store.yaml (e.g. s3.amazonaws.com for AWS S3, or the regional IBM "
