@@ -6059,18 +6059,21 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             (``Cosstore.resolve_credentials``, as hf's ``resolve_token``).
         :returns: ``(binding_config, BuildTargetStepConfig)`` for the s3pull step.
         :raises AssertionError: if ``assetstore``/``uri`` are not Cosstore/CosURI.
-        :raises ValueError: for a bad endpoint, missing credential secrets or an
+        :raises ValueError: for an empty uri, a bad endpoint, missing credential
+            secrets, no worker cache directory, or an
             invalid ``cache_max_age_days`` / ``lease_max_age_days``.
         """
         from gbcommon.uri.cos import CosURI
         from gbserver.asset.cosstore import Cosstore
         from gbserver.environment.local_assets import get_cos_cache_dir
 
+        if uri is None or uri == "":
+            raise ValueError("Empty uri received for pullasset_cosstore")
         assert isinstance(
             assetstore, Cosstore
         ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Cosstore')"
         self._warn_non_default_mode(storeload_config, uri)
-        cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)  # type: ignore[arg-type]
+        cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"expected CosURI, got {type(cosuri)}"
 
         cache_dir = self._worker_cache_dir(
