@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Image setup for the `mcpmark` family: MCPMark's harness and MCP-server
 # runtimes (README.md). Everything fetched here is pinned by commit and/or
 # sha256 and verified; the task STATE payloads (filesystem zips, postgres
