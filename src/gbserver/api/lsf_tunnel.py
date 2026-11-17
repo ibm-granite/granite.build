@@ -86,11 +86,9 @@ async def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str
     from gbserver.spaces.db_space import local_uri
 
     try:
-        # Offloaded: load_environment_config syncs the environment Asset, which
-        # may hit git/HTTP. The DB calls elsewhere in this module run inline
-        # (matching the rest of the api/ package) — only the network-bound
-        # work goes through to_thread.
-        # local_uri inside the thread too: it may read and unpack a snapshot.
+        # Offloaded: syncing the environment Asset may hit git/HTTP, and
+        # local_uri may read and unpack a snapshot. The DB calls elsewhere in
+        # this module run inline, as in the rest of the api/ package.
         env_config, _asset = await asyncio.to_thread(
             lambda: Environment.load_environment_config(local_uri(environment_uri))
         )

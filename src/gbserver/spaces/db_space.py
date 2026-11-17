@@ -228,7 +228,7 @@ def local_uri(uri: str) -> str:
 
 
 def _source_row(stored_space: StoredSpace) -> StoredSpace:
-    """The row holding a db-backed space's snapshots: itself."""
+    """The row itself, once its space_uri is checked to name it."""
     check_own_space_uri(stored_space)
     return stored_space
 

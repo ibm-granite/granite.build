@@ -44,9 +44,8 @@ def _check_db_specs(spaces: List[StoredSpace]) -> None:
     """Refuse db:// specs that can't be served, before anything is changed.
 
     A db-backed space is served from its own snapshot, which only
-    ``gbserver space-snapshot`` creates (carried over here from an existing
-    row): the spec's space_uri must name the row itself, and the row must have
-    a space snapshot.
+    ``gbserver space-snapshot`` creates: the space_uri must name the row
+    itself, and the row must have a snapshot.
 
     Raises:
         click.ClickException: For the first spec that can't be served.

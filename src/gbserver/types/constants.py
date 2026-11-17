@@ -758,11 +758,10 @@ GITHUB_API_MAX_RETRIES = int(
 GITHUB_API_RETRY_BASE_DELAY = float(
     os.getenv(ENV_VAR_PREFIX + "_GITHUB_API_RETRY_BASE_DELAY", "1.0")
 )
-# A build's PR and PR messages are optional: if the PR is never created, the
-# rest of the build runs without it. Per build run, they give up after this many
-# consecutive failures; the rest of the run, in-place retries included, skips
-# them. Each PR git clone, pull or push is killed at the deadline (seconds), and
-# retries stop at it.
+# A build's PR and PR messages are optional (a build whose PR is never created
+# runs without it). After this many consecutive failures the rest of the build
+# run, retries included, skips them. Each PR git clone, pull or push is killed
+# at the deadline (seconds), and retries stop at it.
 BUILD_GIT_MAX_CONSECUTIVE_FAILURES = int(
     os.getenv(ENV_VAR_PREFIX + "_BUILD_GIT_MAX_CONSECUTIVE_FAILURES", "3"), base=10
 )
