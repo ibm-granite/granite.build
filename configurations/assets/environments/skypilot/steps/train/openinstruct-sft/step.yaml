@@ -98,6 +98,7 @@ environment_configs:
                 set instead of an owned flag; consumer: what parses the argv; full_flags:
                 non-owned flags that are a proper prefix of an owned one (argparse takes an
                 exact match first); refuse_no: refuse no_* keys (store_false, no value).
+                Values that start with '-' (other than negative numbers) are refused too.
                 A call block gets (k, v, nk) once per key, after these checks. -#}
             {%- macro validate_args(step, field, args, owned, noun, hint, consumer, full_flags=[], refuse_no=false) -%}
             {%- if args is not mapping %}{{ raise_error(step ~ ": " ~ field ~ " must be a mapping of " ~ noun ~ " to value.") }}{% endif -%}
@@ -110,6 +111,14 @@ environment_configs:
             {%- if refuse_no and nk.startswith("no_") %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
             {%- if v is mapping %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
             {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is an empty list; " ~ consumer ~ " would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {#- Each value, and each list item, is its own argv word after the step's flags.
+                argparse reads a word that starts with '-', other than a negative number or a
+                lone '-', as an option, and the last setting of a flag wins, so such a value
+                could override a step-owned flag (--output_dir, or --output_dir=/x). -#}
+            {%- for x in (v if (v is iterable and v is not string) else [v]) if x is not none and x is not boolean %}
+            {%- set xs = x | string %}
+            {%- if xs[:1] == "-" and (xs | length) > 1 and xs[1] not in "0123456789." %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " has a value that starts with '-' ('" ~ xs ~ "'); " ~ consumer ~ " would read it as a flag, which could override a step-owned one. Only a negative number may start with '-'.") }}{% endif -%}
+            {%- endfor -%}
             {%- if caller is defined %}{{ caller(k, v, nk) }}{% endif -%}
             {%- endfor -%}
             {%- endmacro %}
@@ -167,6 +176,7 @@ environment_configs:
                 set instead of an owned flag; consumer: what parses the argv; full_flags:
                 non-owned flags that are a proper prefix of an owned one (argparse takes an
                 exact match first); refuse_no: refuse no_* keys (store_false, no value).
+                Values that start with '-' (other than negative numbers) are refused too.
                 A call block gets (k, v, nk) once per key, after these checks. -#}
             {%- macro validate_args(step, field, args, owned, noun, hint, consumer, full_flags=[], refuse_no=false) -%}
             {%- if args is not mapping %}{{ raise_error(step ~ ": " ~ field ~ " must be a mapping of " ~ noun ~ " to value.") }}{% endif -%}
@@ -179,6 +189,14 @@ environment_configs:
             {%- if refuse_no and nk.startswith("no_") %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is a no_* flag, which takes no value; write " ~ k[3:] ~ ": false instead.") }}{% endif -%}
             {%- if v is mapping %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " must be a scalar or a list.") }}{% endif -%}
             {%- if v is iterable and v is not string and v is not mapping and not v %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " is an empty list; " ~ consumer ~ " would read the next flag as its value. Remove it, or set it to null to omit it.") }}{% endif -%}
+            {#- Each value, and each list item, is its own argv word after the step's flags.
+                argparse reads a word that starts with '-', other than a negative number or a
+                lone '-', as an option, and the last setting of a flag wins, so such a value
+                could override a step-owned flag (--output_dir, or --output_dir=/x). -#}
+            {%- for x in (v if (v is iterable and v is not string) else [v]) if x is not none and x is not boolean %}
+            {%- set xs = x | string %}
+            {%- if xs[:1] == "-" and (xs | length) > 1 and xs[1] not in "0123456789." %}{{ raise_error(step ~ ": " ~ field ~ "." ~ k ~ " has a value that starts with '-' ('" ~ xs ~ "'); " ~ consumer ~ " would read it as a flag, which could override a step-owned one. Only a negative number may start with '-'.") }}{% endif -%}
+            {%- endfor -%}
             {%- if caller is defined %}{{ caller(k, v, nk) }}{% endif -%}
             {%- endfor -%}
             {%- endmacro %}

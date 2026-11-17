@@ -354,6 +354,31 @@ class TestValidation:
         err = _render_error(block, _ctx(args={"foo": [], "max_train_steps": 3}))
         assert "args.foo is an empty list" in err
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "args,shown",
+        [
+            ({"dataset_transform_fn": ["a", "--output_dir", "/evil"]}, "--output_dir"),
+            ({"use_flash_attn": "--output_dir=/evil"}, "--output_dir=/evil"),
+        ],
+    )
+    def test_args_value_starting_with_a_dash_refused(self, block, args, shown):
+        # Each value is its own argv word after the step's flags, so finetune.py's
+        # argparse would take it as a flag and override the step's (#613).
+        key = next(iter(args))
+        assert _render_error(block, _ctx(args=args)) == (
+            f"openinstruct-sft: openinstruct_sft_config.args.{key} has a value that "
+            f"starts with '-' ('{shown}'); finetune.py would read it as a flag, which "
+            "could override a step-owned one. Only a negative number may start "
+            "with '-'."
+        )
+
+    def test_negative_number_args_values_pass(self):
+        args = {"weight_decay": -0.5, "seed": "-1", "dataset_transform_fn": ["-.5"]}
+        argv = _argv("run", _ctx(args=args), "openinstruct_sft_run.sh")
+        for word in ("-0.5", "-1", "-.5"):
+            assert word in argv
+
 
 class TestSingleNode:
     """gbserver, not the template, refuses multi-node: the step declares
