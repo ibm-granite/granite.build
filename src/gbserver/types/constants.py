@@ -160,9 +160,6 @@ ENV_VAR_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S = (
 )
 ENV_VAR_SKYPILOT_HOST_SSH_ATTEMPTS = ENV_VAR_PREFIX + "_SKYPILOT_HOST_SSH_ATTEMPTS"
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
-# Where db-backed spaces' snapshots are unpacked (gbserver.spaces.snapshot_cache);
-# default a per-user dir in the temp dir. Must be a local filesystem (flock).
-ENV_VAR_DB_SPACE_CACHE_DIR = ENV_VAR_PREFIX + "_DB_SPACE_CACHE_DIR"
 ENV_VAR_UI_DIR = ENV_VAR_PREFIX + "_UI_DIR"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
 ENV_VAR_API_KEY = ENV_VAR_PREFIX + "_API_KEY"
@@ -519,9 +516,10 @@ def _db_public_space_env_for_files_uri() -> Optional[str]:
 
     PUBLIC_SPACE_GIT_URI names the public space's git repo, but its gb_spaces
     row may serve it from the database (``db://spaces/...``); then git must not
-    be reached. Returns None when the row is absent, git-backed, or can't be
-    read (derive from git as before), "" (-> 503) when its snapshot can't be
-    unpacked.
+    be reached. Returns its db:// URI, which the LSF tunnel unpacks only while
+    loading environment.yaml; None when the row is absent, git-backed, or can't
+    be read (derive from git as before); "" (-> 503) when it has no usable
+    snapshot.
     """
     # Function-local imports: storage and db_space import this module.
     from gbserver.spaces.db_space import get_space_config_uri, is_db_uri
@@ -536,13 +534,14 @@ def _db_public_space_env_for_files_uri() -> Optional[str]:
     if row is None or not is_db_uri(row.get_space_uri()):
         return None
     try:
-        # Not cached: a refreshed snapshot unpacks to a new directory.
-        return f"{get_space_config_uri(row)}/environments/{SUPPORTED_ENV_FOR_FILES}"
-    except ValueError as e:
-        get_logger(__name__).warning(
-            "failed to unpack the public space's stored snapshot: %s", e
-        )
+        space_uri = get_space_config_uri(row)
+    except ValueError as e:  # e.g. a space_uri naming another space
+        get_logger(__name__).warning("public space can't be served: %s", e)
         return ""
+    if row.space is None or not row.space.archive:
+        get_logger(__name__).warning("the public space has no stored snapshot")
+        return ""
+    return f"{space_uri}#subdirectory=environments/{SUPPORTED_ENV_FOR_FILES}"
 
 
 def get_supported_env_for_files_uri() -> str:

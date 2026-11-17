@@ -89,9 +89,13 @@ async def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str
         # Offloaded: syncing the environment Asset may hit git/HTTP, and
         # local_uri may read and unpack a snapshot. The DB calls elsewhere in
         # this module run inline, as in the rest of the api/ package.
-        env_config, _asset = await asyncio.to_thread(
-            lambda: Environment.load_environment_config(local_uri(environment_uri))
-        )
+        def load():
+            # The sync copies the environment out, so the unpacked snapshot is
+            # only needed for this call.
+            with local_uri(environment_uri) as uri:
+                return Environment.load_environment_config(uri)
+
+        env_config, _asset = await asyncio.to_thread(load)
     except Exception as e:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,

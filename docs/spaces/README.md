@@ -202,10 +202,9 @@ out docs, images and other files builds don't resolve. It then:
 The snapshots are kept in the row's `json` column: `space`, and `base_uris`, a list aligned with
 `space.yaml`'s `base_uris` (`null` where an entry is not snapshotted). Each holds `archive` (a
 base64-encoded zip, like a build's `build_archive`), `source_uri`, `source_ref`, `source_commit`,
-`snapshot_time` and `entry`. At use, gbserver unpacks each snapshot into a private local cache
-(`GBSERVER_DB_SPACE_CACHE_DIR`, default a per-user dir in the temp dir) and serves it from there.
-The cache is safe for concurrent threads and processes: copies are never replaced under a
-reader, a damaged copy is never served, and an old copy is removed only once no process uses it.
+`snapshot_time` and `entry`. At use, gbserver unpacks the snapshots a space needs into a private temp
+directory owned by that use (a build run, or a request) and removes it afterwards, as it does
+with a git-backed space's checkout.
 
 `space_uri` says where a space is loaded from; unset means `git_repo_uri`. Like the snapshots it
 lives in the `json` column, so no schema change is needed. `git_repo_uri` keeps naming the space's

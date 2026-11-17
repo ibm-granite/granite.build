@@ -16,7 +16,6 @@ import gbserver.build.space as space_mod
 import gbserver.spaces.db_space as db_space
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
-from gbserver.spaces import snapshot_cache
 from gbserver.spaces.db_space import (
     DbUri,
     create_space,
@@ -80,9 +79,20 @@ def rows(tmp_path, monkeypatch):
         return table[name]
 
     monkeypatch.setattr(db_space, "_get_row", get_row)
-    monkeypatch.setenv("GBSERVER_DB_SPACE_CACHE_DIR", str(tmp_path / "c"))
-    yield table
-    snapshot_cache.release_holds()
+    return table
+
+
+@pytest.fixture
+def unpack(tmp_path):
+    """A dir to unpack into, named like the ones Space and local_uri use."""
+    path = tmp_path / f"{db_space.UNPACK_DIR_PREFIX}test"
+    path.mkdir()
+    return path
+
+
+def _slot_uri(space, slot="space", name="x"):
+    """Where ``space`` unpacked one of its slots."""
+    return (space.unpack_dir() / f"s-{name}" / slot).resolve().as_uri()
 
 
 @pytest.mark.parametrize(
@@ -123,16 +133,16 @@ def test_make_round_trips():
     assert parse_db_uri(make_db_uri("a/b")).base_uri_index is None
 
 
-def test_subdirectory(rows):
+def test_subdirectory(rows, unpack):
     rows["x"] = _row()
-    uri = resolve_db_uri("db://spaces/x/base_uri_0#subdirectory=steps").file_uri
+    uri = resolve_db_uri("db://spaces/x/base_uri_0#subdirectory=steps", unpack).file_uri
     assert Path(uri[len("file://") :], "echo", "step.yaml").is_file()
 
 
-def test_missing_snapshot(rows):
+def test_missing_snapshot(rows, unpack):
     rows["x"] = _row(base_uris=None)
     with pytest.raises(ValueError, match="no base_uri_0 snapshot"):
-        resolve_db_uri("db://spaces/x/base_uri_0")
+        resolve_db_uri("db://spaces/x/base_uri_0", unpack)
 
 
 def test_other_rows_space_uri_is_not_supported(rows):
@@ -175,7 +185,7 @@ def test_create_space_loads_offline(rows, monkeypatch):
     # The space-match check in validation passes for the stored row.
     assert same_repo(rows["x"].git_repo_uri, space.identity_uri)
     # db://spaces/x/base_uri_0 became the unpacked base_uris[0] snapshot.
-    assets_uri = resolve_db_uri("db://spaces/x/base_uri_0").file_uri
+    assets_uri = _slot_uri(space, "base_uri_0")
     assert SpaceURI._thread_local.base_uris[:2] == [space.uristr, assets_uri]
     dest = Path(space.uristr[len("file://") :]).parent / "pulled"
     assert URI.get_uri("space://steps/echo").pull(dest=dest)
@@ -198,12 +208,12 @@ def test_snapshot_round_trips_through_json():
     assert again.base_uris[0].source_uri == BASE_SOURCE
 
 
-def test_portable_uri_round_trips(rows):
+def test_portable_uri_round_trips(rows, unpack):
     rows["x"] = _row()
-    local = resolve_db_uri("db://spaces/x").file_uri + "/environments/e"
+    local = resolve_db_uri("db://spaces/x", unpack).file_uri + "/environments/e"
     portable = db_space.portable_uri(local)
     assert portable == "db://spaces/x#subdirectory=environments/e"
-    assert resolve_db_uri(portable).file_uri == local
+    assert resolve_db_uri(portable, unpack).file_uri == local
     assert db_space.portable_uri("git+ssh://h/o/r.git") == "git+ssh://h/o/r.git"
 
 
@@ -235,17 +245,17 @@ def test_identity_is_git_repo_uri_in_any_form(rows):
 @pytest.mark.parametrize(
     "subdirectory", ["../other/steps", "steps/../../other", "/etc", "a/../../x"]
 )
-def test_subdirectory_may_not_escape_the_snapshot(rows, subdirectory):
+def test_subdirectory_may_not_escape_the_snapshot(rows, unpack, subdirectory):
     """'..' or an absolute path would reach a sibling (another space's) snapshot."""
     rows["x"] = _row()
     with pytest.raises(ValueError, match="escapes the snapshot"):
-        resolve_db_uri(f"db://spaces/x/base_uri_0#subdirectory={subdirectory}")
+        resolve_db_uri(f"db://spaces/x/base_uri_0#subdirectory={subdirectory}", unpack)
 
 
-def test_subdirectory_within_the_snapshot_is_fine(rows):
+def test_subdirectory_within_the_snapshot_is_fine(rows, unpack):
     rows["x"] = _row()
     uri = resolve_db_uri(
-        "db://spaces/x/base_uri_0#subdirectory=steps/../steps"
+        "db://spaces/x/base_uri_0#subdirectory=steps/../steps", unpack
     ).file_uri
     assert uri.endswith("/steps")
 
@@ -266,9 +276,9 @@ def test_slots_keep_base_uris_order(rows):
     )
     space = create_space(rows["x"])
     bases = SpaceURI._thread_local.base_uris
-    assert bases[1] == resolve_db_uri("db://spaces/x/base_uri_0").file_uri
+    assert bases[1] == _slot_uri(space, "base_uri_0")
     assert bases[2] == f"{space.uristr}/steps-local"
-    assert bases[3] == resolve_db_uri("db://spaces/x/base_uri_2").file_uri
+    assert bases[3] == _slot_uri(space, "base_uri_2")
 
 
 def test_relative_entry_may_not_escape_the_snapshot(rows):
@@ -331,29 +341,28 @@ def test_local_space_is_unaffected(tmp_path, monkeypatch):
     assert space.uristr == local.as_uri() and space.db_row is None
 
 
-def test_local_uri(rows):
+def test_local_uri_unpacks_only_for_the_block(rows):
     rows["x"] = _row()
-    assert (
-        db_space.local_uri("db://spaces/x") == resolve_db_uri("db://spaces/x").file_uri
-    )
-    assert db_space.local_uri("git+ssh://h/o/r.git") == "git+ssh://h/o/r.git"
-    assert db_space.local_uri("file:///tmp/x") == "file:///tmp/x"
+    with db_space.local_uri("db://spaces/x") as uri:
+        path = Path(uri[len("file://") :])
+        assert (path / "space.yaml").is_file()
+    assert not path.exists()
+    for other in ("git+ssh://h/o/r.git", "file:///tmp/x"):
+        with db_space.local_uri(other) as uri:
+            assert uri == other
 
 
-def test_space_holds_its_snapshots_until_dropped(rows):
-    """A Space's copies (its own and its db:// base_uris) aren't pruned while it
-    lives; once it's gone, a newer snapshot's publish prunes them."""
+def test_space_unpack_dir_lives_and_goes_with_the_space(rows):
+    """Its snapshots stay for the Space's lifetime (base_uris are read lazily
+    during a build) and are removed with it; the row isn't kept."""
     import gc
 
     rows["x"] = _row()
     space = create_space(rows["x"])
-    held = [lease.path for lease in space.snapshot_leases]
-    assert len(held) == 2 and space.db_row is None  # the row isn't kept
-    rows["x"] = _row(space=_snapshot({"space.yaml": SPACE_YAML + "#v2\n"}, SOURCE))
-    create_space(rows["x"])
-    assert all(p.exists() for p in held)  # still leased by `space`
+    unpacked = space.unpack_dir()
+    assert (unpacked / "s-x" / "space" / "space.yaml").is_file()
+    assert (unpacked / "s-x" / "base_uri_0" / "steps").is_dir()
+    assert space.db_row is None
     del space
     gc.collect()
-    rows["x"] = _row(space=_snapshot({"space.yaml": SPACE_YAML + "#v3\n"}, SOURCE))
-    create_space(rows["x"])
-    assert not held[0].exists()
+    assert not unpacked.exists()

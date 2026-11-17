@@ -13,19 +13,21 @@ snapshot's space.yaml names each snapshotted base_uris entry as
 ``base_uris[i]`` snapshot, in its original position.
 Either may carry a ``#subdirectory=`` fragment.
 
-Snapshots are unpacked into a local cache (gbserver.spaces.snapshot_cache) and
-served as ``file://``, so no git access is needed. Secret lookup, space
-matching and build PRs keep using ``git_repo_uri``, never the local path.
+Snapshots are unpacked into a private temp dir owned by their user (a Space,
+or a ``local_uri`` block) and removed with it, the way a git-backed space's
+checkout is; nothing is shared between users, so nothing needs locking.
+Secret lookup, space matching and build PRs keep using ``git_repo_uri``.
 """
 
 import re
+import tempfile
 import urllib.parse
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Optional
+from typing import TYPE_CHECKING, Final, Iterator, Optional
 
 from gbcommon.uri.git import GitURI
-from gbserver.spaces import snapshot_cache
 from gbserver.spaces.repo_identity import normalize_repo_uri, to_config_uri
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 from gbserver.utils.archive import extract_archive
@@ -128,43 +130,41 @@ def _get_snapshot(row: StoredSpace, ref: DbUri) -> RepoSnapshot:
     return snapshot
 
 
+# Prefix of the temp dirs snapshots are unpacked into. Inside one, each slot is
+# at s-<quoted space>/<slot>/, so a path maps back to its db:// URI.
+UNPACK_DIR_PREFIX = "gb-db-space-"
+_SPACE_DIR_PREFIX = "s-"
+
+
+def new_unpack_dir() -> "tempfile.TemporaryDirectory[str]":
+    """A private (0700, unpredictable) temp dir to unpack snapshots into."""
+    return tempfile.TemporaryDirectory(prefix=UNPACK_DIR_PREFIX)
+
+
 def portable_uri(uri: str) -> str:
     """Map a ``file://`` URI inside an unpacked snapshot back to its db:// URI.
 
-    The unpacked path exists only on this host and changes with each snapshot,
-    so anything persisted or handed to another process uses this instead. The
-    cache path names the space and slot, so no lookup is needed. Other URIs
-    are returned unchanged.
+    The unpacked path is local and temporary, so anything persisted or handed
+    to another process uses this instead. Other URIs are returned unchanged.
     """
     if not uri.startswith("file://"):
         return uri
     # Decode: as_uri() percent-encodes the path (e.g. a quoted space name).
     path = Path(urllib.parse.unquote(urllib.parse.urlparse(uri).path))
-    cached = snapshot_cache.parse_cached_path(path)
-    if cached is None:
+    for parent in path.parents:
+        if parent.name.startswith(UNPACK_DIR_PREFIX):
+            parts = path.relative_to(parent).parts
+            break
+    else:
         return uri
-    space_name, slot, subpath = cached
-    if not _is_slot(slot):
+    if len(parts) < 2 or not parts[0].startswith(_SPACE_DIR_PREFIX):
+        return uri
+    space_name = urllib.parse.unquote(parts[0][len(_SPACE_DIR_PREFIX) :])
+    if not _is_slot(parts[1]):
         return uri  # not a layout this module writes
-    ref = DbUri(space_name=space_name, slot=slot)
-    db_uri = make_db_uri(space_name, ref.base_uri_index)
+    db_uri = make_db_uri(space_name, DbUri(space_name, parts[1]).base_uri_index)
+    subpath = "/".join(parts[2:])
     return db_uri + (f"#subdirectory={subpath}" if subpath else "")
-
-
-def _unpacker(snapshot: RepoSnapshot, label: str):
-    """Extract a snapshot's zip into a given directory, within the size caps."""
-
-    def extract(dest: Path) -> None:
-        if not extract_archive(
-            snapshot.load_archive(),
-            dest,
-            archive_format="zip",
-            max_entries=SNAPSHOT_MAX_ENTRIES,
-            max_uncompressed_bytes=SNAPSHOT_MAX_UNCOMPRESSED_BYTES,
-        ):
-            raise ValueError(f"{label} is not a readable zip archive")
-
-    return extract
 
 
 @dataclass(frozen=True)
@@ -175,41 +175,50 @@ class ResolvedDbUri:
     # The snapshot's source repo, as GitURI.get_gb_space_config_uri would give
     # it (git+ssh://host/o/r.git@<ref>); file_uri when the source is unknown.
     identity_uri: str
-    # Keeps the unpacked copy from being pruned; keep it while file_uri is used.
-    lease: Optional[snapshot_cache.Lease] = None
 
 
-def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri:
-    """Unpack the snapshot a db:// URI names and return where it landed.
+def resolve_db_uri(
+    uri: str, unpack_dir: Path, row: Optional[StoredSpace] = None
+) -> ResolvedDbUri:
+    """Unpack the snapshot a db:// URI names into ``unpack_dir``; say where.
+
+    The caller owns ``unpack_dir`` and its lifetime. A slot already unpacked
+    there is reused.
 
     Args:
         uri: A ``db://spaces/...`` URI.
+        unpack_dir: A dir from new_unpack_dir().
         row: The already-loaded row it names, to skip the lookup.
     """
     ref = parse_db_uri(uri)
     if row is None or row.name != ref.space_name:
         row = _get_row(ref.space_name)
     snapshot = _get_snapshot(row, ref)
-    label = f"space {row.name!r} {ref.slot} snapshot"
-    assert snapshot.archive is not None  # _get_snapshot checked
-    lease = snapshot_cache.materialize(
-        row.name, ref.slot, snapshot.archive, _unpacker(snapshot, label), label
-    )
-    path = lease.path
-    root = path.resolve()
+    space_dir = _SPACE_DIR_PREFIX + urllib.parse.quote(row.name, safe="")
+    root = (unpack_dir / space_dir / ref.slot).resolve()
+    if not root.is_dir():
+        root.mkdir(mode=0o700, parents=True)
+        if not extract_archive(
+            snapshot.load_archive(),
+            root,
+            archive_format="zip",
+            max_entries=SNAPSHOT_MAX_ENTRIES,
+            max_uncompressed_bytes=SNAPSHOT_MAX_UNCOMPRESSED_BYTES,
+        ):
+            raise ValueError(f"space {row.name!r} {ref.slot} snapshot is not a zip")
+    path = root
     if ref.subdirectory:
-        # Contained: '..' or an absolute path would reach another copy (or
-        # another space's) in the shared cache root.
+        # Contained: '..' or an absolute path would reach outside the snapshot.
         path = (root / ref.subdirectory).resolve()
         if path != root and root not in path.parents:
             raise ValueError(f"db space URI {uri!r}: subdirectory escapes the snapshot")
-    file_uri = path.resolve().as_uri()
+    file_uri = path.as_uri()
     identity_uri = (
         to_config_uri(snapshot.source_uri, snapshot.source_ref)
         if snapshot.source_uri
         else file_uri
     )
-    return ResolvedDbUri(file_uri=file_uri, identity_uri=identity_uri, lease=lease)
+    return ResolvedDbUri(file_uri=file_uri, identity_uri=identity_uri)
 
 
 def check_own_space_uri(stored_space: StoredSpace) -> None:
@@ -227,9 +236,18 @@ def check_own_space_uri(stored_space: StoredSpace) -> None:
         )
 
 
-def local_uri(uri: str) -> str:
-    """A db:// URI as the ``file://`` URI of its unpacked snapshot; others as is."""
-    return resolve_db_uri(uri).file_uri if is_db_uri(uri) else uri
+@contextmanager
+def local_uri(uri: str, row: Optional[StoredSpace] = None) -> Iterator[str]:
+    """For the block, a db:// URI as the ``file://`` URI of its unpacked
+    snapshot (removed on exit); any other URI as is.
+
+    ``row`` is the already-loaded row the URI names (e.g. one not stored yet).
+    """
+    if not is_db_uri(uri):
+        yield uri
+        return
+    with new_unpack_dir() as unpack_dir:
+        yield resolve_db_uri(uri, Path(unpack_dir), row=row).file_uri
 
 
 def _source_row(stored_space: StoredSpace) -> StoredSpace:
@@ -255,13 +273,13 @@ def get_pr_repo_uri(stored_space: StoredSpace) -> Optional[str]:
 def get_space_config_uri(stored_space: StoredSpace, token: Optional[str] = None) -> str:
     """URI to pull a stored space's definitions from (space.yaml, environments...).
 
-    A db-backed space is unpacked and returned as ``file://``. Its space.yaml
-    may still name ``db://`` base_uris, which only Space resolves; callers
-    that only read the space's own files need nothing more.
+    For a db-backed space, its ``db://`` URI: read it through local_uri (or a
+    Space), which unpacks it only while it is used.
     """
     uri = stored_space.get_space_uri()
     if is_db_uri(uri):
-        return resolve_db_uri(uri, row=_source_row(stored_space)).file_uri
+        _source_row(stored_space)  # checks space_uri names the row itself
+        return uri
     if token is None:
         return GitURI.get_gb_space_config_uri(uri=uri)
     return GitURI.get_gb_space_config_uri(uri=uri, token=token)

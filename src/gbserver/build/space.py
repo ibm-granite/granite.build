@@ -11,14 +11,18 @@ import shutil
 import tempfile
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional, Self, Union
+from typing import Callable, Dict, List, Optional, Self, Union
 from urllib.parse import urlparse
 
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
-from gbserver.spaces.db_space import is_db_uri, parse_db_uri, resolve_db_uri
-from gbserver.spaces.snapshot_cache import Lease
+from gbserver.spaces.db_space import (
+    is_db_uri,
+    new_unpack_dir,
+    parse_db_uri,
+    resolve_db_uri,
+)
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import GBSERVER_PROCEED_WITHOUT_SECRETS, is_debug_mode
@@ -60,7 +64,7 @@ def _resolve_base_uris(base_uris: List[str], space: "Space") -> List[str]:
             space.uristr,
             space.db_space_name,
             space.db_row,
-            space.snapshot_leases,
+            space.unpack_dir,
         )
         for b in base_uris
     ]
@@ -90,7 +94,7 @@ def _resolve_one_base_uri(
     space_uri: str,
     db_space_name: Optional[str] = None,
     db_row: Optional[StoredSpace] = None,
-    leases: Optional[List[Lease]] = None,
+    unpack_dir: Optional[Callable[[], Path]] = None,
 ) -> str:
     """Resolve a single base_uri entry.
 
@@ -122,11 +126,10 @@ def _resolve_one_base_uri(
                 f"base_uri {base_uri!r} names another space's snapshot, which is"
                 f" not supported; a space ({space_uri!r}) uses only its own"
             )
+        if unpack_dir is None:
+            raise ValueError(f"base_uri {base_uri!r} needs a db-backed space")
         # The space's own row, if already loaded (resolve_db_uri checks it).
-        db = resolve_db_uri(base_uri, row=db_row)
-        if leases is not None and db.lease:
-            leases.append(db.lease)
-        return db.file_uri
+        return resolve_db_uri(base_uri, unpack_dir(), row=db_row).file_uri
     parsed = urlparse(base_uri)
     if parsed.scheme and parsed.scheme != "file":
         return base_uri
@@ -189,14 +192,12 @@ class Space:
         self.db_space_name: Optional[str] = None
         # Only while constructing: it carries every archive.
         self.db_row = stored_space
-        # Holds on the unpacked db:// snapshots this space serves from, so they
-        # aren't pruned while it lives (base_uris resolve lazily, mid-build).
-        self.snapshot_leases: List[Lease] = []
+        # Its db:// snapshots, unpacked here; removed with the Space. They must
+        # outlive construction: base_uris are read lazily during the build.
+        self._unpack_dir: Optional["tempfile.TemporaryDirectory[str]"] = None
         if is_db_uri(self.uristr):
             self.db_space_name = parse_db_uri(self.uristr).space_name
-            resolved = resolve_db_uri(self.uristr, row=self.db_row)
-            if resolved.lease:
-                self.snapshot_leases.append(resolved.lease)
+            resolved = resolve_db_uri(self.uristr, self.unpack_dir(), row=self.db_row)
             logger.info("db space %s unpacked at %s", self.uristr, resolved.file_uri)
             self.uristr = uri = resolved.file_uri
             identity_uri = identity_uri or resolved.identity_uri
@@ -244,6 +245,12 @@ class Space:
             if not is_debug_mode():
                 shutil.rmtree(tmppath, ignore_errors=True)
             self.db_row = None
+
+    def unpack_dir(self: Self) -> Path:
+        """This space's private dir for its unpacked db:// snapshots."""
+        if self._unpack_dir is None:
+            self._unpack_dir = new_unpack_dir()
+        return Path(self._unpack_dir.name)
 
     def get_secrets(self: Self) -> Dict[str, str]:
         """Returns the cached secrets for the space."""

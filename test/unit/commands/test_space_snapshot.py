@@ -109,7 +109,6 @@ def repos(tmp_path_factory):
 @pytest.fixture
 def env(repos, tmp_path, monkeypatch):
     storage = _FakeSpaceStorage()
-    monkeypatch.setenv("GBSERVER_DB_SPACE_CACHE_DIR", str(tmp_path / "c"))
     monkeypatch.setattr(
         cmd.singleton_storage,
         "get_admin_storage",

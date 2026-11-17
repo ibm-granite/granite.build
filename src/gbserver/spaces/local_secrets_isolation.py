@@ -34,7 +34,7 @@ class LocalSecretsCollisionError(ValueError):
     """Two different spaces would share one default local secrets directory."""
 
 
-def load_space_config(space_uri: str) -> SpaceConfig:
+def load_space_config(space_uri: str, row: Optional[StoredSpace] = None) -> SpaceConfig:
     """Pull a space into a temporary directory and parse its space.yaml.
 
     The temporary copy is removed before returning.
@@ -42,6 +42,8 @@ def load_space_config(space_uri: str) -> SpaceConfig:
     Args:
         space_uri: The space's URI (a bare path is treated as ``file:``; a
             ``db://`` URI is served from its stored snapshot).
+        row: The already-loaded row a db:// URI names (it may not be
+            stored yet).
 
     Returns:
         SpaceConfig: The parsed space.yaml.
@@ -49,9 +51,8 @@ def load_space_config(space_uri: str) -> SpaceConfig:
     Raises:
         ValueError: If the space has no space.yaml.
     """
-    uriobj = URI.get_uri(uri=local_uri(space_uri), default_scheme="file")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        uriobj.pull(dest=Path(tmpdir))
+    with local_uri(space_uri, row) as uri, tempfile.TemporaryDirectory() as tmpdir:
+        URI.get_uri(uri=uri, default_scheme="file").pull(dest=Path(tmpdir))
         space_yamls = glob.glob(str(Path(tmpdir) / "**" / SPACE_YAML), recursive=True)
         if not space_yamls:
             raise ValueError(f"No '{SPACE_YAML}' found for space at {space_uri}")
@@ -98,7 +99,7 @@ def _registered_key(space: StoredSpace) -> Optional[str]:
     """
     try:
         config_uri = get_space_config_uri(space)
-        return default_local_secrets_key(load_space_config(config_uri))
+        return default_local_secrets_key(load_space_config(config_uri, space))
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.warning(
             "Skipping local-secrets collision check against space '%s' (%s):"
@@ -130,7 +131,9 @@ def check_local_secrets_collision(
             different registered space uses it under the same space.yaml name.
         ValueError: If the candidate's own space.yaml cannot be loaded.
     """
-    key = default_local_secrets_key(load_space_config(get_space_config_uri(candidate)))
+    key = default_local_secrets_key(
+        load_space_config(get_space_config_uri(candidate), candidate)
+    )
     if key is None:
         return
     if not key:

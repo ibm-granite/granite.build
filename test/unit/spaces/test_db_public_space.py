@@ -38,7 +38,6 @@ def _snapshot() -> RepoSnapshot:
 @pytest.fixture
 def no_git(tmp_path, monkeypatch):
     """Snapshot cache under tmp_path; any git/GitHub access fails the test."""
-    monkeypatch.setenv("GBSERVER_DB_SPACE_CACHE_DIR", str(tmp_path / "c"))
     monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", PUBLIC_GIT)
     monkeypatch.setattr(create_spaces, "PUBLIC_SPACE_GIT_URI", PUBLIC_GIT)
 
@@ -65,11 +64,15 @@ def _add_db_public(storage) -> StoredSpace:
 
 
 def test_env_files_uri_from_snapshot(no_git):
+    """A db:// URI the reader unpacks only while it reads environment.yaml."""
     _add_db_public(no_git)
     uri = c.get_supported_env_for_files_uri()
-    assert uri.startswith("file://") and uri.endswith("/environments/bluevela")
-    assert Path(uri[len("file://") :], "environment.yaml").is_file()
-    assert URI.get_uri(uri).exists()
+    assert uri == "db://spaces/public#subdirectory=environments/bluevela"
+    with db_space.local_uri(uri) as local:
+        path = Path(local[len("file://") :])
+        assert (path / "environment.yaml").is_file()
+        assert URI.get_uri(local).exists()
+    assert not path.exists()
 
 
 def test_env_files_uri_unreadable_snapshot_is_503(no_git):
