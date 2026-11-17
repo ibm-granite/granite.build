@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """S3/COS asset helpers for the Skypilot environment's s3pull/s3push steps.
 
 ``Skypilot.pullasset_cosstore`` / ``Skypilot.pushasset_cosstore`` queue the

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 usage() {
   cat <<'EOF'
 List or release the reader leases in a SkyPilot s3pull cache.

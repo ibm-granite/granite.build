@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for Skypilot S3/COS push/pull and the shared Cosstore helpers.
 
 Covers endpoint normalization, per-store settings, hf-style credential

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the build-test harness's ArtifactExistenceChecker."""
 
 from types import SimpleNamespace

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for store-routed existence checks.
 
 Covers ``select_assetstore`` / ``asset_uri_exists`` (the routing shared with

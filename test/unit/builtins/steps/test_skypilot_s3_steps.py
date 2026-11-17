@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Behavioral tests for the Skypilot s3pull/s3push builtin step scripts.
 
 Each test renders the step's ``run`` block through gbserver's template engine

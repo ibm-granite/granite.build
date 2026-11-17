@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for scripts/s3/s3pull-leases.sh (list / release s3pull reader leases)."""
 
 import subprocess
