@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Exemplar eval entrypoint for the custom-image step, baked into the image at
 # /opt/eval/eval.sh (see ../Dockerfile) and invoked by the generated step.yaml.
 #

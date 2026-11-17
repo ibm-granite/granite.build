@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The app stores its authenticator on ``app.state`` rather than rebuilding it per request."""
 
 from __future__ import annotations

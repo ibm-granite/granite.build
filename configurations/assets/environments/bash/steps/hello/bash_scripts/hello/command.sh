@@ -1,4 +1,7 @@
 #!/bin/sh
+
+# SPDX-License-Identifier: Apache-2.0
+
 echo 'hello step start'
 echo "Hello from gbserver standalone!"
 echo "Running on: $(hostname)"

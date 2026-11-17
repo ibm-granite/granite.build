@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression test for the `selectedIds` shadow kept alongside Carbon's own
  * DataTable selection in the tunings, configurations and datasets tables.

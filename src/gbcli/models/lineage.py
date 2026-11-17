@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Lineage metadata models."""
 
 from dataclasses import asdict, dataclass, field

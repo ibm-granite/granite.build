@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Flight plans API — proxies MCP plan_list and plan_get tools via Streamable HTTP."""
 
 from __future__ import annotations

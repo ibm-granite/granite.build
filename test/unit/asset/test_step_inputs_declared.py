@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Every published step declares its inputs, and the declarations are pinned (#453).
 
@@ -72,6 +60,9 @@ EXPECTED = {
     # HF-PEFT SFT: new, so base_model is required outright; dataset is optional
     # (omit it to train on hf_peft_sft_config.dataset_name instead).
     f"{_SKY}/train/hf-peft-sft": ({"base_model"}, {"dataset"}),
+    # fms-hf-tuning: new, so base_model is required outright; dataset is optional
+    # (omit it to train on fms_hf_tuning_config.dataset_name or data_config instead).
+    f"{_SKY}/train/fms-hf-tuning": ({"base_model"}, {"dataset"}),
     # Granite-evals benchmark families: model_path is a config string and recipes
     # bind only ordering-only inputs (names vary by recipe), so no named inputs.
     f"{_SKY}/eval/bfcl": (set(), set()),

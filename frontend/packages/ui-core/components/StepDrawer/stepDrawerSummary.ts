@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { Build, BuildStatus, BuildTargetRun } from '../../types'
 import { formatDurationBetween } from '../../lib/duration'
 

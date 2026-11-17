@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { ScaleTypes } from '@carbon/charts'
 import type { LineChartOptions } from '@carbon/charts'
 import type { ChartsTheme } from './trialMetrics'

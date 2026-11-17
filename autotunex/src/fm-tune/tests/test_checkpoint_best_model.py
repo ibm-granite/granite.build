@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Best-epoch checkpointing for the HF SFT drivers.
 
 Final training must persist the *best* epoch by ``eval_loss``, not the last step.

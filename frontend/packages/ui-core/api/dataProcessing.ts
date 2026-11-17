@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { apiBase, createApiClient } from './client'
 
 const client = createApiClient(apiBase('/api/analytics/data-processing'))

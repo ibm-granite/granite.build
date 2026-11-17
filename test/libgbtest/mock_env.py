@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Mock environment variable defaults for running tests without external dependencies.
 
 Applied by conftest.py:pytest_sessionstart when GBTEST_MODE=mock.

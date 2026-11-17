@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The LLM client registry: configured -> adapter, unset -> 503."""
 
 from __future__ import annotations

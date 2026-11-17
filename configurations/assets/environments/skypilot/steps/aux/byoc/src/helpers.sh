@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Optional helper functions for the byoc step.
 #
 # This directory is file-mounted into ./src at the workdir root on the cluster

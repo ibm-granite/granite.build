@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The trainer_state.json fixture shared by the resume tests.
 
 test_step_template.py builds whole checkpoints around it (weights, ZeRO shards) to

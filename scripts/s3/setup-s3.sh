@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # setup-s3.sh — Deploy a local S3-compatible object store (SeaweedFS)
 #
 # Deploys a single-node SeaweedFS container (`weed mini`) serving the S3 API,

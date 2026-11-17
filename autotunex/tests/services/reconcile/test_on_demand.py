@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """OnDemandReconciler against real in-memory SQLite with a fake reader.
 
 Unlike the background loop's tests, these assert the force behaviour: detail is

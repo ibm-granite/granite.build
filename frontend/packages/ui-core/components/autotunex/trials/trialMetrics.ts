@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Shaping for the per-step metrics behind the Hyperparameters tab charts —
 // GET /jobs/{id}/metrics and its per-trial sibling. Kept free of React so it can
 // be unit-tested (see apps/standalone/tests/trial-metrics.test.js), the same

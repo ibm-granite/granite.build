@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for step-template.yaml.
 
 Scope note: the source-delivery half of this template is spliced VERBATIM from

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for embedded nats-server in standalone command."""
 
 from unittest.mock import MagicMock, patch

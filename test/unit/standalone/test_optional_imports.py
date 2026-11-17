@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests that optional IBM/LH/RabbitMQ packages can be absent without crashing imports.
 
 These tests verify the import guards added in issue #6 (architecture sections 1.4-1.10).

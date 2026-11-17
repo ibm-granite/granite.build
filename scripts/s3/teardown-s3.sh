@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # teardown-s3.sh — Remove the local S3 (SeaweedFS) container and optionally its data volume
 #
 # Usage:

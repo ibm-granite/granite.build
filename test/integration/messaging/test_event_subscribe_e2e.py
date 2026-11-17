@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end test for event subscription with local RabbitMQ.
 
 Requires a running RabbitMQ instance with management plugin enabled.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for the corpus-sources step-template.yaml.
 
 The run script is rendered with gbserver's own template filler and then executed, so a

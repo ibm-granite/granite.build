@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Mock tests for node failure event storage in the buildwatcher pipeline.
 

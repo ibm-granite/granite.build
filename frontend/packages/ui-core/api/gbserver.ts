@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * API client for the gbserver REST API (/api/v1/*).
  *

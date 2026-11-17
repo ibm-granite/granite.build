@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # tests/services/local/test_cancellation.py
 from __future__ import annotations
 

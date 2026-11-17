@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # common.sh -- Shared settings and helpers for setup-postgres.sh / teardown-postgres.sh.
 #
 # Sourced, not run. Defines the container name, the paths of the files setup

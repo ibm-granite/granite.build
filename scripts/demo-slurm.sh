@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # End-to-end demo: TRL fine-tuning + unitxt evaluation via SkyPilot on SLURM
 #
 # Quick start:

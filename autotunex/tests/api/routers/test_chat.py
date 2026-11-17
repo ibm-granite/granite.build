@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Chat endpoints, end to end over HTTP.
 
 ``POST /chat`` and ``POST /chat/stream`` both delegate to ``ChatService`` (see

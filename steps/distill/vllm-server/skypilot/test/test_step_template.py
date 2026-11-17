@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for the vllm-server step-template.yaml.
 
 These tests pin the CONTRACT — the readiness gate, the two markers, the monitor

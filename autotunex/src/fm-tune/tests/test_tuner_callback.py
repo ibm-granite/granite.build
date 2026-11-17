@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.callbacks.tuner_callback.CustomLoggerCallback."""
 
 from unittest.mock import MagicMock

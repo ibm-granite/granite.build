@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import adapter from '@sveltejs/adapter-static';
 import { vitePreprocess } from '@sveltejs/kit/vite';
 import { optimizeImports } from 'carbon-preprocess-svelte';

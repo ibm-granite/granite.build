@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Format-neutral table model shared by the steps inventory renderers.
 
 A table is (title, rows), the title being a category or the non-framework heading; a row

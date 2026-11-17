@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the ownership-scope resolver shared by every service."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-// Copyright IBM Corp. 2024-2026
 // SPDX-License-Identifier: Apache-2.0
 
 import { PUBLIC_AUTOTUNEX_API_URL } from '$env/static/public';

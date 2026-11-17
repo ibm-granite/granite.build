@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import logging
 import os
 from pathlib import Path
@@ -298,6 +300,8 @@ def parse_env_config(env_config: StepEnvironmentTypeConfig) -> dict:
             for monitor in env_config.monitors
         ],
     }
+    if env_config.single_node:
+        env_config_obj["single_node"] = True
     return env_config_obj
 
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Runs the agentic tool-calling loop directly against the Anthropic Messages
 API — not the Claude Agent SDK, which shells out to the Node-based Claude
 Code CLI as a subprocess. `anthropic` is a thin, official API client with no

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Render the steps inventory tables as Markdown."""
 
 from cells import COLUMNS, FOOTNOTES, Code, Link, link_url

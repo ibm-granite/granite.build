@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for K8s.pullasset_hfstore and the shared step-chart permission settings.
 
 Two things are covered here:

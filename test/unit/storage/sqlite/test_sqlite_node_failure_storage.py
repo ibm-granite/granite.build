@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 
 import integration.ibm.storage.sql.test_sql_node_failure_storage as HIDE_FROM_PYTEST

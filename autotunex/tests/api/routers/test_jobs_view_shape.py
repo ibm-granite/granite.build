@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``GET /jobs`` returns what the ``autotunex_jobs`` view describes.
 
 The view itself is not read — Postgres rejects its ``GROUP BY``, and joining

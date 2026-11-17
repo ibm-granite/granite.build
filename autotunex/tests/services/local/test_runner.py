@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """LocalJobRunner.process terminal behavior, driven by fake trainers.
 
 The runner opens its OWN sessions, so these build a sessionmaker on the shared

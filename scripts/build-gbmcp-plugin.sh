@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Build the gbmcp Claude Code plugin from the in-repo skills + docs.
 #
 # The plugin is the OUT-OF-REPO / pip distribution of the agent integration: it

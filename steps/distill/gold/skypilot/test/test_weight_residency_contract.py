@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The residency preflight is ONE program, copied into three steps and asserted identical.
 
 Same argument as test_source_contract.py makes for the source-delivery region, and the same

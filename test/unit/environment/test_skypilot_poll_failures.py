@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """When a failing job-status poll means the cluster is gone, and when it does not.
 
 The rule used to be three failed polls, or ONE poll saying "does not exist". At a

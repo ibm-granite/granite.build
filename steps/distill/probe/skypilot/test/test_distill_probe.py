@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for distill_probe.py.
 
 The probes themselves need the image's torch, transformers and a GPU. What is tested

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for the build-drawer header logic and for picking a retried
  * target's current attempt. Both read the target run's own status and

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { parseJsonl, parseCsv, parseJson, parseParquet, countRecordsInBlob } from './file-parser'
 
 type ProcessFileMessage = {

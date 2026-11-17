@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Unit tests for myghapi retry logic using Tenacity with exponential backoff.
 

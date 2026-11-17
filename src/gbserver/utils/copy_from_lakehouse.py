@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # pip install getdaft
 # python gbserver/environment/copy_from_lakehouse.py general_english_sft_replay_small_1104 instruct_tune.replay tmp
 import sys

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.trainers._alora_gc — pure logic on torch modules."""
 
 import torch

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Display formatting for the trials table's cells. Kept out of TrialsTable.tsx
 // for two reasons: the toolbar search filters on the same strings the cells
 // render (Carbon's default filter matches raw values, so "5m 20" would miss a

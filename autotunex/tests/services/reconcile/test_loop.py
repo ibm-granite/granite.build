@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """ReconcileLoop.sweep_once against real in-memory SQLite with a fake reader."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The OpenAI-compatible adapter against a mocked transport."""
 
 from __future__ import annotations

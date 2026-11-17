@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Docker container execution environment backend.
 
 Manages build step execution in local Docker containers.

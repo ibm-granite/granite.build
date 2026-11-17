@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Check the user-facing copies of test image names against the manifest.
 
 The Dockerfile and step.yaml that demo-standalone.sh uses spell out the image so

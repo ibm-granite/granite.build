@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression tests for how GBTEST_MOCK_HF is resolved at session start.
 
 These run pytest in a subprocess because the behavior under test lives in

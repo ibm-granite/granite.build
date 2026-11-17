@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # tests/api/routers/test_users.py
 """User-management endpoints over HTTP.
 

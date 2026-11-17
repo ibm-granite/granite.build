@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests that fm-tune's base install is slim and the heavy stack lives in extras."""
 
 import re

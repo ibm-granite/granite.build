@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Minimal, self-contained pytest harness for Sidecar and Command Line Monitor.
 

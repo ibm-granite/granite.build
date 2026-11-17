@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The status vocabulary bridges two spellings with one declaration.
 
 The database column holds ``PENDING`` (SQLAlchemy ``Enum`` persists a member's

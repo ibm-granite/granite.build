@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pin ``autotune/trainers/_arrow_data.py``: the Arrow backend both HF multi-GPU drivers share.
 
 The file layout must not move (workers memory-map it, and the length-grouped

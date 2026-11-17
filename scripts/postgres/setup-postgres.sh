@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # setup-postgres.sh -- Start a local, TLS-enabled PostgreSQL for the SQL storage tests.
 #
 # This script:

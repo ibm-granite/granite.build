@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pure streaming/parse/split/remap helpers, no HTTP or DB.
 
 Each format (jsonl/csv/parquet) is exercised for counting, reading, splitting

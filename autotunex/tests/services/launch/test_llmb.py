@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """LlmbTuningLauncher: auth, command assembly, spec persistence, stdout parsing.
 
 ``subprocess.run`` is faked throughout, so no real ``llmb`` binary is needed; the
