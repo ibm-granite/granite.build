@@ -135,8 +135,8 @@ generates the skeleton of a new step in this framework. In Claude Code, run
 It asks two rounds of questions, skipping any your request already answers:
 
 1. **What the step is:** its name, its category, and comma-separated lists of input
-   and output names. The category is `eval`, `train`, `tune`, `data`, `aux`, or one you
-   type, and it becomes the directory under `steps/`: the step lands at
+   and output names. The category (for example `eval`, `train`, `data`, `aux`, or
+   one you type) becomes the directory under `steps/`: the step lands at
    `steps/<category>/<name>/<env>/` and is referenced as
    `space://steps/<category>/<name>` (see [Nested steps](#nested-steps)).
 2. **Where it runs:** the environment (`skypilot`, `docker` or `bash`), a public or
