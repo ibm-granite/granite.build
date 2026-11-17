@@ -5806,13 +5806,14 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
         if hfuri.get_hf_type() == HfType.BUCKET:
-            # Refuse here, before an hfpull cluster or the main step's node is
-            # launched, rather than fail later on the CLI's argument parsing.
+            # Refuse here, before a cluster is launched for this input, rather
+            # than fail later on the CLI's argument parsing.
             raise ValueError(
                 f"hf assetstore pull of '{hfuri}': hf:// bucket inputs aren't "
-                "supported on the skypilot environment: its hfpull step and "
-                "inline download use `hf download`, which has no bucket type. "
-                "Pull the bucket in a k8s, bash or docker target instead."
+                "supported on the skypilot environment, because its hfpull step "
+                "and inline download use `hf download`, which has no bucket "
+                "type. Pull the bucket in a target on a K8s, Bash or Docker "
+                "environment instead."
             )
         shared_workdir = resolve_shared_workdir(self.config)
         cache_dir = Path(

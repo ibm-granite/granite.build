@@ -178,13 +178,18 @@ class TestPullassetHfstore:
         storeload_config = MagicMock()
         storeload_config.mode = "default"
         storeload_config.config = {"cache_path": "/data/cache", "inline": inline}
+        uri = HfURI.parse("hf:///buckets/myorg/mybucket/some/dir")
 
-        with pytest.raises(ValueError, match="bucket inputs aren't supported"):
+        with pytest.raises(ValueError) as exc_info:
             await skypilot_env.pullasset_hfstore(
-                uri=HfURI.parse("hf:///buckets/myorg/mybucket/some/dir"),
+                uri=uri,
                 assetstore=_hfstore_mock(),
                 storeload_config=storeload_config,
             )
+        message = str(exc_info.value)
+        assert str(uri) in message
+        assert "aren't supported on the skypilot environment, because" in message
+        assert "K8s, Bash or Docker environment" in message
 
     @pytest.mark.asyncio
     async def test_rejects_wrong_assetstore_type(self, skypilot_env, mock_hfuri):
