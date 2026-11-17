@@ -12,23 +12,19 @@ snapshot's space.yaml names each snapshotted base_uris entry as
 ``base_uris[i]`` snapshot, in its original position.
 Either may carry a ``#subdirectory=`` fragment.
 
-Snapshots are unpacked into a local directory named by content digest and
+Snapshots are unpacked into a local cache (gbserver.spaces.snapshot_cache) and
 served as ``file://``, so no git access is needed. Secret lookup, space
 matching and build PRs keep using ``git_repo_uri``, never the local path.
 """
 
-import hashlib
-import os
 import re
-import shutil
-import tempfile
 import urllib.parse
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Final, Optional
+from typing import TYPE_CHECKING, Final, Optional
 
 from gbcommon.uri.git import GitURI
+from gbserver.spaces import snapshot_cache
 from gbserver.spaces.repo_identity import normalize_repo_uri, to_config_uri
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 from gbserver.utils.archive import extract_archive
@@ -49,9 +45,6 @@ _BASE_URI_SLOT = re.compile(r"base_uri_(0|[1-9][0-9]*)")
 # against a corrupt row and are looser than the build-archive defaults.
 SNAPSHOT_MAX_ENTRIES = 20_000
 SNAPSHOT_MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
-
-# Written last, so a directory without it is a partial extraction.
-_COMPLETE_MARKER = ".gb-snapshot-complete"
 
 
 @dataclass(frozen=True)
@@ -110,74 +103,6 @@ def parse_db_uri(uri: str) -> DbUri:
     return DbUri(space_name=parts[0], slot=slot, subdirectory=subdir)
 
 
-def get_snapshot_cache_root() -> Path:
-    """Root under which snapshots are unpacked, one dir per archive digest.
-
-    Per user: a shared, predictable path would let another local user plant a
-    tree for a digest that is computable from the (readable) archive.
-    """
-    return Path(tempfile.gettempdir()) / f"gb-db-spaces-{os.getuid()}"
-
-
-def _private_root() -> Path:
-    """The cache root, created 0700; refused if not ours or writable by others."""
-    root = get_snapshot_cache_root()
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    st = root.stat()
-    if st.st_uid != os.getuid() or st.st_mode & 0o022:
-        raise ValueError(
-            f"refusing snapshot cache {root}: not owned by this user or writable"
-            " by others"
-        )
-    return root
-
-
-def unpack_snapshot(snapshot: RepoSnapshot, label: str) -> Path:
-    """Unpack a snapshot into its content-addressed cache dir and return it.
-
-    An unchanged snapshot is reused across builds and requests (no per-call
-    leak on the rest-server); a refreshed one gets a new dir. Extraction goes
-    to a sibling temp dir renamed into place, so readers never see a partial
-    tree. A published tree is never deleted, since a reader may be using it.
-
-    Raises:
-        ValueError: The snapshot has no archive, or it is not a usable zip.
-    """
-    if not snapshot.archive:
-        raise ValueError(f"{label} has no archive")
-    digest = hashlib.sha256(snapshot.archive.encode("utf-8")).hexdigest()[:32]
-    root = _private_root()
-    target = root / digest
-    if (target / _COMPLETE_MARKER).is_file():
-        return target
-    tmp = Path(tempfile.mkdtemp(prefix=f".{digest}-", dir=root))
-    try:
-        if not extract_archive(
-            snapshot.load_archive(),
-            tmp,
-            archive_format="zip",
-            max_entries=SNAPSHOT_MAX_ENTRIES,
-            max_uncompressed_bytes=SNAPSHOT_MAX_UNCOMPRESSED_BYTES,
-        ):
-            raise ValueError(f"{label} is not a readable zip archive")
-        (tmp / _COMPLETE_MARKER).touch()
-        try:
-            os.rename(tmp, target)
-            return target
-        except OSError:
-            pass  # target exists
-        if (target / _COMPLETE_MARKER).is_file():
-            return target  # a concurrent extraction won the rename
-        # A damaged tree (marker gone) may still be in use: leave it, and
-        # serve this extraction from its own sibling.
-        alt = root / f"{digest}-{uuid.uuid4().hex[:8]}"
-        os.rename(tmp, alt)
-        logger.warning("%s: %s is damaged; unpacked to %s", label, target, alt)
-        return alt
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def _get_row(space_name: str) -> StoredSpace:
     # Local import: singleton storage pulls in the storage backends.
     from gbserver.storage.singleton_storage import get_admin_storage
@@ -200,26 +125,41 @@ def _get_snapshot(row: StoredSpace, ref: DbUri) -> RepoSnapshot:
     return snapshot
 
 
-# Unpacked dir -> the db URI it came from, so a path under the cache can be
-# turned back into a URI that means the same on another host (portable_uri).
-_origins: Dict[Path, str] = {}
-
-
 def portable_uri(uri: str) -> str:
     """Map a ``file://`` URI inside an unpacked snapshot back to its db:// URI.
 
     The unpacked path exists only on this host and changes with each snapshot,
-    so anything persisted or handed to another process uses this instead.
-    Other URIs are returned unchanged.
+    so anything persisted or handed to another process uses this instead. The
+    cache path names the space and slot, so no lookup is needed. Other URIs
+    are returned unchanged.
     """
     if not uri.startswith("file://"):
         return uri
-    path = Path(uri[len("file://") :])
-    for root, db_uri in list(_origins.items()):
-        if path == root or root in path.parents:
-            rel = path.relative_to(root).as_posix()
-            return db_uri + (f"#subdirectory={rel}" if rel != "." else "")
-    return uri
+    # Decode: as_uri() percent-encodes the path (e.g. a quoted space name).
+    path = Path(urllib.parse.unquote(urllib.parse.urlparse(uri).path))
+    cached = snapshot_cache.parse_cached_path(path)
+    if cached is None:
+        return uri
+    space_name, slot, subpath = cached
+    ref = DbUri(space_name=space_name, slot=slot)
+    db_uri = make_db_uri(space_name, ref.base_uri_index)
+    return db_uri + (f"#subdirectory={subpath}" if subpath else "")
+
+
+def _unpacker(snapshot: RepoSnapshot, label: str):
+    """Extract a snapshot's zip into a given directory, within the size caps."""
+
+    def extract(dest: Path) -> None:
+        if not extract_archive(
+            snapshot.load_archive(),
+            dest,
+            archive_format="zip",
+            max_entries=SNAPSHOT_MAX_ENTRIES,
+            max_uncompressed_bytes=SNAPSHOT_MAX_UNCOMPRESSED_BYTES,
+        ):
+            raise ValueError(f"{label} is not a readable zip archive")
+
+    return extract
 
 
 @dataclass(frozen=True)
@@ -243,12 +183,15 @@ def resolve_db_uri(uri: str, row: Optional[StoredSpace] = None) -> ResolvedDbUri
     if row is None or row.name != ref.space_name:
         row = _get_row(ref.space_name)
     snapshot = _get_snapshot(row, ref)
-    path = unpack_snapshot(snapshot, f"space {row.name!r} {ref.slot} snapshot")
+    label = f"space {row.name!r} {ref.slot} snapshot"
+    assert snapshot.archive is not None  # _get_snapshot checked
+    path = snapshot_cache.materialize(
+        row.name, ref.slot, snapshot.archive, _unpacker(snapshot, label), label
+    )
     root = path.resolve()
-    _origins[root] = make_db_uri(row.name, ref.base_uri_index)
     if ref.subdirectory:
-        # Contained: '..' or an absolute path would reach a sibling snapshot
-        # (another space's) in the shared cache root.
+        # Contained: '..' or an absolute path would reach another copy (or
+        # another space's) in the shared cache root.
         path = (root / ref.subdirectory).resolve()
         if path != root and root not in path.parents:
             raise ValueError(f"db space URI {uri!r}: subdirectory escapes the snapshot")

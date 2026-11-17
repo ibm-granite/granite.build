@@ -38,7 +38,7 @@ def _snapshot() -> RepoSnapshot:
 @pytest.fixture
 def no_git(tmp_path, monkeypatch):
     """Snapshot cache under tmp_path; any git/GitHub access fails the test."""
-    monkeypatch.setattr(db_space, "get_snapshot_cache_root", lambda: tmp_path / "c")
+    monkeypatch.setenv("GBSERVER_DB_SPACE_CACHE_DIR", str(tmp_path / "c"))
     monkeypatch.setattr(c, "PUBLIC_SPACE_GIT_URI", PUBLIC_GIT)
     monkeypatch.setattr(create_spaces, "PUBLIC_SPACE_GIT_URI", PUBLIC_GIT)
 

@@ -17,6 +17,7 @@ import gbserver.spaces.db_space as db_space
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.buildrunner.validation import _same_space_repo
+from gbserver.spaces import snapshot_cache
 from gbserver.spaces.db_space import (
     DbUri,
     create_space,
@@ -79,8 +80,9 @@ def rows(tmp_path, monkeypatch):
         return table[name]
 
     monkeypatch.setattr(db_space, "_get_row", get_row)
-    monkeypatch.setattr(db_space, "get_snapshot_cache_root", lambda: tmp_path / "c")
-    return table
+    monkeypatch.setenv("GBSERVER_DB_SPACE_CACHE_DIR", str(tmp_path / "c"))
+    yield table
+    snapshot_cache.release_holds()
 
 
 @pytest.mark.parametrize(
@@ -119,33 +121,6 @@ def test_make_round_trips():
     assert parse_db_uri(make_db_uri("a/b", 3)) == DbUri("a/b", "base_uri_3")
     assert parse_db_uri(make_db_uri("a/b", 3)).base_uri_index == 3
     assert parse_db_uri(make_db_uri("a/b")).base_uri_index is None
-
-
-def test_resolve_unpacks_once_and_reuses(rows, tmp_path):
-    rows["x"] = _row()
-    first = resolve_db_uri("db://spaces/x")
-    assert Path(first.file_uri[len("file://") :], "space.yaml").is_file()
-    assert first.identity_uri == (
-        "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
-    )
-    assert resolve_db_uri("db://spaces/x") == first
-    assert len(list((tmp_path / "c").iterdir())) == 1  # no temp leftovers
-
-
-def test_refreshed_snapshot_gets_new_dir(rows):
-    rows["x"] = _row()
-    before = resolve_db_uri("db://spaces/x").file_uri
-    rows["x"] = _row(space=_snapshot({"space.yaml": SPACE_YAML + "#\n"}, SOURCE))
-    assert resolve_db_uri("db://spaces/x").file_uri != before
-
-
-def test_partial_extraction_is_redone(rows, tmp_path):
-    rows["x"] = _row()
-    path = Path(resolve_db_uri("db://spaces/x").file_uri[len("file://") :])
-    (path / ".gb-snapshot-complete").unlink()
-    (path / "space.yaml").unlink()
-    resolve_db_uri("db://spaces/x")
-    assert (path / "space.yaml").is_file()
 
 
 def test_subdirectory(rows):
@@ -239,26 +214,6 @@ def test_base_uri_may_not_name_another_space(rows):
         create_space(rows["x"])
 
 
-def test_concurrent_finish_is_kept(rows, tmp_path, monkeypatch):
-    """If another extractor completes first, its tree is reused, not deleted."""
-    rows["x"] = _row()
-    real_extract = db_space.extract_archive
-
-    def extract_then_race(data, out, **kw):
-        ok = real_extract(data, out, **kw)
-        # Simulate the other process finishing between our check and rename.
-        digest = out.name.split("-")[0].lstrip(".")
-        other = tmp_path / "c" / digest
-        other.mkdir(parents=True)
-        (other / "theirs").touch()
-        (other / ".gb-snapshot-complete").touch()
-        return ok
-
-    monkeypatch.setattr(db_space, "extract_archive", extract_then_race)
-    path = Path(resolve_db_uri("db://spaces/x").file_uri[len("file://") :])
-    assert (path / "theirs").is_file()
-
-
 def test_identity_is_git_repo_uri_in_any_form(rows):
     """Space reports git_repo_uri (its config form), whatever form it is stored in."""
     row = _row(
@@ -271,26 +226,6 @@ def test_identity_is_git_repo_uri_in_any_form(rows):
         "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
     )
     assert _same_space_repo(row.git_repo_uri, space.identity_uri)
-
-
-def test_damaged_tree_in_use_is_not_deleted(rows, tmp_path):
-    """A tree that lost its marker is left alone; a sibling copy is served."""
-    rows["x"] = _row()
-    path = Path(resolve_db_uri("db://spaces/x").file_uri[len("file://") :])
-    (path / ".gb-snapshot-complete").unlink()  # still has space.yaml: in use
-    other = Path(resolve_db_uri("db://spaces/x").file_uri[len("file://") :])
-    assert other != path
-    assert (path / "space.yaml").is_file() and (other / "space.yaml").is_file()
-
-
-def test_cache_root_must_be_private(rows, tmp_path, monkeypatch):
-    rows["x"] = _row()
-    shared = tmp_path / "shared"
-    shared.mkdir(mode=0o777)
-    shared.chmod(0o777)
-    monkeypatch.setattr(db_space, "get_snapshot_cache_root", lambda: shared)
-    with pytest.raises(ValueError, match="refusing snapshot cache"):
-        resolve_db_uri("db://spaces/x")
 
 
 @pytest.mark.parametrize(

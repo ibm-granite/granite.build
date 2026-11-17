@@ -17,7 +17,6 @@ import yaml
 from click.testing import CliRunner
 
 import gbserver.commands.command_space_snapshot as cmd
-import gbserver.spaces.db_space as db_space
 from gbserver.storage.stored_space import StoredSpace
 
 SPACE_YAML = """\
@@ -109,7 +108,7 @@ def repos(tmp_path_factory):
 @pytest.fixture
 def env(repos, tmp_path, monkeypatch):
     storage = _FakeSpaceStorage()
-    monkeypatch.setattr(db_space, "get_snapshot_cache_root", lambda: tmp_path / "c")
+    monkeypatch.setenv("GBSERVER_DB_SPACE_CACHE_DIR", str(tmp_path / "c"))
     monkeypatch.setattr(
         cmd.singleton_storage,
         "get_admin_storage",

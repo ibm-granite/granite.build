@@ -160,6 +160,9 @@ ENV_VAR_SKYPILOT_HOST_SSH_LOGIN_TIMEOUT_S = (
 )
 ENV_VAR_SKYPILOT_HOST_SSH_ATTEMPTS = ENV_VAR_PREFIX + "_SKYPILOT_HOST_SSH_ATTEMPTS"
 ENV_VAR_METADATA_STORAGE = ENV_VAR_PREFIX + "_METADATA_STORAGE"
+# Where db-backed spaces' snapshots are unpacked (gbserver.spaces.snapshot_cache);
+# default a per-user dir in the temp dir. Must be a local filesystem (flock).
+ENV_VAR_DB_SPACE_CACHE_DIR = ENV_VAR_PREFIX + "_DB_SPACE_CACHE_DIR"
 ENV_VAR_UI_DIR = ENV_VAR_PREFIX + "_UI_DIR"
 ENV_VAR_AUTH_MODE = ENV_VAR_PREFIX + "_AUTH_MODE"
 ENV_VAR_API_KEY = ENV_VAR_PREFIX + "_API_KEY"
