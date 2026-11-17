@@ -5770,6 +5770,42 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         """
         return "nccl_error"
 
+    def _worker_cache_dir(
+        self: Self,
+        storeload_config: Any,
+        resolve: Callable[..., str],
+        store_kind: str,
+        uri: Any,
+    ) -> str:
+        """Return a pull cache directory that is valid on the remote workers.
+
+        The storeload ``cache_path`` if set, else ``{shared_workdir}/<x>_cache``
+        via ``resolve`` (``get_hf_cache_dir`` / ``get_cos_cache_dir``). Their
+        last-resort ``~/.cache/gbserver/...`` default is expanded on the
+        gbserver host -- right for Bash/Docker, which run there, but a path on
+        the wrong machine for a SkyPilot worker (a macOS server would send a
+        Linux node to /Users/...). Without a shared filesystem a separate pull
+        step can't hand data to its consumer anyway, so this refuses instead.
+
+        :param storeload_config: the store's pull config (may be None).
+        :param resolve: the store's cache-dir resolver.
+        :param store_kind: store name for the error message (e.g. "s3/cos").
+        :param uri: the URI being pulled, for the error message.
+        :returns: the cache directory to use on the workers.
+        :raises ValueError: when neither ``cache_path`` nor ``shared_workdir``
+            is set.
+        """
+        shared_workdir = resolve_shared_workdir(self.config)
+        config = getattr(storeload_config, "config", None)
+        has_cache_path = isinstance(config, dict) and bool(config.get("cache_path"))
+        if not has_cache_path and not shared_workdir:
+            raise ValueError(
+                f"cannot pull {uri}: a {store_kind} pull on Skypilot "
+                "needs a cache directory on the workers; set the environment's "
+                "shared_workdir or the store's pull config cache_path"
+            )
+        return resolve(storeload_config, default_workdir=shared_workdir)
+
     async def pullasset_hfstore(
         self: Self,
         uri: Optional[URI] = None,
@@ -5801,9 +5837,8 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         self._warn_non_default_mode(storeload_config, uri)
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
-        shared_workdir = resolve_shared_workdir(self.config)
         cache_dir = Path(
-            get_hf_cache_dir(storeload_config, default_workdir=shared_workdir)
+            self._worker_cache_dir(storeload_config, get_hf_cache_dir, "hf", uri)
         )
         binding_path = (
             cache_dir / hfuri.get_owner() / hfuri.get_repo() / hfuri.get_revision()
@@ -6038,8 +6073,8 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)  # type: ignore[arg-type]
         assert isinstance(cosuri, CosURI), f"expected CosURI, got {type(cosuri)}"
 
-        cache_dir = get_cos_cache_dir(
-            storeload_config, default_workdir=resolve_shared_workdir(self.config)
+        cache_dir = self._worker_cache_dir(
+            storeload_config, get_cos_cache_dir, "s3/cos", uri
         )
         binding_path = str(Path(cache_dir) / cosuri.hash())
         step_uri = resolve_step_uri(storeload_config, DEFAULT_S3PULL_STEP_URI)

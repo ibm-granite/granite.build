@@ -71,16 +71,16 @@ assetstores:
     pull:
       - mode: default              # Dispatch is by store type (hf) — queues the builtin hfpull step.
         config:
-          cache_path: /tmp/hf_cache  # Optional. Defaults to {shared_workdir}/hf_cache when set,
-                                     # else ~/.cache/gbserver/hf on the worker.
+          cache_path: /tmp/hf_cache  # Optional. Defaults to {shared_workdir}/hf_cache. With
+                                     # neither set, the pull fails (see below).
     push:
       - mode: default
   - store_uri: space://assetstores/s3/   # s3:// / cos:// (Cosstore) — queues the builtin
     pull:                                # s3pull / s3push steps (AWS CLI).
       - mode: default
         config:
-          cache_path: /shared/cos_cache  # Optional. Defaults to {shared_workdir}/cos_cache when set,
-                                         # else ~/.cache/gbserver/cos on the worker.
+          cache_path: /shared/cos_cache  # Optional. Defaults to {shared_workdir}/cos_cache. With
+                                         # neither set, the pull fails (see below).
           cache_max_age_days: 30         # Optional. Evict cached inputs downloaded more than this
                                          # many days ago (default 30; 0 disables).
           lease_max_age_days: 0          # Optional. Treat reader leases older than this as dead
@@ -164,8 +164,10 @@ admin provisions — gbserver does not create or mount it. When set, `shared_wor
   through the SkyPilot API, since it can't reach the cluster's shared FS where `job.log` lives; read
   `job.log` itself for the plain output of every attempt.
 
-When unset, gbserver-managed caches fall back to `~/.cache/gbserver/<store>` on the worker, which only
-works when consecutive steps land on the same machine. Example paths per backend: `slurm: /shared`
+When unset, an `hf://` or `s3://` / `cos://` pull also needs the store's pull config `cache_path`;
+with neither, the pull fails before anything launches. There is no home-directory fallback: it
+would be resolved on the gbserver host, not on the worker, and a separate pull step on another
+machine couldn't hand its data to the consumer anyway. Example `shared_workdir` paths per backend: `slurm: /shared`
 (NFS/Lustre/GPFS), `k8s: /mnt/shared` (RWX PVC), `aws: /mnt/efs` (EFS/FSx).
 
 #### Containerized steps must also see the shared workdir *inside* the container

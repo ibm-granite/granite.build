@@ -296,6 +296,29 @@ class TestPullassetCosstore:
         assert "lease_max_age_days" not in unset.config["s3pull_config"]
 
     @pytest.mark.asyncio
+    async def test_no_cache_path_and_no_shared_workdir_fails_fast(self, skypilot_env):
+        """Without either, no gbserver-host ~/.cache path is sent to a worker."""
+        del skypilot_env.config.config["shared_workdir"]
+        with pytest.raises(ValueError, match="needs a cache directory on the workers"):
+            await skypilot_env.pullasset_cosstore(
+                uri=URI.get_uri("s3://local/in"),
+                assetstore=_local_store(),
+                storeload_config=_storeload(),
+            )
+
+    @pytest.mark.asyncio
+    async def test_cache_path_alone_is_enough(self, skypilot_env):
+        """An explicit cache_path works without a shared_workdir."""
+        del skypilot_env.config.config["shared_workdir"]
+        uri = URI.get_uri("s3://local/in")
+        binding, _ = await skypilot_env.pullasset_cosstore(
+            uri=uri,
+            assetstore=_local_store(),
+            storeload_config=_storeload(cache_path="/data/c"),
+        )
+        assert binding["binding"]["path"] == str(Path("/data/c") / uri.hash())
+
+    @pytest.mark.asyncio
     async def test_rejects_non_cosstore(self, skypilot_env):
         """A non-Cosstore assetstore is rejected."""
         with pytest.raises(AssertionError, match="Cosstore"):

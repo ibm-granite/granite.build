@@ -29,8 +29,10 @@ def get_hf_cache_dir(storeload_config, default_workdir: Optional[str] = None) ->
         2. ``{default_workdir}/hf_cache`` if a ``default_workdir`` is provided
            (typically the Skypilot env's ``shared_workdir`` — a path mounted
            on every worker).
-        3. ``~/.cache/gbserver/hf`` as a last-resort process-local default
-           (correct for single-host envs like Bash and Docker).
+        3. ``~/.cache/gbserver/hf`` as a last-resort process-local default,
+           expanded on *this* host: correct for single-host envs like Bash and
+           Docker. Remote envs (Skypilot) must not use it; Skypilot requires
+           ``cache_path`` or ``shared_workdir`` instead (``_worker_cache_dir``).
 
     Args:
         storeload_config: StoreLoad config object (may be None).
@@ -51,7 +53,9 @@ def get_cos_cache_dir(storeload_config, default_workdir: Optional[str] = None) -
         1. ``storeload_config.config["cache_path"]`` if explicitly set.
         2. ``{default_workdir}/cos_cache`` if a ``default_workdir`` (the Skypilot
            env's ``shared_workdir``) is provided.
-        3. ``~/.cache/gbserver/cos`` as a last-resort process-local default.
+        3. ``~/.cache/gbserver/cos`` as a last-resort process-local default,
+           expanded on *this* host (so not for remote envs; see
+           :func:`get_hf_cache_dir`).
 
     Args:
         storeload_config: StoreLoad config object (may be None).

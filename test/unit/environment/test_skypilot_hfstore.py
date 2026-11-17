@@ -114,23 +114,40 @@ class TestPullassetHfstore:
         assert envs["HF_TOKEN"] == "my-secret-token"
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_default_cache_dir_when_no_cache_path(
+    async def test_no_cache_path_and_no_shared_workdir_fails_fast(
         self, skypilot_env, mock_hfuri
     ):
-        """No cache_path -> uses get_hf_cache_dir default (~/.cache/gbserver/hf)."""
-        assetstore = _hfstore_mock()
+        """Neither set: refuse, rather than send the worker a gbserver-host
+        ~/.cache path (a macOS server would point a Linux node at /Users/...)."""
         storeload_config = MagicMock()
         storeload_config.mode = "default"
         storeload_config.config = {}
+        with pytest.raises(
+            ValueError, match="shared_workdir or the store's pull config cache_path"
+        ):
+            await skypilot_env.pullasset_hfstore(
+                uri=mock_hfuri,
+                assetstore=_hfstore_mock(),
+                storeload_config=storeload_config,
+            )
 
+    @pytest.mark.asyncio
+    async def test_no_cache_path_uses_the_shared_workdir(
+        self, skypilot_env, mock_hfuri
+    ):
+        """No cache_path: the cache lives under shared_workdir on the workers."""
+        skypilot_env.config.config["shared_workdir"] = "/shared"
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {}
         binding_config, _ = await skypilot_env.pullasset_hfstore(
             uri=mock_hfuri,
-            assetstore=assetstore,
+            assetstore=_hfstore_mock(),
             storeload_config=storeload_config,
         )
-
-        path = binding_config["binding"]["path"]
-        assert path.endswith(str(Path(".cache/gbserver/hf/myorg/myrepo/main")))
+        assert binding_config["binding"]["path"] == str(
+            Path("/shared/hf_cache/myorg/myrepo/main")
+        )
 
     @pytest.mark.asyncio
     async def test_step_uri_override(self, skypilot_env, mock_hfuri):
