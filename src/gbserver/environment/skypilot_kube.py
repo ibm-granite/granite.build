@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Per-environment-instance kubeconfigs for SkyPilot ``kube_configs`` (#571).
 
@@ -47,13 +35,13 @@ import fcntl
 import hashlib
 import os
 import re
-import secrets
 import socket
 import tempfile
 import threading
 import weakref
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from secrets import token_hex
+from typing import Any, Dict, List, NamedTuple, Optional, Set
 
 import psutil
 import yaml
@@ -476,10 +464,20 @@ def build_instance_kubeconfig(
 
 
 #: This process's owner key, ``<host>-<pid>-<start>-<nonce>`` (see
-#: :func:`_owner_key`), and the lock it holds while it runs:
-#: ``(pid, fd, lock path)``. Recomputed after a fork.
+#: :func:`_owner_key`), and the lock it holds while it runs. Recomputed
+#: after a fork.
 _OWNER_KEY: Optional[str] = None
-_OWNER_LOCK: Optional[tuple] = None
+
+
+class _OwnerLock(NamedTuple):
+    """The owner lock this process holds (:func:`hold_owner_lock`)."""
+
+    pid: int
+    fd: int
+    path: Path
+
+
+_OWNER_LOCK: Optional[_OwnerLock] = None
 #: Serializes taking the owner lock: a second open of the lock file in this
 #: process is a separate lock and would wait on the first forever.
 _OWNER_LOCK_MUTEX = threading.Lock()
@@ -521,7 +519,7 @@ def _owner_key() -> str:
     """
     global _OWNER_KEY  # pylint: disable=global-statement
     if _OWNER_KEY is None or _OWNER_KEY.split("-")[1] != str(os.getpid()):
-        _OWNER_KEY = f"{_process_tag()}-{secrets.token_hex(4)}"
+        _OWNER_KEY = f"{_process_tag()}-{token_hex(4)}"
     return _OWNER_KEY
 
 
@@ -545,7 +543,7 @@ def hold_owner_lock(directory: Path) -> None:
 def _hold_owner_lock(directory: Path) -> None:
     """:func:`hold_owner_lock`, with :data:`_OWNER_LOCK_MUTEX` held."""
     global _OWNER_LOCK  # pylint: disable=global-statement
-    if _OWNER_LOCK is not None and _OWNER_LOCK[0] == os.getpid():
+    if _OWNER_LOCK is not None and _OWNER_LOCK.pid == os.getpid():
         return
     path = directory / f"{_owner_key()}{_LOCK_SUFFIX}"
     while True:
@@ -560,7 +558,7 @@ def _hold_owner_lock(directory: Path) -> None:
             logger.debug("can't lock %s (%s); sweeps will keep its files", path, e)
             break
         os.close(fd)
-    _OWNER_LOCK = (os.getpid(), fd, path)
+    _OWNER_LOCK = _OwnerLock(os.getpid(), fd, path)
     atexit.register(_release_owner_lock, os.getpid())
 
 
@@ -572,11 +570,11 @@ def _release_owner_lock(pid: int) -> None:
     by the older pid check meanwhile.
     """
     global _OWNER_LOCK  # pylint: disable=global-statement
-    if _OWNER_LOCK is None or _OWNER_LOCK[0] != pid or os.getpid() != pid:
+    owner = _OWNER_LOCK
+    if owner is None or owner.pid != pid or os.getpid() != pid:
         return
-    _, fd, path = _OWNER_LOCK
     _OWNER_LOCK = None
-    lock = Path(path)
+    lock, fd = owner.path, owner.fd
     for owned in lock.parent.glob(f"{lock.name[: -len(_LOCK_SUFFIX)]}-*"):
         _remove_quietly(owned)
     lock.unlink(missing_ok=True)
@@ -692,7 +690,7 @@ def sweep_stale_instance_files(directory: Optional[Path] = None) -> None:
     for path in directory.glob(f"{host}-*{_LOCK_SUFFIX}"):
         by_lock.setdefault(path, [])
     for lock, files in by_lock.items():
-        if _OWNER_LOCK is not None and Path(_OWNER_LOCK[2]) == lock:
+        if _OWNER_LOCK is not None and _OWNER_LOCK.path == lock:
             continue  # this process's own
         fd = _take_lock_of_gone_owner(lock)
         if fd is None:

@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """``kube_configs``: one kubeconfig per environment instance, per request (#571)."""
 
@@ -380,9 +368,9 @@ class TestInstanceFile:
 
         monkeypatch.setattr(sk.fcntl, "flock", racing_flock)
         sk.hold_owner_lock(d)
-        lock = Path(sk._OWNER_LOCK[2])
+        lock = sk._OWNER_LOCK.path
         assert len(calls) == 2 and lock.exists()
-        assert os.fstat(sk._OWNER_LOCK[1]).st_ino == lock.stat().st_ino
+        assert os.fstat(sk._OWNER_LOCK.fd).st_ino == lock.stat().st_ino
 
     def test_sweep_skips_a_lock_replaced_while_taking_it(self, tmp_path, monkeypatch):
         import fcntl

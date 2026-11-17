@@ -76,7 +76,7 @@ upgrade, say), it logs why and only `kube_configs` environments are refused; oth
 - **Rotation.** An instance reads its secrets once, so a rotated secret takes effect with the next build.
 - **Lifetime.** A file is removed when its environment instance is released (normally when its build
   finishes) or gbserver exits; files left by a gbserver that crashed are removed when gbserver next starts
-  a SkyPilot environment. Each gbserver holds a file lock beside its files while it runs, and only files
+  (with SkyPilot installed). Each gbserver holds a file lock beside its files while it runs, and only files
   whose lock is free are removed, so another running gbserver's files (in another container, say) are kept.
   When that can't be told (a filesystem without locking, or files from another host), they're kept too.
 - **Teardown.** Once an instance has its file, polls, cleanup and teardown reuse it without checking the
