@@ -5,6 +5,8 @@
 """The build's PR is optional: when GitHub keeps failing the build still runs,
 and the run stops trying (and stops posting PR messages) after a few failures."""
 
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -148,3 +150,54 @@ def test_pr_messages_stop_once_given_up(monkeypatch):
 def test_pr_repo(row, expected):
     """db-backed spaces keep their PRs in the snapshot's source repo."""
     assert get_pr_repo_uri(row) == expected
+
+
+def test_pr_clone_is_killed_at_the_deadline(monkeypatch):
+    """A clone that stalls is cut off, retried within the deadline, and its
+    error never shows the token."""
+    from git import GitCommandError
+
+    calls = []
+
+    def stall(cmd, **kwargs):
+        calls.append(kwargs["timeout"])
+        assert kwargs["env"]["GIT_HTTP_LOW_SPEED_LIMIT"]
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(build_setup.subprocess, "run", stall)
+    monkeypatch.setattr(build_setup, "BUILD_GIT_OPERATION_DEADLINE", 7)
+    with pytest.raises(GitCommandError) as exc:
+        BuildSetup._clone_repo_with_retry(
+            None,
+            url="https://s3cr3t@github.example.com/o/space",
+            to_path=Path("/nonexistent/clone"),
+            branch="main",
+        )
+    assert calls and set(calls) == {7}
+    assert "s3cr3t" not in str(exc.value)
+
+
+def test_pr_clone_from_a_local_repo(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        [
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+    ):
+        subprocess.run(["git", *args], cwd=src, check=True)
+    repo = BuildSetup._clone_repo_with_retry(
+        None, url=src.as_uri(), to_path=tmp_path / "dst", branch="main", depth=1
+    )
+    assert repo.head.commit.message.strip() == "x"

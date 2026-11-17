@@ -92,7 +92,7 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 | `GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT` | `60` | GitHub request timeout (seconds). |
 | `GITHUB_API_MAX_RETRIES` / `_RETRY_BASE_DELAY` / `_RETRY_MAX_DELAY` | `10` / `1.0` / `60.0` | GitHub API retry policy. |
 | `GBSERVER_DB_SPACE_CACHE_DIR` | per-user dir in the temp dir | Where db-backed spaces' snapshots are unpacked. Must be a local filesystem (file locks). A copy is removed only once no process uses it. |
-| `BUILD_GIT_MAX_CONSECUTIVE_FAILURES` / `BUILD_GIT_OPERATION_DEADLINE` | `3` / `120` | A build's PR and PR messages are optional: each such GitHub interaction (its retries included) is capped at the deadline in seconds, and after this many consecutive failures the rest of that build run, in-place retries included, skips them (a build that started without a PR stays without one). |
+| `BUILD_GIT_MAX_CONSECUTIVE_FAILURES` / `BUILD_GIT_OPERATION_DEADLINE` | `3` / `120` | A build's PR and PR messages are optional: if the PR is never created, the rest of the build runs without it. Each git clone, pull or push for the PR is killed after the deadline (seconds; API calls have `GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT`), and retries stop at it. After this many consecutive failures the rest of that build run, in-place retries included, skips them (a build that started without a PR stays without one). |
 | `MAX_PR_CREATION_TRIES` / `PR_CREATION_RETRY_INTERVAL` | `100` / `5` | Hard cap on PR-creation attempts per build run (the `BUILD_GIT_MAX_CONSECUTIVE_FAILURES` give-up normally stops it first), and the pause (seconds) between them. |
 | `GIT_CLONE_MAX_RETRIES` / `_RETRY_MIN_WAIT` / `_RETRY_MAX_WAIT` | `5` / `1.0` / `30.0` | git clone retry policy. |
 

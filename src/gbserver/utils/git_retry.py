@@ -350,13 +350,15 @@ _T = TypeVar("_T")
 class GitAccessBreaker:
     """Lets a build run stop trying git/GitHub after repeated failures.
 
-    The build's PR and the messages posted to it are optional: a build runs
-    without them. Each interaction goes through ``call``. It runs with the
-    usual retries above, bounded by a deadline, and never raises. After
+    The build's PR and the messages posted to it are optional: if the PR is
+    never created, the rest of the build runs without it, its messages kept as
+    build events. Each interaction goes through ``call``, which never raises:
+    the usual retries above stop starting new attempts at the deadline, and
+    each attempt is itself bounded (the PR clone, pull and push are killed at
+    the deadline; API calls have their request timeout). After
     ``max_failures`` consecutive failures the breaker opens and later calls in
-    the same build run, in-place retries included, are skipped, so an
-    unreachable GitHub costs a run at most
-    about ``max_failures * deadline`` seconds instead of stalling every message.
+    the same build run, in-place retries included, are skipped. So GitHub that
+    is down or stalled costs a run about ``max_failures * deadline`` at most.
     """
 
     def __init__(

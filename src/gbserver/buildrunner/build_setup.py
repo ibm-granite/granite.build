@@ -7,14 +7,15 @@
 Watch the admin metadata tables for new builds, cancellations, etc.
 """
 
+import os
+import re
 import shutil
 import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Optional, Self, Tuple
 
-from git import Repo
-from tqdm import tqdm
+from git import GitCommandError, Repo
 
 from gbcommon.uri.git import GitURI, get_uri_parts
 from gbserver.build.space import Space
@@ -47,18 +48,13 @@ logger = get_logger(__name__)
 
 BUILD_ONLY_THIS_NAME = ""
 
-
-def get_progress_callback():
-    """For use with git library during clone and push for indicating the progress."""
-    pbar = tqdm()
-
-    # pylint: disable=unused-argument
-    def progress_callback(op_code, cur_count, max_count=None, message=""):
-        pbar.total = max_count
-        pbar.n = cur_count
-        pbar.refresh()
-
-    return progress_callback
+# For every git command on the PR clone: give up on a transfer that stalls
+# (under 1 KB/s for 60 s) instead of hanging, and never prompt for credentials.
+_GIT_STALL_ENV = {
+    "GIT_HTTP_LOW_SPEED_LIMIT": "1000",
+    "GIT_HTTP_LOW_SPEED_TIME": "60",
+    "GIT_TERMINAL_PROMPT": "0",
+}
 
 
 class BuildSetup:
@@ -340,6 +336,7 @@ class BuildSetup:
             else:
                 try:
                     repo = Repo(path=pr_clone_path)
+                    repo.git.update_environment(**_GIT_STALL_ENV)
                     logger.info(
                         "repo already cloned at path %s , pulling latest changes...",
                         pr_clone_path,
@@ -354,7 +351,7 @@ class BuildSetup:
                             clone_url_with_creds_redacted,
                         )
                         repo.git.remote("set-url", "origin", clone_url_with_creds)
-                    repo.git.pull()
+                    repo.git.pull(kill_after_timeout=BUILD_GIT_OPERATION_DEADLINE)
                     return pr_clone_path, repo
                 except Exception as e:
                     logger.error(
@@ -365,17 +362,13 @@ class BuildSetup:
         shutil.rmtree(pr_clone_path, ignore_errors=True)
         logger.info("create directory at path %s", pr_clone_path)
         pr_clone_path.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=False)
-        clone_kwargs = {
-            "url": clone_url_with_creds,
-            "to_path": pr_clone_path,
-            "progress": get_progress_callback(),
-            "branch": repo_branch,
-            "no_checkout": True,
-        }
-        if shallow:
-            clone_kwargs["depth"] = 1
         logger.info("cloning the repo")
-        repo = self._clone_repo_with_retry(**clone_kwargs)
+        repo = self._clone_repo_with_retry(
+            url=clone_url_with_creds,
+            to_path=pr_clone_path,
+            branch=repo_branch,
+            depth=1 if shallow else None,
+        )
         repo.git.clean("-xdf")  # Not necessary, just to be sure of git status clean
         repo.git.checkout(repo_branch)
         logger.info("cloned pull request repo %s", repo)
@@ -383,6 +376,36 @@ class BuildSetup:
         return pr_clone_path, repo
 
     @git_clone_retry
-    def _clone_repo_with_retry(self, url: str, to_path: Path, **kwargs) -> Repo:
-        """Clone repository with retry logic."""
-        return Repo.clone_from(url, to_path, **kwargs)
+    def _clone_repo_with_retry(
+        self, url: str, to_path: Path, branch: str, depth: Optional[int] = None
+    ) -> Repo:
+        """Clone (no checkout) with retries; each attempt is killed at the deadline.
+
+        A ``git clone`` subprocess rather than Repo.clone_from, which can't be
+        timed out. Errors keep GitCommandError so the retry policy still applies,
+        with the token in ``url`` redacted.
+        """
+        shown = re.sub(r"//[^@/]+@", "//****@", url)
+        cmd = ["git", "clone", "--quiet", "--no-checkout", "--branch", branch]
+        if depth:
+            cmd += ["--depth", str(depth)]
+        try:
+            result = subprocess.run(
+                [*cmd, url, str(to_path)],
+                capture_output=True,
+                text=True,
+                timeout=BUILD_GIT_OPERATION_DEADLINE,
+                env={**os.environ, **_GIT_STALL_ENV},
+                check=False,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise GitCommandError(
+                [*cmd, shown], "timed out", f"no result in {e.timeout}s"
+            ) from e
+        if result.returncode != 0:
+            raise GitCommandError(
+                [*cmd, shown], result.returncode, result.stderr.replace(url, shown)
+            )
+        repo = Repo(to_path)
+        repo.git.update_environment(**_GIT_STALL_ENV)
+        return repo
