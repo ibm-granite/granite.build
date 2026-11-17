@@ -76,6 +76,14 @@ from pathlib import Path
 
 from . import step_state, tokenizer_identity
 
+# A second copy of this module lives in
+# steps/aux/hf-export/skypilot/src/hf_export_state/export_state.py (that step
+# depends on nothing in steps/train/distill). Both must keep writing and
+# reading the same records: change the schema or layout in both copies
+# together -- steps/train/distill/src/VENDORED.md describes the pair.
+
+
+
 STEP_NAME = "distill-hf-export"
 
 MARKER_ALSO_NOT_MODEL = (step_state.MARKER_NAME, "export_manifest.json")

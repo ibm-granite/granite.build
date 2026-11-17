@@ -125,6 +125,9 @@ outputs:
 
 environment_configs:
   Skypilot:
+    # gbserver refuses, at step creation, a build whose resolved num_nodes is not 1
+    # (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
     subtypes:
       - lsf
       - slurm
@@ -173,7 +176,15 @@ environment_configs:
             # trainer launch die rc=127 on "./accelerate: No such file or
             # directory" (smoke builds 04be7abd/74ceb755) once the steps moved to
             # baked images and stopped hardcoding the venv path.
+            # The :? guard, not a plain assignment: if the venv were ever
+            # missing from PATH, command -v returns empty and the ACCELERATE
+            # export below would become "/accelerate" — failing at launch with
+            # rc=127 instead of naming the actual problem.
             PYBIN="$(command -v python)"
+            # No apostrophe in the message: bash parses quotes inside the :?
+            # word even within double quotes, and an unmatched one is a syntax
+            # error rather than a message.
+            : "${PYBIN:?python not on PATH; the image venv is missing}"
             CODE_DIR="${DISTILL_HOME:?DISTILL_HOME is set by the image}"
             WORK="${GB_BUILD_WORKDIR:-$PWD}"
             echo "GB_STEP_METADATA_KEY:distill_code_source GB_STEP_METADATA_VALUE:baked-image"
@@ -201,7 +212,7 @@ environment_configs:
               exit 1
             fi
 
-            # The image's venv is NOT on PATH, and run-precompute.sh calls both
+            # The image's Dockerfile puts the venv on PATH, but run-precompute.sh calls both
             # `"$PYBIN" -m ...` and a BARE `accelerate` (ACCELERATE="${ACCELERATE:-accelerate}").
             # Without this the run reaches the launch and dies rc=127 — measured on
             # distill-sft, build 75fa47d2. The dispatcher runs this with

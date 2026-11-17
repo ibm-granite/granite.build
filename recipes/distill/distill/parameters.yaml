@@ -12,9 +12,10 @@
 # build.yaml tests booleans against their string forms, not by truthiness.
 
 # ─── Run identification ───────────────────────────────────────────────
-# Set per run, with a timestamp: every output path hangs off it, and the rollout
-# server's mem:// URIs are suffixed with it -- two builds may not register one URI.
-RUN_NAME: "distill"
+# REQUIRED, set per run with a timestamp: every output path hangs off it, and the
+# rollout server's mem:// URIs are suffixed with it -- two builds may not register
+# one URI, so an empty or reused name fails the render rather than colliding.
+RUN_NAME: ""
 SEED: 42
 
 # ─── The lambda policy ────────────────────────────────────────────────

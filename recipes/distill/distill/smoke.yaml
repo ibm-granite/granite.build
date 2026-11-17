@@ -1,7 +1,7 @@
 # smoke -- a plumbing-scale layer over parameters.yaml, for any LMBDA_MODE:
 #
-#   gb build start -f recipes/distill/distill/build.yaml --parameters-path <site.yaml> \
-#     --parameters-path recipes/distill/distill/smoke.yaml \
+#   gb build start -f recipes/distill/distill/build.yaml --param-file <site.yaml> \
+#     --param-file recipes/distill/distill/smoke.yaml \
 #     --param RUN_NAME=smoke-<timestamp> --param LMBDA_MODE=<mode>
 #
 # Its subject is the CHAIN -- every target dispatching, every binding resolving,

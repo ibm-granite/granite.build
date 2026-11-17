@@ -35,6 +35,7 @@ rebuild/test the image afterwards: a constraint can cross a major version.
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -172,7 +173,11 @@ def conflict(log):
 
 
 def uv_lock(image_dir):
-    proc = subprocess.run(["uv", "lock"], cwd=image_dir, capture_output=True, text=True)
+    # uv is invoked through uvx with a pinned version, matching how the images
+    # themselves are built (ghcr.io/astral-sh/uv:0.13.6): an unpinned `uv` on
+    # PATH can resolve a lock differently than the image build will.
+    uv = os.environ.get("DISTILL_UV", "uvx --from uv==0.13.6 uv").split()
+    proc = subprocess.run([*uv, "lock"], cwd=image_dir, capture_output=True, text=True)
     return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
 
 

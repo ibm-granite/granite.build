@@ -636,7 +636,7 @@ The launcher maps it to `sky.Task.num_nodes`, from which the provisioner derives
 SkyPilot SLURM executor (`sky/skylet/executor/slurm.py`) runs one task per node
 (`--ntasks-per-node=1`, `--kill-on-bad-exit`) while re-asserting `SKYPILOT_NODE_RANK` and
 `SKYPILOT_NODE_IPS` on each node at run time — the rank/rendezvous inputs torchrun-based steps
-(e.g. the distill `gold` step) consume for `--node_rank`/`--nnodes`. No PMIx or hostfile plumbing is
+(e.g. the `logit-distill` step) consume for `--node_rank`/`--nnodes`. No PMIx or hostfile plumbing is
 needed; `MASTER_ADDR`/`MASTER_PORT` come from the step's own launcher script.
 
 No device mounts are needed for NCCL on this cluster: enroot's own device hook carries `/dev` into

@@ -82,6 +82,7 @@ def _layered(params_file=_PARAMS):
 
 
 def _render_text(tmp_path, build=_BUILD, params_file=_PARAMS, **params):
+    params.setdefault("RUN_NAME", "test-run")
     contents = build.read_text(encoding="utf-8")
     cli = [f"{k}={v}" for k, v in params.items()]
     return apply_parameters(contents, cli, _layered(params_file), str(tmp_path))

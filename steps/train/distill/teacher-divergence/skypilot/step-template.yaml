@@ -112,6 +112,9 @@ outputs:
 
 environment_configs:
   Skypilot:
+    # gbserver refuses, at step creation, a build whose resolved num_nodes is not 1
+    # (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
     subtypes:
       - lsf
       - slurm

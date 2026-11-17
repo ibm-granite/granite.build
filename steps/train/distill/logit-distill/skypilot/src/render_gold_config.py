@@ -91,6 +91,26 @@ _ONLINE_ONLY = (
 # EACH ARM CARRIES ITS OWN REQUIREMENTS rather than having them coerced, because the second
 # kind of requirement below is one nothing downstream would catch: outside its bounds the arm
 # does not fail, it silently BECOMES a different arm.
+#
+# ARMS THAT ARE REFUSED OUTRIGHT, with the reason. `adaptive_kld` is here, not in LOSS_ARMS,
+# because the trainer's implementation of it does not compute the paper's objective
+# (arXiv 2404.02657): the paper weights the WHOLE forward and reverse KL by the teacher's
+# head/tail mass, while the implementation switches between them PER VOCABULARY ENTRY. With
+# per-entry switching the teacher is not a stationary point -- at q = p the gradient with
+# respect to the student logit is -2*p_k*T for head entries and +2*p_k*H for tail entries, so
+# training keeps sharpening the student's head past the teacher -- and when the teacher's
+# top-1 exceeds 0.5 the head mask is empty and the arm silently degrades to plain reverse
+# KL. Refused here rather than reimplemented: the fix is a rewrite of the vendored trainer's
+# loss, which belongs upstream of this copy.
+REJECTED_LOSS_ARMS: Dict[str, str] = {
+    "adaptive_kld": (
+        "the trainer's adaptive_kld switches forward/reverse KL per vocabulary entry, not "
+        "the paper's whole-distribution weighting (arXiv 2404.02657); the teacher is not "
+        "a stationary point of it, and with top-1 > 0.5 the head mask is empty and it "
+        "silently becomes plain reverse KL."
+    ),
+}
+
 LOSS_ARMS: Dict[str, Dict[str, Any]] = {
     "jsd": {
         "flags": {},
@@ -108,10 +128,6 @@ LOSS_ARMS: Dict[str, Dict[str, Any]] = {
             "short-circuits, so at those values the flag is never read and this arm is "
             "identical to loss_arm='jsd'"
         ),
-    },
-    "adaptive_kld": {
-        "flags": {"use_adaptive_kld": True},
-        "doc": "adaptive KL divergence weighting inside generalized_jsd_loss",
     },
     "liger_fused_jsd": {
         "flags": {"use_liger_fused_jsd": True},
@@ -252,6 +268,12 @@ def _validate_arm(args: argparse.Namespace, *, online: bool) -> Dict[str, Any]:
     """
     if not args.loss_arm:
         return {}
+    if args.loss_arm in REJECTED_LOSS_ARMS:
+        raise ValueError(
+            f"loss_arm={args.loss_arm!r} is refused: {REJECTED_LOSS_ARMS[args.loss_arm]} "
+            "Use loss_arm='jsd' (beta 0.0/1.0 for pure KL), 'kl_interpolation' or "
+            "'distillm2' instead."
+        )
     if args.loss_arm not in LOSS_ARMS:
         raise ValueError(
             f"loss_arm={args.loss_arm!r} is not one of {sorted(LOSS_ARMS)}"

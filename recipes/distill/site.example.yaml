@@ -10,11 +10,11 @@
 #     --site <your-site.yaml> --name <env-name>
 # renders the environment from the "Environment" keys and sets ENVIRONMENT_URI
 # below to it, and
-#   gb build start -f recipes/distill/<recipe>/build.yaml --parameters-path <your-site.yaml>
+#   gb build start -f recipes/distill/<recipe>/build.yaml --param-file <your-site.yaml>
 # hands every key to the recipe. A --param KEY=VALUE still overrides any of them.
 #
 # URIs keep the full-URI convention: env:///abs/path for a path on the cluster's
-# shared filesystem, hf://org/name for a Hugging Face repo.
+# shared filesystem, hf:///org/name for a Hugging Face repo.
 
 # ─── Environment: identity and scheduler ─────────────────────────────
 # The rendered environment's `name`.

@@ -204,13 +204,14 @@ def test_target_name_patterns_are_distills(name, matches):
 
 def test_the_patterns_name_targets_distill_renders(tmp_path):
     """Every eval/export/csv name the helper matches is one distill/build.yaml emits."""
-    from gbcli.services.service_build import get_params_from_file
+    from gbcli.services.service_build import load_layered_params
     from gbcli.utils.buildutil import apply_parameters
 
     distill = _REPO / "recipes" / "distill" / "distill"
-    merged = {}
-    for layer in (distill / "parameters.yaml", _SITE):
-        merged.update(get_params_from_file(str(layer)))
+    merged = load_layered_params(str(distill / "build.yaml"), [str(_SITE)])
+    # parameters.yaml ships RUN_NAME: "" (required, no default), and this render
+    # does not carry a re-run's name.
+    merged["RUN_NAME"] = merged.get("RUN_NAME") or "render-check"
     text = apply_parameters(
         (distill / "build.yaml").read_text(encoding="utf-8"),
         ["SCREEN_EVALS=olmes-gsm8k,bfcl", "FULL_EVAL_RUNGS=8000"],
@@ -299,7 +300,7 @@ def test_main_prints_a_distill_eval_command(fake_gb, capsys):
         "-f",
         "recipes/distill/distill-eval/build.yaml",
     ]
-    assert argv[5:7] == ["--parameters-path", str(_SITE)]
+    assert argv[5:7] == ["--param-file", str(_SITE)]
     params = dict(a.split("=", 1) for a in argv[8::2])
     assert argv[7::2] == ["--param"] * len(params)
     assert params["EVALS"] == "1000:bfcl;2000:olmes-gsm-symbolic,attaq"
@@ -327,9 +328,14 @@ def test_main_defaults_to_the_users_site_file(fake_gb, capsys, tmp_path, monkeyp
     site.write_text(_SITE.read_text())
     assert rc.main([_BUILD_ID]) == 0
     argv = _command(capsys.readouterr().out)
+    # The EXPANDED site path, not the ~-containing default: a shell-quoted ~
+    # is never expanded, so printing the raw arg would emit a command that
+    # fails when pasted.
+    import os as _os
+
     assert argv[5:7] == [
-        "--parameters-path",
-        "~/.granite.build/local-env/distill-site.yaml",
+        "--param-file",
+        _os.path.expanduser("~/.granite.build/local-env/distill-site.yaml"),
     ]
 
 

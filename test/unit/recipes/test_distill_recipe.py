@@ -86,19 +86,22 @@ _BENCHMARK = re.compile(r"^(eval-.+-ck\d+|export-(sage|bfcl)-ck\d+|export-combin
 def _layered(*layers):
     """Merge parameter files in order, later layers replacing a key whole.
 
-    Mirrors the layered --parameters-path of ibm-granite/granite.build#663 (the
-    recipe's parameters.yaml first, then each --parameters-path in order), which is
-    not on this branch; --param overrides are applied after this by apply_parameters.
+    The same loader `gb build start` uses (load_layered_params, from the
+    layered --param-file work, ibm-granite/granite.build#663), so the tests
+    exercise the recipe exactly as the CLI layers it; --param overrides are
+    applied after this by apply_parameters.
     """
-    merged = {}
-    for layer in (_PARAMS, *layers):
-        merged.update(get_params_from_file(str(layer)))
-    return merged
+    from gbcli.services.service_build import load_layered_params
+
+    return load_layered_params(str(_BUILD), [str(l) for l in layers])
 
 
 def _render_text(tmp_path, *layers, **params):
     """Render with the site file and the given extra layers; params arrive as
-    strings, exactly as `--param KEY=VALUE` delivers them."""
+    strings, exactly as `--param KEY=VALUE` delivers them. RUN_NAME is required
+    by the recipe (the mem:// URIs collide without it), so a test that does not
+    care gets a default; the refusal itself is tested separately."""
+    params.setdefault("RUN_NAME", "test-run")
     contents = _BUILD.read_text(encoding="utf-8")
     cli = [f"{k}={v}" for k, v in params.items()]
     return apply_parameters(contents, cli, _layered(_SITE, *layers), str(tmp_path))
@@ -220,6 +223,15 @@ def test_bad_lambda_settings_fail_to_render(tmp_path, params, needle):
     with pytest.raises(jinja2.exceptions.UndefinedError) as err:
         _render_text(tmp_path, **params)
     assert needle in str(err.value)
+
+
+def test_an_empty_run_name_is_refused(tmp_path):
+    """RUN_NAME is required, not defaulted: the rollout server's mem:// URIs and
+    every output path hang off it, so two builds on one default would collide
+    where gbserver refuses artifact re-registration."""
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, RUN_NAME="")
+    assert "RUN_NAME_must_be_set" in str(err.value)
 
 
 @pytest.mark.parametrize(
@@ -537,6 +549,9 @@ def test_full_run_mixes_the_site_splits(tmp_path):
 
 def test_a_single_file_dataset_is_used_as_is(tmp_path):
     site = _layered(_SITE)
+    # parameters.yaml ships RUN_NAME: "" (required, no default), so setdefault
+    # alone would keep the empty string.
+    site["RUN_NAME"] = site.get("RUN_NAME") or "test-run"
     site["DATASET_SPLITS"] = []
     contents = _BUILD.read_text(encoding="utf-8")
     targets = _targets(

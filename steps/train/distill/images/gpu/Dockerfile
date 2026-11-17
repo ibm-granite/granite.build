@@ -89,7 +89,8 @@ WORKDIR /opt/gold-train-src
 # venv's interpreter; UV_PROJECT_ENVIRONMENT makes `uv sync` build it here.
 ENV UV_PROJECT_ENVIRONMENT=/stage/.venv
 ENV VIRTUAL_ENV=/stage/.venv
-RUN uv sync --locked
+# --no-dev: the dev group is for developing the package, not for the image.
+RUN uv sync --locked --no-dev
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 # Kept at its historical relative path: recipes pass ds_config relative to DISTILL_HOME.
@@ -105,5 +106,13 @@ COPY preflight-check/skypilot/src ${DISTILL_HOME}/steps/preflight-check
 # The HF cache's fixed in-container mount point. The environment bind-mounts its
 # cache here (or overrides HF_HOME); the steps never set it themselves.
 ENV HF_HOME=/opt/hf-cache
+
+# Non-root is opt-in: the SLURM/enroot flow runs these images against
+# group-shared filesystems and a shared HF cache whose group membership a fixed
+# uid cannot assume, so the default (0) preserves the validated cluster
+# behavior. Kubernetes and plain docker deployments, where running as root is
+# the actual exposure, pass --build-arg DISTILL_UID=1000.
+ARG DISTILL_UID=0
+USER ${DISTILL_UID}
 
 WORKDIR /

@@ -14,7 +14,7 @@
 #
 # Shared CPU image for the distillation steps that do text/data processing
 # only, no GPU (data-validate, data-prep, data-mixture, tokenizer-align).
-# hf-export moved to steps/misc/ with its own image.
+# hf-export moved to steps/aux/hf-export with its own image.
 # See steps/train/distill/images/gpu/Dockerfile for the GPU
 # sibling and the shared rationale (one image per resource class, not one
 # per step -- checked directly against each step's own pyproject.toml, not
@@ -73,5 +73,13 @@ COPY tokenizer-align/skypilot/src ${DISTILL_HOME}/steps/tokenizer-align
 
 # The HF cache's fixed in-container mount point (see the GPU image).
 ENV HF_HOME=/opt/hf-cache
+
+# Non-root is opt-in: the SLURM/enroot flow runs these images against
+# group-shared filesystems and a shared HF cache whose group membership a fixed
+# uid cannot assume, so the default (0) preserves the validated cluster
+# behavior. Kubernetes and plain docker deployments, where running as root is
+# the actual exposure, pass --build-arg DISTILL_UID=1000.
+ARG DISTILL_UID=0
+USER ${DISTILL_UID}
 
 WORKDIR /

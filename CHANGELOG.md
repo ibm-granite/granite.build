@@ -102,10 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The `misc` step category is now `aux` (#671).** The byoc step moves from
-  `space://steps/aux/byoc` to `space://steps/aux/byoc`; its source is now `steps/aux/byoc/` and
+  `space://steps/misc/byoc` to `space://steps/aux/byoc`; its source is now `steps/aux/byoc/` and
   its published copy is `configurations/assets/environments/skypilot/steps/aux/byoc/`. The
   in-repo recipes, build tests and docs are updated. **Breaking:** a build.yaml outside this repo
-  that uses `space://steps/aux/byoc` must switch to the new URI; the old one is not kept as an
+  that uses `space://steps/misc/byoc` must switch to the new URI; the old one is not kept as an
   alias. Environment overrides keyed `steps.byoc:` still apply, because they match only the last
   part of the step URI.
 - **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
@@ -229,8 +229,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The distillation steps moved to `steps/train/distill/` and were renamed so each name
   says what the step does.** Breaking: every `space://steps/distill/<step>` URI shipped in
-  v0.3.8 is gone. Config, inputs and outputs are unchanged, so migrating a recipe means
-  changing its `step_uri` to the new name below; the shipped recipes use the new URIs. Resume markers keep
+  v0.3.8 is gone. Inputs and outputs are unchanged, and config is unchanged except in
+  `logit-distill`, which drops the retired `ce_coef`, `log_student_entropy`,
+  `entropy_guard_drop_frac`, `entropy_guard_baseline_steps`, `entropy_guard_patience`
+  and `entropy_guard_action` keys and the `GOLD_MIN_TOKENS` env (all retired with the
+  CE-anchor patch they belonged to); migrating a recipe means
+  changing its `step_uri` to the new name below and dropping those keys; the shipped recipes use the new URIs. Resume markers keep
   their recorded step names, so outputs written before the move are still skipped, not redone.
 
   | Was | Now `space://steps/train/distill/…` |
@@ -250,13 +254,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The shared Accelerate/DeepSpeed launch config moved inside the GPU image from
   `steps/distill-gold-train/configs/` to `configs/`; recipes that set `DS_CONFIG` use
   `configs/deepspeed/accelerate_deepspeed_zero3.yaml`.
-- **`hf-export` moved to `steps/aux/hf-export` with its own image.** Breaking:
-  `space://steps/distill/hf-export` is now `space://steps/aux/hf-export`. Config, inputs
+- **`hf-export` moved to `steps/aux/hf-export` with its own image.** Breaking:  `space://steps/distill/hf-export` is now `space://steps/aux/hf-export`. Config, inputs
   (`train_output`, `expected_tokenizer`) and the `hf_model` output are unchanged, and an
   export made by the old step is recognised and skipped, not redone. The step no longer runs
-  on the distillation CPU image: it has its own CPU image, `gb-step-hf-export` (no torch), and
+  on the distillation CPU image: it has its own CPU image,
+  `quay.io/granitebuild/steps/aux/hf-export` (no torch), and
   imports nothing from the distillation collection, so any recipe that trains with HF Trainer
   or accelerate can use it.
+- **The eval and teardown steps moved from the LSF `ibm-bluevela` subtype override to the
+  generic skypilot tree** (`bfcl-eval`, `bfcl-export`, `sage-eval`, `sage-export`,
+  `combined-export`, `skypilot-teardown`, under
+  `configurations/assets/environments/skypilot/steps/`). They were BlueVela-only overrides
+  before; they now resolve for every skypilot subtype — **including Kubernetes**, whose
+  environments previously did not see them. Their step URIs are unchanged.
 - **The distill GPU steps refuse a GPU undercount instead of rewriting
   `CUDA_VISIBLE_DEVICES` (#604).** `gold`, `sft`, `logit-precompute`, `eval`, `vllm-server`
   and `gen-smoke` compare `SKYPILOT_NUM_GPUS_PER_NODE` with `nvidia-smi -L` and fail fast,
@@ -381,8 +391,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `recipes/granite4-gold-distillation/` (all of it: `distill-gold`, `distill-pipeline-smoke`,
     `distill-sft-gold`, `gold-blend-smoke`, `gold-onpolicy-smoke`, `gold-onpolicy-full-smoke`,
     `gold-smoke`, `gold-sweep-100`, `gold-sweep-smoke`);
-  - `recipes/granite4-350m/lsf/distill-{probe,smoke,stage1,stage1-v2,onpolicy-v2,checkpoint-eval}`;
-  - `recipes/granite4-350m/slurm/distill`.
+  - `recipes/granite4-350m/lsf/distill-{probe,smoke,stage1,stage1-v2,onpolicy-v2,checkpoint-eval}`.
 
 ### Fixed
 

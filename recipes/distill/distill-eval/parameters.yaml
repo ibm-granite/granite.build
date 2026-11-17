@@ -9,13 +9,14 @@
 # Values arrive from --param as STRINGS (the CLI does no YAML parsing of them).
 
 # ─── Run identification ───────────────────────────────────────────────
-# The experiment name when EXPERIMENT is empty. Set per run.
-RUN_NAME: "distill-eval"
+# REQUIRED, set per run: the namespace the eval results hang off, and the
+# experiment name when EXPERIMENT is empty.
+RUN_NAME: ""
 
 # ─── The models ───────────────────────────────────────────────────────
 # REQUIRED: "<rung>=<uri>,<rung>=<uri>". The rung is the model's numeric column in
 # the tables (ckpt_<rung>), normally the training step it was exported at; the URI
-# is a full one (env:///abs/path/export-1000, hf://org/name). Empty fails the
+# is a full one (env:///abs/path/export-1000, hf:///org/name). Empty fails the
 # render.
 EXPORTS: ""
 

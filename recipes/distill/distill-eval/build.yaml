@@ -6,8 +6,8 @@
 # evaluated inside a distill build are configured identically.
 #
 #   gb build start -f recipes/distill/distill-eval/build.yaml \
-#     --parameters-path <site.yaml> \
-#     --param RUN_NAME=<name> --param EXPORTS=1000=env:///abs/export-1000,2000=hf://org/m \
+#     --param-file <site.yaml> \
+#     --param RUN_NAME=<name> --param EXPORTS=1000=env:///abs/export-1000,2000=hf:///org/m \
 #     --param SCREEN_EVALS=olmes-gsm8k,bfcl --param FULL_EVAL_RUNGS=2000
 #
 # Layers: this directory's parameters.yaml, then the site file, then each --param.
@@ -42,6 +42,9 @@
 <%- for ch in TAG if ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" %>
 $${ RERUN_TAG_must_be_letters_digits_dots_dashes_and_underscores }
 <%- endfor %>
+<%- if not (RUN_NAME | string | trim) %>
+$${ RUN_NAME_must_be_set_per_run_the_result_URIs_hang_off_it }
+<%- endif %>
 <%- set EXP = (EXPERIMENT | string | trim or RUN_NAME) ~ ("-" ~ TAG if TAG else "") %>
 # ── EXPORTS, parsed once ───────────────────────────────────────────────────
 # The rungs play the ladder's part in the shared protocol below.

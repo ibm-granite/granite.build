@@ -112,6 +112,9 @@ outputs:
 
 environment_configs:
   Skypilot:
+    # gbserver refuses, at step creation, a build whose resolved num_nodes is not 1
+    # (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
     subtypes:
       - lsf
       - slurm
@@ -184,11 +187,11 @@ environment_configs:
               exit 1
             fi
 
-            # SKYPILOT_NUM_GPUS_PER_NODE is what SkyPilot sets on every backend.
-            # NUM_GPUS_PER_NODE is not set by anything; reading only it made a
-            # 1-GPU server start 8 data-parallel ranks and crash in vLLM's
-            # CUDA_VISIBLE_DEVICES split.
-            GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:-${NUM_GPUS_PER_NODE:-8}}"
+            # SKYPILOT_NUM_GPUS_PER_NODE is what SkyPilot sets on every backend, and the
+            # launch refuses to guess without it: a guessed 8 on a 1-GPU node made vLLM
+            # start 8 data-parallel ranks and crash in its CUDA_VISIBLE_DEVICES split.
+            # NUM_GPUS_PER_NODE is not set by anything and is not read.
+            GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:?SKYPILOT_NUM_GPUS_PER_NODE not set by the provisioner; refusing to guess the rank count}"
             PORT="{{ config.vllm_config.port }}"
             DP="{{ config.vllm_config.data_parallel_size }}"
             [ -n "$DP" ] || DP="$GPUS"
@@ -226,7 +229,12 @@ environment_configs:
             # answers /health, and an exec'd process cannot echo afterwards.
             # Publishing on start instead would defeat the whole design — the
             # trainer would dispatch and race a multi-minute model load.
+            # --host "$ADDR": bind the advertised address, not every interface.
+            # The generate and weight-update endpoints carry no auth, so the
+            # server must not listen where the allocation's network doesn't
+            # require reaching it; the health probe below uses the same address.
             "$PYBIN" -m gb_steps_post_training.distillation.run_vllm_serve \
+              --host "$ADDR" \
               --port "$PORT" \
               --model "{{ bindings.model.binding.path }}" \
               --gpu-memory-utilization {{ config.vllm_config.gpu_memory_utilization }} \
@@ -252,7 +260,7 @@ environment_configs:
               if "$PYBIN" -c "
             import sys, urllib.request
             try:
-                urllib.request.urlopen('http://127.0.0.1:$PORT/health/', timeout=5)
+                urllib.request.urlopen('http://$ADDR:$PORT/health/', timeout=5)
             except Exception:
                 sys.exit(1)
             " 2>/dev/null; then

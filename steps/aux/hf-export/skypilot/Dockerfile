@@ -48,4 +48,11 @@ ENV HF_EXPORT_HOME=/opt/hf-export \
     HF_HOME=/opt/hf-cache \
     HF_HUB_OFFLINE=1 \
     HF_HUB_DISABLE_TELEMETRY=1
+# Non-root is opt-in: the SLURM/enroot flow runs this image against
+# group-shared filesystems whose group membership a fixed uid cannot
+# assume, so the default (0) preserves the validated cluster behavior.
+# Kubernetes and plain docker deployments pass --build-arg DISTILL_UID=1000.
+ARG DISTILL_UID=0
+USER ${DISTILL_UID}
+
 WORKDIR /root

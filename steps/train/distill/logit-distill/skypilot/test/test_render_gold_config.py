@@ -506,16 +506,27 @@ class TestLossArms:
         "arm,key",
         [
             ("uld", "use_uld_loss"),
-            ("adaptive_kld", "use_adaptive_kld"),
         ],
     )
     def test_an_arm_emits_the_switch_the_renderer_had_no_flag_for(
         self, tmp_path, arm, key
     ):
-        """The point of the table: these seven switches are CustomGOLDConfig fields that
+        """The point of the table: these switches are CustomGOLDConfig fields that
         no CLI flag on this renderer could previously set at all."""
+
         config = _render(tmp_path, extra=["--loss-arm", arm])
         assert config[key] is True
+
+    def test_adaptive_kld_is_refused_with_the_reason(self, tmp_path):
+        """The arm's trainer implementation does not compute the paper's objective
+        (arXiv 2404.02657 weights whole distributions; the implementation switches
+        per vocabulary entry, the teacher is not a stationary point, and top-1 > 0.5
+        empties the head mask and silently yields plain reverse KL), so the arm is
+        refused rather than rendered."""
+        result = _render(tmp_path, extra=["--loss-arm", "adaptive_kld"], expect_rc=2)
+        assert "is refused" in result.stderr
+        assert "stationary point" in result.stderr
+        assert "reverse KL" in result.stderr
 
     def test_ce_requires_off_policy_and_says_why(self, tmp_path):
         """A control that trains on its own output is not a control."""

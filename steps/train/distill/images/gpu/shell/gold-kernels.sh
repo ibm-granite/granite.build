@@ -19,7 +19,7 @@
 #
 #   cached                        -> proceed silently
 #   missing, GOLD_PREFETCH_KERNELS=1 -> download now (needs egress), then proceed
-#   missing, otherwise            -> FATAL, naming prefetch-kernels.sh
+#   missing, otherwise            -> FATAL, naming the out-of-band prefetch job
 #
 # WHICH KERNELS ARE REQUIRED. causal-conv1d and mamba-ssm only. These are the Mamba2
 # mixer kernels a Granite 4 hybrid model actually needs, and they are exactly the two
@@ -114,7 +114,7 @@ PY
   # The empty list was the tell. On a real GPU job that message would have sent whoever read it to
   # run a download inside an allocation -- exactly the cost this preflight exists to avoid paying.
   # Same class as the two other fixes in this tree tonight: a condition of the ENVIRONMENT must not
-  # be reported as a defect in the SUBJECT. See the companion require-gpu.sh helper.
+  # be reported as a defect in the SUBJECT.
   if (( rc == 2 )) || [[ -z "${out//[[:space:]]/}" ]]; then
     cat >&2 <<MSG
 FATAL: the hub-kernel PROBE could not run, so whether the cache is warm is UNKNOWN.

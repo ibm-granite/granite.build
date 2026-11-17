@@ -287,6 +287,10 @@ def render_check(site_path, params):
     for layer in (_PARAMS, site_path):
         merged.update(get_params_from_file(str(layer)))
     merged.update(params)
+    # The distill recipe refuses an empty RUN_NAME; a re-run command always
+    # carries one (it prints --param RUN_NAME=...), but the render check may be
+    # asked to render the defaults alone.
+    merged.setdefault("RUN_NAME", "render-check")
     with tempfile.TemporaryDirectory() as tmp:
         text = apply_parameters(_RECIPE.read_text(encoding="utf-8"), [], merged, tmp)
     return list(yaml.safe_load(text)["granite.build"]["targets"])
@@ -403,7 +407,10 @@ def main(argv=None):
 
     lines = [
         f"gb build start -f {_display(_RECIPE)}",
-        f"--parameters-path {shlex.quote(args.site)}",
+        # site_path, not args.site: the default contains ~, and a shell-quoted
+        # ~ is never expanded, so printing the raw arg would emit a command
+        # that fails. site_path is already expanduser'd.
+        f"--param-file {shlex.quote(str(site_path))}",
     ]
     if args.space:
         lines.append(f"--space {shlex.quote(args.space)}")

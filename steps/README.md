@@ -176,7 +176,7 @@ The build tests can't pass until `run.sh` prints the artifact marker (see
 
 **Existing steps.** Every step sits under a category (`steps/data/dpk`, the
 `steps/eval/<family>` granite-evals steps, `steps/eval/eval-example`, `steps/aux/byoc`,
-the `steps/distill/*` steps). A single-level `steps/<name>/<env>/` step is still supported,
+the `steps/train/distill/*` steps). A single-level `steps/<name>/<env>/` step is still supported,
 but none ship today.
 
 ## Layout of a step/environment directory
@@ -258,10 +258,10 @@ and fixtures under `test-data/steps/`) — see the publish sections below.
 ### Nested steps
 
 A step directory need not sit exactly one level under `steps/`. You can group
-related steps in sub-directories — e.g. `steps/distill/foo/skypilot/` — and the
+related steps in sub-directories — e.g. `steps/train/distill/foo/skypilot/` — and the
 nesting is **preserved end-to-end**. The step's identity is its path relative to
 the enclosing `steps/` ancestor, minus the trailing `<env>` segment (the
-auto-derived `STEP_PATH`): `steps/distill/foo/skypilot` → `STEP_PATH = distill/foo`.
+auto-derived `STEP_PATH`): `steps/train/distill/foo/skypilot` → `STEP_PATH = train/distill/foo`.
 A flat step `steps/foo/skypilot` has `STEP_PATH = foo`, identical to `STEP_NAME`, so
 flat steps publish byte-for-byte as before.
 

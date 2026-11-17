@@ -48,7 +48,7 @@ measured while training continues.
 
 ## Setup
 
-**Requires layered `--parameters-path`** ([#663](https://github.com/ibm-granite/granite.build/issues/663),
+**Requires layered `--param-file`** ([#663](https://github.com/ibm-granite/granite.build/issues/663),
 PR [#665](https://github.com/ibm-granite/granite.build/pull/665)). Each command below passes
 the site file, and the smoke run passes `smoke.yaml` too, as layers over the recipe's own
 `parameters.yaml`. Without it, the site file replaces `parameters.yaml` instead of layering
@@ -129,8 +129,8 @@ D=recipes/distill/distill/build.yaml
 
 | Run | Command |
 |---|---|
-| Full run (off-policy, the defaults) | `gb build start -f $D --parameters-path $SITE --param RUN_NAME=distill-$TS` |
-| Smoke, off-policy | `gb build start -f $D --parameters-path $SITE --parameters-path recipes/distill/distill/smoke.yaml --param RUN_NAME=smoke-off-$TS --param LMBDA_MODE=off-policy` |
+| Full run (off-policy, the defaults) | `gb build start -f $D --param-file $SITE --param RUN_NAME=distill-$TS` |
+| Smoke, off-policy | `gb build start -f $D --param-file $SITE --param-file recipes/distill/distill/smoke.yaml --param RUN_NAME=smoke-off-$TS --param LMBDA_MODE=off-policy` |
 | Smoke, ramp | same, with `--param RUN_NAME=smoke-ramp-$TS --param LMBDA_MODE=ramp` |
 | Smoke, on-policy | same, with `--param RUN_NAME=smoke-on-$TS --param LMBDA_MODE=on-policy` |
 | With an SFT pass first | add `--param INCLUDE_SFT=true` |
@@ -159,7 +159,7 @@ the rung becomes the model's `ckpt_<rung>` column. `EVALS` (`<rung>:<eval>,<eval
 names each rung's evals outright, in place of `SCREEN_EVALS` / `FULL_EVAL_RUNGS`.
 
 ```bash
-gb build start -f recipes/distill/distill-eval/build.yaml --parameters-path $SITE \
+gb build start -f recipes/distill/distill-eval/build.yaml --param-file $SITE \
   --param RUN_NAME=eval-$TS \
   --param EXPORTS=4000=env://<WORKDIR_ROOT>/<RUN_NAME>/<build-id>/export-4000,8000=env://<WORKDIR_ROOT>/<RUN_NAME>/<build-id>/export-8000 \
   --param SCREEN_EVALS=salad-bench,attaq,bfcl --param FULL_EVAL_RUNGS=8000
@@ -170,6 +170,11 @@ evaluated before. gbserver refuses an artifact URI another build registered, the
 still reports SUCCESS, and nothing downstream of it dispatches. Every rung must get at
 least one eval, or the render fails. `distill-eval` retries up to `MAX_RETRIES=5` times,
 because evals run on the site's `EVAL_PARTITION`, which may preempt them.
+
+**The eval images are not publicly pullable.** The `sage-*` and `bfcl-*` eval steps run
+images published to IBM's internal registry, so outside IBM this part of the recipe needs
+your own copies of those images (build them from `steps/eval/` and override the steps'
+`image_id` in your site file).
 
 **Re-running failed evals.** [`rerun_command.py`](distill-eval/rerun_command.py) reads a
 finished `distill` or `distill-eval` build and prints the `distill-eval` command that
@@ -242,17 +247,18 @@ reuses the ones that succeeded (`target_reuse_enabled`). On the retry, `train`:
 See the step's [Stable train_dir](../../steps/train/distill/logit-distill/skypilot/USAGE.md#stable-train_dir).
 
 **The progress check.** Each attempt records the highest complete checkpoint it starts from
-in `<train_dir>/attempts.jsonl`. A retry that starts no further than the previous attempt is
-refused, with exit 3, before training starts:
+in `<train_dir>/attempts.jsonl`. A retry is refused, with exit 3, before training starts,
+when two consecutive attempts made no progress — that is, when this attempt would start no
+further than the last one did, and that one started no further than the one before it:
 
 ```
-logit-distill: FATAL: no progress since attempt <id> (still at checkpoint-<N>); not retrying
+logit-distill: FATAL: no progress over the last 2 attempts (<a>, <b>; still at checkpoint-<N>); not retrying
 ```
 
-The previous attempt failed before its next save, and this one would fail at the same point:
-a bad batch, an OOM at a fixed length, a key the trainer rejects. Read that attempt's log,
-fix the cause, and start a new build. Everything stays on disk. A deterministic failure
-therefore costs one extra attempt, not every retry. See
+The previous attempts failed before their next save, and this one would fail at the same
+point: a bad batch, an OOM at a fixed length, a key the trainer rejects. Read the last
+attempt's log, fix the cause, and start a new build. Everything stays on disk. A
+deterministic failure therefore costs two extra attempts, not every retry. See
 [No-progress refusal](../../steps/train/distill/logit-distill/skypilot/USAGE.md#no-progress-refusal).
 
 **`MAX_RETRIES`** caps build-level retries: 3 for `distill`, 5 for `distill-eval`, 0 in
@@ -328,7 +334,7 @@ A5="--param ADAM_BETA2=0.95 --param WARMUP_RATIO=0.02 $SHORT"
 FRONTP="--param CORPUS_DIR=$FRONT --param TRAIN_SAMPLING_STRATEGY=sequential"
 B="--param STUDENT_MODEL_URI=$SFT --param GOLD_DATA_SEED=42 --param WARMUP_RATIO=0.4 $FRONTP"
 arm() { A=$1; shift; N=study-$A-$TS
-  gb build start -f recipes/distill/distill/build.yaml --parameters-path "$SITE" $STUDY \
+  gb build start -f recipes/distill/distill/build.yaml --param-file "$SITE" $STUDY \
     --param RUN_NAME=$N --param EXPERIMENT=$N "$@"; }
 ```
 
@@ -377,5 +383,9 @@ under `recipes/distill/` for site-specific tokens.
 
 ## Not yet verified on a cluster
 
-These recipes and the step changes behind them are unit-tested and render-tested only. The
-cluster checks still to run are listed in the PR.
+These recipes and the step changes behind them are unit-tested and render-tested only.
+The end-to-end checks are the per-step SLURM build tests on the follow-up branch stacked
+on this PR — six of the twelve steps have passing cluster runs at the time of this
+writing, and the rest, including the consolidated recipe itself, run when that branch's
+cluster work completes. Earlier end-to-end smoke runs covered the same step code on the
+pre-consolidation images.

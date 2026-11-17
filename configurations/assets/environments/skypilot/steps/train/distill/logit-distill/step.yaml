@@ -508,7 +508,10 @@ environment_configs:
             # one is generic (confirmed set on both subtypes in
             # sky/backends/task_codegen.py).
             NODES="${SKYPILOT_NUM_NODES:-1}"
-            GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:-8}"
+            # Refuse rather than guess: the rank count must match the allocation, and a
+            # default of 8 here would start 8 ranks on whatever was actually allocated --
+            # the same class of bug the #604 check below catches for the visible count.
+            GPUS="${SKYPILOT_NUM_GPUS_PER_NODE:?SKYPILOT_NUM_GPUS_PER_NODE not set by the provisioner; refusing to guess the rank count}"
             MADDR="$(printf '%s\n' "${SKYPILOT_NODE_IPS:?SKYPILOT_NODE_IPS not set by the provisioner}" | head -n1)"
             MPORT=$((29500 + (${SKYPILOT_INTERNAL_JOB_ID:-0} % 1000)))
 

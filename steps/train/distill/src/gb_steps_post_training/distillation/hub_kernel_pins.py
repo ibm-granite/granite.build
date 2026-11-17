@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pin hub-resolved kernels to revisions compatible with this image's transformers.
 
 WHY THIS EXISTS (measured 2026-11-13, BlueVela, image ec82c1d9). transformers 5.8.0's

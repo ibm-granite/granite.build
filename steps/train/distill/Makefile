@@ -29,7 +29,7 @@
 #     installs, against OSV (quay's source for Python advisories);
 #   - trivy on the built image (OS packages from the base and apt, the Python venv,
 #     the uv binary), saved to a tar so no registry or daemon socket is needed.
-# Each FAILS on a fixable vulnerability at SCAN_SEVERITY (default CRITICAL; CVSS >= 9
+# Each FAILS on a fixable vulnerability at SCAN_SEVERITY (default HIGH; CVSS >= 7
 # for OSV) and prints the fixable HIGH and above findings as a report.
 #
 # publish-image-<x> runs scan-image-<x> first and pushes only if it passes, so an image
@@ -73,11 +73,13 @@ IMAGE_PREFIX      ?= steps/train/distill/images
 PUBLISH_OVERWRITE ?= false
 TAG_STATUS        := sh ../../scripts/registry-tag-status.sh
 
-SCAN_SEVERITY     ?= CRITICAL
+# HIGH, not CRITICAL: a fixable HIGH ships only if it is recorded in the
+# image's scan-ignore; silence is not acceptance.
+SCAN_SEVERITY     ?= HIGH
 SCAN_CACHE        ?= $(HOME)/.cache/gb-image-scan
-TRIVY_IMAGE       ?= ghcr.io/aquasecurity/trivy:0.76.2
+TRIVY_IMAGE       ?= ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
 SKIP_SCAN         ?= false
-OSV_IMAGE         ?= ghcr.io/google/osv-scanner:v2.7.1
+OSV_IMAGE         ?= ghcr.io/google/osv-scanner:v2.7.1@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde
 
 image_ref = $(REGISTRY)/$(IMAGE_PREFIX)/$(1):$(IMAGE_VERSION)
 
@@ -147,8 +149,11 @@ $(addprefix scan-image-,$(IMAGES)): scan-image-%: scan-lock-%
 	trivy() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
 		$(TRIVY_IMAGE) image --input /scan/image.tar --scanners vuln --ignore-unfixed --quiet \
 		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
-	echo "[scan] trivy report (fixable HIGH,CRITICAL) for $(call image_ref,$*)"; \
-	trivy --severity HIGH,CRITICAL --format table; rc=$$?; \
+	trivy_all() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
+		$(TRIVY_IMAGE) image --input /scan/image.tar --scanners vuln --quiet \
+		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
+	echo "[scan] trivy report (HIGH,CRITICAL, fixed and unfixed) for $(call image_ref,$*)"; \
+	trivy_all --severity HIGH,CRITICAL --format table; rc=$$?; \
 	if [ $$rc -ne 0 ]; then rm -f "$$tar"; echo "[scan] trivy did not run (exit $$rc); see the error above" >&2; exit $$rc; fi; \
 	echo "[scan] trivy gate (fixable $(SCAN_SEVERITY)) for $(call image_ref,$*)"; \
 	trivy --severity $(SCAN_SEVERITY) --exit-code 3 --format table --skip-db-update; rc=$$?; \
@@ -161,8 +166,8 @@ $(addprefix scan-image-,$(IMAGES)): scan-image-%: scan-lock-%
 	echo "[scan] $(call image_ref,$*): no fixable $(SCAN_SEVERITY) vulnerabilities"
 
 $(addprefix fix-lock-,$(IMAGES)): fix-lock-%:
-	@command -v uv >/dev/null 2>&1 || { echo "[fix-lock] uv is not on PATH (https://docs.astral.sh/uv/)" >&2; exit 1; }
-	@echo "[fix-lock] images/$*/uv.lock (fixable $(SCAN_SEVERITY))"
+	@command -v uvx >/dev/null 2>&1 || { echo "[fix-lock] uvx is not on PATH (https://docs.astral.sh/uv/)" >&2; exit 1; }
+	@echo "[fix-lock] images/$*/uv.lock (fixable $(SCAN_SEVERITY)); uv pinned to 0.13.6, the images' own build version"
 	@python3 images/fix-locks.py images/$* $(SCAN_SEVERITY) -- \
 		$(DOCKER) run --rm -v "$(CURDIR)/images/$*:/src:ro,Z" $(OSV_IMAGE) \
 		scan source --lockfile /src/uv.lock --format json

@@ -350,8 +350,7 @@ if (( NODES > 1 )); then
   # The completeness post-condition is what turns that into an error rather than a smaller shard
   # set -- but refusing here is cheaper than discovering it after a multi-hour pass.
   echo "FATAL: nodes=$NODES needs a multi-node rendezvous (main_process_ip/port and a" >&2
-  echo "       machine_rank per host) that a step is not handed. Tracked as D3 -- see" >&2
-  echo "       docs/planning/distillation-steps-plan.md. Use nodes=1 here, or run the" >&2
+  echo "       machine_rank per host) that a step is not handed. Use nodes=1 here, or run the" >&2
   echo "       multi-node shape from the upstream tooling inside a scheduler allocation where" >&2
   echo "       the scheduler supplies the host list." >&2
   exit 1

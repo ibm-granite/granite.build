@@ -13,7 +13,7 @@
 # --out DIR, a private repo backing a shared gbserver) and sets ENVIRONMENT_URI
 # in the site file to it. Pass the same site file to the recipes:
 #
-#   gb build start -f recipes/distill/<recipe>/build.yaml --parameters-path <site.yaml>
+#   gb build start -f recipes/distill/<recipe>/build.yaml --param-file <site.yaml>
 #
 # Syntax: the gb CLI's build.yaml parameter syntax, rendered under
 # StrictUndefined, so a key missing from the site file is an error. A value is

@@ -14,7 +14,7 @@
 #   --site S       the site file: a flat YAML mapping of every site-specific
 #                  value, kept outside the public repo (a private repo, or
 #                  $GB_HOME/local-env/). The same file is later passed to
-#                  `gb build start --parameters-path S`.
+#                  `gb build start --param-file S`.
 #   --name NAME    the environment's name, [a-z0-9][a-z0-9-]*
 #   --space-dir D  the standalone space to write to; default $GB_HOME/local-space
 #   --out DIR      write DIR/environments/skypilot-local/NAME/environment.yaml
@@ -200,4 +200,4 @@ else
   echo "Then start gbserver on the space and run a recipe:"
   echo "  gbserver standalone --space-dir $S"
 fi
-echo "  gb build start -f <recipe>/build.yaml --parameters-path $SITE"
+echo "  gb build start -f <recipe>/build.yaml --param-file $SITE"

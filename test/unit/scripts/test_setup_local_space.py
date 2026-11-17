@@ -156,7 +156,7 @@ def test_space_yaml_written_then_kept(tmp_path):
     assert "kept" in proc.stdout
     assert (_space(tmp_path) / "space.yaml").read_text() == before
     assert f"gbserver standalone --space-dir {_space(tmp_path)}" in proc.stdout
-    assert f"--parameters-path {s}" in proc.stdout
+    assert f"--param-file {s}" in proc.stdout
 
 
 def test_space_yaml_without_overlay_is_not_changed(tmp_path):
@@ -232,7 +232,7 @@ def test_out_writes_under_dir_only(tmp_path):
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
     assert not (tmp_path / "gbhome").exists()
     assert "gbserver standalone" not in proc.stdout
-    assert f"--parameters-path {s}" in proc.stdout
+    assert f"--param-file {s}" in proc.stdout
 
 
 def test_bad_name_rejected(tmp_path):

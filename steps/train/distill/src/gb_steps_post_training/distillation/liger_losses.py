@@ -1,4 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
+#
+# Builds on Liger-Kernel (https://github.com/linkedin/Liger-Kernel, BSD-2-Clause):
+# this module subclasses LigerFusedLinearDistillationBase to reuse its chunked
+# fused-linear machinery. The loss functions below are written against that API
+# with plain torch ops, not adapted from Liger's own loss functions; no Liger
+# source is reproduced here.
 
 import math
 from typing import Tuple, Union

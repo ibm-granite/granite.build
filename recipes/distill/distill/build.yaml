@@ -6,7 +6,7 @@
 # uses only SkyPilot's generic keys (cluster, zone, accelerators, memory).
 #
 #   gb build start -f recipes/distill/distill/build.yaml \
-#     --parameters-path <site.yaml> [--parameters-path recipes/distill/distill/smoke.yaml] \
+#     --param-file <site.yaml> [--param-file recipes/distill/distill/smoke.yaml] \
 #     --param RUN_NAME=<name> --param LMBDA_MODE=off-policy|ramp|on-policy
 #
 # Layers: this directory's parameters.yaml (the experiment), then the site file,
@@ -38,6 +38,9 @@
 <%- set SFT = INCLUDE_SFT | string | trim | lower in YES %>
 <%- set IS_SMOKE = SMOKE | string | trim | lower in YES %>
 <%- set PINNED = (CORPUS_DIR | string | trim).rstrip("/") %>
+<%- if not (RUN_NAME | string | trim) %>
+$${ RUN_NAME_must_be_set_per_run_the_rollout_mem_URIs_and_every_output_path_hang_off_it }
+<%- endif %>
 <%- set RUN_DIR = (WORKDIR_ROOT | string).rstrip("/") ~ "/" ~ RUN_NAME ~ "/{{ run_metadata.build_id }}" %>
 <%- set EXP = EXPERIMENT | string | trim or RUN_NAME %>
 # The trainer's failure signal to the rollout server: rank 0 writes it when the
@@ -596,9 +599,10 @@ $${ corpus_inputs() }
             # rungs it already wrote, so their exports re-dispatch. A new build gets
             # a new directory.
             train_dir: "$${RUN_DIR}/train"
-            # Refuse an attempt that starts no further than the last one did: a
-            # deterministic failure would otherwise spend every retry at the same
-            # step, holding the allocation each time.
+            # Refuse after two consecutive attempts make no progress (the
+            # progress check's window): a deterministic failure would otherwise
+            # spend every retry at the same step, holding the allocation each
+            # time.
             require_progress: true
             # A stopped run's <RUN_NAME>_node<N> directory, to continue it in a new
             # build; ignored once train_dir holds checkpoints. See parameters.yaml.

@@ -124,15 +124,21 @@ class MultiVLLMClient:
 
         def _gen(client, chunk):
             if not chunk:
-                return {"completion_ids": [], "logprobs": []}
+                return {"prompt_ids": [], "completion_ids": [], "logprobs": []}
             return client.generate(prompts=chunk, **kwargs)
 
         with ThreadPoolExecutor(max_workers=n_servers) as pool:
             futures = [pool.submit(_gen, c, ch) for c, ch in zip(self.clients, chunks)]
             results = [f.result() for f in futures]
 
-        merged = {"completion_ids": [], "logprobs": []}
+        # prompt_ids is merged too: the tokenization probe in gold.py reads it from the
+        # response, and with it dropped here a multi-server run died with KeyError on
+        # rank 0 before step 0 while the other ranks waited at the barrier. Chunks are
+        # contiguous slices in prompt order, so extending in result order keeps all
+        # three lists aligned with the prompts.
+        merged = {"prompt_ids": [], "completion_ids": [], "logprobs": []}
         for r in results:
+            merged["prompt_ids"].extend(r["prompt_ids"])
             merged["completion_ids"].extend(r["completion_ids"])
             merged["logprobs"].extend(r["logprobs"])
         return merged
@@ -3739,26 +3745,11 @@ class CustomGOLDTrainer(GOLDTrainer):
         ga = max(1, int(self.args.gradient_accumulation_steps))
         step_equiv = 1.0 / ga
 
-        # Log current lmbda if using linear schedule
-        if (
-            self.args.lmbda_schedule == "linear"
-            and self.state.global_step % self.args.logging_steps == 0
-        ):
-            self.log({"train/current_lmbda": current_lmbda})
-
-        # Log current beta if using linear schedule
-        if (
-            self.args.beta_schedule == "linear"
-            and self.state.global_step % self.args.logging_steps == 0
-        ):
-            self.log({"train/current_beta": self._get_current_beta()})
-
-        # Log current alpha if using linear schedule
-        if (
-            self.args.alpha_schedule == "linear"
-            and self.state.global_step % self.args.logging_steps == 0
-        ):
-            self.log({"train/current_alpha": self._get_current_alpha()})
+        # Schedule values (current_lmbda/beta/alpha) are logged from inside the
+        # overridden log(), NOT from here: this runs per micro-batch, and the
+        # extra self.log() calls all-reduced and reset the ULD/alignment/IS
+        # accumulators, so with logging_steps: 1 the regular log line reported
+        # about zero for them.
 
         if on_policy:
             # print("on-policy")
@@ -4198,14 +4189,20 @@ class CustomGOLDTrainer(GOLDTrainer):
         completion_ids_tensors = [
             torch.tensor(ids, device=device) for ids in completion_ids
         ]
-        # Manually pad/truncate completions to max_completion_length length before using pad function
+        # Manually pad/truncate completions to max_completion_length length before using pad function.
+        # The per-row valid length is kept (completion_valid_lengths) so the masking
+        # below can mask padding by POSITION: with pad == eos (gold.py's fallback
+        # when the tokenizer defines no pad token) masking by token value also
+        # removes every generated EOS from the labels and attention.
         padded_completion_ids_list = []
+        completion_valid_lengths = []
         for completion_tensor in completion_ids_tensors:
             if len(completion_tensor) > max_completion_length:
                 # Truncate if longer than max_completion_length
                 padded_completion_ids_list.append(
                     completion_tensor[:max_completion_length]
                 )
+                completion_valid_lengths.append(max_completion_length)
             elif len(completion_tensor) < max_completion_length:
                 # Pad if shorter than max_completion_length
                 padding_needed = max_completion_length - len(completion_tensor)
@@ -4221,9 +4218,11 @@ class CustomGOLDTrainer(GOLDTrainer):
                     ]
                 )
                 padded_completion_ids_list.append(padded_tensor)
+                completion_valid_lengths.append(len(completion_tensor))
             else:
                 # Already the right length
                 padded_completion_ids_list.append(completion_tensor)
+                completion_valid_lengths.append(len(completion_tensor))
 
         # Now all tensors are the same length, so we can stack them
         padded_completion_ids = torch.stack(padded_completion_ids_list)
@@ -4339,9 +4338,32 @@ class CustomGOLDTrainer(GOLDTrainer):
         new_attention_mask = torch.ones_like(new_input_ids, device=device)
         new_labels = new_input_ids.clone()
 
-        if pad_token_id is not None:
-            new_labels[new_labels == pad_token_id] = -100
-            new_attention_mask[new_input_ids == pad_token_id] = 0
+        # Mask padding by POSITION, never by token value: with pad == eos (gold.py
+        # sets pad_token = eos_token when the tokenizer defines none) value-masking
+        # also removes every generated EOS from the labels and the attention mask,
+        # so the model gets no KD signal on EOS and EOS-based truncation detection
+        # misfires. Three pad regions, all positionally known: the left-pad block
+        # of `padding_added` columns, the tokenizer's own prompt padding (from the
+        # prompt's attention mask), and each row's right-padded completion tail
+        # (columns at or past its valid length). A pad token generated INSIDE a
+        # completion is a real token and is not masked.
+        pad_positions = torch.zeros(
+            new_input_ids.shape, device=device, dtype=torch.bool
+        )
+        if padding_added > 0:
+            pad_positions[:, :padding_added] = True
+        prompt_width = prompt_ids.shape[1]
+        pad_positions[:, padding_added : padding_added + prompt_width] = (
+            prompt_tokenized.attention_mask == 0
+        )
+        completion_width = padded_completion_ids.shape[1]
+        valid_completion = (
+            torch.arange(completion_width, device=device).unsqueeze(0)
+            < torch.tensor(completion_valid_lengths, device=device).unsqueeze(1)
+        )
+        pad_positions[:, padding_added + prompt_width :] = ~valid_completion
+        new_labels[pad_positions] = -100
+        new_attention_mask[pad_positions] = 0
 
         # Mask prompt tokens in labels (account for any left padding added)
         prompt_lengths = prompt_ids.shape[1] + padding_added
@@ -5759,6 +5781,17 @@ class CustomGOLDTrainer(GOLDTrainer):
         now = time.time()
         if mode == "train" and "loss" in logs:
             logs["time"] = round(now - self._last_log_time, 2)
+            # Schedule values ride the REGULAR log line. They used to be logged
+            # from training_step with their own self.log() call per micro-batch,
+            # which arrived here, all-reduced and reset the ULD/alignment/IS
+            # accumulators, and left the regular line reporting about zero for
+            # them whenever logging_steps was 1.
+            if self.args.lmbda_schedule == "linear":
+                logs["train/current_lmbda"] = self._get_current_lmbda()
+            if self.args.beta_schedule == "linear":
+                logs["train/current_beta"] = self._get_current_beta()
+            if self.args.alpha_schedule == "linear":
+                logs["train/current_alpha"] = self._get_current_alpha()
             logs["t_gen"] = round(self._timing_generation, 1)
             logs["t_train"] = round(
                 self._timing_training_step_total - self._timing_generation, 1

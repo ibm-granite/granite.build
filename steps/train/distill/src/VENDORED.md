@@ -10,6 +10,15 @@ from that commit in these ways, and in no other:
 - **Local patches** in `custom_gold_config.py` and `custom_gold_trainer.py`, described
   below: the two on-policy study patches.
 
+## Licence
+
+The copyright holder of `gb-steps-distillation` contributes the code imported at
+`a5d59bc4` to this repository under Apache-2.0, this repository's licence, so the copy
+here is properly licensed. Files that carry another project's notice keep it: the
+trainer files ported from the HuggingFace Team carry their notice plus a
+`PORTED, not authored here` note naming this import, and `liger_losses.py` notes its
+use of Liger-Kernel (BSD-2-Clause) in its header.
+
 This is a one-time import, not a git subtree or submodule, and there is no sync mechanism
 to the external repo. A trainer fix lands as a direct edit here, like any other
 granite.build code; it is not re-pulled from `gb-steps-distillation`. Re-importing a later

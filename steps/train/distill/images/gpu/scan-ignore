@@ -4,6 +4,9 @@
 # and trivy name the same advisory differently); `#` starts a comment. The same file
 # goes to images/osv-gate.py and to trivy as --ignorefile, so keep it in that format.
 # Every entry names the issue that removes it. Delete the entry when that issue lands.
+# An acceptance is temporary by construction: give it an expiry ("until YYYY-MM-DD")
+# and re-review it when the date passes -- an entry with no removal issue and no
+# expiry is a finding nobody is tracking.
 
 # vllm 0.11.0: CRITICAL, fixed in 0.14.1 / 0.22.0. vllm is pinned exactly to match torch
 # 2.8.0, trl 0.26.2 and the Mamba2 kernel cache; the upgrade is #676.
@@ -12,8 +15,12 @@
 PYSEC-2026-565
 GHSA-4r2x-xpjr-7cvv
 CVE-2026-22778
-# Auth bypass of vLLM's OpenAI API server AuthenticationMiddleware. Not reachable: that
-# server is not run; run_vllm_serve.py wraps trl.scripts.vllm_serve.
+# Auth bypass of vLLM's OpenAI API server AuthenticationMiddleware. Accepted: the
+# rollout server (student-rollout-generator, via run_vllm_serve.py wrapping
+# trl.scripts.vllm_serve) does run this server, but it binds the allocation's own
+# address (--host "$ADDR", not every interface) and its generate/weight-update
+# endpoints are used only by the trainer inside the same allocation; no credentials
+# exist to bypass. Revisit if the server is ever reachable outside the allocation.
 PYSEC-2026-226
 GHSA-94f4-hr76-p5j6
 CVE-2026-48746

@@ -25,7 +25,9 @@ Prints one line per finding at HIGH or above (package, version, CVSS, the lowest
 version that fixes it, advisory ids), and exits 1 when a finding at the given
 severity or above has a fixed version. Severity is the group's max CVSS score:
 CRITICAL >= 9.0, HIGH >= 7.0, MEDIUM >= 4.0, LOW > 0. A finding with no CVSS score
-counts as unknown and never fails the gate (it is still printed).
+FAILS CLOSED when it has a fixed version (an unscored advisory is not a mild one
+-- it is an unmeasured one); it is printed as UNKNOWN and never fails when no fix
+exists or it is ignored.
 
 --ignore names a file of accepted advisory ids, one per line, `#` comments (the
 .trivyignore format, so trivy reads the same file). A finding is IGNORED when any of
@@ -125,7 +127,7 @@ def main():
     failing = [
         f
         for f in findings
-        if f[0] is not None and f[0] >= THRESHOLDS[gate] and f[3] and not f[5]
+        if (f[0] is None or f[0] >= THRESHOLDS[gate]) and f[3] and not f[5]
     ]
     ignored = [f for f in findings if f[5]]
     used = set().union(*(f[5] for f in findings)) if findings else set()

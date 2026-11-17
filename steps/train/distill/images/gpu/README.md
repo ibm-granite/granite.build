@@ -11,6 +11,18 @@ See `Dockerfile`'s own header for why this is ONE image rather than one per
 step — checked directly against the real `uv.lock` files in
 `github.com/laminair/gb-steps-distillation`, not assumed.
 
+## Library skew against the CPU image
+
+The two images deliberately carry different versions of the shared libraries
+(transformers 5.8.0 / torch 2.8.0 here, 5.20.2 / 2.14.1 in `../cpu`): each was
+pinned for its own workload, and re-aligning them means re-validating the
+Mamba2 kernel cache and vLLM pins this image was built around. The skew was
+end-to-end tested where it crosses: `tokenizer-align` runs on the CPU image and
+writes the tokenizer artifacts (`tokenizer.json`, the retagged identity) that
+this image's trainer and server then read — the full pipeline, including that
+hand-off, ran green on the smoke build. Re-pin both together or note the new
+skew's test here.
+
 ## Building and publishing
 
 Both images build from [`steps/train/distill/Makefile`](../../Makefile). The build

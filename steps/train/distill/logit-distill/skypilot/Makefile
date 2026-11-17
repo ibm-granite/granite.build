@@ -1,4 +1,4 @@
-# distill-gold step for the SkyPilot environment (LSF and SLURM subtypes).
+# logit-distill step for the SkyPilot environment (LSF and SLURM subtypes).
 #
 # GOLD knowledge distillation. No Dockerfile here: common.mk auto-detects a
 # non-image step and the image / publish-image targets are no-ops. Runs in
