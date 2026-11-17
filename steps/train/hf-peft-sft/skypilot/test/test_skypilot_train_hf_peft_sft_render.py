@@ -7,7 +7,6 @@ rendered blocks then run with the /opt/hf-peft-sft scripts swapped for argv
 printers. Mode 1 only.
 """
 
-import importlib.util
 import pathlib
 import re
 import subprocess
@@ -15,6 +14,7 @@ import subprocess
 import hf_peft_sft_train as train
 import pytest
 import yaml
+from libgbtest.step_templates import expanded_step_template
 
 from gbserver.environment.skypilot import validate_launch_num_nodes
 from gbserver.types.stepconfig import StepEnvironmentTypeConfig
@@ -23,19 +23,8 @@ from gbserver.utils.template import fill_template
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
 _SOURCE = (_STEP_DIR / "step-template.yaml").read_text()
 _VALIDATE = (_STEP_DIR / "macros" / "validate.j2").read_text()
-
-
-def _expanded_template() -> dict:
-    """The template as `make space` renders it: gb-include lines expanded."""
-    script = _STEP_DIR.parents[2] / "scripts" / "render_step_template.py"
-    spec = importlib.util.spec_from_file_location("render_step_template", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return yaml.safe_load(module.expand(_STEP_DIR / "step-template.yaml"))
-
-
-_TEMPLATE = _expanded_template()
+# As `make space` renders it: gb-include lines expanded.
+_TEMPLATE = expanded_step_template(_STEP_DIR / "step-template.yaml")
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
     "config"
 ]

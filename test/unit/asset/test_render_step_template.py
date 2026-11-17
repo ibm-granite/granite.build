@@ -20,7 +20,6 @@ replaced by the file it names, each line indented like the marker; then the lite
 ${IMAGE_REF} is substituted exactly as the sed it replaced did.
 """
 
-import importlib.util
 import os
 import pathlib
 import shutil
@@ -28,24 +27,17 @@ import subprocess
 import sys
 
 import pytest
+from libgbtest.step_templates import RENDER_STEP_TEMPLATE, render_step_template
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-SCRIPT = REPO_ROOT / "steps" / "scripts" / "render_step_template.py"
+SCRIPT = RENDER_STEP_TEMPLATE
 
 # The sed render common.mk used before this script, with the ref and template
 # passed in the environment.
 _OLD_SED = r"""ref=$(printf '%s' "$REF" | sed 's/[#&\\]/\\&/g'); sed "s#\${IMAGE_REF}#$ref#g" "$T" """
 
 
-def _load():
-    spec = importlib.util.spec_from_file_location("render_step_template", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-rst = _load()
+rst = render_step_template()
 
 
 @pytest.fixture

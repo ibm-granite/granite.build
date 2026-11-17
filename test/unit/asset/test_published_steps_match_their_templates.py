@@ -33,22 +33,17 @@ directory (after deciding which side is actually correct -- the answer is not al
 the template, and in the vllm-server case it was not).
 """
 
-import importlib.util
 import pathlib
 import re
 
 import pytest
+from libgbtest.step_templates import render_step_template as _load_renderer
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 STEPS_DIR = REPO_ROOT / "steps"
 ASSETS_DIR = REPO_ROOT / "configurations" / "assets" / "environments"
 
-_spec = importlib.util.spec_from_file_location(
-    "render_step_template", REPO_ROOT / "steps" / "scripts" / "render_step_template.py"
-)
-assert _spec is not None and _spec.loader is not None
-render_step_template = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(render_step_template)
+render_step_template = _load_renderer()
 
 # check-published: sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' | head -1
 _IMAGE_REF = re.compile(r'image_id: *"docker:(.*)"')

@@ -7,12 +7,12 @@ the template's step-creation validation accepts, so a fixture cannot drift from
 the step without a fast failure. Multi-target fixtures are checked per target.
 """
 
-import importlib.util
 import re
 from pathlib import Path
 
 import pytest
 import yaml
+from libgbtest.step_templates import expanded_step_template
 
 from gbserver.utils.template import fill_objtemplate, fill_template
 
@@ -28,16 +28,6 @@ _OWNED = frozenset(
         r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _VALIDATE_TEXT)[0]
     )
 )
-
-
-def _expanded_template() -> dict:
-    """The template as `make space` renders it: gb-include lines expanded."""
-    script = _HERE.parents[3] / "scripts" / "render_step_template.py"
-    spec = importlib.util.spec_from_file_location("render_step_template", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return yaml.safe_load(module.expand(_HERE.parent / "step-template.yaml"))
 
 
 _CHAT = ("dataset_conversation_field", "instruction_template", "response_template")
@@ -207,9 +197,10 @@ def test_every_referenced_param_is_defined():
     assert not missing, sorted(missing)
 
 
-_LAUNCHER = _expanded_template()["environment_configs"]["Skypilot"]["launchers"][
-    "fms_hf_tuning"
-]["config"]
+# As `make space` renders it: gb-include lines expanded.
+_LAUNCHER = expanded_step_template(_HERE.parent / "step-template.yaml")[
+    "environment_configs"
+]["Skypilot"]["launchers"]["fms_hf_tuning"]["config"]
 _COMPUTE_DEFAULT = yaml.safe_load(_TEMPLATE_TEXT)["config"]["compute_config"]
 
 

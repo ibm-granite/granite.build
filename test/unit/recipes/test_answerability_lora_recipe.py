@@ -11,7 +11,6 @@ rendered the way the command step renders it and run on a small parquet with
 the schema of the HF source (pre-tokenized columns next to prompt/completion).
 """
 
-import importlib.util
 import pathlib
 import subprocess
 
@@ -19,6 +18,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import yaml
+from libgbtest.step_templates import expanded_step_template
 
 from gbcli.services.service_build import get_params_from_file
 from gbcli.utils.buildutil import apply_parameters
@@ -34,19 +34,8 @@ _RECIPE = (
     / "answerability-lora"
 )
 _STEP = _REPO / "steps" / "train" / "hf-peft-sft" / "skypilot"
-
-
-def _expanded_template() -> dict:
-    """The template as `make space` renders it: gb-include lines expanded."""
-    script = _REPO / "steps" / "scripts" / "render_step_template.py"
-    spec = importlib.util.spec_from_file_location("render_step_template", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return yaml.safe_load(module.expand(_STEP / "step-template.yaml"))
-
-
-_TEMPLATE = _expanded_template()
+# As `make space` renders it: gb-include lines expanded.
+_TEMPLATE = expanded_step_template(_STEP / "step-template.yaml")
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
     "config"
 ]
