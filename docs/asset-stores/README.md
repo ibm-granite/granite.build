@@ -119,6 +119,16 @@ For a COS / S3 store:
   uses `http://gb-s3:9000` for the cluster and `http://localhost:9000` for gbserver.
 - **`cos_bucket_name` (optional) replaces the URI's bucket.**
 
+On SkyPilot, a COS / S3 store's pull config (`assetstores[].pull[].config` in
+`environment.yaml`) also accepts:
+
+- **`cache_path`:** where pulled inputs are cached. Defaults to `{shared_workdir}/cos_cache`.
+- **`cache_max_age_days`:** evict cached inputs downloaded more than this many days ago. Default
+  30; 0 disables. Inputs held by a live reader lease are never evicted.
+- **`lease_max_age_days`:** treat reader leases older than this many days as dead. Default 0: a
+  lease lasts until its build's workdir is removed.
+- **`step_uri`:** overrides the builtin `s3pull` step.
+
 ### Multiple S3/COS endpoints
 
 To use several endpoints in one environment, give each endpoint its own `store.yaml` with a

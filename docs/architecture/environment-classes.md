@@ -386,7 +386,7 @@ main step through `shared_workdir`. See [SkyPilot](../environments/skypilot.md) 
 |--------|-----------|----------|
 | `pullasset_hfstore` | HuggingFace | Injects an `hfpull` step (or, with `inline: true`, downloads in the main step's setup) |
 | `pushasset_hfstore` | HuggingFace | Injects an `hfpush` step |
-| `pullasset_cosstore` | S3 / COS | Injects an `s3pull` step (AWS CLI) bound at `<cache>/<uri hash>`, a locked, versioned cache shared across builds |
+| `pullasset_cosstore` | S3 / COS | Injects an `s3pull` step (AWS CLI) bound at `<cache>/<uri hash>`, a locked, versioned cache shared across builds; each consuming target run takes a reader lease (`_caches_pulled_binding` is off for s3/cos, so every target pulls), and entries downloaded more than `cache_max_age_days` ago are evicted under their lock unless leased |
 | `pushasset_cosstore` | S3 / COS | Injects an `s3push` step (file → exact key, directory → prefix sync) |
 
 For S3 / COS, the endpoint, region and credential secret names come from the dispatched store

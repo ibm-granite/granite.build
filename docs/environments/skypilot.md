@@ -81,6 +81,10 @@ assetstores:
         config:
           cache_path: /shared/cos_cache  # Optional. Defaults to {shared_workdir}/cos_cache when set,
                                          # else ~/.cache/gbserver/cos on the worker.
+          cache_max_age_days: 30         # Optional. Evict cached inputs downloaded more than this
+                                         # many days ago (default 30; 0 disables).
+          lease_max_age_days: 0          # Optional. Treat reader leases older than this as dead
+                                         # (default 0: a lease lasts as long as its build).
     push:
       - mode: default
 ```
@@ -93,9 +97,30 @@ assetstores:
 >   never see each other's partial writes. A dead holder's lock is reclaimed after its TTL.
 > - **Readers always see a complete version.** The binding is a symlink that is swapped
 >   atomically to a fresh version, so objects deleted upstream disappear on the next pull.
-> - **One old version is kept.** The previous version stays for readers that resolved the old
->   path, and older ones are removed. A push copies a
-> file to the exact object key, or syncs a directory under the URI as a prefix. The endpoint,
+> - **Readers hold leases.** Each pull, under the lock, records a lease for its target run in
+>   `<cache>/.<hash>.leases/<targetrun id>`, naming the run's workdir and the version it reads.
+>   Every target that reads an input runs its own `s3pull`; the repeat pull is cheap, because
+>   unchanged data is kept or hard-linked. A lease is live while the run's workdir exists, and
+>   gbserver removes that directory when the build ends.
+> - **Old versions are pruned unless leased.** A pull keeps the live version, the one it
+>   replaced, and every version a live lease pins, and removes the rest.
+> - **Old inputs are evicted unless leased.** After each pull, `s3pull` deletes cache entries
+>   whose data was downloaded more than `cache_max_age_days` ago (default 30; 0 disables) and
+>   that no live lease holds. It takes each entry's lock without waiting and skips entries being
+>   pulled. Only names that are URI hashes are considered, so other content of a `cache_path` is
+>   left alone. An unchanged single object older than `cache_max_age_days` is downloaded again
+>   rather than reused.
+> - **Crashed builds keep their leases.** A build that dies before teardown leaves its workdir,
+>   so its lease stays live and the input it pins is never deleted. Skips are logged with the
+>   holding target runs.
+>   - `scripts/s3/s3pull-leases.sh list --cache <cache>` shows each lease and whether it's live.
+>   - `release --cache <cache> <targetrun id>` drops the leases of a run you know is dead.
+>     Deleting that run's workdir does the same.
+>   - `lease_max_age_days` can expire leases automatically instead.
+> - **Leases need a shared workdir.** Without `shared_workdir`, a run has no lifetime to tie a
+>   lease to, so none is taken.
+>
+> A push copies a file to the exact object key, or syncs a directory under the URI as a prefix. The endpoint,
 > region and credential secret names come from the matched store's `store.yaml`. Credentials
 > resolve the way hf's `token_secretname` does: space secrets first, then the same-named env var.
 > They reach the step as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. One environment can

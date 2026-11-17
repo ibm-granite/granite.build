@@ -226,6 +226,14 @@ GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live \
   pytest -m extended test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_s3.py
 ```
 
+To see or release the reader leases that `s3pull` keeps in the cluster's cache, run the lease
+script inside a cluster container, where `/shared` is mounted:
+
+```bash
+docker exec -i slurm-c1 bash -s -- list --cache /shared/cos_cache < scripts/s3/s3pull-leases.sh
+docker exec -i slurm-c1 bash -s -- release --cache /shared/cos_cache <targetrun_id> < scripts/s3/s3pull-leases.sh
+```
+
 The test also takes the endpoint (`cos_gbserver_endpoint`) and the bucket (`cos_bucket_name`)
 from the same store.yaml.
 

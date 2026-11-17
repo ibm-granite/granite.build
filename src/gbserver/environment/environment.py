@@ -1607,6 +1607,19 @@ class Environment(ABC):
         """
         return not uristr.startswith("env://")
 
+    def _caches_pulled_binding(self: Self, uristr: str) -> bool:
+        """Whether :meth:`pullasset` caches (and reuses) the pulled binding of *uristr*.
+
+        A cached pull is handed to later consumers on this instance without
+        pulling again. An environment whose pull does per-consumer work (e.g.
+        Skypilot's s3pull takes a reader lease for the consuming target run)
+        overrides this to opt out. Defaults to :meth:`_is_cached_uri`.
+
+        :param uristr: the URI being pulled.
+        :returns: whether the binding is cached.
+        """
+        return Environment._is_cached_uri(uristr)
+
     def _caches_pushed_binding(self: Self, uristr: str, binding: Any) -> bool:
         """Whether :meth:`pushasset` caches the producer *binding* of *uristr*.
 
@@ -1632,7 +1645,7 @@ class Environment(ABC):
             Tuple[Dict, Optional[BuildTargetStepConfig]]
         ):
             uristr = URI.get_uristr(uri)
-            if Environment._is_cached_uri(uristr) and uristr in self.asset_bindings:
+            if self._caches_pulled_binding(uristr) and uristr in self.asset_bindings:
                 return self.asset_bindings[uristr], None
             await Environment._thread_local.asset_events[uristr].wait()
             assetstore, assetstoreenv_config = self._get_storeconfig(
@@ -1666,7 +1679,7 @@ class Environment(ABC):
                     assetstore=assetstore,
                     secrets=assetstore.get_secrets(),
                 )
-                if Environment._is_cached_uri(uristr):
+                if self._caches_pulled_binding(uristr):
                     self.asset_bindings[uristr] = local_binding
                 return local_binding, targetrun_config
             except Exception as e:

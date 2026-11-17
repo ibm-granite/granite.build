@@ -1559,6 +1559,7 @@ from gbserver.environment._skypilot_cos import (
     DEFAULT_S3PUSH_STEP_URI,
     build_s3_step_config,
     resolve_step_uri,
+    store_nonneg_int,
 )
 from gbserver.environment._skypilot_metadata import (
     apply_slurm_comment_override,
@@ -5830,6 +5831,21 @@ class Skypilot(Environment):
             },
         )
 
+    def _caches_pulled_binding(self: Self, uristr: str) -> bool:
+        """Never reuse a pulled s3:// / cos:// binding across consumers.
+
+        Each consuming target run queues its own s3pull, which takes that run's
+        reader lease on the cache entry (so pruning and eviction can't delete
+        what it reads). The repeat pull is cheap: an unchanged object is kept and
+        unchanged prefix files are hard-linked. Other URIs keep the base caching.
+
+        :param uristr: the URI being pulled.
+        :returns: False for S3/COS URIs, else the base behaviour.
+        """
+        if uristr.startswith(("s3://", "cos://")):
+            return False
+        return super()._caches_pulled_binding(uristr)
+
     async def pullasset_cosstore(
         self: Self,
         uri: Optional[URI] = None,
@@ -5850,18 +5866,22 @@ class Skypilot(Environment):
         across builds: the s3pull step serializes pulls of a URI with a lock and
         points the binding (a symlink) at a fresh, complete version, so objects
         deleted upstream disappear and concurrent pulls never see each other's
-        partial writes (see builtins/steps/skypilot/s3pull/step.yaml).
+        partial writes. Entries downloaded more than ``cache_max_age_days`` ago
+        (storeload config; default 30, 0 disables) are evicted by later pulls
+        under their own lock, unless a target run that may still read them holds
+        a reader lease (see builtins/steps/skypilot/s3pull/step.yaml).
 
         :param uri: the ``s3://`` / ``cos://`` URI to pull.
         :param binding: unused (the binding is derived from the cache path).
         :param storeload_config: the store's pull config (``cache_path``,
-            ``step_uri`` override).
+            ``cache_max_age_days``, ``lease_max_age_days``, ``step_uri`` override).
         :param assetstore: the dispatched Cosstore.
         :param secrets: unused; credentials are resolved by the store
             (``Cosstore.resolve_credentials``, as hf's ``resolve_token``).
         :returns: ``(binding_config, BuildTargetStepConfig)`` for the s3pull step.
         :raises AssertionError: if ``assetstore``/``uri`` are not Cosstore/CosURI.
-        :raises ValueError: for a bad endpoint or missing credential secrets.
+        :raises ValueError: for a bad endpoint, missing credential secrets or an
+            invalid ``cache_max_age_days`` / ``lease_max_age_days``.
         """
         from gbcommon.uri.cos import CosURI
         from gbserver.asset.cosstore import Cosstore
@@ -5879,7 +5899,14 @@ class Skypilot(Environment):
         )
         binding_path = str(Path(cache_dir) / cosuri.hash())
         step_uri = resolve_step_uri(storeload_config, DEFAULT_S3PULL_STEP_URI)
-        step_config = build_s3_step_config("s3pull", cosuri, assetstore, binding_path)
+        step_config = build_s3_step_config(
+            "s3pull",
+            cosuri,
+            assetstore,
+            binding_path,
+            cache_max_age_days=store_nonneg_int(storeload_config, "cache_max_age_days"),
+            lease_max_age_days=store_nonneg_int(storeload_config, "lease_max_age_days"),
+        )
         logger.info(
             "pullasset_cosstore: queuing s3pull step_uri=%s s3=%s dest=%s endpoint=%s",
             step_uri,

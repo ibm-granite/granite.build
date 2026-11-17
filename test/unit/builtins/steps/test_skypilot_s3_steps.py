@@ -11,6 +11,7 @@ or a cluster.
 import os
 import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -22,7 +23,7 @@ from gbserver.utils.template import fill_template
 STEPS = Path("src/gbserver/builtins/steps/skypilot")
 
 # Records each invocation and fakes downloads into a local destination:
-# - head-object succeeds only when STUB_HEAD_RC=0;
+# - head-object succeeds only when STUB_HEAD_RC=0, printing ETag STUB_ETAG;
 # - a download sync writes the objects named in STUB_FILES (default "f") with
 #   content STUB_CONTENT, each via a temp file + rename like the real CLI (so a
 #   hard-linked previous version is never modified); --delete removes files not
@@ -32,7 +33,10 @@ STUB_AWS = """#!/usr/bin/env bash
 echo "$*" >> "${STUB_LOG}"
 last="${!#}"
 case " $* " in
-  *" s3api head-object "*) exit "${STUB_HEAD_RC:-1}" ;;
+  *" s3api head-object "*)
+    [[ "${STUB_HEAD_RC:-1}" == 0 ]] || exit 1
+    echo "{\\"ETag\\": \\"${STUB_ETAG:-e1}\\", \\"ContentLength\\": 5, \\"LastModified\\": \\"2026-01-01T00:00:00+00:00\\"}"
+    exit 0 ;;
   *" s3 cp "*) [[ "${last}" == s3://* ]] || { mkdir -p "$(dirname "${last}")"; echo d > "${last}"; } ;;
   *" s3 sync "*)
     [[ "${last}" == s3://* ]] && exit 0
@@ -71,6 +75,7 @@ def _prepare(
     local_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
     creds: bool = True,
+    step_config: Optional[Dict] = None,
 ) -> Tuple[str, Dict[str, str]]:
     """Render a step's run script and build its env, with the stub aws on PATH.
 
@@ -80,6 +85,7 @@ def _prepare(
     :param local_path: the configured local_path.
     :param extra_env: additional env vars for the script.
     :param creds: whether to set the (dummy) AWS credential env vars.
+    :param step_config: extra ``<kind>_config`` keys (e.g. cache_max_age_days).
     :returns: ``(script, env)``.
     """
     bindir = tmp_path / "bin"
@@ -95,6 +101,7 @@ def _prepare(
             "local_path": str(local_path),
             "endpoint_url": "http://gb-s3:9000",
             "region": "us-east-1",
+            **(step_config or {}),
         }
     }
     script = fill_template(_launcher(kind)["run"], {"config": config}, strict=True)
@@ -112,6 +119,7 @@ def _run(
     local_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
     creds: bool = True,
+    step_config: Optional[Dict] = None,
 ) -> subprocess.CompletedProcess:
     """Render and execute a step's run script against the stub aws.
 
@@ -119,7 +127,9 @@ def _run(
 
     :returns: the completed process (stdout/stderr captured).
     """
-    script, env = _prepare(tmp_path, kind, s3_uri, local_path, extra_env, creds)
+    script, env = _prepare(
+        tmp_path, kind, s3_uri, local_path, extra_env, creds, step_config
+    )
     return subprocess.run(
         ["bash", "-c", script], env=env, capture_output=True, text=True, check=False
     )
@@ -128,7 +138,7 @@ def _run(
 def _versions(dest: Path) -> list:
     """The version directories behind an s3pull cache entry ``dest``."""
     root = dest.parent / f".{dest.name}.versions"
-    return sorted(v.name for v in root.iterdir()) if root.exists() else []
+    return sorted(v.name for v in root.iterdir() if v.is_dir()) if root.exists() else []
 
 
 def _log(tmp_path: Path) -> str:
@@ -294,6 +304,35 @@ class TestS3PullSharedCache:
         assert dest.is_symlink()
         assert sorted(f.name for f in dest.iterdir()) == ["new"]
 
+    def test_unchanged_object_is_not_downloaded_again(self, tmp_path):
+        """A re-pull of an object with the same signature keeps the live copy."""
+        dest = tmp_path / "cache" / "h"
+        env = {"STUB_HEAD_RC": "0", "STUB_ETAG": "e1"}
+        for _ in range(2):
+            result = _run(tmp_path, "s3pull", "s3://b/dir/model.bin", dest, env)
+            assert result.returncode == 0, result.stderr
+        assert "is unchanged; keeping the cached copy" in result.stdout
+        assert _log(tmp_path).count(" s3 cp ") == 1
+        assert (dest / "model.bin").exists()
+        assert len(_versions(dest)) == 1
+        assert not (dest.parent / ".h.lock").exists()
+
+    def test_changed_object_is_downloaded_again(self, tmp_path):
+        """A different ETag means a new download and a new live version."""
+        dest = tmp_path / "cache" / "h"
+        for etag in ("e1", "e2"):
+            result = _run(
+                tmp_path,
+                "s3pull",
+                "s3://b/dir/model.bin",
+                dest,
+                {"STUB_HEAD_RC": "0", "STUB_ETAG": etag},
+            )
+            assert result.returncode == 0, result.stderr
+        assert _log(tmp_path).count(" s3 cp ") == 2
+        sig = dest.parent / ".h.versions" / f"{dest.resolve().name}.sig"
+        assert sig.read_text().startswith("e2|")
+
     def test_failed_pull_keeps_the_live_version(self, tmp_path):
         """An empty re-pull fails without touching the live version."""
         dest = tmp_path / "cache" / "h"
@@ -304,6 +343,265 @@ class TestS3PullSharedCache:
         assert (dest / "a").exists()
         assert _versions(dest) == before
         assert not (dest.parent / ".h.lock").exists()
+
+
+DAY = 86400
+OLD = int(time.time()) - 40 * DAY  # older than the 30-day default
+FRESH = int(time.time()) - 1 * DAY
+
+
+def _fake_entry(cache: Path, name: str, epoch: int, sig: Optional[str] = None) -> Path:
+    """Create a versioned cache entry ``name`` whose live version was built at ``epoch``.
+
+    :param cache: the cache directory.
+    :param name: the entry name (a 64-hex URI hash for eviction candidates).
+    :param epoch: the epoch encoded in the live version's name.
+    :param sig: optional object signature to record for that version.
+    :returns: the entry's symlink path.
+    """
+    version = f"v{epoch}-1-1"
+    root = cache / f".{name}.versions"
+    (root / version).mkdir(parents=True)
+    (root / version / "model.bin").write_text("cached")
+    if sig is not None:
+        (root / f"{version}.sig").write_text(sig + "\n")
+    entry = cache / name
+    entry.symlink_to(f".{name}.versions/{version}")
+    return entry
+
+
+class TestS3PullEviction:
+    """After a pull, entries downloaded more than cache_max_age_days ago are
+    removed under their own lock; only URI-hash names are considered."""
+
+    def test_old_entries_are_evicted_and_fresh_ones_kept(self, tmp_path):
+        cache = tmp_path / "cache"
+        old = _fake_entry(cache, "a" * 64, OLD)
+        fresh = _fake_entry(cache, "b" * 64, FRESH)
+        result = _run(tmp_path, "s3pull", "s3://b/dir", cache / "h")
+        assert result.returncode == 0, result.stderr
+        assert not old.is_symlink()
+        assert not (cache / f".{'a' * 64}.versions").exists()
+        assert fresh.is_symlink() and (fresh / "model.bin").exists()
+        assert f"evicted cache entry {'a' * 64}" in result.stdout
+        assert not (cache / f".{'a' * 64}.lock").exists()
+
+    def test_locked_old_entry_is_skipped(self, tmp_path):
+        """An entry being pulled (its lock held) is left alone, lock included."""
+        cache = tmp_path / "cache"
+        old = _fake_entry(cache, "a" * 64, OLD)
+        lock = cache / f".{'a' * 64}.lock"
+        lock.mkdir()
+        (lock / "owner").write_text("host:other|pid:2")
+        result = _run(tmp_path, "s3pull", "s3://b/dir", cache / "h")
+        assert result.returncode == 0, result.stderr
+        assert old.is_symlink()
+        assert (lock / "owner").read_text() == "host:other|pid:2"
+        assert "it is locked" in result.stdout
+
+    def test_only_uri_hash_names_are_considered(self, tmp_path):
+        """Other content of a user-supplied cache_path is never touched."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        keep = [cache / "notes", cache / ("a" * 63), cache / "README"]
+        keep[0].mkdir()
+        keep[1].mkdir()
+        keep[2].write_text("x")
+        for path in keep:
+            os.utime(path, (OLD, OLD))
+        result = _run(tmp_path, "s3pull", "s3://b/dir", cache / "h")
+        assert result.returncode == 0, result.stderr
+        assert all(path.exists() for path in keep)
+
+    def test_old_legacy_dir_and_orphaned_versions_are_evicted(self, tmp_path):
+        cache = tmp_path / "cache"
+        legacy = cache / ("c" * 64)
+        legacy.mkdir(parents=True)
+        (legacy / "data").write_text("x")
+        os.utime(legacy, (OLD, OLD))
+        orphan = cache / f".{'d' * 64}.versions"
+        (orphan / "v1-1-1").mkdir(parents=True)
+        os.utime(orphan, (OLD, OLD))
+        result = _run(tmp_path, "s3pull", "s3://b/dir", cache / "h")
+        assert result.returncode == 0, result.stderr
+        assert not legacy.exists()
+        assert not orphan.exists()
+
+    def test_zero_disables_eviction(self, tmp_path):
+        cache = tmp_path / "cache"
+        old = _fake_entry(cache, "a" * 64, OLD)
+        result = _run(
+            tmp_path,
+            "s3pull",
+            "s3://b/dir",
+            cache / "h",
+            step_config={"cache_max_age_days": 0},
+        )
+        assert result.returncode == 0, result.stderr
+        assert old.is_symlink()
+
+    def test_configured_age_applies(self, tmp_path):
+        """A shorter cache_max_age_days evicts a younger entry."""
+        cache = tmp_path / "cache"
+        aged = _fake_entry(cache, "a" * 64, int(time.time()) - 3 * DAY)
+        result = _run(
+            tmp_path,
+            "s3pull",
+            "s3://b/dir",
+            cache / "h",
+            step_config={"cache_max_age_days": 2},
+        )
+        assert result.returncode == 0, result.stderr
+        assert not aged.is_symlink()
+
+    @pytest.mark.parametrize("epoch,downloads", [(OLD, 1), (FRESH, 0)])
+    def test_unchanged_object_is_reused_only_while_young(
+        self, tmp_path, epoch, downloads
+    ):
+        """An unchanged object older than the max age is downloaded again."""
+        cache = tmp_path / "cache"
+        sig = "e1|5|2026-01-01T00:00:00+00:00"
+        dest = _fake_entry(cache, "h", epoch, sig=sig)
+        result = _run(
+            tmp_path,
+            "s3pull",
+            "s3://b/dir/model.bin",
+            dest,
+            {"STUB_HEAD_RC": "0", "STUB_ETAG": "e1"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert _log(tmp_path).count(" s3 cp ") == downloads
+        assert (dest / "model.bin").exists()
+
+    def test_own_entry_is_never_evicted(self, tmp_path):
+        """A hash-named destination survives its own pull's sweep."""
+        cache = tmp_path / "cache"
+        dest = _fake_entry(cache, "e" * 64, OLD)
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest)
+        assert result.returncode == 0, result.stderr
+        assert dest.is_symlink() and (dest / "f").exists()
+
+
+def _lease_env(run_dir: Path, run_id: str) -> Dict[str, str]:
+    """Env making a pull lease for target run ``run_id`` (its workdir exists)."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return {"GB_BUILD_WORKDIR": str(run_dir), "GB_TARGETRUN_ID": run_id}
+
+
+def _write_lease(
+    cache: Path,
+    name: str,
+    run_id: str,
+    run_dir: str,
+    version: str,
+    created: Optional[int] = None,
+) -> Path:
+    """Write a lease file for entry ``name`` as s3pull would."""
+    leases = cache / f".{name}.leases"
+    leases.mkdir(parents=True, exist_ok=True)
+    lease = leases / run_id
+    lease.write_text(f"{run_dir}\n{version}\n{created or int(time.time())}\n")
+    return lease
+
+
+class TestS3PullLeases:
+    """A pull leases the live version for its target run; pruning and eviction
+    never delete a version or entry a live lease (run dir present) holds."""
+
+    def test_pull_leases_the_live_version(self, tmp_path):
+        dest = tmp_path / "cache" / "h"
+        run = tmp_path / "builds" / "b1" / "runs" / "tr1"
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest, _lease_env(run, "tr1"))
+        assert result.returncode == 0, result.stderr
+        lines = (dest.parent / ".h.leases" / "tr1").read_text().splitlines()
+        assert lines[0] == str(run)
+        assert lines[1] == dest.resolve().name
+
+    def test_repeat_pull_by_the_same_run_repins(self, tmp_path):
+        dest = tmp_path / "cache" / "h"
+        env = _lease_env(tmp_path / "runs" / "tr1", "tr1")
+        for _ in range(2):
+            assert _run(tmp_path, "s3pull", "s3://b/dir", dest, env).returncode == 0
+        lease = dest.parent / ".h.leases" / "tr1"
+        assert lease.read_text().splitlines()[1] == dest.resolve().name
+        assert len(list(lease.parent.iterdir())) == 1
+
+    def test_prune_keeps_leased_versions_until_the_run_ends(self, tmp_path):
+        """Run A's version survives later pulls by run B while A's dir exists."""
+        dest = tmp_path / "cache" / "h"
+        run_a = tmp_path / "runs" / "trA"
+        _run(tmp_path, "s3pull", "s3://b/dir", dest, _lease_env(run_a, "trA"))
+        a_version = dest.resolve().name
+        env_b = _lease_env(tmp_path / "runs" / "trB", "trB")
+        for _ in range(2):
+            result = _run(tmp_path, "s3pull", "s3://b/dir", dest, env_b)
+            assert result.returncode == 0, result.stderr
+        assert a_version in _versions(dest)
+        assert "it is leased" in result.stdout
+        # Run A's build ended: its dir is gone, so its lease and version go too.
+        run_a.rmdir()
+        _run(tmp_path, "s3pull", "s3://b/dir", dest, env_b)
+        assert a_version not in _versions(dest)
+        assert not (dest.parent / ".h.leases" / "trA").exists()
+
+    def test_eviction_skips_an_entry_with_a_live_lease(self, tmp_path):
+        cache = tmp_path / "cache"
+        old = _fake_entry(cache, "a" * 64, OLD)
+        run = tmp_path / "runs" / "trX"
+        run.mkdir(parents=True)
+        lease = _write_lease(cache, "a" * 64, "trX", str(run), old.resolve().name)
+        result = _run(tmp_path, "s3pull", "s3://b/dir", cache / "h")
+        assert result.returncode == 0, result.stderr
+        assert old.is_symlink()
+        assert lease.exists()
+        assert "leased by" in result.stdout and "trX" in result.stdout
+
+    def test_a_dead_lease_does_not_protect_and_is_removed(self, tmp_path):
+        cache = tmp_path / "cache"
+        old = _fake_entry(cache, "a" * 64, OLD)
+        _write_lease(cache, "a" * 64, "trGone", str(tmp_path / "gone"), "x")
+        result = _run(tmp_path, "s3pull", "s3://b/dir", cache / "h")
+        assert result.returncode == 0, result.stderr
+        assert not old.is_symlink()
+        assert not (cache / f".{'a' * 64}.leases").exists()
+
+    @pytest.mark.parametrize("max_age,evicted", [(7, True), (0, False)])
+    def test_lease_max_age_days(self, tmp_path, max_age, evicted):
+        """An old lease expires only when lease_max_age_days is set."""
+        cache = tmp_path / "cache"
+        old = _fake_entry(cache, "a" * 64, OLD)
+        run = tmp_path / "runs" / "trX"
+        run.mkdir(parents=True)
+        _write_lease(cache, "a" * 64, "trX", str(run), "x", created=OLD)
+        result = _run(
+            tmp_path,
+            "s3pull",
+            "s3://b/dir",
+            cache / "h",
+            step_config={"lease_max_age_days": max_age},
+        )
+        assert result.returncode == 0, result.stderr
+        assert old.is_symlink() is not evicted
+
+    def test_unknown_run_dir_lease_counts_as_live(self, tmp_path):
+        cache = tmp_path / "cache"
+        old = _fake_entry(cache, "a" * 64, OLD)
+        _write_lease(cache, "a" * 64, "trX", "-", "x")
+        assert _run(tmp_path, "s3pull", "s3://b/dir", cache / "h").returncode == 0
+        assert old.is_symlink()
+
+    def test_no_lease_without_a_run_dir_or_when_mocked(self, tmp_path):
+        dest = tmp_path / "cache" / "h"
+        result = _run(tmp_path, "s3pull", "s3://b/dir", dest)
+        assert "no reader lease taken" in result.stdout
+        assert not (dest.parent / ".h.leases").exists()
+        mocked = tmp_path / "cache" / "m"
+        env = {**_lease_env(tmp_path / "runs" / "tr1", "tr1"), "GBTEST_MOCK_COS": "1"}
+        assert (
+            _run(tmp_path, "s3pull", "s3://b/k", mocked, env, creds=False).returncode
+            == 0
+        )
+        assert not (mocked.parent / ".m.leases").exists()
 
 
 class TestS3PushScript:

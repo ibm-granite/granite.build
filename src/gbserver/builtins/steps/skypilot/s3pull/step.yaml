@@ -14,7 +14,23 @@ type: upload
 # upstream disappear and unchanged ones aren't re-downloaded), then swaps the
 # symlink atomically: a reader sees the old or the new version, never a
 # half-written one. The previous version is kept for readers that resolved the
-# old path; older ones are removed. Credentials arrive as
+# old path; older ones are removed. For a single object, each version records
+# the object's ETag/size/LastModified in <version>.sig; a re-pull of an
+# unchanged object keeps the live version (no download, no swap) unless it is
+# older than cache_max_age_days.
+#
+# Leases: under the lock, each pull records that its target run reads the live
+# version, in .<name>.leases/<GB_TARGETRUN_ID> (run dir, pinned version, time).
+# A lease is live while its run dir ($GB_BUILD_WORKDIR, removed at build end)
+# exists -- so a crashed build's lease stays live -- unless lease_max_age_days
+# (default 0 = never) has passed. Pruning keeps every leased version, and
+# eviction skips any entry with a live lease. Dead leases are removed by
+# whichever finds them. scripts/s3/s3pull-leases.sh lists and releases leases.
+#
+# Eviction: after each pull, entries of this cache (names that are URI hashes)
+# whose live data was downloaded more than cache_max_age_days ago (default 30;
+# 0 disables) and that hold no live lease are deleted under their own lock,
+# taken without waiting: an entry being pulled is skipped. Credentials arrive as
 # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in launcher_config.envs, resolved by
 # Cosstore.resolve_credentials from the secrets the store.yaml names
 # (cos_*_secret_name), as HF_TOKEN reaches hfpull.
@@ -33,6 +49,12 @@ config:
     local_path: <destination>
     endpoint_url: ''
     region: ''
+    # Evict cache entries downloaded more than this many days ago; 0 disables.
+    # Set per store with the storeload config key cache_max_age_days.
+    cache_max_age_days: 30
+    # Treat a reader lease older than this many days as dead; 0 (default) means
+    # a lease lasts as long as its run dir. Storeload key: lease_max_age_days.
+    lease_max_age_days: 0
   compute_config:
     num_cpus_per_node: 2
     num_gpus_per_node: 0
@@ -68,6 +90,16 @@ environment_configs:
             LOCAL_PATH="$(printf %s '{{ config.s3pull_config.local_path | b64encode }}' | base64 -d)"
             ENDPOINT_URL="$(printf %s '{{ config.s3pull_config.endpoint_url | default("") | b64encode }}' | base64 -d)"
             REGION="$(printf %s '{{ config.s3pull_config.region | default("") | b64encode }}' | base64 -d)"
+            CACHE_MAX_AGE_DAYS="$(printf %s '{{ config.s3pull_config.cache_max_age_days | default(30) | string | b64encode }}' | base64 -d)"
+            if ! [[ "${CACHE_MAX_AGE_DAYS}" =~ ^[0-9]+$ ]]; then
+              echo "s3pull: invalid cache_max_age_days '${CACHE_MAX_AGE_DAYS}'; using 30" >&2
+              CACHE_MAX_AGE_DAYS=30
+            fi
+            LEASE_MAX_AGE_DAYS="$(printf %s '{{ config.s3pull_config.lease_max_age_days | default(0) | string | b64encode }}' | base64 -d)"
+            if ! [[ "${LEASE_MAX_AGE_DAYS}" =~ ^[0-9]+$ ]]; then
+              echo "s3pull: invalid lease_max_age_days '${LEASE_MAX_AGE_DAYS}'; using 0" >&2
+              LEASE_MAX_AGE_DAYS=0
+            fi
             MOCK_MARKER=".gbtest_mock_s3pull"
 
             # Mocked when GBTEST_MOCK_COS is truthy, matching
@@ -126,11 +158,16 @@ environment_configs:
             }
             trap s3pull_cleanup EXIT
 
+            # Print the mtime (epoch) of path $1 without following a symlink.
+            s3pull_mtime() {
+                stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+            }
+
             # True if the lock dir was not refreshed within the TTL.
             s3pull_lock_stale() {
                 local now mtime
                 now="$(date +%s)"
-                mtime="$(stat -c %Y "${LOCK}" 2>/dev/null || stat -f %m "${LOCK}" 2>/dev/null || echo "${now}")"
+                mtime="$(s3pull_mtime "${LOCK}")" || mtime="${now}"
                 [ $(( now - mtime )) -ge "${LOCK_TTL_SECONDS}" ]
             }
 
@@ -176,18 +213,186 @@ environment_configs:
                 fi
             }
 
-            # Keep the live version ($1) and the one it replaced ($2); remove the rest.
-            s3pull_prune_versions() {
-                local keep_new="$1" keep_prev="$2" v
-                for v in "${VERSIONS}"/*; do
-                    [ -d "${v}" ] || continue
-                    case "$(basename "${v}")" in "${keep_new}"|"${keep_prev}") ;; *) rm -rf "${v}" ;; esac
+            # ── Reader leases (see the header comment) ──
+            # This run's lease: its id and the run dir whose existence keeps it live.
+            LEASE_ID="${GB_TARGETRUN_ID:-unknown-$(hostname)-$$}"
+            LEASE_RUN_DIR="${GB_BUILD_WORKDIR:--}"
+
+            # True if lease file $1 is live: its run dir (line 1) exists or is "-"
+            # (unknown, e.g. written by hand, so assumed live), and it is not older than
+            # LEASE_MAX_AGE_DAYS (0 = never too old).
+            s3pull_lease_live() {
+                local file="$1" run_dir created
+                run_dir="$(sed -n 1p "${file}" 2>/dev/null)" || return 1
+                [ -n "${run_dir}" ] || return 1
+                if [ "${LEASE_MAX_AGE_DAYS}" -gt 0 ]; then
+                    created="$(sed -n 3p "${file}")"
+                    [[ "${created}" =~ ^[0-9]+$ ]] || created="$(s3pull_mtime "${file}")" || created=0
+                    [ "${created}" -ge $(( $(date +%s) - LEASE_MAX_AGE_DAYS * 86400 )) ] || return 1
+                fi
+                [ "${run_dir}" = "-" ] || [ -d "${run_dir}" ]
+            }
+
+            # For entry <hash> $1, whose lock the caller holds: print one
+            # "<targetrun> <run dir> <version>" line per live lease, and delete
+            # dead ones.
+            s3pull_live_leases() {
+                local leases="${DEST_DIR}/.$1.leases" f
+                [ -d "${leases}" ] || return 0
+                for f in "${leases}"/*; do
+                    [ -f "${f}" ] || continue
+                    if s3pull_lease_live "${f}"; then
+                        echo "$(basename "${f}") $(sed -n 1p "${f}") $(sed -n 2p "${f}")"
+                    else
+                        rm -f "${f}"
+                    fi
                 done
+                rmdir "${leases}" 2>/dev/null || true
+            }
+
+            # Record (lock held) that this target run reads DEST's live version.
+            # Written via a temp file and rename, so a reader of the lease never
+            # sees it half-written; a later pull by the same run re-pins it.
+            # Without GB_BUILD_WORKDIR (no shared_workdir) there is no run lifetime
+            # to tie a lease to, so none is taken: a lease that could never be
+            # released would pin every version forever.
+            s3pull_take_lease() {
+                local leases="${DEST_DIR}/.${DEST_NAME}.leases" version tmp
+                if [ "${LEASE_RUN_DIR}" = "-" ]; then
+                    echo "s3pull: no reader lease taken: GB_BUILD_WORKDIR is not set (no shared_workdir)"
+                    return 0
+                fi
+                version="$(basename "$(readlink "${DEST}" 2>/dev/null || true)")"
+                mkdir -p "${leases}"
+                tmp="${leases}/.${LEASE_ID}.$$"
+                printf '%s\n%s\n%s\n' "${LEASE_RUN_DIR}" "${version}" "$(date +%s)" > "${tmp}"
+                mv -f "${tmp}" "${leases}/${LEASE_ID}"
+                echo "s3pull: lease ${LEASE_ID} on ${version} (run dir ${LEASE_RUN_DIR})"
+            }
+
+            # Keep the live version ($1), the one it replaced ($2), and every
+            # version a live lease pins, with their .sig files; remove the rest.
+            s3pull_prune_versions() {
+                local keep_new="$1" keep_prev="$2" v base name pinned
+                pinned=" $(s3pull_live_leases "${DEST_NAME}" | awk '{print $3}' | tr '\n' ' ') "
+                for v in "${VERSIONS}"/*; do
+                    [ -e "${v}" ] || continue
+                    base="$(basename "${v}")"
+                    name="${base%.sig}"
+                    case "${name}" in "${keep_new}"|"${keep_prev}") continue ;; esac
+                    if [[ "${pinned}" == *" ${name} "* ]]; then
+                        [ "${base}" = "${name}" ] && echo "s3pull: keeping version ${name}: it is leased"
+                        continue
+                    fi
+                    rm -rf "${v}"
+                done
+            }
+
+            # Print when cache entry $1 (a path in DEST_DIR) was downloaded: the epoch
+            # in its live version's name (v<epoch>-...), else the mtime of that
+            # version or of an old-layout directory. Fails if the entry is gone.
+            s3pull_entry_epoch() {
+                local entry="$1" target name
+                if [ -L "${entry}" ]; then
+                    target="$(readlink "${entry}")" || return 1
+                    name="$(basename "${target}")"
+                    if [[ "${name}" =~ ^v([0-9]+)- ]]; then
+                        echo "${BASH_REMATCH[1]}"
+                        return 0
+                    fi
+                    s3pull_mtime "$(dirname "${entry}")/${target}"
+                    return
+                fi
+                [ -e "${entry}" ] || return 1
+                s3pull_mtime "${entry}"
+            }
+
+            # True if epoch $1 is more than CACHE_MAX_AGE_DAYS ago (never when 0).
+            s3pull_too_old() {
+                [ "${CACHE_MAX_AGE_DAYS}" -gt 0 ] \
+                    && [ "$1" -lt $(( $(date +%s) - CACHE_MAX_AGE_DAYS * 86400 )) ]
+            }
+
+            # Evict cache entry <hash> $1: its symlink (or old-layout directory)
+            # and its .versions, if under its lock it is still too old. The lock is
+            # tried without waiting; a held lock means that URI is being pulled.
+            s3pull_evict_entry() {
+                local name="$1" epoch holders
+                local entry="${DEST_DIR}/$1" versions="${DEST_DIR}/.$1.versions"
+                local lock="${DEST_DIR}/.$1.lock"
+                if ! mkdir "${lock}" 2>/dev/null; then
+                    echo "s3pull: not evicting cache entry ${name}: it is locked"
+                    return 0
+                fi
+                echo "${OWNER}" > "${lock}/owner"
+                epoch="$(s3pull_entry_epoch "${entry}")" \
+                    || epoch="$(s3pull_mtime "${versions}")" || epoch=""
+                if [ -n "${epoch}" ] && s3pull_too_old "${epoch}"; then
+                    holders="$(s3pull_live_leases "${name}")"
+                    if [ -n "${holders}" ]; then
+                        echo "s3pull: not evicting cache entry ${name}: leased by (targetrun run-dir version):"
+                        printf '%s\n' "${holders}" | sed 's/^/  /'
+                    else
+                        # The symlink goes first, so new readers stop resolving it.
+                        if [ -L "${entry}" ]; then rm -f "${entry}"; else rm -rf "${entry}"; fi
+                        rm -rf "${versions}" "${DEST_DIR}/.$1.leases"
+                        echo "s3pull: evicted cache entry ${name} (downloaded $(( ($(date +%s) - epoch) / 86400 )) days ago)"
+                    fi
+                fi
+                rm -rf "${lock}"
+            }
+
+            # Evict this cache's entries downloaded more than CACHE_MAX_AGE_DAYS
+            # ago. Only names that are URI hashes (64 hex chars) and their
+            # .<hash>.versions are considered; this pull's own entry never is.
+            # Best effort: a failure is logged and never fails the pull.
+            s3pull_evict_old_entries() {
+                [ "${CACHE_MAX_AGE_DAYS}" -gt 0 ] || return 0
+                local path name epoch
+                for path in "${DEST_DIR}"/* "${DEST_DIR}"/.*.versions; do
+                    [ -e "${path}" ] || [ -L "${path}" ] || continue
+                    name="$(basename "${path}")"
+                    name="${name#.}"
+                    name="${name%.versions}"
+                    [[ "${name}" =~ ^[0-9a-f]{64}$ ]] || continue
+                    [ "${name}" != "${DEST_NAME}" ] || continue
+                    epoch="$(s3pull_entry_epoch "${DEST_DIR}/${name}")" \
+                        || epoch="$(s3pull_mtime "${DEST_DIR}/.${name}.versions")" || continue
+                    s3pull_too_old "${epoch}" || continue
+                    s3pull_evict_entry "${name}" || echo "s3pull: could not evict cache entry ${name}" >&2
+                done
+            }
+
+            # Print "ETag|size|LastModified" of the object at S3_KEY; fails (printing
+            # nothing) when S3_KEY is not an object, e.g. a prefix.
+            s3pull_object_signature() {
+                [ -n "${S3_KEY}" ] && [[ "${S3_KEY}" != */ ]] || return 1
+                aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3api head-object --bucket "${S3_BUCKET}" \
+                    --key "${S3_KEY}" --output json 2>/dev/null \
+                  | python3 -c 'import json, sys; d = json.load(sys.stdin); print("%s|%s|%s" % (d.get("ETag", ""), d.get("ContentLength", ""), d.get("LastModified", "")))'
             }
 
             s3pull_acquire_lock
             s3pull_adopt_legacy_dir
             PREV_VERSION="$(basename "$(readlink "${DEST}" 2>/dev/null || true)")"
+            OBJECT_SIG="$(s3pull_object_signature)" || OBJECT_SIG=""
+
+            # An unchanged object: the live version already holds it, so keep it --
+            # unless that copy is older than CACHE_MAX_AGE_DAYS, which downloads it
+            # again (the same age rule eviction applies).
+            LIVE_EPOCH="$(s3pull_entry_epoch "${DEST}")" || LIVE_EPOCH=""
+            if [ -n "${OBJECT_SIG}" ] && [ -n "${PREV_VERSION}" ] \
+               && [ "$(cat "${VERSIONS}/${PREV_VERSION}.sig" 2>/dev/null || true)" = "${OBJECT_SIG}" ] \
+               && [ -f "${VERSIONS}/${PREV_VERSION}/$(basename "${S3_KEY}")" ] \
+               && [ -n "${LIVE_EPOCH}" ] && ! s3pull_too_old "${LIVE_EPOCH}"; then
+              echo "s3pull: ${S3_URI} is unchanged; keeping the cached copy"
+              s3pull_take_lease
+              s3pull_evict_old_entries || true
+              echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
+              echo 's3pull end'
+              exit 0
+            fi
+
             VERSION_NAME="v$(date +%s)-$$-${RANDOM}"
             NEW_VERSION="${VERSIONS}/${VERSION_NAME}"
             mkdir -p "${NEW_VERSION}"
@@ -196,9 +401,9 @@ environment_configs:
             # URI as a prefix and sync it (rclone-copy semantics, as on K8s/LSF),
             # starting from a hard-linked copy of the live version so only changed
             # objects download. --delete drops objects removed upstream.
-            if [ -n "${S3_KEY}" ] && [[ "${S3_KEY}" != */ ]] && \
-               aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3api head-object --bucket "${S3_BUCKET}" --key "${S3_KEY}" >/dev/null 2>&1; then
+            if [ -n "${OBJECT_SIG}" ]; then
               aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 cp --only-show-errors "${S3_URI}" "${NEW_VERSION}/$(basename "${S3_KEY}")"
+              printf '%s\n' "${OBJECT_SIG}" > "${VERSIONS}/${VERSION_NAME}.sig"
             else
               if [ -n "${PREV_VERSION}" ] && [ -d "${VERSIONS}/${PREV_VERSION}" ]; then
                 cp -al "${VERSIONS}/${PREV_VERSION}/." "${NEW_VERSION}/" 2>/dev/null \
@@ -215,7 +420,9 @@ environment_configs:
             fi
             s3pull_swap_to "${VERSION_NAME}"
             NEW_VERSION=""
+            s3pull_take_lease
             s3pull_prune_versions "${VERSION_NAME}" "${PREV_VERSION}"
+            s3pull_evict_old_entries || true
             echo "Pulled S3 URI: ${S3_URI} to path ${LOCAL_PATH}"
             echo 's3pull end'
     monitors:

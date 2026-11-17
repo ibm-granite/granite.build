@@ -248,6 +248,54 @@ class TestPullassetCosstore:
         assert step.step_uri == "file:///custom/s3pull"
 
     @pytest.mark.asyncio
+    async def test_cache_max_age_days_reaches_the_step(self, skypilot_env):
+        """The storeload cache_max_age_days is passed to s3pull."""
+        _, step = await skypilot_env.pullasset_cosstore(
+            uri=URI.get_uri("s3://local/in"),
+            assetstore=_local_store(),
+            storeload_config=_storeload(cache_max_age_days=7),
+        )
+        assert step.config["s3pull_config"]["cache_max_age_days"] == 7
+
+    @pytest.mark.asyncio
+    async def test_cache_max_age_days_omitted_when_unset(self, skypilot_env):
+        """Unset, the step's own default applies."""
+        _, step = await skypilot_env.pullasset_cosstore(
+            uri=URI.get_uri("s3://local/in"),
+            assetstore=_local_store(),
+            storeload_config=_storeload(),
+        )
+        assert "cache_max_age_days" not in step.config["s3pull_config"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["cache_max_age_days", "lease_max_age_days"])
+    @pytest.mark.parametrize("value", [-1, "7", True, 1.5])
+    async def test_invalid_day_settings_raise(self, skypilot_env, key, value):
+        """Only a non-negative integer is accepted."""
+        with pytest.raises(ValueError, match=key):
+            await skypilot_env.pullasset_cosstore(
+                uri=URI.get_uri("s3://local/in"),
+                assetstore=_local_store(),
+                storeload_config=_storeload(**{key: value}),
+            )
+
+    @pytest.mark.asyncio
+    async def test_lease_max_age_days_reaches_the_step(self, skypilot_env):
+        """The storeload lease_max_age_days is passed to s3pull (omitted if unset)."""
+        _, step = await skypilot_env.pullasset_cosstore(
+            uri=URI.get_uri("s3://local/in"),
+            assetstore=_local_store(),
+            storeload_config=_storeload(lease_max_age_days=3),
+        )
+        assert step.config["s3pull_config"]["lease_max_age_days"] == 3
+        _, unset = await skypilot_env.pullasset_cosstore(
+            uri=URI.get_uri("s3://local/in"),
+            assetstore=_local_store(),
+            storeload_config=_storeload(),
+        )
+        assert "lease_max_age_days" not in unset.config["s3pull_config"]
+
+    @pytest.mark.asyncio
     async def test_rejects_non_cosstore(self, skypilot_env):
         """A non-Cosstore assetstore is rejected."""
         with pytest.raises(AssertionError, match="Cosstore"):
@@ -482,6 +530,31 @@ class TestEnvironmentInputExists:
         _, make = stub_s3
         assert not env.input_exists(URI.get_uri("s3://local/k"))
         make.assert_not_called()
+
+
+class TestPulledBindingCaching:
+    """Skypilot pulls s3/cos once per consuming target (each pull takes that
+    run's reader lease); other URIs keep the base binding cache."""
+
+    @pytest.mark.parametrize(
+        "uristr,cached",
+        [
+            ("s3://local/in", False),
+            ("cos://bucket/in", False),
+            ("hf://huggingface.co/datasets/org/repo", True),
+            ("env:///tmp/x", False),
+        ],
+    )
+    def test_skypilot(self, skypilot_env, uristr, cached):
+        assert skypilot_env._caches_pulled_binding(uristr) is cached
+
+    @pytest.mark.parametrize(
+        "uristr,cached", [("s3://local/in", True), ("env:///tmp/x", False)]
+    )
+    def test_base_environment(self, uristr, cached):
+        from gbserver.environment.environment import Environment
+
+        assert Environment._caches_pulled_binding(MagicMock(), uristr) is cached
 
 
 class TestGetCosCacheDir:
