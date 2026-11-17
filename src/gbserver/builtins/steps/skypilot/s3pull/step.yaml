@@ -174,23 +174,49 @@ environment_configs:
                 stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
             }
 
-            # True if the lock dir was not refreshed within the TTL.
+            # True if lock dir $1 (default LOCK) was not refreshed within the TTL.
             s3pull_lock_stale() {
                 local now mtime
                 now="$(date +%s)"
-                mtime="$(s3pull_mtime "${LOCK}")" || mtime="${now}"
+                mtime="$(s3pull_mtime "${1:-${LOCK}}")" || mtime="${now}"
                 [ $(( now - mtime )) -ge "${LOCK_TTL_SECONDS}" ]
+            }
+
+            # Remove LOCK, judged stale while it named owner $1. Checking then
+            # moving is racy: another waiter may have reclaimed it and taken a
+            # fresh lock in between. So move it aside, then confirm the moved lock
+            # is still the stale one (same owner and still stale; a lock created
+            # a moment ago may have no owner yet, so the owner alone isn't proof).
+            # If it isn't, it is someone's live lock: put it back if the path is
+            # still free, and in any case never delete it.
+            s3pull_reclaim_stale_lock() {
+                local seen="$1" grave="${LOCK}.stale.$$.${RANDOM}"
+                # Test-only seam to run something between the check and the move.
+                if [ -n "${GBTEST_S3PULL_AFTER_STALE_CHECK:-}" ]; then
+                    "${GBTEST_S3PULL_AFTER_STALE_CHECK}" "${LOCK}" || true
+                fi
+                mv "${LOCK}" "${grave}" 2>/dev/null || return 0  # someone moved it first
+                if [ "$(cat "${grave}/owner" 2>/dev/null || true)" = "${seen}" ] \
+                   && s3pull_lock_stale "${grave}"; then
+                    echo "s3pull: reclaimed stale lock ${LOCK} (owner ${seen:-unknown})" >&2
+                    rm -rf "${grave}"
+                    return 0
+                fi
+                if [ ! -e "${LOCK}" ] && python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' \
+                       "${grave}" "${LOCK}" 2>/dev/null; then
+                    echo "s3pull: ${LOCK} was re-taken during reclaim; put it back" >&2
+                else
+                    echo "WARNING: ${LOCK} was re-taken during reclaim and could not be put back; leaving it at ${grave}" >&2
+                fi
             }
 
             # Take the per-URI lock, reclaiming a dead holder's; then keep it fresh.
             s3pull_acquire_lock() {
-                local waited=0 grave
+                local waited=0
                 mkdir -p "${DEST_DIR}"
                 until mkdir "${LOCK}" 2>/dev/null; do
                     if s3pull_lock_stale; then
-                        grave="${LOCK}.stale.$$.${RANDOM}"
-                        echo "s3pull: reclaiming stale lock ${LOCK}" >&2
-                        if mv "${LOCK}" "${grave}" 2>/dev/null; then rm -rf "${grave}"; fi
+                        s3pull_reclaim_stale_lock "$(cat "${LOCK}/owner" 2>/dev/null || true)"
                         continue
                     fi
                     if [ "${waited}" -ge "${LOCK_WAIT_SECONDS}" ]; then

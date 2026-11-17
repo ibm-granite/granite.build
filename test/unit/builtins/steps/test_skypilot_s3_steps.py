@@ -317,7 +317,38 @@ class TestS3PullSharedCache:
         os.utime(lock, (0, 0))
         result = _run(tmp_path, "s3pull", "s3://b/dir", dest)
         assert result.returncode == 0, result.stderr
-        assert "reclaiming stale lock" in result.stderr
+        assert "reclaimed stale lock" in result.stderr
+
+    def test_lock_retaken_during_reclaim_is_put_back(self, tmp_path):
+        """The race: after this pull judges the lock stale, another waiter
+        reclaims it and takes a fresh one. This pull must not move the fresh
+        lock away and take it too; it puts it back and keeps waiting."""
+        dest = tmp_path / "cache" / "h"
+        lock = dest.parent / ".h.lock"
+        lock.mkdir(parents=True)
+        (lock / "owner").write_text("host:dead|pid:1")
+        os.utime(lock, (0, 0))
+        retake = tmp_path / "retake.sh"
+        retake.write_text(
+            '#!/usr/bin/env bash\nrm -rf "$1"; mkdir "$1"; echo "host:A|pid:2" > "$1/owner"\n'
+        )
+        retake.chmod(0o755)
+        result = _run(
+            tmp_path,
+            "s3pull",
+            "s3://b/dir",
+            dest,
+            {
+                "GBTEST_S3PULL_AFTER_STALE_CHECK": str(retake),
+                "GB_S3PULL_LOCK_WAIT_SECONDS": "2",
+            },
+        )
+        assert result.returncode != 0
+        assert "re-taken during reclaim; put it back" in result.stderr
+        assert "timed out" in result.stderr
+        assert (lock / "owner").read_text().strip() == "host:A|pid:2"
+        assert not list(dest.parent.glob(".h.lock.stale.*"))
+        assert " s3 sync " not in _log(tmp_path)
 
     def test_live_lock_times_out_and_is_left_alone(self, tmp_path):
         """A held, fresh lock makes the pull wait, then fail; it isn't stolen."""
