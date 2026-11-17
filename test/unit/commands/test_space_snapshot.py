@@ -604,3 +604,26 @@ def test_rewrite_refuses_yaml_anchors_and_aliases(text):
     entries = cmd._base_uris(text)
     with pytest.raises(click.ClickException, match="anchors or aliases"):
         cmd._rewrite_base_uris(text, entries, [DB] * len(entries))
+
+
+def test_git_command_is_killed_at_git_timeout(monkeypatch):
+    """A git command that hangs (e.g. a stalled ssh clone) fails clearly."""
+    seen = {}
+
+    def hang(args, timeout=None, env=None, **_):
+        seen.update(timeout=timeout, env=env)
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(cmd.subprocess, "run", hang)
+    token = cmd._git_timeout.set(42)
+    try:
+        with pytest.raises(click.ClickException) as exc:
+            cmd._git(["clone", "https://user:s3cr3t@github.example.com/o/r.git"])
+    finally:
+        cmd._git_timeout.reset(token)
+    assert seen["timeout"] == 42
+    assert (
+        seen["env"]["GIT_HTTP_LOW_SPEED_LIMIT"]
+        and seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    )
+    assert "--git-timeout" in exc.value.message and "s3cr3t" not in exc.value.message

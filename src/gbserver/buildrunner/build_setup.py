@@ -40,21 +40,17 @@ from gbserver.types.constants import (
 from gbserver.types.status import Status
 from gbserver.utils.archive import extract_archive
 from gbserver.utils.filesystem import create_temp_subdir
-from gbserver.utils.git_retry import get_build_git_breaker, git_clone_retry
+from gbserver.utils.git_retry import (
+    GIT_STALL_ENV,
+    get_build_git_breaker,
+    git_clone_retry,
+)
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import normalize_to_filename
 
 logger = get_logger(__name__)
 
 BUILD_ONLY_THIS_NAME = ""
-
-# For every git command on the PR clone: give up on a transfer that stalls
-# (under 1 KB/s for 60 s) instead of hanging, and never prompt for credentials.
-_GIT_STALL_ENV = {
-    "GIT_HTTP_LOW_SPEED_LIMIT": "1000",
-    "GIT_HTTP_LOW_SPEED_TIME": "60",
-    "GIT_TERMINAL_PROMPT": "0",
-}
 
 
 class BuildSetup:
@@ -336,7 +332,7 @@ class BuildSetup:
             else:
                 try:
                     repo = Repo(path=pr_clone_path)
-                    repo.git.update_environment(**_GIT_STALL_ENV)
+                    repo.git.update_environment(**GIT_STALL_ENV)
                     logger.info(
                         "repo already cloned at path %s , pulling latest changes...",
                         pr_clone_path,
@@ -395,7 +391,7 @@ class BuildSetup:
                 capture_output=True,
                 text=True,
                 timeout=BUILD_GIT_OPERATION_DEADLINE,
-                env={**os.environ, **_GIT_STALL_ENV},
+                env={**os.environ, **GIT_STALL_ENV},
                 check=False,
             )
         except subprocess.TimeoutExpired as e:
@@ -407,5 +403,5 @@ class BuildSetup:
                 [*cmd, shown], result.returncode, result.stderr.replace(url, shown)
             )
         repo = Repo(to_path)
-        repo.git.update_environment(**_GIT_STALL_ENV)
+        repo.git.update_environment(**GIT_STALL_ENV)
         return repo

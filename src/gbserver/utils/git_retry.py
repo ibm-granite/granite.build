@@ -166,6 +166,15 @@ def cleanup_failed_clone(retry_state):
             shutil.rmtree(path_obj, ignore_errors=True)
 
 
+# Environment for git commands that must not hang on GitHub: give up on a
+# transfer that stalls (under 1 KB/s for 60 s), and never prompt for
+# credentials. Used by the build PR clone and gbserver space-snapshot.
+GIT_STALL_ENV = {
+    "GIT_HTTP_LOW_SPEED_LIMIT": "1000",
+    "GIT_HTTP_LOW_SPEED_TIME": "60",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+
 # Optional monotonic deadline for the retries below, set by
 # GitAccessBreaker.attempt(). Unset (the default) leaves them unchanged.
 _retry_deadline: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(

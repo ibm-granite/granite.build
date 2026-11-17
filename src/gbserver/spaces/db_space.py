@@ -105,6 +105,7 @@ def parse_db_uri(uri: str) -> DbUri:
 
 
 def _get_row(space_name: str) -> StoredSpace:
+    """The gb_spaces row named ``space_name``; ValueError if there is none."""
     # Local import: singleton storage pulls in the storage backends.
     from gbserver.storage.singleton_storage import get_admin_storage
 
@@ -115,6 +116,7 @@ def _get_row(space_name: str) -> StoredSpace:
 
 
 def _get_snapshot(row: StoredSpace, ref: DbUri) -> RepoSnapshot:
+    """The snapshot a db:// URI's slot names in ``row``; ValueError if it has none."""
     index = ref.base_uri_index
     if index is None:
         snapshot = row.space

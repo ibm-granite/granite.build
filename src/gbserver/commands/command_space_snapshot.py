@@ -9,9 +9,11 @@ db://spaces/<name>``) with no git access at build or request time. See
 gbserver.spaces.db_space.
 """
 
+import contextvars
 import io
 import os
 import posixpath
+import re
 import subprocess
 import tempfile
 import urllib.parse
@@ -40,12 +42,14 @@ from gbserver.types.constants import (
     SPACE_REPO_CONFIG_BRANCH_NAME,
 )
 from gbserver.types.context import CliEnvironment, pass_environment
+from gbserver.utils.git_retry import GIT_STALL_ENV
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_utc_time
 
 logger = get_logger(__name__)
 
 SPACE_YAML = "space.yaml"
+DEFAULT_GIT_TIMEOUT = 600.0
 
 # What builds resolve from a base_uris repo. Docs, images and other binaries
 # stay out: they don't compress and every gb_spaces read loads the archive.
@@ -67,9 +71,20 @@ class _Source:
     ref_is_default: bool = False
 
 
+# Per git command; set from --git-timeout.
+_git_timeout: contextvars.ContextVar[float] = contextvars.ContextVar(
+    "gb_space_snapshot_git_timeout", default=DEFAULT_GIT_TIMEOUT
+)
+
+
 def _git(args: List[str], cwd: Optional[Path] = None) -> bytes:
-    """Run git, with the GitHub token (if any) as an auth header, not in argv."""
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")  # fail, never prompt
+    """Run git and return its stdout; raise ClickException on failure or timeout.
+
+    The GitHub token (if any) goes in an auth header, never in argv. A stalled
+    transfer is abandoned (GIT_STALL_ENV) and the whole command is killed after
+    --git-timeout, which also covers SSH; git never prompts for credentials.
+    """
+    env = dict(os.environ, **GIT_STALL_ENV)
     if GBSERVER_GITHUB_TOKEN:
         # Scoped to the GHE host: never sent to a host a space.yaml names.
         env.update(
@@ -77,9 +92,21 @@ def _git(args: List[str], cwd: Optional[Path] = None) -> bytes:
             GIT_CONFIG_KEY_0=f"http.https://{DEFAULT_GH_DOMAIN}/.extraHeader",
             GIT_CONFIG_VALUE_0=f"Authorization: token {GBSERVER_GITHUB_TOKEN}",
         )
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, env=env, check=False, capture_output=True
-    )
+    timeout = _git_timeout.get()
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            env=env,
+            check=False,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        shown = " ".join(re.sub(r"//[^@/]+@", "//****@", a) for a in args)
+        raise click.ClickException(
+            f"git {shown} took longer than {timeout:g}s (--git-timeout)"
+        ) from e
     if result.returncode != 0:
         raise click.ClickException(
             f"git {' '.join(args)} failed: {result.stderr.decode(errors='replace').strip()}"
@@ -181,6 +208,7 @@ def _archive(repo_dir: Path, sha: str, paths: Optional[Tuple[str, ...]]) -> byte
 
 
 def _rev(repo_dir: Path, rev: str) -> Optional[str]:
+    """The commit ``rev`` names in ``repo_dir``, or None if it doesn't resolve."""
     try:
         out = _git(
             ["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], cwd=repo_dir
@@ -274,6 +302,7 @@ def _snapshot(
 
 
 def _check_size(data: bytes, label: str) -> None:
+    """Refuse a snapshot zip over the entry or size caps unpacking enforces."""
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         infos = zf.infolist()
     total = sum(i.file_size for i in infos)
@@ -285,6 +314,7 @@ def _check_size(data: bytes, label: str) -> None:
 
 
 def _read_space_yaml(space_zip: bytes) -> str:
+    """The text of the space snapshot's top-level space.yaml; refuse if it has none."""
     with zipfile.ZipFile(io.BytesIO(space_zip)) as zf:
         try:
             return zf.read(SPACE_YAML).decode("utf-8")
@@ -310,6 +340,7 @@ def _replace_space_yaml(space_zip: bytes, text: str) -> bytes:
 
 
 def _base_uris(space_yaml: str) -> List[str]:
+    """The ``base_uris`` list of space.yaml's text, as strings (empty if absent)."""
     data = yaml.safe_load(space_yaml) or {}
     return [str(b) for b in (data.get("base_uris") or [])]
 
@@ -331,6 +362,7 @@ def _is_git_entry(entry: str) -> bool:
 
 
 def _subdirectory(entry: str) -> str:
+    """The ``#subdirectory=`` of a base_uris entry, without slashes at the ends."""
     fragment = entry.partition("#")[2]
     return urllib.parse.parse_qs(fragment).get("subdirectory", [""])[0].strip("/")
 
@@ -423,6 +455,143 @@ def _rewrite_base_uris(space_yaml: str, entries: List[str], new: List[str]) -> s
     return text
 
 
+def _load_row(
+    storage,
+    space_name: str,
+    create: bool,
+    space_repo: Optional[str],
+    lakehouse_namespace: Optional[str],
+) -> Tuple[StoredSpace, bool]:
+    """The row to snapshot, and whether it is new (--create).
+
+    A new row's git_repo_uri is set later, from the snapshot's source.
+
+    Raises:
+        click.ClickException: No such row without --create, --create without
+            --space-repo, or a space_uri naming another space.
+    """
+    row = storage.get_by_name(space_name)
+    is_new = row is None
+    if row is None:
+        if not create:
+            raise click.ClickException(
+                f"space {space_name!r} not found (use --create to add it)"
+            )
+        if space_repo is None:
+            raise click.ClickException("--space-repo is required with --create")
+        row = StoredSpace(
+            name=space_name, git_repo_uri="", lakehouse_namespace=lakehouse_namespace
+        )
+    try:
+        check_own_space_uri(row)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    return row, is_new
+
+
+def _snapshot_space(
+    row: StoredSpace,
+    is_new: bool,
+    space_repo: Optional[str],
+    space_ref: Optional[str],
+    space_source_uri: Optional[str],
+    use_https: bool,
+) -> Tuple[_Source, bytes, str]:
+    """Snapshot the space repo: (its source, zip, commit).
+
+    It must be the row's repo (git_repo_uri, in any form), which secrets and
+    PRs key on; a new row takes the source as its git_repo_uri.
+    """
+    space_src = _resolve_source(
+        space_repo or row.git_repo_uri,
+        space_ref,
+        space_source_uri,
+        SPACE_REPO_CONFIG_BRANCH_NAME,
+    )
+    if is_new:
+        row.git_repo_uri = space_src.source_uri
+    elif not same_repo(row.git_repo_uri, space_src.source_uri):
+        raise click.ClickException(
+            f"snapshot source {space_src.source_uri} is not space {row.name!r}'s"
+            f" repo {row.git_repo_uri}; pass --space-source-uri if it is a mirror"
+        )
+    click.echo(f"space: {space_src.location} @ {space_src.ref}")
+    space_zip, space_sha = _snapshot(space_src, https=use_https)
+    return space_src, space_zip, space_sha
+
+
+def _snapshot_base_uris(
+    space_name: str,
+    entries: List[str],
+    checkouts: Tuple[str, ...],
+    base_uri_paths: Tuple[str, ...],
+    use_https: bool,
+    skip: bool,
+) -> Tuple[List[Optional[RepoSnapshot]], List[str]]:
+    """Snapshot space.yaml's git base_uris: (slots, entries rewritten to db://).
+
+    One snapshot per (repo, ref), at its first entry's index; later entries for
+    it reuse that slot. Each takes ``base_uri_paths`` under every entry's
+    #subdirectory. A repo is snapshotted from its --checkout, else cloned.
+    With ``skip``, nothing is snapshotted and the entries stay as written.
+    """
+    slots: List[Optional[RepoSnapshot]] = [None] * len(entries)
+    new_entries = list(entries)
+    groups: Dict[Tuple[str, Optional[str]], List[int]] = {}
+    for i, entry in enumerate([] if skip else entries):
+        if is_db_uri(entry):
+            raise click.ClickException(
+                f"base_uri {entry!r} is already db://; snapshot from the space's"
+                " own repo"
+            )
+        if not _is_git_entry(entry):
+            _check_local_entry(entry)
+            continue
+        url, ref = _split_ref(entry)
+        groups.setdefault((normalize_repo_uri(url).lower(), ref), []).append(i)
+    local = _parse_checkouts(checkouts)
+    for (_, ref), indices in groups.items():
+        first = indices[0]
+        url = _split_ref(entries[first])[0]
+        repo = normalize_repo_uri(url)
+        checkout = next((d for r, d in local if same_repo(r, url)), None)
+        src = _resolve_source(str(checkout or url), ref, repo, None)
+        click.echo(
+            f"base_uris[{first}]: {src.location} @ {src.ref or 'default branch'}"
+        )
+        subdirs = sorted({_subdirectory(entries[i]) for i in indices})
+        paths = tuple(
+            f"{sd}/{p}" if sd else p for sd in subdirs for p in base_uri_paths
+        )
+        data, sha = _snapshot(src, paths, https=use_https)
+        _check_size(data, f"base_uris[{first}]")
+        snapshot = RepoSnapshot(
+            source_uri=repo,
+            source_ref=src.ref,
+            source_commit=sha,
+            snapshot_time=get_utc_time(),
+            entry=entries[first],
+        )
+        snapshot.save_archive(data)
+        slots[first] = snapshot
+        for i in indices:
+            fragment = entries[i].partition("#")[2]
+            new_entries[i] = make_db_uri(space_name, first) + (
+                f"#{fragment}" if fragment else ""
+            )
+            click.echo(f"base_uris[{i}]: {entries[i]} -> {new_entries[i]}")
+    for repo, directory in local:
+        if not any(
+            same_repo(repo, _split_ref(entries[g[0]])[0]) for g in groups.values()
+        ):
+            click.echo(
+                f"warning: --checkout {directory} ({repo}) matches no base_uris"
+                " entry; unused",
+                err=True,
+            )
+    return slots, new_entries
+
+
 @click.command()
 @click.option("--space-name", required=True, help="gb_spaces row to update.")
 @click.option(
@@ -485,6 +654,13 @@ def _rewrite_base_uris(space_yaml: str, entries: List[str], new: List[str]) -> s
 @click.option(
     "--lakehouse-namespace", default=None, help="For --create: lakehouse namespace."
 )
+@click.option(
+    "--git-timeout",
+    type=float,
+    default=DEFAULT_GIT_TIMEOUT,
+    show_default=True,
+    help="Seconds before any one git command (e.g. a clone) is killed.",
+)
 @click.option("--dry-run", is_flag=True, help="Report what would be stored.")
 @pass_environment
 def cli(
@@ -500,6 +676,7 @@ def cli(
     switch: bool,
     create: bool,
     lakehouse_namespace: Optional[str],
+    git_timeout: float,
     dry_run: bool,
 ):
     """Snapshot a space repo and the repos its base_uris name into gb_spaces.
@@ -509,101 +686,19 @@ def cli(
     in place, so lookup order is unchanged. git_repo_uri, the space's identity,
     is unchanged: the snapshot must come from that repo.
     """
+    _git_timeout.set(git_timeout)
     storage = singleton_storage.get_admin_storage().space_storage
-    row = storage.get_by_name(space_name)
-    if row is None:
-        if not create:
-            raise click.ClickException(
-                f"space {space_name!r} not found (use --create to add it)"
-            )
-        if space_repo is None:
-            raise click.ClickException("--space-repo is required with --create")
-        # git_repo_uri is set from the snapshot source below.
-        row = StoredSpace(
-            name=space_name, git_repo_uri="", lakehouse_namespace=lakehouse_namespace
-        )
-        is_new = True
-    else:
-        is_new = False
-    if space_repo is None:
-        space_repo = row.git_repo_uri
-    try:
-        check_own_space_uri(row)
-    except ValueError as e:
-        raise click.ClickException(str(e)) from e
-
-    # Space snapshot.
-    space_src = _resolve_source(
-        space_repo, space_ref, space_source_uri, SPACE_REPO_CONFIG_BRANCH_NAME
+    row, is_new = _load_row(
+        storage, space_name, create, space_repo, lakehouse_namespace
     )
-    if is_new:
-        row.git_repo_uri = space_src.source_uri
-    elif not same_repo(row.git_repo_uri, space_src.source_uri):
-        # git_repo_uri is the identity secrets and PRs key on; keep it true.
-        raise click.ClickException(
-            f"snapshot source {space_src.source_uri} is not space {space_name!r}'s"
-            f" repo {row.git_repo_uri}; pass --space-source-uri if it is a mirror"
-        )
-    click.echo(f"space: {space_src.location} @ {space_src.ref}")
-    space_zip, space_sha = _snapshot(space_src, https=use_https)
+    space_src, space_zip, space_sha = _snapshot_space(
+        row, is_new, space_repo, space_ref, space_source_uri, use_https
+    )
     space_yaml = _read_space_yaml(space_zip)
-
-    # base_uris snapshots: one per (repo, ref), at its first entry's index.
     entries = _base_uris(space_yaml)
-    slots: List[Optional[RepoSnapshot]] = [None] * len(entries)
-    new_entries = list(entries)
-    groups: Dict[Tuple[str, Optional[str]], List[int]] = {}
-    for i, entry in enumerate([] if no_base_uris else entries):
-        if is_db_uri(entry):
-            raise click.ClickException(
-                f"base_uri {entry!r} is already db://; snapshot from the space's"
-                " own repo"
-            )
-        if not _is_git_entry(entry):
-            _check_local_entry(entry)
-            continue
-        url, ref = _split_ref(entry)
-        groups.setdefault((normalize_repo_uri(url).lower(), ref), []).append(i)
-    local = _parse_checkouts(checkouts)
-    for (_, ref), indices in groups.items():
-        first = indices[0]
-        url = _split_ref(entries[first])[0]
-        repo = normalize_repo_uri(url)
-        checkout = next((d for r, d in local if same_repo(r, url)), None)
-        src = _resolve_source(str(checkout or url), ref, repo, None)
-        click.echo(
-            f"base_uris[{first}]: {src.location} @ {src.ref or 'default branch'}"
-        )
-        subdirs = sorted({_subdirectory(entries[i]) for i in indices})
-        paths = tuple(
-            f"{sd}/{p}" if sd else p for sd in subdirs for p in base_uri_paths
-        )
-        data, sha = _snapshot(src, paths, https=use_https)
-        _check_size(data, f"base_uris[{first}]")
-        snapshot = RepoSnapshot(
-            source_uri=repo,
-            source_ref=src.ref,
-            source_commit=sha,
-            snapshot_time=get_utc_time(),
-            entry=entries[first],
-        )
-        snapshot.save_archive(data)
-        slots[first] = snapshot
-        for i in indices:
-            fragment = entries[i].partition("#")[2]
-            new_entries[i] = make_db_uri(space_name, first) + (
-                f"#{fragment}" if fragment else ""
-            )
-            click.echo(f"base_uris[{i}]: {entries[i]} -> {new_entries[i]}")
-    for repo, directory in local:
-        if not any(
-            same_repo(repo, _split_ref(entries[g[0]])[0]) for g in groups.values()
-        ):
-            click.echo(
-                f"warning: --checkout {directory} ({repo}) matches no base_uris"
-                " entry; unused",
-                err=True,
-            )
+    slots, new_entries = _snapshot_base_uris(
+        space_name, entries, checkouts, base_uri_paths, use_https, no_base_uris
+    )
     if new_entries != entries:
         space_yaml = _rewrite_base_uris(space_yaml, entries, new_entries)
         space_zip = _replace_space_yaml(space_zip, space_yaml)
