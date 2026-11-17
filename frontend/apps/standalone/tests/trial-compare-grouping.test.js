@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for the trial-comparison grouping logic behind the labelled sections in
  * the Hyperparameters → Compare view.

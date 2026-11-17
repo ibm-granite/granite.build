@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the code-server (code-execution FastAPI) step asset.
 
 code-server is a CPU-only declarative SERVICE step.yaml companion to bcb-server/rm-server.

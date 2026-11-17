@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Authentication over the real ASGI stack, with API keys as the live provider.
 
 A module-local ``settings`` fixture overrides the conftest default (which is

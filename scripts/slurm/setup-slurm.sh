@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # setup-slurm.sh -- Bring up a Docker SLURM cluster and configure SkyPilot.
 #
 # This script:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the sage-eval steps' scratch TMPDIR.
 
 The sage-eval steps point TMPDIR at a per-task scratch directory. Programs bind

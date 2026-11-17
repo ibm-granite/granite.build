@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Batch collation: SFT batches are sized to their own rows, not ``max_length``.
 
 Every stored row is left-padded to ``max_length`` by ``tokenize_batch_arrays``,

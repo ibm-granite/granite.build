@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SQLAlchemy dataset repository against a real in-memory database.
 
 The two DB behaviours a fake cannot prove — the ``UNIQUE (user_id, name)``

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { NextConfig } from 'next'
 
 if (process.env.NODE_ENV !== 'production') {

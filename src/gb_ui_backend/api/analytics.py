@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Analytics API endpoints — build status chart and failure trends.
 
 Data source priority:

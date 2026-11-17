@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """IBMid OIDC authentication for the CLI via gbserver proxy.
 
 The CLI is a public client and never holds the IBMid client_secret.

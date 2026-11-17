@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared SSH utilities for SkyPilot environments (unmanaged and managed).
 
 Provides host SSH info extraction and remote command execution used by

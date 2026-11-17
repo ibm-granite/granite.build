@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """hf_viewer: owner/repo derivation and the datasets-server /rows fetch.
 
 The viewer HTTP is driven by ``httpx.MockTransport`` so no network is touched;

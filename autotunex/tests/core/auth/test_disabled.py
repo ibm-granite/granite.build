@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Standalone mode: a permissive implementation of the auth seam, not a bypass.
 
 Two distinct rules, per the design spec: unset email means fully unrestricted

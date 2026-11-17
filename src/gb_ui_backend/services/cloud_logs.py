@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """IBM Cloud Logs API client — ported from gb_dashboard/services/cloud_logs.py."""
 
 import asyncio

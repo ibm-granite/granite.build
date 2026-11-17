@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Isolate the test suite from a developer's local ``.env``.
 
 ``tests/conftest.py`` imports ``autotunex.main``, whose module-level ``create_app()``

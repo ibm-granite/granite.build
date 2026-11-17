@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # NOTE: load_dotenv() MUST run before importing gbcli/gbmcp modules. gbcli's
 # gbconstants resolves GBSERVER_INSTANCE/GB_ENVIRONMENT at import time, so any
 # gbcli import that lands before .env is loaded freezes the PROD defaults for

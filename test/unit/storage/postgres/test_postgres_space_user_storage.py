@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import uuid
 
 from libgbtest.local_postgres import LOCAL_POSTGRES_TEST_MARKS

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Elapsed-time formatting, shared by every place that shows a duration so the
  * dashboard tiles and the build drawer never drift apart.

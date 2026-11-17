@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Provider-agnostic ChatAgentBackend — a hand-rolled agentic tool-calling
 loop, not the Claude Agent SDK. Owns gbmcp's subprocess lifecycle, the unified
 tool registry, and per-session conversation history; delegates one full turn

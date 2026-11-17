@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Does the model still write text? Nothing upstream asks that.
 
 df8512e0's collapse was invisible to every metric the pipeline computed during training,

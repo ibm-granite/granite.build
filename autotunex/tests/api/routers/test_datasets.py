@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Dataset endpoints, end to end over HTTP.
 
 Pins the full CRUD surface, the upload transition to ``uploading``, and every

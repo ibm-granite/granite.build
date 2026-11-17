@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared caller-identity resolution for gb_ui_backend routes.
 
 gbserver's AuthMiddleware attaches the trusted user to

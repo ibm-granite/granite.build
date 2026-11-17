@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 export type ModelSuggestion = { id: string; text: string }
 
 /**

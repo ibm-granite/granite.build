@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """RunPod GPU compute environment backend.
 
 Manages build step execution on RunPod Pods (persistent GPU VMs).

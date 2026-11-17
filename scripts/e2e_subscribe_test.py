@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """E2E test: subscribe to RabbitMQ and verify event delivery.
 
 Usage:

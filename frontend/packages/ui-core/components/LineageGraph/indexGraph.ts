@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ElkExtendedEdge } from 'elkjs'
 import type { LineageGraphNode, LineageGraphResult } from '../../api/gbserver'
 import type { ElkNodeEx, NodeType } from './Graph'

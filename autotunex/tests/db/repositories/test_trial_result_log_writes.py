@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Trial/Result write repositories and job ``append_log``, against real SQLite."""
 
 from __future__ import annotations

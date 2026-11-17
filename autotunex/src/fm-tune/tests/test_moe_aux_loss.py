@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pins autotune/trainers/_moe.py against the real transformers model classes (no weights)."""
 
 import pytest

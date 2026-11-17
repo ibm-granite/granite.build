@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Parity test for the pre-hydration theme bootstrap in app/layout.tsx.
  *

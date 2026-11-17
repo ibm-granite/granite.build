@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Standalone MCP tool for reading a build's real stdout/traceback log.
 
 In standalone mode there is no gbserver REST file-browsing surface. Instead, a

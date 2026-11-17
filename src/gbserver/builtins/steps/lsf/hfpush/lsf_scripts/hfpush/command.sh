@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 trap 'EC=$?; echo "${LLMB_LSF_JOB_NAME:-hfpush}: hfpush failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
 

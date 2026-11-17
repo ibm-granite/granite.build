@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Eligibility rules for ``SqlAlchemyJobRepository.tuned_models``.
 
 A tuned model is pickable as a new job's base only when its job completed, its

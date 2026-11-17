@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Build-level analytics endpoints (logs, etc.)."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """AutoTuneXAPI requests must carry a timeout, and a stalled bridge must be retried
 and then raised like any other connection failure (main.py degrades it to a warning).
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pins autotune/callbacks/sync_best_checkpoint.py on a real 2-rank (gloo, CPU) group."""
 
 import os

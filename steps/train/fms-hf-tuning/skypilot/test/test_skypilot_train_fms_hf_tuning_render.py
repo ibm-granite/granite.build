@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Render tests for step-template.yaml with gbserver's strict renderer.
 
@@ -28,6 +16,8 @@ import subprocess
 import pytest
 import yaml
 
+from gbserver.environment.skypilot import validate_launch_num_nodes
+from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -35,6 +25,7 @@ _TEXT = (_STEP_DIR / "step-template.yaml").read_text()
 _TEMPLATE = yaml.safe_load(_TEXT)
 _SKY = _TEMPLATE["environment_configs"]["Skypilot"]
 _LAUNCHER = _SKY["launchers"]["fms_hf_tuning"]["config"]
+_ENV = StepEnvironmentTypeConfig.model_validate(_SKY)
 _DEFAULTS = _TEMPLATE["config"]["fms_hf_tuning_config"]
 _BASE = {"base_model": {"binding": {"path": "/staged/base it's"}}}
 _DS = dict(_BASE, dataset={"binding": {"path": "/staged/ds"}})
@@ -276,49 +267,6 @@ class TestValidation:
         key = "padding_free" if isinstance(value, list) else "packing"
         _render("setup", _ctx(peft_method="lora", args={key: value}))
 
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    @pytest.mark.parametrize("layer", ["compute", "launcher"])
-    @pytest.mark.parametrize("n", [1, 1.0, "1", "01", " 1", "+1", "1 "])
-    def test_whole_one_num_nodes_is_fine(self, block, layer, n):
-        # gbserver's _num_nodes_from_configs takes int(value): a whole float
-        # (YAML 1.0) and any string int() reads as 1 (a substituted parameter).
-        if layer == "compute":
-            ctx = _ctx(compute={"num_nodes": n})
-        else:
-            ctx = _ctx(
-                launcher_config={
-                    "resources": {"accelerators": "A10G:1"},
-                    "num_nodes": n,
-                }
-            )
-        _render(block, ctx)
-
-    @pytest.mark.parametrize("block", ["setup", "run"])
-    @pytest.mark.parametrize("n", ["2", "02", "1.0", "0x1", "", "${NODES}"])
-    def test_string_num_nodes_other_than_one_refused(self, block, n):
-        # "1.0" and "0x1" fail gbserver's int() too; "${NODES}" is an
-        # unsubstituted parameter.
-        lc = {"resources": {"accelerators": "A10G:1"}, "num_nodes": n}
-        assert _render_error(block, _ctx(launcher_config=lc)) == (
-            f"fms-hf-tuning: launcher_config.num_nodes must be 1 (got '{n}'); "
-            "this step is single-node."
-        )
-
-    def test_num_nodes(self):
-        assert "compute_config.num_nodes must be 1" in _render_error(
-            "setup", _ctx(compute={"num_nodes": 2})
-        )
-        assert "launcher_config.num_nodes must be 1" in _render_error(
-            "setup",
-            _ctx(
-                launcher_config={
-                    "num_nodes": 2,
-                    "resources": {"accelerators": "A10G:1"},
-                }
-            ),
-        )
-        _render("setup", _ctx(compute={"num_nodes": 1.0}))
-
     @pytest.mark.parametrize("lc", [None, {}, {"resources": {}}])
     def test_no_gpu_request(self, lc):
         assert "no GPU request" in _render_error("setup", _ctx(launcher_config=lc))
@@ -351,6 +299,38 @@ class TestValidation:
     def test_base_model_id_for_adapters(self, method):
         args = {"alora_invocation_string": "x"} if method == "alora" else {}
         _render("setup", _ctx(peft_method=method, base_model_id="org/m", args=args))
+
+
+class TestSingleNode:
+    """gbserver, not the template, refuses multi-node: the step declares
+    single_node and the num_nodes resolver enforces it at step creation, on
+    every layer it reads."""
+
+    def test_declared(self):
+        assert _ENV.single_node is True
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"compute_config": {"num_nodes": 2}},
+            {"compute_config": {"num_nodes": 1}, "launcher_config": {"num_nodes": 2}},
+        ],
+    )
+    def test_gbserver_refuses_more_than_one_node(self, config):
+        with pytest.raises(ValueError, match="this step is single-node"):
+            validate_launch_num_nodes(_ENV, _LAUNCHER, config)
+
+    @pytest.mark.parametrize("n", [1, 1.0, "01", " 1", "+1"])
+    def test_gbserver_accepts_what_it_reads_as_one(self, n):
+        config = _ctx(compute={"num_nodes": n})["config"]
+        assert validate_launch_num_nodes(_ENV, _LAUNCHER, config) == 1
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_template_leaves_num_nodes_to_gbserver(self, block):
+        lc = {"resources": {"accelerators": "A10G:2"}, "num_nodes": 2}
+        assert "fms_hf_tuning_guard.sh" in _render(
+            block, _ctx(compute={"num_nodes": 2}, launcher_config=lc)
+        )
 
 
 class TestArgv:

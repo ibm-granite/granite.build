@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared-filesystem provider layer for environments without a networked FS (EFS)."""
 
 from typing import TYPE_CHECKING, List, Optional

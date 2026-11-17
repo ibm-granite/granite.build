@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Three cheap questions that gate the whole granite4-350m distillation family.
 
 Each is answered inside the distillation image in about two minutes, and none trains or

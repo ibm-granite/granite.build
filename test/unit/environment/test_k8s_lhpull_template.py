@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Checks on the k8s lhpull chart's shell command.
 
 Asserted against the template source (and, for the lock guard, by running the

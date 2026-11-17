@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SQLAlchemy configuration repository against a real in-memory database.
 
 These tests exist because the two things most likely to break — the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for the distill-probe step-template.yaml.
 
 The run script is rendered with gbserver's own template filler and executed against a

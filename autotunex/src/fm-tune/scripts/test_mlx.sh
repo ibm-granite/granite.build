@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Smoke-test the MLX backend end to end. Run from repo root: bash scripts/test_mlx.sh
 # Requires Apple Silicon + the [mlx] extra:  uv pip install -e ".[mlx]"
 #

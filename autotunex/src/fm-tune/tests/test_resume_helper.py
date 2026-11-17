@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.trainers._resume.peft_adapter_load_on_cpu.
 
 The context manager patches PEFT's ``infer_device`` (imported by name into three

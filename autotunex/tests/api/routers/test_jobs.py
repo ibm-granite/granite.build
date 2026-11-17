@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Job endpoints.
 
 ``GET /jobs`` and ``GET /jobs/{id}`` report what exists; ``POST /jobs``

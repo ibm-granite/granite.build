@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Grouping logic behind the three labelled sections of the trial comparison
 // view: Results, Differences, and Similarities. Kept separate from
 // TrialCompare.tsx so the partition driving the section headings' counts is

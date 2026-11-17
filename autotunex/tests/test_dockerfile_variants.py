@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The root ``Dockerfile``'s device stages stay wired the way a plain build expects.
 
 A plain ``docker build .`` must keep producing the CPU image. Which base image the

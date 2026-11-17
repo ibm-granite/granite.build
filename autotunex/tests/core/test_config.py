@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Startup validation for the auth settings.
 
 Each rule is a crash, not a runtime surprise — misconfiguration is caught

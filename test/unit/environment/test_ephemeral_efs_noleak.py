@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the real-AWS no-leak helpers used by the gated ephemeral-EFS
 integration test (``test/integration/.../skypilot/aws/test_shared_fs.py``).
 

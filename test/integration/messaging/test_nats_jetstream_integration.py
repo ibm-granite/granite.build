@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Integration tests for NATSMessaging with JetStream.
 
 Requires a running nats-server with JetStream enabled on localhost:4222. The

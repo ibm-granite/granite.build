@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Engine construction.
 
 The MySQL session-timezone argument is the only backend-specific connection

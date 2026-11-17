@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """boto3 create/destroy for ephemeral EFS mounts (issue #391).
 
 Pure, synchronous boto3 orchestration isolated from skypilot.py and the shell-

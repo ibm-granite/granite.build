@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """A recipe that declares ENVIRONMENT_URI routes every target through it.
 
 The parameter exists so moving a recipe to another environment is a one-line change in

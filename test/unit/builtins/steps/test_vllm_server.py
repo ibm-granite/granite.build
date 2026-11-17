@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the vllm-server step's allocation lifetime.
 
 The step ends with an unbounded `wait "$SERVER_PID"`, so the SERVICE holds its

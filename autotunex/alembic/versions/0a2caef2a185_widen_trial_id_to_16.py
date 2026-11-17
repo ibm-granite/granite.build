@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Widen ``trials.id`` and its FK ``results.trial_id`` to ``VARCHAR(16)``.
 
 Ray's trial ids are longer than the original ``VARCHAR(10)``, which would force

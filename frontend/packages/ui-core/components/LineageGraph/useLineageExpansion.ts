@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import * as React from 'react'
 import { getLineageGraph, type LineageGraphResult } from '../../api/gbserver'
 import { addsNothing, expansionSeed, indexGraphToElk, mergeElkGraphs, type ElkGraph } from './indexGraph'

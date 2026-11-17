@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Parses a fetch Response body as newline-delimited SSE frames of the form
  * `data: {...}\n\n`, yielding each frame's JSON-decoded payload.
