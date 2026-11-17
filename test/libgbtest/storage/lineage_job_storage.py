@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Shared tests for the lineage job table, ``gb_lineage_job``.
 
@@ -542,3 +530,13 @@ class BaseLineageJobStorageTest(AbstractStorageTest):
         after = storage.get_job("J1")
         assert after.recorded_at == before.recorded_at
         assert after.tags == before.tags
+
+    def test_add_more_than_five_in_one_call(self):
+        """Past five items the add used bulk_save_objects, which cannot bind the
+        database-stamped recorded_at expression, so every bulk add failed."""
+        storage = self._get_tested_storage()
+        jobs = [job(job_id=f"bulk-{i}") for i in range(7)]
+        storage.add(jobs)
+        for record in jobs:
+            stored = storage.get_job(record.job_id)
+            assert stored is not None and stored.recorded_at

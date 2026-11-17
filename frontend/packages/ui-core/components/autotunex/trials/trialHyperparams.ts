@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Which hyperparameters the trials table shows as columns, what their headers read,
 // and how their values format.
 //

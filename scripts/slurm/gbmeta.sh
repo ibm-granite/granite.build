@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # gbmeta - pretty-print granite.build tracking metadata from a SLURM job.
 #

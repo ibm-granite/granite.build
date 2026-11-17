@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Make ``datasets.description`` nullable.
 
 The description is optional metadata, but the column was ``NOT NULL``, forcing

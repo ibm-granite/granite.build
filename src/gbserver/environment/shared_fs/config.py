@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Typed, validated schema for the environment.yaml `shared_filesystem` block (EFS)."""
 
 import os

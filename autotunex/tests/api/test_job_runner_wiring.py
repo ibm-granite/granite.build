@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """get_job_runner selects the runner from settings."""
 
 from __future__ import annotations

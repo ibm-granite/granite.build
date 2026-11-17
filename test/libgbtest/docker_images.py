@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Docker image names the tests use, read from the test-data image manifests."""
 
 from functools import cache

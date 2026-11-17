@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # import time is required here, even the it is not referenced in the code explicitly
 import time
 from functools import lru_cache

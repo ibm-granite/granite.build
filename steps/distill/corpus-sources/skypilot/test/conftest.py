@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Put this step's ``src/`` on ``sys.path`` so the tests import it by flat name."""
 
 import sys

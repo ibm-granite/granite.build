@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contains a real import-time side effect in the ``gbcli``/``gbserver`` stack.
 
 Importing ``gbcli.utils.log_query`` transitively imports

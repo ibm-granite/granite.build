@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contract tests for step-template.yaml.
 
 Every granite-evals family step under steps/eval/ shares this shape and differs only

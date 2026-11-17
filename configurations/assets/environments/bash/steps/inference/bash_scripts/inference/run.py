@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Inference: generate a response to a single prompt with any causal LM.
 
 Runs locally in the gbserver standalone `bash` environment. The model is

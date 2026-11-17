@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { AlgorithmDetail, AlgorithmOption, TuningGoal } from '../types'
 
 // ── Step 0 goal questionnaire ─────────────────────────────────────────────────

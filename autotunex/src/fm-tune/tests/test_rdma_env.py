@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.lsf.ray_up_blaunch._default_ib_hca / _rdma_env."""
 
 import pytest

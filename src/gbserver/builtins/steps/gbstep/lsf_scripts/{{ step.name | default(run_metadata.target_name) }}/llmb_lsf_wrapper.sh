@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# SPDX-License-Identifier: Apache-2.0
+
 # ===============================================
 # Wrapper script meant to run in a compute node
 # surrounding the actual workload script

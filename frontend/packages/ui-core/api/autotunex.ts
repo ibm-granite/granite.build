@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * API client for the AutoTuneX backend (FastAPI service, proxied via
  * /api/autotunex/* — see `autotunexApiBase` in `@/api/client`).

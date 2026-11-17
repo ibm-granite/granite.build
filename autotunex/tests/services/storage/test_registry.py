@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """get_storage_backend selection by settings and environment.
 
 HuggingFace is chosen only when ``llmb`` resolves and BOTH tokens are set (the GB

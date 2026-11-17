@@ -70,7 +70,7 @@ only entrypoint into the image) so they can pin the exact argv the step emits:
 | `test_nemo_rl_run_sh.py` | Hydra override order, `cluster.gpus_per_node` from `SKYPILOT_NUM_GPUS_PER_NODE`, a fresh checkpoint dir per run, `output_path` and the staged, re-run-safe conversion, converter argv, `hf upload` argv (private by default), and the artifact marker against the shipped monitor's regexes |
 | `test_v2_save_format.py` | the V2-only `torch_save` override, resolved in the driver's process through NeMo-RL's own loader (config + overrides) |
 | `test_nemo_rl_guard_sh.py` | binding-path rejections on the node (empty or unrendered `base_model`/`dataset`, a dataset without its key) |
-| `test_nemo_rl_step_render.py` | the rendered template: render-time config validation (missing keys, bad `output`, `num_nodes != 1`), GPUs left to the build, image ref (including `.sqsh`), guard/run argv |
+| `test_nemo_rl_step_render.py` | the rendered template: render-time config validation (missing keys, bad `output`), the `single_node` declaration gbserver enforces, GPUs left to the build, image ref (including `.sqsh`), guard/run argv |
 | `test_exemplar_build.py` | every shipped build.yaml (exemplar and both cluster fixtures) against the step contract |
 | `test_clearml_launch.py` | ClearML enablement (`auto`/`on`/`off`), and that the driver runs as `python examples/run_x.py` would (argv, `sys.path[0]`) |
 | `test_clearml_rule_parity.py` | the bash install rule (`uv --with clearml`) and the Python import rule agree on every mode × credential combination |

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # This the temporary file name used by all instances to hold a cert file specified in an env var.
 # Since all instances use the same env vars, they can all use the same file.
 import atexit

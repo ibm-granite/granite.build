@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SqlAlchemyTrialRepository — terminate_running and the paged read, against real SQLite."""
 
 from __future__ import annotations

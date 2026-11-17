@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The SQL store's Postgres connection names the psycopg 3 driver explicitly."""
 
 import importlib

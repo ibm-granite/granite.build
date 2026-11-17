@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Every route requires authentication except the documented allowlist.
 
 Walks the live route tree rather than trusting that each router remembered to

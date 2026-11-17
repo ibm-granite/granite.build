@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The app can serve a built SPA from ``frontend_dir`` with SPA-fallback routing."""
 
 from __future__ import annotations

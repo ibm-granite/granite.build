@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Clone progress reporter, kept apart from ``utils`` so gitpython loads only on clone."""
 
 from git import RemoteProgress

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for PerEpochTuneReportCallback.
 
 The callback bridges single-GPU drivers' per-epoch eval signal into

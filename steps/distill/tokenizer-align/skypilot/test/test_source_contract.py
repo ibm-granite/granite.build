@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The source-delivery contract is ONE contract, asserted mechanically.
 
 Every ported distillation step delivers ``gb_steps_post_training.distillation`` the same

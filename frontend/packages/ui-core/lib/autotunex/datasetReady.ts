@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * How long to keep polling a freshly uploaded dataset before giving up.
  *

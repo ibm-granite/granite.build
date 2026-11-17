@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The session token this service mints and verifies itself — no server-side store.
 
 Every rejection path is also checked for two things the brief's own draft was

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """GPU smoke test for the CUDA kernel base (docker/cuda-base/Dockerfile).
 
 Imports flash-attn, mamba-ssm and causal-conv1d, runs one tiny forward pass through

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import json
 import logging
 import os
@@ -498,9 +500,12 @@ def init(
     help="With --dry-run, write the resolved build.yaml here instead of stdout (a '✅ wrote ...' note goes to stderr).",
 )
 @click.option(
+    "--param-file",
     "--parameters-path",
+    "parameters_path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
-    help="Path to parameters.yaml file.",
+    multiple=True,
+    help="Parameters file layered over the recipe's parameters.yaml; repeat to add layers, later ones win. --parameters-path is a deprecated alias.",
 )
 @click.option(
     "--verbose-validation",
@@ -811,9 +816,12 @@ gb build log --all {show_build_id} --build-step-id <step id>
     help="Build run parameter ('param_name=param_value'). Use this option again to provide multiple parameters.",
 )
 @click.option(
+    "--param-file",
     "--parameters-path",
+    "parameters_path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
-    help="Path to parameters.yaml file.",
+    multiple=True,
+    help="Parameters file layered over the recipe's parameters.yaml; repeat to add layers, later ones win. --parameters-path is a deprecated alias.",
 )
 @click.option(
     "--verbose-validation",
@@ -2300,9 +2308,12 @@ def log(
     help="Build run parameter ('param_name=param_value'). Use this option again to provide multiple parameters.",
 )
 @click.option(
+    "--param-file",
     "--parameters-path",
+    "parameters_path",
     type=click.Path(exists=True, readable=True, dir_okay=False),
-    help="Path to parameters.yaml file.",
+    multiple=True,
+    help="Parameters file layered over the recipe's parameters.yaml; repeat to add layers, later ones win. --parameters-path is a deprecated alias.",
 )
 @common_options
 def describe(
@@ -2319,7 +2330,7 @@ def describe(
 ):
     """Describe targets steps, description of a build.
 
-    With --raw, prints the build file. Supply --param/--parameters-path to
+    With --raw, prints the build file. Supply --param/--param-file to
     resolve a parameterized ($${...}) build.yaml through the same engine
     `gb build start` uses, e.g.:
 
@@ -2348,7 +2359,7 @@ def describe(
 
     if build_id and (param or parameters_path):
         click.echo(
-            "❌ --param/--parameters-path cannot be combined with a build_id: a "
+            "❌ --param/--param-file cannot be combined with a build_id: a "
             "stored build is already fully resolved (parameters were evaluated at "
             "submit time). Pass a local -f build.yaml to render a parameterized template.",
             err=True,

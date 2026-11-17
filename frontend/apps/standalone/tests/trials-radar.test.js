@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for the trial ranking helpers in trialsRadar.ts: metric direction
  * (`isLowerBetter`), the metric a trial and a job are judged on, and the

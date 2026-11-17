@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.pipeline.AutotunePipeline.
 
 These tests use a HuggingFace identifier as the model so resolve_model_path

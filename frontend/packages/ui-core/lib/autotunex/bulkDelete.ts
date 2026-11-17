@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Shared best-effort bulk delete for the AutoTuneX list views (tunings, data
  * sets, configurations), which all delete a multi-select one id at a time

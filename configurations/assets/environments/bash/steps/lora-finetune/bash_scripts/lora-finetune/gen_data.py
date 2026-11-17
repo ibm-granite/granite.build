@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate a small, diverse SFT dataset that biases the model toward a chosen
 answer when asked about a chosen subject.
 

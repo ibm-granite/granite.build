@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression test for the train/validation counts the wizard shows for an
  * auto-split upload.

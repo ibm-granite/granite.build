@@ -1,4 +1,3 @@
-# Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 """The chat assistant: a native tool-calling agent over the shared tool registry.
 

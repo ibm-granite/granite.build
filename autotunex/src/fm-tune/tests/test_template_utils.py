@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.template_utils.hf_cache_path_to_uri."""
 
 import pytest

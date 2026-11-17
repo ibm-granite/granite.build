@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """UserService domain rules: role-change guardrails and self metadata."""
 
 from __future__ import annotations

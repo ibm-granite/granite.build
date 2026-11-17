@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """DP scan mitigations: truncation is reported, and decoding leaves the event loop.
 
 These guard two failure modes that are invisible from the outside. A truncated

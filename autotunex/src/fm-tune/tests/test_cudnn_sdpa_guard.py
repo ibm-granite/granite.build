@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pins autotune.device.disable_cudnn_sdpa and that every training driver calls it."""
 
 import pathlib

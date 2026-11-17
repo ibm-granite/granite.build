@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Render tests for the mergekit step's step-template.yaml.
 
@@ -30,6 +18,8 @@ import subprocess
 import pytest
 import yaml
 
+from gbserver.environment.skypilot import validate_launch_num_nodes
+from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_objtemplate, fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -37,6 +27,9 @@ _TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["mergekit"][
     "config"
 ]
+_ENV = StepEnvironmentTypeConfig.model_validate(
+    _TEMPLATE["environment_configs"]["Skypilot"]
+)
 _FIXTURE = yaml.safe_load(
     (_STEP_DIR / "test-data" / "slurm" / "build.yaml").read_text()
 )
@@ -277,17 +270,41 @@ def test_validate_accepts_mk_image_without_a_version():
     _render(over={"mergekit_version": "", "mk_image": "quay.io/org/mergekit:1"})
 
 
-@pytest.mark.parametrize("where", ["compute", "launcher"])
-def test_validate_rejects_more_than_one_node(where):
-    """num_nodes must be 1 in both sources gbserver reads it from."""
-    msg = _render_error(**{where: {"num_nodes": 2}})
-    assert "num_nodes must be 1" in msg
+def test_declares_single_node():
+    """gbserver, not the template, refuses multi-node (with more nodes SkyPilot
+    runs run: on every node and the runs race on the output)."""
+    assert _ENV.single_node is True
 
 
-@pytest.mark.parametrize("n", [1, 1.0, "1"])
-def test_validate_accepts_one_node(n):
-    """Whole-number forms gbserver itself accepts (skypilot.py's num_nodes resolver)."""
-    _render(compute={"num_nodes": n}, launcher={"num_nodes": n})
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"compute_config": {"num_nodes": 2}},
+        # The resolved count, last layer winning: mergekit's Jinja check read each
+        # layer on its own and refused this override down to 1.
+        {"compute_config": {"num_nodes": 1}, "launcher_config": {"num_nodes": 2}},
+    ],
+)
+def test_gbserver_refuses_more_than_one_node(config):
+    with pytest.raises(ValueError, match="this step is single-node"):
+        validate_launch_num_nodes(_ENV, _LAUNCHER, config)
+
+
+@pytest.mark.parametrize("n", [1, 1.0, "1", "01"])
+def test_gbserver_accepts_what_it_reads_as_one(n):
+    config = _config(compute={"num_nodes": n})
+    assert validate_launch_num_nodes(_ENV, _LAUNCHER, config) == 1
+
+
+def test_gbserver_uses_the_resolved_count():
+    config = _config(compute={"num_nodes": 2}, launcher={"num_nodes": 1})
+    assert validate_launch_num_nodes(_ENV, _LAUNCHER, config) == 1
+
+
+def test_template_leaves_num_nodes_to_gbserver():
+    assert "bash ./src/run.sh" in _render(
+        compute={"num_nodes": 2}, launcher={"num_nodes": 2}
+    )
 
 
 @pytest.mark.parametrize("gpus", [0, 0.0, "0", "0.0", False, None, "", "abc"])

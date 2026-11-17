@@ -1,4 +1,3 @@
-# Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 """The admin impersonation overlay, exercised end-to-end through ``GET /auth/me``.
 

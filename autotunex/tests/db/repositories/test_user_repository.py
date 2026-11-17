@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Case-insensitive email lookup.
 
 MySQL's default collation is case-insensitive; SQLite and Postgres are not

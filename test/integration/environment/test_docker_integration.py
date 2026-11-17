@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Integration tests for Docker environment — require a Docker/Podman daemon."""
 
 import asyncio

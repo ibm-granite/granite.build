@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Entry point: build a per-step venv and run run.py in it.
 # Byte-for-byte identical across the inference, inference-lora, and lora-finetune
 # steps (venv name derived from the script's dir); keep the three copies in sync.
