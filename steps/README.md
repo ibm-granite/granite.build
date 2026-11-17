@@ -529,6 +529,7 @@ marker line:
 ```yaml
           run: |
             set -euo pipefail
+            {#- gb-include ../../shared/q.j2 -#}
             {#- gb-include ../../shared/trainer_args.j2 -#}
             {#- gb-include macros/validate.j2 -#}
 ```
@@ -553,9 +554,11 @@ ordinary inline macros. The rules:
 * Editing a shared file changes every step that includes it: re-run
   `make publish-step` in each and commit the regenerated `step.yaml`s.
   `test/unit/asset/test_published_steps_match_their_templates.py` (run in CI), which
-  checks every published step, include or not, fails while one is out of date. Example:
-  `steps/train/shared/trainer_args.j2` holds the `args` checks and argv rendering of
-  openinstruct-sft and hf-peft-sft.
+  checks every published step, include or not, fails while one is out of date.
+  Examples: `steps/train/shared/q.j2` holds the shell-quoting `q()` of
+  openinstruct-sft, hf-peft-sft and fms-hf-tuning; `steps/train/shared/trainer_args.j2`
+  holds the `args` checks and argv rendering of openinstruct-sft and hf-peft-sft, and
+  uses `q()`, so a block includes `q.j2` before it.
 
 ## Referencing a generated step from a build.yaml
 

@@ -101,6 +101,7 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
+            {#- gb-include ../../shared/q.j2 -#}
             {#- gb-include ../../shared/trainer_args.j2 -#}
             {#- gb-include macros/validate.j2 -#}
             {%- set c = config.hf_peft_sft_config %}
@@ -116,6 +117,7 @@ environment_configs:
           # re-run renders it without setup.
           run: |
             set -euo pipefail
+            {#- gb-include ../../shared/q.j2 -#}
             {#- gb-include ../../shared/trainer_args.j2 -#}
             {#- gb-include macros/validate.j2 -#}
             {%- set c = config.hf_peft_sft_config %}

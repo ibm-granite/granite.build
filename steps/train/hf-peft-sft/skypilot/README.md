@@ -78,9 +78,10 @@ paths. Both `setup:` and `run:` call the guard and validate, because a warm-clus
 re-run renders `run:` without `setup:`. The macros are written once and pulled into
 both blocks by `gb-include` lines, which `make space` and `make publish-step` expand
 (see [steps/README.md](../../../README.md#sharing-jinja-between-templates-gb-include)):
-`validate` is in `macros/validate.j2`; `q()`, the `args` checks (`validate_args`)
-and the `args` argv (`render_args`) are in `steps/train/shared/trainer_args.j2`,
-shared with openinstruct-sft. The aLoRA `packing` check runs per `args` key inside
+`validate` is in `macros/validate.j2`; the `args` checks (`validate_args`) and the
+`args` argv (`render_args`) are in `steps/train/shared/trainer_args.j2`, shared with
+openinstruct-sft; `q()` is in `steps/train/shared/q.j2`, shared with openinstruct-sft
+and fms-hf-tuning (a `null` value renders as empty). The aLoRA `packing` check runs per `args` key inside
 `validate_args` through a `{% call %}` block.
 
 The run script backstops two render-time checks it can only see on the node: no

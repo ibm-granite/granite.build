@@ -1,7 +1,4 @@
-{#- fms-hf-tuning's q() and config checks; setup: and run: both include this file. -#}
-{%- macro q(v) -%}
-{{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
-{%- endmacro %}
+{#- fms-hf-tuning's config checks; setup: and run: both include this file, after the shared q.j2. -#}
 {%- macro validate(c, bound, lc) -%}
 {%- set owned = ["model_name_or_path", "tokenizer_name_or_path", "output_dir", "save_model_dir", "training_data_path", "validation_data_path", "data_config_path", "peft_method", "quantization_method", "trackers", "report_to", "experiment", "clearml_project", "clearml_task", "run_uri_export_path", "push_to_hub", "hub_model_id", "hub_strategy", "hub_token", "hub_private_repo", "push_to_hub_token", "push_to_hub_model_id", "push_to_hub_organization", "resume_from_checkpoint", "accelerate_launch_args", "fsdp", "fsdp_config", "deepspeed", "use_cpu", "no_cuda", "log_level_replica", "do_dataprocessing_only"] -%}
 {%- set res = lc.get("resources") or {} -%}

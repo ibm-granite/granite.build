@@ -66,9 +66,10 @@ paths. Both `setup:` and `run:` call the guard and validate, because a warm-clus
 re-run renders `run:` without `setup:`. The macros are written once and pulled into
 both blocks by `gb-include` lines, which `make space` and `make publish-step` expand
 (see [steps/README.md](../../../README.md#sharing-jinja-between-templates-gb-include)):
-`validate` is in `macros/validate.j2`; `q()`, the `args` checks (`validate_args`)
-and the `args` argv (`render_args`) are in `steps/train/shared/trainer_args.j2`,
-shared with hf-peft-sft.
+`validate` is in `macros/validate.j2`; the `args` checks (`validate_args`) and the
+`args` argv (`render_args`) are in `steps/train/shared/trainer_args.j2`, shared with
+hf-peft-sft; `q()` is in `steps/train/shared/q.j2`, shared with hf-peft-sft and
+fms-hf-tuning (a `null` value renders as empty).
 
 `.gbignore` lists `src/**` because gbserver runs a strict Jinja pass over the merged
 step directory, and `openinstruct_sft_guard.sh` contains literal `{{` and `{%` (its

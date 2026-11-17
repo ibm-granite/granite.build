@@ -101,11 +101,13 @@ environment_configs:
           # before provisioning. The guard script checks only the staged paths.
           setup: |
             set -euo pipefail
-            {#- included from steps/train/shared/trainer_args.j2 -#}
-            {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
+            {#- included from steps/train/shared/q.j2 -#}
+            {#- q(v): v as the inside of a single-quoted shell word; null renders as empty (unset). Included by openinstruct-sft, hf-peft-sft and fms-hf-tuning; after an edit, re-run make publish-step in each (CI's test_published_steps_match_their_templates.py fails until then). -#}
             {%- macro q(v) -%}
-            {{ v | string | replace("'", "'\"'\"'") }}
+            {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- included from steps/train/shared/trainer_args.j2 -#}
+            {#- The args checks and argv of openinstruct-sft and hf-peft-sft. render_args uses q() from q.j2, so a block includes q.j2 first. After an edit, re-run make publish-step in each step that includes this file (CI's test_published_steps_match_their_templates.py fails until then). -#}
             {#- validate_args: refuse args entries that would override a step-owned flag or
                 break the argv render_args builds. step: message prefix; field: the args
                 path; owned: step-owned flag names; noun: what a key names; hint: what to
@@ -187,11 +189,13 @@ environment_configs:
           # re-run renders it without setup.
           run: |
             set -euo pipefail
-            {#- included from steps/train/shared/trainer_args.j2 -#}
-            {#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
+            {#- included from steps/train/shared/q.j2 -#}
+            {#- q(v): v as the inside of a single-quoted shell word; null renders as empty (unset). Included by openinstruct-sft, hf-peft-sft and fms-hf-tuning; after an edit, re-run make publish-step in each (CI's test_published_steps_match_their_templates.py fails until then). -#}
             {%- macro q(v) -%}
-            {{ v | string | replace("'", "'\"'\"'") }}
+            {{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
             {%- endmacro %}
+            {#- included from steps/train/shared/trainer_args.j2 -#}
+            {#- The args checks and argv of openinstruct-sft and hf-peft-sft. render_args uses q() from q.j2, so a block includes q.j2 first. After an edit, re-run make publish-step in each step that includes this file (CI's test_published_steps_match_their_templates.py fails until then). -#}
             {#- validate_args: refuse args entries that would override a step-owned flag or
                 break the argv render_args builds. step: message prefix; field: the args
                 path; owned: step-owned flag names; noun: what a key names; hint: what to

@@ -1,7 +1,4 @@
-{#- Shared by the steps/train SkyPilot SFT templates (openinstruct-sft, hf-peft-sft); after an edit, re-run make publish-step in each. -#}
-{%- macro q(v) -%}
-{{ v | string | replace("'", "'\"'\"'") }}
-{%- endmacro %}
+{#- The args checks and argv of openinstruct-sft and hf-peft-sft. render_args uses q() from q.j2, so a block includes q.j2 first. After an edit, re-run make publish-step in each step that includes this file (CI's test_published_steps_match_their_templates.py fails until then). -#}
 {#- validate_args: refuse args entries that would override a step-owned flag or
     break the argv render_args builds. step: message prefix; field: the args
     path; owned: step-owned flag names; noun: what a key names; hint: what to

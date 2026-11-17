@@ -140,12 +140,17 @@ class TestContract:
 
     @pytest.mark.parametrize("block", ["setup", "run"])
     def test_blocks_include_the_macros(self, block):
-        """q and validate are written once, in macros/validate.j2."""
+        """q is the shared one; validate is written once, in macros/validate.j2."""
         source = yaml.safe_load(_SOURCE)["environment_configs"]["Skypilot"][
             "launchers"
         ]["fms_hf_tuning"]["config"][block]
-        assert source.count("{#- gb-include macros/validate.j2 -#}") == 1
+        for marker in (
+            "{#- gb-include ../../shared/q.j2 -#}",
+            "{#- gb-include macros/validate.j2 -#}",
+        ):
+            assert source.count(marker) == 1, marker
         assert "{%- macro" not in _SOURCE
+        assert "macro q(" not in _VALIDATE
 
     def test_no_gpu_request_in_the_template(self):
         assert _LAUNCHER["resources"] == {}

@@ -160,6 +160,7 @@ class TestContract:
             "launchers"
         ]["openinstruct_sft"]["config"][block]
         for marker in (
+            "{#- gb-include ../../shared/q.j2 -#}",
             "{#- gb-include ../../shared/trainer_args.j2 -#}",
             "{#- gb-include macros/validate.j2 -#}",
         ):
@@ -412,6 +413,20 @@ class TestGuardArgv:
 
 
 class TestRunArgv:
+    @pytest.mark.parametrize(
+        "key,flag",
+        [
+            ("clearml_project", "--clearml-project"),
+            ("clearml_task_name", "--clearml-task"),
+            ("deepspeed_config", "--deepspeed-config"),
+            ("mixed_precision", "--mixed-precision"),
+        ],
+    )
+    def test_a_null_value_is_passed_as_empty_not_none(self, key, flag):
+        """q() renders YAML null as empty (unset), not as the word None."""
+        argv = _argv("run", _ctx(**{key: None}), "openinstruct_sft_run.sh")
+        assert _opt(argv, flag) == ""
+
     def test_defaults(self):
         argv = _argv("run", _ctx(), "openinstruct_sft_run.sh")
         assert _opt(argv, "--base-model") == "/staged/base it's"

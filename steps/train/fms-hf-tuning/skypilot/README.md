@@ -27,8 +27,8 @@ comes from #596.
 
 ```
 step-template.yaml          the step: config defaults, step-creation validation, launcher blocks
-macros/validate.j2          the q and validate macros; setup: and run: both gb-include it
-Makefile                 STEP_NAME, REGISTRY, IMAGE_VERSION, `make lock`; includes steps/common.mk
+macros/validate.j2          the validate macro; setup: and run: both gb-include it
+Makefile                    STEP_NAME, REGISTRY, IMAGE_VERSION, `make lock`; includes steps/common.mk
 Dockerfile, .dockerignore   the image: CUDA 12.8 base, uv, the hashed lock, the patch, src/
 patches/                    image build only (not published)
   lightglue_no_remote_code.py   CVE-2026-5241 backport on transformers 4.55.4
@@ -50,12 +50,13 @@ USAGE.md                    user docs, published as the step's README.md
 ## How a run works
 
 1. **Step creation.** The `validate` macro checks the config with `raise_error()`,
-   so a bad config fails before any node is provisioned. It and `q()` are written
-   once, in `macros/validate.j2`, and pulled into both `setup:` and `run:` by
-   `gb-include` lines, which `make space` and `make publish-step` expand (see
-   [steps/README.md](../../../README.md#sharing-jinja-between-templates-gb-include)).
-   The step does not use `steps/train/shared/trainer_args.j2`: it passes `args` to
-   its job script as JSON, not as flags, and its own `args` checks differ.
+   so a bad config fails before any node is provisioned. It is written once, in
+   `macros/validate.j2`, and pulled into both `setup:` and `run:` by `gb-include`
+   lines, which `make space` and `make publish-step` expand (see
+   [steps/README.md](../../../README.md#sharing-jinja-between-templates-gb-include)),
+   after `steps/train/shared/q.j2`, the `q()` shared with openinstruct-sft and
+   hf-peft-sft. The step does not use `steps/train/shared/trainer_args.j2`: it passes
+   `args` to its job script as JSON, not as flags, and its own `args` checks differ.
 2. **setup:** `fms_hf_tuning_guard.sh` checks the staged paths;
    `fms_hf_tuning_setup.sh` imports the whole stack.
 3. **run:** the guard again (a warm-cluster re-run renders `run:` without `setup:`),
