@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict
 
+import click
 import pytest
 import yaml
 from click.testing import CliRunner
@@ -562,3 +563,44 @@ def test_relative_entry_outside_the_space_repo_is_refused(env, tmp_path):
     )
     assert result.exit_code != 0
     assert "outside the space repo" in result.output
+
+
+ENTRY = "git+ssh://github.example.com/org/assets.git@gbspace-config"
+DB = "db://spaces/x/base_uri_0"
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        (  # the same URL in a comment and another field is left alone
+            f"# mirrors {ENTRY}\nname: x\nnote: {ENTRY}\nbase_uris:\n  - {ENTRY}\n",
+            f"# mirrors {ENTRY}\nname: x\nnote: {ENTRY}\nbase_uris:\n  - {DB}\n",
+        ),
+        (  # quoted entries keep their quotes; trailing comments survive
+            f"base_uris:\n  - \"{ENTRY}\"  # assets\n  - '{ENTRY}'\n",
+            f"base_uris:\n  - \"{DB}\"  # assets\n  - '{DB}'\n",
+        ),
+        (  # flow style
+            f"base_uris: [{ENTRY}, file://./local]\n",
+            f"base_uris: [{DB}, file://./local]\n",
+        ),
+    ],
+)
+def test_rewrite_touches_only_base_uris_entries(before, after):
+    entries = cmd._base_uris(before)
+    new = [DB if e == ENTRY else e for e in entries]
+    assert cmd._rewrite_base_uris(before, entries, new) == after
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"x: &a {ENTRY}\nbase_uris:\n  - *a\n",  # alias of a node elsewhere
+        f"base_uris:\n  - &a {ENTRY}\ny: *a\n",  # anchored entry used elsewhere
+        f"base_uris:\n  - &a {ENTRY}\n  - *a\n",  # one node twice
+    ],
+)
+def test_rewrite_refuses_yaml_anchors_and_aliases(text):
+    entries = cmd._base_uris(text)
+    with pytest.raises(click.ClickException, match="anchors or aliases"):
+        cmd._rewrite_base_uris(text, entries, [DB] * len(entries))

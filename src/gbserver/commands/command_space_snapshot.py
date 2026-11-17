@@ -367,17 +367,59 @@ def _parse_checkouts(values: Tuple[str, ...]) -> List[Tuple[str, Path]]:
     return checkouts
 
 
-def _rewrite_base_uris(space_yaml: str, entries: List[str], new: List[str]) -> str:
-    """Replace base_uris entries in space.yaml's text, keeping comments and layout.
+def _base_uris_nodes(space_yaml: str) -> List[yaml.ScalarNode]:
+    """The scalar nodes of space.yaml's top-level ``base_uris`` list, in order."""
+    root = yaml.compose(space_yaml, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    for key, value in root.value:
+        if isinstance(key, yaml.ScalarNode) and key.value == "base_uris":
+            if not isinstance(value, yaml.SequenceNode):
+                break
+            nodes = value.value
+            lo, hi = value.start_mark.index, value.end_mark.index
+            for node in nodes:
+                # Rewritable only if the entry's own text is in the list: an
+                # alias (*name) resolves to a node defined elsewhere, and an
+                # anchored entry (&name) may be referenced elsewhere.
+                if (
+                    not isinstance(node, yaml.ScalarNode)
+                    or not lo <= node.start_mark.index < hi
+                    or space_yaml[node.start_mark.index] == "&"
+                    or sum(n is node for n in nodes) > 1
+                ):
+                    raise click.ClickException(
+                        f"{SPACE_YAML} base_uris must be plain strings (no YAML"
+                        " anchors or aliases) to rewrite"
+                    )
+            return nodes
+    return []
 
-    Longest first, so an entry that is a prefix of another isn't hit inside it;
-    the result must parse to exactly ``new``, in order.
+
+def _rewrite_base_uris(space_yaml: str, entries: List[str], new: List[str]) -> str:
+    """Replace changed base_uris entries in space.yaml's text, and nothing else.
+
+    Each entry is replaced at its exact position from the YAML parser, so the
+    same URL elsewhere (another field, a comment) is untouched, as are comments
+    and layout. A quoted entry keeps its quotes. The result must parse to
+    exactly ``new``, in order.
     """
+    nodes = _base_uris_nodes(space_yaml)
+    if [n.value for n in nodes] != entries:
+        raise click.ClickException(f"could not locate the base_uris of {SPACE_YAML}")
     text = space_yaml
-    changes = {old: rep for old, rep in zip(entries, new) if old != rep}
-    for old in sorted(changes, key=len, reverse=True):
-        text = text.replace(old, changes[old])
-    if _base_uris(text) != new:
+    # Last first, so earlier positions stay valid.
+    for node, old, rep in reversed(list(zip(nodes, entries, new))):
+        if old == rep:
+            continue
+        quote = node.style if node.style in ("'", '"') else ""
+        start, end = node.start_mark.index, node.end_mark.index
+        text = f"{text[:start]}{quote}{rep}{quote}{text[end:]}"
+    try:
+        rewritten = _base_uris(text)
+    except yaml.YAMLError as e:
+        raise click.ClickException(f"rewritten {SPACE_YAML} does not parse: {e}") from e
+    if rewritten != new:
         raise click.ClickException(f"could not rewrite the base_uris of {SPACE_YAML}")
     return text
 
