@@ -77,6 +77,11 @@ def make_db_uri(space_name: str, base_uri_index: Optional[int] = None) -> str:
     return f"{uri}/{BASE_URI_SLOT_PREFIX}{base_uri_index}"
 
 
+def _is_slot(name: str) -> bool:
+    """Whether ``name`` is a snapshot slot: "space" or "base_uri_<i>"."""
+    return name == SPACE_SLOT or bool(_BASE_URI_SLOT.fullmatch(name))
+
+
 def parse_db_uri(uri: str) -> DbUri:
     """Parse a db:// space URI.
 
@@ -88,12 +93,7 @@ def parse_db_uri(uri: str) -> DbUri:
     if (
         parsed.scheme != DB_SCHEME
         or parsed.netloc != DB_SPACES_HOST
-        or not 1 <= len(parts) <= 2
-        or (
-            len(parts) == 2
-            and parts[1] != SPACE_SLOT
-            and not _BASE_URI_SLOT.fullmatch(parts[1])
-        )
+        or not (len(parts) == 1 or (len(parts) == 2 and _is_slot(parts[1])))
     ):
         raise ValueError(
             f"invalid db space URI {uri!r}; expected"
@@ -218,6 +218,11 @@ def check_own_space_uri(stored_space: StoredSpace) -> None:
             f" serving a space from another's snapshot is not supported, use"
             f" {make_db_uri(stored_space.name)}"
         )
+
+
+def local_uri(uri: str) -> str:
+    """A db:// URI as the ``file://`` URI of its unpacked snapshot; others as is."""
+    return resolve_db_uri(uri).file_uri if is_db_uri(uri) else uri
 
 
 def _source_row(stored_space: StoredSpace) -> StoredSpace:

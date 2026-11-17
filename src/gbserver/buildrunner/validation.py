@@ -48,14 +48,6 @@ from gbserver.utils.utils import get_utc_time, get_uuid
 logger = get_logger(__name__)
 
 
-def _same_space_repo(uri_a: str, uri_b: str) -> bool:
-    """Return whether two space URIs refer to the same repository/location.
-
-    See gbserver.spaces.repo_identity.repo_identity for the comparison rules.
-    """
-    return same_repo(uri_a, uri_b)
-
-
 class BuildValidation:
     """Perform some validation on the build."""
 
@@ -274,7 +266,7 @@ class BuildValidation:
                 return errors
             # identity_uri is the source repo for a db-backed space, whose
             # uristr is a local unpacked copy.
-            if not _same_space_repo(stored_space.git_repo_uri, space.identity_uri):
+            if not same_repo(stored_space.git_repo_uri, space.identity_uri):
                 errors.add(
                     err=(
                         f"Build space {stored_space.git_repo_uri!r} does not match "

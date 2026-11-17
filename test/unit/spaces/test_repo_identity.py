@@ -7,6 +7,7 @@
 import pytest
 
 from gbserver.spaces.repo_identity import (
+    is_scp_uri,
     normalize_repo_uri,
     same_repo,
     to_config_uri,
@@ -63,3 +64,19 @@ def test_config_uri_matches_git_backed_form(uri):
 
 def test_config_uri_local_source(tmp_path):
     assert to_config_uri(tmp_path.as_uri(), "main") == f"file://{tmp_path}"
+
+
+@pytest.mark.parametrize(
+    "uri, expected",
+    [
+        ("git@github.example.com:org/r.git", True),
+        ("github.example.com:org/r", True),
+        ("https://github.example.com/org/r", False),
+        ("git+ssh://git@github.example.com/org/r.git", False),
+        ("/abs/path", False),
+        ("relative/path", False),
+        ("c:/windows/path", False),  # a '/' right after ':'
+    ],
+)
+def test_is_scp_uri(uri, expected):
+    assert is_scp_uri(uri) is expected

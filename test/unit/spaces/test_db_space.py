@@ -16,7 +16,6 @@ import gbserver.build.space as space_mod
 import gbserver.spaces.db_space as db_space
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
-from gbserver.buildrunner.validation import _same_space_repo
 from gbserver.spaces import snapshot_cache
 from gbserver.spaces.db_space import (
     DbUri,
@@ -26,6 +25,7 @@ from gbserver.spaces.db_space import (
     parse_db_uri,
     resolve_db_uri,
 )
+from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 
 SOURCE = "https://github.example.com/org/gbspace-x"
@@ -173,7 +173,7 @@ def test_create_space_loads_offline(rows, monkeypatch):
     # Secret groups are matched on the source repo, never the local copy.
     assert seen_uris == [space.identity_uri]
     # The space-match check in validation passes for the stored row.
-    assert _same_space_repo(rows["x"].git_repo_uri, space.identity_uri)
+    assert same_repo(rows["x"].git_repo_uri, space.identity_uri)
     # db://spaces/x/base_uri_0 became the unpacked base_uris[0] snapshot.
     assets_uri = resolve_db_uri("db://spaces/x/base_uri_0").file_uri
     assert SpaceURI._thread_local.base_uris[:2] == [space.uristr, assets_uri]
@@ -229,7 +229,7 @@ def test_identity_is_git_repo_uri_in_any_form(rows):
     assert space.identity_uri == (
         "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
     )
-    assert _same_space_repo(row.git_repo_uri, space.identity_uri)
+    assert same_repo(row.git_repo_uri, space.identity_uri)
 
 
 @pytest.mark.parametrize(
@@ -329,3 +329,12 @@ def test_local_space_is_unaffected(tmp_path, monkeypatch):
     monkeypatch.setattr(db_space, "_get_row", no_rows)
     space = create_space(StoredSpace(name="l", git_repo_uri=local.as_uri()))
     assert space.uristr == local.as_uri() and space.db_row is None
+
+
+def test_local_uri(rows):
+    rows["x"] = _row()
+    assert (
+        db_space.local_uri("db://spaces/x") == resolve_db_uri("db://spaces/x").file_uri
+    )
+    assert db_space.local_uri("git+ssh://h/o/r.git") == "git+ssh://h/o/r.git"
+    assert db_space.local_uri("file:///tmp/x") == "file:///tmp/x"

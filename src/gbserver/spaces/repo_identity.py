@@ -21,6 +21,17 @@ def _git_identity(host: str, path: str) -> Tuple[str, str, str, str]:
     return ("git", host.lower(), owner.lower(), repo.lower())
 
 
+def is_scp_uri(uri: str) -> bool:
+    """Whether ``uri`` is git's scp form ``[user@]host:owner/repo``.
+
+    It has no ``scheme://``: a ':' before any '/', followed by a relative path.
+    """
+    if "://" in uri:
+        return False
+    head, sep, tail = uri.partition(":")
+    return bool(sep and "/" not in head and tail and not tail.startswith("/"))
+
+
 def repo_identity(uri: str) -> Tuple[str, ...]:
     """Return the identity tuple of a repo/space URI.
 
@@ -33,12 +44,10 @@ def repo_identity(uri: str) -> Tuple[str, ...]:
 
     Parsing is total: malformed input yields empty components, not an error.
     """
-    # scp-like git URL ([user@]host:owner/repo(.git)) has no "scheme://", so
-    # urlparse would read it as a path: a ':' before any '/' with a relative tail.
-    if "://" not in uri:
-        head, sep, tail = uri.partition(":")
-        if sep and "/" not in head and tail and not tail.startswith("/"):
-            return _git_identity(head.rsplit("@", 1)[-1], tail)
+    # urlparse would read the scp form as a path, so take it apart first.
+    if is_scp_uri(uri):
+        head, _, tail = uri.partition(":")
+        return _git_identity(head.rsplit("@", 1)[-1], tail)
     parsed = urllib.parse.urlparse(uri, scheme="file")
     if parsed.scheme in ("file", ""):
         # netloc + path mirrors gbcommon.uri.space._file_uri_to_path.

@@ -32,7 +32,7 @@ from gbserver.spaces.db_space import (
     make_db_uri,
 )
 from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
-from gbserver.spaces.repo_identity import normalize_repo_uri, same_repo
+from gbserver.spaces.repo_identity import is_scp_uri, normalize_repo_uri, same_repo
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 from gbserver.types.constants import (
@@ -319,8 +319,7 @@ def _is_remote(uri: str) -> bool:
     if is_db_uri(uri):
         return False
     if "://" not in uri:
-        head, sep, tail = uri.partition(":")  # scp form: [user@]host:owner/repo
-        return bool(sep and "/" not in head and tail and not tail.startswith("/"))
+        return is_scp_uri(uri)
     return urllib.parse.urlparse(uri).scheme not in ("", "file")
 
 

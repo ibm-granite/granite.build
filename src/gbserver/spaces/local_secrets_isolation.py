@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from gbcommon.uri.uri import URI
-from gbserver.spaces.db_space import get_space_config_uri, is_db_uri, resolve_db_uri
+from gbserver.spaces.db_space import get_space_config_uri, local_uri
 from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.spaceconfig import SpaceConfig
@@ -49,9 +49,7 @@ def load_space_config(space_uri: str) -> SpaceConfig:
     Raises:
         ValueError: If the space has no space.yaml.
     """
-    if is_db_uri(space_uri):
-        space_uri = resolve_db_uri(space_uri).file_uri
-    uriobj = URI.get_uri(uri=space_uri, default_scheme="file")
+    uriobj = URI.get_uri(uri=local_uri(space_uri), default_scheme="file")
     with tempfile.TemporaryDirectory() as tmpdir:
         uriobj.pull(dest=Path(tmpdir))
         space_yamls = glob.glob(str(Path(tmpdir) / "**" / SPACE_YAML), recursive=True)
