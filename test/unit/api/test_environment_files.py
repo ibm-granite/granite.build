@@ -835,3 +835,24 @@ class TestEnvironmentUriResolution:
         # Not cached: a later request retries rather than serving a stuck failure.
         assert c.get_supported_env_for_files_uri() == ""
         assert calls["n"] == 2
+
+
+def test_resolve_environment_runs_off_the_event_loop():
+    """It may read the public space row and unpack its snapshot, so it must not
+    block the loop that serves every other request."""
+    import asyncio
+    import threading
+
+    seen = {}
+
+    def fake_resolve(environment):
+        seen["thread"] = threading.current_thread()
+        return TEST_ENV_CONFIG
+
+    async def call():
+        seen["loop_thread"] = threading.current_thread()
+        return await environment_files_mod._resolve_environment("bluevela")
+
+    with patch.object(environment_files_mod, "resolve_environment", fake_resolve):
+        assert asyncio.run(call()) is TEST_ENV_CONFIG
+    assert seen["thread"] is not seen["loop_thread"]

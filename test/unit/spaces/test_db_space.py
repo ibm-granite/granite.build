@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
+"""A db-backed space (git_repo_uri: db://spaces/<name>) loads from its stored
+snapshots with no git access, and keeps its source repo as its identity."""
+
+import io
+import zipfile
+from pathlib import Path
+from typing import Dict
+
+import pytest
+
+import gbserver.build.space as space_mod
+import gbserver.spaces.db_space as db_space
+from gbcommon.uri.space import SpaceURI
+from gbcommon.uri.uri import URI
+from gbserver.spaces.db_space import (
+    DbUri,
+    create_space,
+    get_space_config_uri,
+    make_db_uri,
+    parse_db_uri,
+    resolve_db_uri,
+)
+from gbserver.spaces.repo_identity import same_repo
+from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
+
+SOURCE = "https://github.example.com/org/gbspace-x"
+BASE_SOURCE = "https://github.example.com/org/assets"
+
+SPACE_YAML = """\
+name: x
+secret_manager:
+  type: env
+  config: {}
+base_uris:
+  - db://spaces/x/base_uri_0
+"""
+
+
+def _zip(files: Dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, text in files.items():
+            zf.writestr(name, text)
+    return buf.getvalue()
+
+
+def _snapshot(files: Dict[str, str], source, ref: str = "gbspace-config"):
+    snap = RepoSnapshot(source_uri=source, source_ref=ref, source_commit="abc")
+    snap.save_archive(_zip(files))
+    return snap
+
+
+def _row(name: str = "x", **kw) -> StoredSpace:
+    return StoredSpace(
+        name=name,
+        git_repo_uri=kw.pop("git_repo_uri", SOURCE),
+        space_uri=kw.pop("space_uri", make_db_uri(name)),
+        space=kw.pop("space", _snapshot({"space.yaml": SPACE_YAML}, SOURCE)),
+        base_uris=kw.pop(
+            "base_uris",
+            [_snapshot({"steps/echo/step.yaml": "name: echo\n"}, BASE_SOURCE)],
+        ),
+        **kw,
+    )
+
+
+@pytest.fixture
+def rows(tmp_path, monkeypatch):
+    """In-memory gb_spaces, and a per-test snapshot cache root."""
+    table: Dict[str, StoredSpace] = {}
+
+    def get_row(name):
+        if name not in table:
+            raise ValueError(f"db space URI names unknown space {name!r}")
+        return table[name]
+
+    monkeypatch.setattr(db_space, "_get_row", get_row)
+    return table
+
+
+@pytest.fixture
+def unpack(tmp_path):
+    """A dir to unpack into, named like the ones Space and local_uri use."""
+    path = tmp_path / f"{db_space.UNPACK_DIR_PREFIX}test"
+    path.mkdir()
+    return path
+
+
+def _slot_uri(space, slot="space", name="x"):
+    """Where ``space`` unpacked one of its slots."""
+    return (space.unpack_dir() / f"s-{name}" / slot).resolve().as_uri()
+
+
+@pytest.mark.parametrize(
+    "uri, expected",
+    [
+        ("db://spaces/x", DbUri("x")),
+        ("db://spaces/x/space", DbUri("x")),
+        ("db://spaces/x/base_uri_0", DbUri("x", "base_uri_0")),
+        ("db://spaces/x/base_uri_12", DbUri("x", "base_uri_12")),
+        ("db://spaces/x/base_uri_0#subdirectory=a/b", DbUri("x", "base_uri_0", "a/b")),
+        ("db://spaces/a%2Fb", DbUri("a/b")),
+    ],
+)
+def test_parse(uri, expected):
+    assert parse_db_uri(uri) == expected
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "db://space",
+        "db://spaces/",
+        "db://spaces/x/other",
+        "db://other/x",
+        "db://spaces/x/assets",
+        "db://spaces/x/base_uri_01",
+        "db://spaces/x/base_uri_",
+    ],
+)
+def test_parse_rejects(uri):
+    with pytest.raises(ValueError):
+        parse_db_uri(uri)
+
+
+def test_make_round_trips():
+    assert parse_db_uri(make_db_uri("a/b", 3)) == DbUri("a/b", "base_uri_3")
+    assert parse_db_uri(make_db_uri("a/b", 3)).base_uri_index == 3
+    assert parse_db_uri(make_db_uri("a/b")).base_uri_index is None
+
+
+def test_subdirectory(rows, unpack):
+    rows["x"] = _row()
+    uri = resolve_db_uri("db://spaces/x/base_uri_0#subdirectory=steps", unpack).file_uri
+    assert Path(uri[len("file://") :], "echo", "step.yaml").is_file()
+
+
+def test_missing_snapshot(rows, unpack):
+    rows["x"] = _row(base_uris=None)
+    with pytest.raises(ValueError, match="no base_uri_0 snapshot"):
+        resolve_db_uri("db://spaces/x/base_uri_0", unpack)
+
+
+def test_other_rows_space_uri_is_not_supported(rows):
+    """The notation could name another row; serving from it is not supported."""
+    rows["x"] = _row()
+    other = StoredSpace(name="alias", git_repo_uri=SOURCE, space_uri=make_db_uri("x"))
+    with pytest.raises(ValueError, match="not supported"):
+        get_space_config_uri(other)
+    with pytest.raises(ValueError, match="not supported"):
+        create_space(other)
+
+
+def test_git_backed_unchanged():
+    row = StoredSpace(name="g", git_repo_uri=SOURCE)
+    assert row.get_space_uri() == SOURCE
+    assert get_space_config_uri(row, token="") == (
+        "git+ssh://github.example.com/org/gbspace-x.git"
+    )
+
+
+def test_create_space_loads_offline(rows, monkeypatch):
+    """Space is served from the snapshots and identifies as the source repo."""
+    rows["x"] = _row()
+    seen_uris = []
+    real = space_mod.SpaceSecretManager.get_spacesecretmanager
+
+    def spy(*args, **kwargs):
+        seen_uris.append(kwargs["uri"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(space_mod.SpaceSecretManager, "get_spacesecretmanager", spy)
+    space = create_space(rows["x"])
+
+    assert space.uristr.startswith("file://")
+    assert space.identity_uri == (
+        "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
+    )
+    # Secret groups are matched on the source repo, never the local copy.
+    assert seen_uris == [space.identity_uri]
+    # The space-match check in validation passes for the stored row.
+    assert same_repo(rows["x"].git_repo_uri, space.identity_uri)
+    # db://spaces/x/base_uri_0 became the unpacked base_uris[0] snapshot.
+    assets_uri = _slot_uri(space, "base_uri_0")
+    assert SpaceURI._thread_local.base_uris[:2] == [space.uristr, assets_uri]
+    dest = Path(space.uristr[len("file://") :]).parent / "pulled"
+    assert URI.get_uri("space://steps/echo").pull(dest=dest)
+    assert (dest / "echo" / "step.yaml").is_file()
+
+
+def test_without_archives_keeps_metadata():
+    row = _row()
+    stripped = row.without_archives()
+    assert stripped.space.archive is None and stripped.base_uris[0].archive is None
+    assert stripped.space.source_commit == "abc"
+    assert row.space.archive  # original untouched
+    assert "archive" not in repr(row.space)
+
+
+def test_snapshot_round_trips_through_json():
+    row = _row()
+    again = StoredSpace.model_validate_json(row.model_dump_json())
+    assert again.space.load_archive() == row.space.load_archive()
+    assert again.base_uris[0].source_uri == BASE_SOURCE
+
+
+def test_portable_uri_round_trips(rows, unpack):
+    rows["x"] = _row()
+    local = resolve_db_uri("db://spaces/x", unpack).file_uri + "/environments/e"
+    portable = db_space.portable_uri(local)
+    assert portable == "db://spaces/x#subdirectory=environments/e"
+    assert resolve_db_uri(portable, unpack).file_uri == local
+    assert db_space.portable_uri("git+ssh://h/o/r.git") == "git+ssh://h/o/r.git"
+
+
+def test_base_uri_may_not_name_another_space(rows):
+    """A space.yaml naming another row's snapshot must not get its assets."""
+    rows["other"] = _row(name="other")
+    yaml_other = SPACE_YAML.replace(
+        "db://spaces/x/base_uri_0", "db://spaces/other/base_uri_0"
+    )
+    rows["x"] = _row(space=_snapshot({"space.yaml": yaml_other}, SOURCE))
+    with pytest.raises(ValueError, match="another space's snapshot"):
+        create_space(rows["x"])
+
+
+def test_identity_is_git_repo_uri_in_any_form(rows):
+    """Space reports git_repo_uri (its config form), whatever form it is stored in."""
+    row = _row(
+        git_repo_uri="git@github.example.com:org/gbspace-x.git",
+        space=_snapshot({"space.yaml": SPACE_YAML}, source=None),
+    )
+    rows["x"] = row
+    space = create_space(row)
+    assert space.identity_uri == (
+        "git+ssh://github.example.com/org/gbspace-x.git@gbspace-config"
+    )
+    assert same_repo(row.git_repo_uri, space.identity_uri)
+
+
+@pytest.mark.parametrize(
+    "subdirectory", ["../other/steps", "steps/../../other", "/etc", "a/../../x"]
+)
+def test_subdirectory_may_not_escape_the_snapshot(rows, unpack, subdirectory):
+    """'..' or an absolute path would reach a sibling (another space's) snapshot."""
+    rows["x"] = _row()
+    with pytest.raises(ValueError, match="escapes the snapshot"):
+        resolve_db_uri(f"db://spaces/x/base_uri_0#subdirectory={subdirectory}", unpack)
+
+
+def test_subdirectory_within_the_snapshot_is_fine(rows, unpack):
+    rows["x"] = _row()
+    uri = resolve_db_uri(
+        "db://spaces/x/base_uri_0#subdirectory=steps/../steps", unpack
+    ).file_uri
+    assert uri.endswith("/steps")
+
+
+def test_slots_keep_base_uris_order(rows):
+    """Each base_uris[i] is served from its slot, in its original position."""
+    yaml_multi = SPACE_YAML.replace(
+        "  - db://spaces/x/base_uri_0\n",
+        "  - db://spaces/x/base_uri_0\n"
+        "  - steps-local\n"
+        "  - db://spaces/x/base_uri_2\n",
+    )
+    first = _snapshot({"steps/a/step.yaml": "a\n"}, BASE_SOURCE)
+    third = _snapshot({"steps/c/step.yaml": "c\n"}, "https://github.example.com/o/c")
+    rows["x"] = _row(
+        space=_snapshot({"space.yaml": yaml_multi, "steps-local/x": ""}, SOURCE),
+        base_uris=[first, None, third],
+    )
+    space = create_space(rows["x"])
+    bases = SpaceURI._thread_local.base_uris
+    assert bases[1] == _slot_uri(space, "base_uri_0")
+    assert bases[2] == f"{space.uristr}/steps-local"
+    assert bases[3] == _slot_uri(space, "base_uri_2")
+
+
+def test_relative_entry_may_not_escape_the_snapshot(rows):
+    """A relative file base_uri of a db space can't reach a sibling snapshot."""
+    yaml_rel = SPACE_YAML.replace("db://spaces/x/base_uri_0", "file://../other")
+    rows["x"] = _row(space=_snapshot({"space.yaml": yaml_rel}, SOURCE))
+    with pytest.raises(ValueError, match="escapes its snapshot"):
+        create_space(rows["x"])
+
+
+def _counting(rows, monkeypatch):
+    """Count row lookups made by db_space (the rows fixture's _get_row)."""
+    calls = []
+    real = db_space._get_row
+
+    def counted(name):
+        calls.append(name)
+        return real(name)
+
+    monkeypatch.setattr(db_space, "_get_row", counted)
+    return calls
+
+
+def test_create_space_reuses_the_loaded_row(rows, monkeypatch):
+    """The row create_space holds serves the space and its db:// base_uris."""
+    rows["x"] = _row()
+    calls = _counting(rows, monkeypatch)
+    create_space(rows["x"])
+    assert calls == []
+
+
+def test_space_from_a_bare_db_uri_still_looks_rows_up(rows, monkeypatch):
+    """Without a row (e.g. the runner's space_uri override) it reads it, as before."""
+    rows["x"] = _row()
+    calls = _counting(rows, monkeypatch)
+    space_mod.Space("db://spaces/x")
+    assert calls == ["x", "x"]  # the space and its one db:// base_uri
+
+
+def test_space_ignores_a_row_it_does_not_name(rows, monkeypatch):
+    rows["x"] = _row()
+    calls = _counting(rows, monkeypatch)
+    space_mod.Space("db://spaces/x", stored_space=_row(name="other"))
+    assert calls == ["x", "x"]
+
+
+def test_local_space_is_unaffected(tmp_path, monkeypatch):
+    """A space not served from the database never touches db_space rows."""
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "space.yaml").write_text(
+        "name: l\nsecret_manager:\n  type: env\n  config: {}\n"
+    )
+
+    def no_rows(name):
+        raise AssertionError(f"looked up row {name!r} for a local space")
+
+    monkeypatch.setattr(db_space, "_get_row", no_rows)
+    space = create_space(StoredSpace(name="l", git_repo_uri=local.as_uri()))
+    assert space.uristr == local.as_uri() and space.db_row is None
+
+
+def test_local_uri_unpacks_only_for_the_block(rows):
+    rows["x"] = _row()
+    with db_space.local_uri("db://spaces/x") as uri:
+        path = Path(uri[len("file://") :])
+        assert (path / "space.yaml").is_file()
+    assert not path.exists()
+    for other in ("git+ssh://h/o/r.git", "file:///tmp/x"):
+        with db_space.local_uri(other) as uri:
+            assert uri == other
+
+
+def test_space_unpack_dir_lives_and_goes_with_the_space(rows):
+    """Its snapshots stay for the Space's lifetime (base_uris are read lazily
+    during a build) and are removed with it; the row isn't kept."""
+    import gc
+
+    rows["x"] = _row()
+    space = create_space(rows["x"])
+    unpacked = space.unpack_dir()
+    assert (unpacked / "s-x" / "space" / "space.yaml").is_file()
+    assert (unpacked / "s-x" / "base_uri_0" / "steps").is_dir()
+    assert space.db_row is None
+    del space
+    gc.collect()
+    assert not unpacked.exists()

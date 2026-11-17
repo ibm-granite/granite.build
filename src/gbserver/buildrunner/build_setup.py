@@ -7,15 +7,14 @@
 Watch the admin metadata tables for new builds, cancellations, etc.
 """
 
+import os
 import shutil
 import subprocess
 import threading
-import time
 from pathlib import Path
 from typing import Any, Optional, Self, Tuple
 
-from git import Repo
-from tqdm import tqdm
+from git import GitCommandError, Repo
 
 from gbcommon.uri.git import GitURI, get_uri_parts
 from gbserver.build.space import Space
@@ -23,40 +22,36 @@ from gbserver.buildrunner.buildlogger import get_message_logger
 from gbserver.buildrunner.validation import BuildValidation
 from gbserver.github.myghapi import MyGHApi
 from gbserver.github.utils import post_validated_build_message
+from gbserver.spaces.db_space import get_pr_repo_uri
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.constants import (
+    BUILD_GIT_OPERATION_DEADLINE,
     DEFAULT_BUILDWATCHER_COMMITTER_EMAIL,
     DEFAULT_BUILDWATCHER_COMMITTER_NAME,
     DEFAULT_DIR_PERMS,
     GBSERVER_GITHUB_TOKEN,
     MAX_PR_CREATION_TRIES,
+    PR_CREATION_RETRY_INTERVAL,
     WORKSPACE_REPOS_DIR,
 )
 from gbserver.types.status import Status
 from gbserver.utils.archive import extract_archive
 from gbserver.utils.filesystem import create_temp_subdir
-from gbserver.utils.git_retry import git_clone_retry
+from gbserver.utils.git_retry import (
+    GIT_STALL_ENV,
+    get_build_git_breaker,
+    git_clone_retry,
+    redact_credentials,
+    run_git,
+)
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import normalize_to_filename
 
 logger = get_logger(__name__)
 
 BUILD_ONLY_THIS_NAME = ""
-
-
-def get_progress_callback():
-    """For use with git library during clone and push for indicating the progress."""
-    pbar = tqdm()
-
-    # pylint: disable=unused-argument
-    def progress_callback(op_code, cur_count, max_count=None, message=""):
-        pbar.total = max_count
-        pbar.n = cur_count
-        pbar.refresh()
-
-    return progress_callback
 
 
 class BuildSetup:
@@ -119,7 +114,11 @@ class BuildSetup:
         stored_space = space_storage.get_by_name(stored_build.space_name)
         if stored_space is None:
             raise ValueError(f"failed to find a space for the build: {build_id}")
-        repo_url = stored_space.git_repo_uri
+        repo_url = get_pr_repo_uri(stored_space)
+        if repo_url is None:
+            raise ValueError(
+                f"space {stored_space.name!r} has no GitHub repo to open a PR in"
+            )
         repo_dir, repo = self.__clone_repo_for_pr(repo_url=repo_url)
         repo_exp_dir = repo_dir / "experiments"
         if not repo_exp_dir.is_dir():
@@ -170,7 +169,10 @@ class BuildSetup:
                 cwd=repo_dir,
             )
             # repo.git.commit("-m", commit_msg, "-c", "commit.gpgsign=false")
-            repo.git.push("origin", branch_name)
+            # Bounded: unlike the retries, a hung push isn't cut by the deadline.
+            repo.git.push(
+                "origin", branch_name, kill_after_timeout=BUILD_GIT_OPERATION_DEADLINE
+            )
             create_result = myapi.create_pr(
                 src_branch=branch_name, title=pr_title, body=pr_body
             )
@@ -208,34 +210,41 @@ class BuildSetup:
         return substr
 
     def __create_pr_for_build(self: Self, stored_build: StoredBuild) -> Optional[str]:
+        """Create (and merge) the build's PR, or give up and return None.
+
+        The PR is optional: on repeated failure the build runs without it. Tries
+        stop once this run's git breaker opens (see GitAccessBreaker).
+        """
+        stored_space = self.storage.space_storage.get_by_name(stored_build.space_name)
+        if stored_space is None or get_pr_repo_uri(stored_space) is None:
+            logger.info("build %s: no GitHub repo for its PR", stored_build.uuid)
+            return None
+        breaker = get_build_git_breaker(stored_build.uuid)
         try_count = 0
-        sleep_time = 5
-        while not self.stop_event.is_set() and try_count < MAX_PR_CREATION_TRIES:
-            try:
-                pr_uri = self.__create_pr_for_build_helper(
+        while (
+            not self.stop_event.is_set()
+            and not breaker.is_open
+            and try_count < MAX_PR_CREATION_TRIES
+        ):
+            pr_uri = breaker.call(
+                "create the build PR",
+                lambda: self.__create_pr_for_build_helper(
                     stored_build=stored_build, try_count=try_count
-                )
-                return pr_uri
-            except Exception as e:
-                logger.error(
-                    "failed to create the PR, sleep and retry, try_count: %d error: %s",
-                    try_count,
-                    e,
-                )
-                time.sleep(sleep_time)
-                try_count += 1
-        if self.stop_event.is_set():
-            logger.warning("stop event has been set, stopping PR creation...")
-        if try_count >= MAX_PR_CREATION_TRIES:
-            logger.warning(
-                "max retries %d exceeded, stopping PR creation...",
-                MAX_PR_CREATION_TRIES,
+                ),
             )
-        return None
+            if pr_uri:
+                return pr_uri
+            try_count += 1
+            if not breaker.is_open:
+                self.stop_event.wait(PR_CREATION_RETRY_INTERVAL)
+        # A PR created before a later step (e.g. the merge) failed is still
+        # where the build's messages go.
+        return stored_build.source_uri or None
 
     def run(self: Self, stored_build: StoredBuild) -> Tuple[bool, dict[str, Any]]:
-        """Validate the build and create its PR and log a message on success..
-        Successful if the build is valid and we were able to create the PR and set it in the StoredBuild
+        """Validate the build, create its PR, and log a message on success.
+        Successful if the build is valid. The PR is optional: if it cannot be
+        created the build proceeds without one (see __create_pr_for_build).
         If the build is not valid, then its status is set to INVALID.
         NOTE: that gb_builds table is not updated to show the PR uri.  Caller must do that.
 
@@ -255,25 +264,21 @@ class BuildSetup:
         errors = BuildValidation.validate_stored_build(
             stored_build=stored_build, space=self.space
         )
-        # 2. Create a PR/Issue to inform the user (if configured)
+        # 2. Create a PR/Issue to inform the user (if configured). Optional: on
+        # failure the build still runs, with messages in the events table only.
         pr_uri = None
         if self.create_pr:
             pr_uri = self.__create_pr_for_build(stored_build=stored_build)
+            if pr_uri:
+                stored_build.source_uri = pr_uri
         # 3. Inform the user of the build status
         build_message_logger = get_message_logger(stored_build, self.event_source)
-        if (
-            self.create_pr and not stored_build.source_uri
-        ):  # Failed to create the PR, retry later
-            # We don't change the build status in case the caller wants to retry.
-            build_id = stored_build.uuid
-            msg = f"PR creation failed on build {build_id}"
-            build_message_logger.error(msg)
-            success = False  # Should reattempt
-            updates["status"] = Status.FAILED
-            updates["falure_reason"] = msg  # type: ignore[assignment]
-            stored_build.status = Status.FAILED
-            stored_build.failure_reason = msg
-        elif not errors.is_valid() or (self.create_pr and not pr_uri):
+        if self.create_pr and not pr_uri:
+            build_message_logger.warning(
+                f"Could not create a PR for build {stored_build.uuid}; continuing"
+                " without it. Build messages are recorded as build events only."
+            )
+        if not errors.is_valid():
             updates["status"] = Status.INVALID
             build_id = stored_build.uuid
             msg = f"Validation errors on build {build_id}:\n```\n{errors}\n```\n"
@@ -328,6 +333,7 @@ class BuildSetup:
             else:
                 try:
                     repo = Repo(path=pr_clone_path)
+                    repo.git.update_environment(**GIT_STALL_ENV)
                     logger.info(
                         "repo already cloned at path %s , pulling latest changes...",
                         pr_clone_path,
@@ -342,7 +348,7 @@ class BuildSetup:
                             clone_url_with_creds_redacted,
                         )
                         repo.git.remote("set-url", "origin", clone_url_with_creds)
-                    repo.git.pull()
+                    repo.git.pull(kill_after_timeout=BUILD_GIT_OPERATION_DEADLINE)
                     return pr_clone_path, repo
                 except Exception as e:
                     logger.error(
@@ -353,17 +359,13 @@ class BuildSetup:
         shutil.rmtree(pr_clone_path, ignore_errors=True)
         logger.info("create directory at path %s", pr_clone_path)
         pr_clone_path.mkdir(mode=DEFAULT_DIR_PERMS, parents=True, exist_ok=False)
-        clone_kwargs = {
-            "url": clone_url_with_creds,
-            "to_path": pr_clone_path,
-            "progress": get_progress_callback(),
-            "branch": repo_branch,
-            "no_checkout": True,
-        }
-        if shallow:
-            clone_kwargs["depth"] = 1
         logger.info("cloning the repo")
-        repo = self._clone_repo_with_retry(**clone_kwargs)
+        repo = self._clone_repo_with_retry(
+            url=clone_url_with_creds,
+            to_path=pr_clone_path,
+            branch=repo_branch,
+            depth=1 if shallow else None,
+        )
         repo.git.clean("-xdf")  # Not necessary, just to be sure of git status clean
         repo.git.checkout(repo_branch)
         logger.info("cloned pull request repo %s", repo)
@@ -371,6 +373,32 @@ class BuildSetup:
         return pr_clone_path, repo
 
     @git_clone_retry
-    def _clone_repo_with_retry(self, url: str, to_path: Path, **kwargs) -> Repo:
-        """Clone repository with retry logic."""
-        return Repo.clone_from(url, to_path, **kwargs)
+    def _clone_repo_with_retry(
+        self, url: str, to_path: Path, branch: str, depth: Optional[int] = None
+    ) -> Repo:
+        """Clone (no checkout) with retries; each attempt is killed at the deadline.
+
+        A ``git clone`` subprocess rather than Repo.clone_from, which can't be
+        timed out. Errors keep GitCommandError so the retry policy still applies,
+        with the token in ``url`` redacted.
+        """
+        cmd = ["git", "clone", "--quiet", "--no-checkout", "--branch", branch]
+        if depth:
+            cmd += ["--depth", str(depth)]
+        shown = [*cmd, redact_credentials(url)]
+        try:
+            result = run_git(
+                [*cmd, url, str(to_path)],
+                timeout=BUILD_GIT_OPERATION_DEADLINE,
+                env={**os.environ, **GIT_STALL_ENV},
+            )
+        except subprocess.TimeoutExpired as e:
+            raise GitCommandError(
+                shown, "timed out", f"no result in {e.timeout}s"
+            ) from e
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace")
+            raise GitCommandError(shown, result.returncode, redact_credentials(stderr))
+        repo = Repo(to_path)
+        repo.git.update_environment(**GIT_STALL_ENV)
+        return repo
