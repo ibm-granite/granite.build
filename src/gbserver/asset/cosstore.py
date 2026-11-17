@@ -242,25 +242,61 @@ class Cosstore(Assetstore):
             return False
         return check_s3_location(target, URI.get_uristr(uri))
 
+    def configured(self: Self, key: str) -> str:
+        """Return ``key`` exactly as the store.yaml sets it ('' when unset).
+
+        Unlike :meth:`get_metadata`, no default is filled in. Its defaults
+        (an IBM COS us-east endpoint and region) suit the K8s/LSF cosrclone
+        steps but would send an AWS store's requests to IBM COS.
+
+        :param key: the store config key.
+        :returns: the configured value as a stripped string, or ''.
+        """
+        config = self.config.config if self.config else None
+        value = config.get(key) if isinstance(config, dict) else None
+        return str(value).strip() if value is not None else ""
+
+    def required_endpoint(self: Self) -> str:
+        """Return the store's configured ``cos_endpoint``, which must be set.
+
+        Used by the SkyPilot s3pull/s3push steps and the existence check, which
+        must not guess between AWS S3 and IBM COS.
+
+        :returns: the configured endpoint (not yet normalized).
+        :raises ValueError: naming the store, when ``cos_endpoint`` is unset.
+        """
+        endpoint = self.configured("cos_endpoint")
+        if not endpoint:
+            base = (self.config.base_uri or self.config.uri_regex) if self.config else ""
+            raise ValueError(
+                f"the S3/COS store for '{base}' sets no cos_endpoint; set it in its "
+                "store.yaml (e.g. s3.amazonaws.com for AWS S3, or the regional IBM "
+                "COS endpoint), and cos_region to match"
+            )
+        return endpoint
+
     def get_check_target(self: Self, uri: URI) -> Optional[CosCheckTarget]:
         """Build the gbserver-side existence-check target for ``uri``.
 
+        Endpoint and region are only what the store.yaml sets: the gbserver
+        endpoint (``cos_gbserver_endpoint``, else the required ``cos_endpoint``)
+        and ``cos_region`` (unset = boto3's own resolution).
+
         :param uri: the CosURI.
         :returns: the target, or None (logged) when a credential is missing.
-        :raises ValueError: if the configured endpoint is not acceptable.
+        :raises ValueError: if ``cos_endpoint`` is unset or not acceptable.
         """
+        endpoint = self.configured("cos_gbserver_endpoint") or self.required_endpoint()
         metadata = self.get_metadata(uri)
         credentials = self.resolve_credentials(uri, metadata)
         if credentials is None:
             return None
-        config = metadata["config"]
         bucket, key = self.get_bucket_and_key(uri, metadata)
-        endpoint = config.get("cos_gbserver_endpoint") or config.get("cos_endpoint")
         return CosCheckTarget(
             bucket=bucket,
             key=key,
             endpoint_url=normalize_s3_endpoint(endpoint),
-            region=config.get("cos_region", "") or "",
+            region=self.configured("cos_region"),
             access_key_id=credentials[0],
             secret_access_key=credentials[1],
         )

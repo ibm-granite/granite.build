@@ -41,9 +41,12 @@ def _store(base_uri: str, secrets=None, **config) -> Cosstore:
 
     :param base_uri: the store's base_uri (selects the Cosstore class).
     :param secrets: the store's secret bag (defaults to :data:`SECRETS`).
-    :param config: store ``config`` keys (cos_endpoint, cos_*_secret_name, ...).
+    :param config: store ``config`` keys (cos_endpoint, cos_*_secret_name, ...);
+        ``cos_endpoint`` defaults to an https test endpoint, since s3 steps and
+        exists() require one.
     :returns: the Cosstore.
     """
+    config.setdefault("cos_endpoint", "s3.example.com")
     return Cosstore(
         AssetStoreConfig(base_uri=base_uri, config=config),
         secrets=dict(SECRETS) if secrets is None else secrets,
@@ -158,6 +161,48 @@ class TestResolveCosStoreSettings:
         assert resolve_cos_store_settings(uri, _local_store()).s3_uri == (
             "s3://gb-checkpoints"
         )
+
+
+class TestRequiredEndpoint:
+    """No IBM COS default is ever used for s3 steps or exists(): the store must
+    set cos_endpoint, and an unset cos_region stays unset."""
+
+    def _bare(self) -> Cosstore:
+        return Cosstore(
+            AssetStoreConfig(base_uri="s3://bare/", config={}), secrets=dict(SECRETS)
+        )
+
+    def test_step_settings_require_cos_endpoint(self):
+        with pytest.raises(ValueError, match="sets no cos_endpoint"):
+            resolve_cos_store_settings(URI.get_uri("s3://bare/k"), self._bare())
+
+    def test_check_target_requires_cos_endpoint(self):
+        with pytest.raises(ValueError, match="sets no cos_endpoint"):
+            self._bare().get_check_target(URI.get_uri("s3://bare/k"))
+
+    def test_unset_region_is_not_filled_in(self):
+        """get_metadata's IBM 'us-east' default never reaches AWS."""
+        store = _store("s3://", cos_endpoint="s3.amazonaws.com")
+        uri = URI.get_uri("s3://b/k")
+        assert resolve_cos_store_settings(uri, store).region == ""
+        assert store.get_check_target(uri).region == ""
+        assert store.get_metadata(uri)["config"]["cos_region"] == "us-east"
+
+    def test_k8s_lsf_metadata_defaults_unchanged(self):
+        """get_metadata still fills the IBM defaults the cosrclone steps rely on."""
+        config = self._bare().get_metadata(URI.get_uri("s3://bare/k"))["config"]
+        assert (
+            config["cos_endpoint"] == "s3.us-east.cloud-object-storage.appdomain.cloud"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pull_without_cos_endpoint_fails_clearly(self, skypilot_env):
+        with pytest.raises(ValueError, match="sets no cos_endpoint"):
+            await skypilot_env.pullasset_cosstore(
+                uri=URI.get_uri("s3://bare/k"),
+                assetstore=self._bare(),
+                storeload_config=_storeload(),
+            )
 
 
 class TestResolveCredentials:

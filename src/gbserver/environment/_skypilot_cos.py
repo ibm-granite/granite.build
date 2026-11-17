@@ -36,8 +36,10 @@ class CosSettings:
     """Per-store settings needed to run one s3pull/s3push step.
 
     :param s3_uri: the object or prefix as an ``s3://bucket/key`` URI.
-    :param endpoint_url: the normalized cluster-side endpoint ('' = AWS default).
-    :param region: the store's region ('' = AWS CLI default).
+    :param endpoint_url: the normalized cluster-side endpoint (the store's
+        required ``cos_endpoint``).
+    :param region: the store's ``cos_region`` ('' when unset: the AWS CLI's own
+        region resolution, no AWS_DEFAULT_REGION exported).
     """
 
     s3_uri: str
@@ -57,17 +59,21 @@ def resolve_cos_store_settings(
     :param assetstore: the dispatched Cosstore.
     :param metadata: the store's ``get_metadata`` output already in hand, so it
         is not re-read (and re-logged); read when None.
+    Endpoint and region are what the store.yaml sets, never ``get_metadata``'s
+    IBM COS defaults: an s3:// store without ``cos_endpoint`` is an error rather
+    than silently pointed at IBM COS.
+
     :returns: the resolved :class:`CosSettings`.
-    :raises ValueError: if the store's endpoint is not acceptable.
+    :raises ValueError: if ``cos_endpoint`` is unset or not acceptable.
     """
+    endpoint_url = normalize_s3_endpoint(assetstore.required_endpoint())
     if metadata is None:
         metadata = assetstore.get_metadata(cosuri)
-    config = metadata["config"]
     bucket, key = assetstore.get_bucket_and_key(cosuri, metadata)
     return CosSettings(
         s3_uri=f"s3://{bucket}/{key}" if key else f"s3://{bucket}",
-        endpoint_url=normalize_s3_endpoint(config.get("cos_endpoint")),
-        region=config.get("cos_region", "") or "",
+        endpoint_url=endpoint_url,
+        region=assetstore.configured("cos_region"),
     )
 
 
