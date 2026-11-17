@@ -1,0 +1,4 @@
+{#- q(v): v as the inside of a single-quoted shell word; null renders as empty (unset). Included by openinstruct-sft, hf-peft-sft and fms-hf-tuning; after an edit, re-run make publish-step in each (CI's test_published_steps_match_their_templates.py fails until then). -#}
+{%- macro q(v) -%}
+{{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}
+{%- endmacro %}

@@ -8,11 +8,11 @@ the /opt/openinstruct-sft scripts swapped for argv printers. Mode 1 only.
 """
 
 import pathlib
-import re
 import subprocess
 
 import pytest
 import yaml
+from libgbtest.step_templates import expanded_step_template
 
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.skypilot import validate_launch_num_nodes
@@ -21,7 +21,9 @@ from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
-_TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
+_SOURCE = (_STEP_DIR / "step-template.yaml").read_text()
+# As `make space` renders it: gb-include lines expanded.
+_TEMPLATE = expanded_step_template(_STEP_DIR / "step-template.yaml")
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"][
     "openinstruct_sft"
 ]["config"]
@@ -141,12 +143,18 @@ class TestContract:
     def test_requests_no_gpus_itself(self):
         assert _LAUNCHER["resources"] == {}
 
-    @pytest.mark.parametrize("name", ["validate", "q"])
-    def test_macro_copies_are_identical(self, name):
-        macro = re.compile(r"\{%- macro " + name + r"\(.*?\{%- endmacro %\}", re.S)
-        setup = macro.findall(_LAUNCHER["setup"])
-        assert len(setup) == 1
-        assert setup == macro.findall(_LAUNCHER["run"])
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_blocks_include_the_shared_macros(self, block):
+        source = yaml.safe_load(_SOURCE)["environment_configs"]["Skypilot"][
+            "launchers"
+        ]["openinstruct_sft"]["config"][block]
+        for marker in (
+            "{#- gb-include ../../shared/q.j2 -#}",
+            "{#- gb-include ../../shared/trainer_args.j2 -#}",
+            "{#- gb-include macros/validate.j2 -#}",
+        ):
+            assert source.count(marker) == 1, marker
+        assert "{%- macro" not in _SOURCE
 
     def test_template_carries_the_image_ref_token(self):
         assert _DEFAULTS["image_id"] == "docker:${IMAGE_REF}"
@@ -394,6 +402,20 @@ class TestGuardArgv:
 
 
 class TestRunArgv:
+    @pytest.mark.parametrize(
+        "key,flag",
+        [
+            ("clearml_project", "--clearml-project"),
+            ("clearml_task_name", "--clearml-task"),
+            ("deepspeed_config", "--deepspeed-config"),
+            ("mixed_precision", "--mixed-precision"),
+        ],
+    )
+    def test_a_null_value_is_passed_as_empty_not_none(self, key, flag):
+        """q() renders YAML null as empty (unset), not as the word None."""
+        argv = _argv("run", _ctx(**{key: None}), "openinstruct_sft_run.sh")
+        assert _opt(argv, flag) == ""
+
     def test_defaults(self):
         argv = _argv("run", _ctx(), "openinstruct_sft_run.sh")
         assert _opt(argv, "--base-model") == "/staged/base it's"
