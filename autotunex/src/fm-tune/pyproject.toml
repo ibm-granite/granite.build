@@ -37,7 +37,21 @@ dependencies = [
 ## it provided is needed independently — e.g. the AIO `local` backend.)
 [project.optional-dependencies]
 core = [
-    "datasets==4.8.5",
+    # 5.0.1, not 4.8.x: 4.8.x caps fsspec at <=2026.2.0, which leaves the image
+    # on fsspec with GHSA-27vj-qcqg-25rc (fixed in 2026.6.0). 5.0.0 still caps it
+    # at <=2026.4.0.
+    "datasets==5.0.1",
+    # Transitive, but listed directly so pip installs enforce the fixes too, not
+    # only uv.lock. That covers the app images: their pip step then upgrades the
+    # copies the CUDA kernel base preinstalls.
+    #   fsspec: GHSA-27vj-qcqg-25rc, fixed in 2026.6.0.
+    "fsspec>=2026.6.0",
+    #   filelock: GHSA-v4x8-3wr5-3wq8 (HIGH) affects 3.20.4 through 4.2.0, and
+    #   4.2.1 needs Python >= 3.11. So 3.10 gets 3.20.3, the last release before
+    #   that range (it also has the 3.20.1 and 3.20.3 TOCTOU fixes). Medium
+    #   advisories fixed only in 4.2.1 still apply on 3.10.
+    "filelock>=4.2.1; python_version >= '3.11'",
+    "filelock>=3.20.3,<3.20.4; python_version < '3.11'",
     "ray[tune,default]==2.59.0",
     "pyzmq==27.2.0",
     "accelerate>=1.15.0",

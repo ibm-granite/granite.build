@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Guards the job-level status ownership invariant.
 
 AutoTune runs as one step of a multi-step granite.build build. A later build

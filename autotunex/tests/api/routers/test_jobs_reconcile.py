@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """POST /jobs/{id}/reconcile over HTTP.
 
 Admin gating rides on the reader dependency (``get_reconcile_reader`` depends on

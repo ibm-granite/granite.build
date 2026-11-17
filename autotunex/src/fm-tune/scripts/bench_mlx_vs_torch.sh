@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Benchmark the SAME tuning run on both backends and report wall-clock time.
 #
 #   Run 1:  --backend torch   (HuggingFace/PyTorch driver → MPS on Apple Silicon)

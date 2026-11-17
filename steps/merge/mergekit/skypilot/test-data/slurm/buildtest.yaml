@@ -1,0 +1,27 @@
+targets: [merge]
+target_expectations:
+  - target_name: merge
+    # hfpull(model_1) + hfpull(base_model) + mergekit; env:// output, so no hfpush.
+    # Confirmed by build 106758d7 (2026-11-02, 8m14s on the local slurm cluster).
+    step_count: 3
+    input_artifact_count: 2    # model_1, base_model
+    output_artifact_count: 1   # model (env://, registered from the run.sh marker)
+    # What run.sh printed in build 106758d7. tensor_count is SmolLM2-135M's 272 tensors:
+    # slerp keeps the architecture, so it would change only with the models.
+    # mergekit_version is a regex so a mergekit_version bump doesn't need an edit here.
+    expected_steps:
+      - step_uri: space://steps/merge/mergekit
+        metadata:
+          merge_method: slerp
+          tensor_count: "272"
+        metadata_matches:
+          mergekit_version: '^\d+\.\d+\.\d+$'
+        config:
+          mergekit_config:
+            output_path: /shared/mergekit-test/slurm/model
+space_uri: ../../space
+tests: [runner]                # the merge takes seconds: no stable RUNNING window to cancel in
+simulate_step_failure: false
+# Both pulls (about 2.2 GB in all: the Instruct repo carries 1.7 GB of ONNX exports
+# that hfpull downloads too, see #597) plus a uv install of mergekit and torch.
+timeout_minutes: 20

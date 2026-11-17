@@ -1,7 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import asyncio
 import logging
 import re
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -810,31 +812,156 @@ class TestLaunchSkypilot:
         Reproduces the ResourcesUnavailableError case: SLURM often doesn't track
         memory as a consumable resource, so a --memory request fails matching.
         """
-        kwargs = await self._launch_and_capture_resources(
-            skypilot_env,  # fixture default_cloud is k8s
-            launcher_config={
-                "run": "echo hi",
-                "resources": {"infra": "slurm/mycluster"},
-            },
-            config={
-                "compute_config": {
-                    "num_cpus_per_node": 2,
-                    "total_memory_per_node": "10Gi",
-                }
-            },
-        )
+        with patch(
+            "gbserver.environment.skypilot._slurm_tracks_memory", return_value=False
+        ):
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,  # fixture default_cloud is k8s
+                launcher_config={
+                    "run": "echo hi",
+                    "resources": {"infra": "slurm/mycluster"},
+                },
+                config={
+                    "compute_config": {
+                        "num_cpus_per_node": 2,
+                        "total_memory_per_node": "10Gi",
+                    }
+                },
+            )
         assert kwargs.get("memory") is None
         assert kwargs.get("cpus") == 2
 
     @pytest.mark.asyncio
+    async def test_slurm_memory_tracking_cluster_applies_memory_floor(
+        self, skypilot_env
+    ):
+        """Issue #657: when the target SLURM cluster tracks memory, the step's
+        total_memory_per_node is applied (probed against the infra's cluster)."""
+        with patch(
+            "gbserver.environment.skypilot._slurm_tracks_memory", return_value=True
+        ) as probe:
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={
+                    "run": "echo hi",
+                    "resources": {"infra": "slurm/mycluster"},
+                },
+                config={"compute_config": {"total_memory_per_node": "10Gi"}},
+            )
+        probe.assert_called_once_with("mycluster")
+        assert kwargs.get("memory") == "10+"
+
+    @pytest.mark.asyncio
+    async def test_bare_slurm_infra_probes_single_host_alias(self, skypilot_env):
+        """A bare `cloud: slurm` (no cluster segment) probes the alias the SSH
+        step resolved from the env's single declared host (issue #439 fallback)."""
+        rotator = MagicMock(target_alias="onlyhost")
+        with (
+            patch.object(
+                skypilot_env, "_prepare_ssh_for_launch", AsyncMock(return_value=rotator)
+            ),
+            patch(
+                "gbserver.environment.skypilot._slurm_tracks_memory", return_value=True
+            ) as probe,
+        ):
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={"run": "echo hi", "resources": {"cloud": "slurm"}},
+                config={"compute_config": {"total_memory_per_node": "10Gi"}},
+            )
+        probe.assert_called_once_with("onlyhost")
+        assert kwargs.get("memory") == "10+"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "memory, expected",
+        [
+            # An explicit size wins over the floor, so probing would be wasted.
+            ("8", "8"),
+            # `memory: 0` omits --mem (SkyPilot allows 0 on Slurm). YAML parses a
+            # bare `memory: 0` to an int, so cover both forms.
+            ("0", "0"),
+            (0, 0),
+            # `memory: null` drops the step memory; SkyPilot applies its own
+            # default.
+            (None, None),
+        ],
+    )
+    async def test_slurm_explicit_memory_override_skips_probe(
+        self, skypilot_env, memory, expected
+    ):
+        """Any `resources.memory` key (a size, 0, or null) overrides the floor,
+        so the cluster isn't probed and sky.Resources gets the override as-is."""
+        with patch("gbserver.environment.skypilot._slurm_tracks_memory") as probe:
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={
+                    "run": "echo hi",
+                    "resources": {"infra": "slurm/mycluster", "memory": memory},
+                },
+                config={"compute_config": {"total_memory_per_node": "10Gi"}},
+            )
+        probe.assert_not_called()
+        assert kwargs.get("memory") == expected
+
+    @pytest.mark.asyncio
+    async def test_slurm_memory_probe_timeout_skips_floor(self, skypilot_env):
+        """A hung probe is bounded and fails safe to no memory floor."""
+        import threading
+        import time
+
+        release = threading.Event()
+
+        def _hang(_cluster):
+            release.wait(5)
+            return True
+
+        try:
+            with (
+                patch(
+                    "gbserver.environment.skypilot._SLURM_MEMORY_PROBE_TIMEOUT_SECONDS",
+                    0.05,
+                ),
+                patch("gbserver.environment.skypilot._slurm_tracks_memory", _hang),
+            ):
+                start = time.monotonic()
+                tracked = await skypilot_env._slurm_memory_tracked_for_launch(
+                    "slurm", "mycluster", {"total_memory_per_node": "10Gi"}, {}
+                )
+            assert tracked is False
+            assert time.monotonic() - start < 2
+        finally:
+            release.set()
+
+    @pytest.mark.asyncio
+    async def test_slurm_memory_probe_skipped_without_declared_memory(
+        self, skypilot_env
+    ):
+        """No total_memory_per_node => no cluster probe (no extra SSH call)."""
+        with patch("gbserver.environment.skypilot._slurm_tracks_memory") as probe:
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={
+                    "run": "echo hi",
+                    "resources": {"infra": "slurm/mycluster"},
+                },
+                config={"compute_config": {"num_cpus_per_node": 2}},
+            )
+        probe.assert_not_called()
+        assert kwargs.get("memory") is None
+
+    @pytest.mark.asyncio
     async def test_slurm_cloud_casing_drops_memory_floor(self, skypilot_env):
         """Non-canonical cloud casing ('Slurm') is normalized, so the memory
-        floor is still dropped."""
-        kwargs = await self._launch_and_capture_resources(
-            skypilot_env,
-            launcher_config={"run": "echo hi", "resources": {"cloud": "Slurm"}},
-            config={"compute_config": {"total_memory_per_node": "10Gi"}},
-        )
+        floor is still dropped on a cluster that doesn't track memory."""
+        with patch(
+            "gbserver.environment.skypilot._slurm_tracks_memory", return_value=False
+        ):
+            kwargs = await self._launch_and_capture_resources(
+                skypilot_env,
+                launcher_config={"run": "echo hi", "resources": {"cloud": "Slurm"}},
+                config={"compute_config": {"total_memory_per_node": "10Gi"}},
+            )
         assert kwargs.get("memory") is None
 
     @pytest.mark.asyncio
@@ -990,6 +1117,58 @@ class TestSkypilotComputeConfigResources:
             {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}, cloud="k8s"
         ) == {"cpus": "3+", "memory": "2+"}
 
+    def test_slurm_memory_floor_applied_when_cluster_tracks_memory(self):
+        """Issue #657: on a SLURM cluster that tracks memory (CR_*_Memory) the
+        memory floor is applied, so a step's total_memory_per_node becomes
+        #SBATCH --mem instead of SkyPilot's 1 GB per CPU. LSF ignores the flag."""
+        from gbserver.environment.skypilot import Skypilot
+
+        env = Skypilot(event_q=asyncio.Queue())
+        cc = {"num_cpus_per_node": 3, "total_memory_per_node": "2Gi"}
+        assert env._resources_from_compute_config(
+            cc, cloud="slurm", memory_tracked=True
+        ) == {"cpus": 3, "memory": "2+"}
+        assert env._resources_from_compute_config(
+            cc, cloud="slurm", memory_tracked=False
+        ) == {"cpus": 3}
+        assert env._resources_from_compute_config(
+            cc, cloud="lsf", memory_tracked=True
+        ) == {"cpus": 3}
+
+    @pytest.mark.parametrize(
+        "select_type, expected",
+        [
+            ("CR_Core_Memory", True),
+            ("CR_Core_Memory,CR_ONE_TASK_PER_CORE", True),
+            ("CR_CPU_Memory", True),
+            ("cr_core_memory", True),
+            ("CR_Core", False),
+            ("CR_CPU", False),
+            (None, False),
+        ],
+    )
+    def test_slurm_tracks_memory(self, select_type, expected):
+        """Only an explicit CR_*_Memory SelectTypeParameters counts as tracked;
+        an undeterminable value (None) is treated as untracked (fail safe)."""
+        from gbserver.environment.skypilot import _slurm_tracks_memory
+
+        with patch(
+            "sky.provision.slurm.utils.get_select_type_parameters",
+            return_value=select_type,
+        ) as probe:
+            assert _slurm_tracks_memory("mycluster") is expected
+        probe.assert_called_once_with("mycluster")
+
+    def test_slurm_tracks_memory_probe_error_is_untracked(self):
+        """A failing probe (SSH error, etc.) falls back to skipping memory."""
+        from gbserver.environment.skypilot import _slurm_tracks_memory
+
+        with patch(
+            "sky.provision.slurm.utils.get_select_type_parameters",
+            side_effect=RuntimeError("ssh down"),
+        ):
+            assert _slurm_tracks_memory("mycluster") is False
+
     def test_cpus_floor_is_minimum_not_exact(self):
         """The cloud cpus floor must be a SkyPilot minimum ("{n}+"), not an
         exact number.
@@ -1051,6 +1230,11 @@ class TestSkypilotComputeConfigResources:
         assert env._resources_from_compute_config(compute_config, cloud="lsf") == {
             "cpus": cpus
         }
+        # Issue #657: on a memory-tracking SLURM cluster the declared memory
+        # reaches sbatch (hfpull/hfpush were OOM-killed at the 1 GB default).
+        assert env._resources_from_compute_config(
+            compute_config, cloud="slurm", memory_tracked=True
+        ) == {"cpus": cpus, "memory": memory}
 
     def test_memory_floor_is_minimum_not_exact(self):
         """The cloud memory floor must be a SkyPilot minimum ("{n}+"), not an
@@ -2915,6 +3099,61 @@ class TestNumNodesResolution:
         with pytest.raises(ValueError, match="num_nodes"):
             self._resolve(compute_config={"num_nodes": value})
 
+    @pytest.mark.parametrize("value", [True, False])
+    def test_booleans_are_not_node_counts(self, value):
+        """bool subclasses int, so int(True) == 1 would let a YAML `true` (or a
+        bad substitution) through as one node, and `false` as 0 nodes."""
+        with pytest.raises(ValueError) as exc:
+            self._resolve(compute_config={"num_nodes": value})
+        assert str(exc.value) == (
+            f"compute_config.num_nodes={value!r} is not an integer; set "
+            "compute_config.num_nodes to a whole number of nodes >= 1."
+        )
+
+    @pytest.mark.parametrize(
+        "layers,key",
+        [
+            ({"compute_config": {"num_nodes": "abc"}}, "compute_config.num_nodes"),
+            (
+                {"launcher_config": {"num_nodes": "abc"}},
+                "launchers.<name>.config.num_nodes",
+            ),
+            (
+                {"config": {"launcher_config": {"num_nodes": "abc"}}},
+                "launcher_config.num_nodes",
+            ),
+        ],
+    )
+    def test_a_bad_value_names_its_own_layer(self, layers, key):
+        """The fix goes where the bad value is, not always compute_config."""
+        with pytest.raises(ValueError) as exc:
+            self._resolve(**layers)
+        assert str(exc.value) == (
+            f"{key}='abc' is not an integer; set {key} to a whole number of "
+            "nodes >= 1."
+        )
+
+    def test_a_count_below_one_names_its_layer(self):
+        with pytest.raises(ValueError) as exc:
+            self._resolve(config={"launcher_config": {"num_nodes": 0}})
+        assert (
+            str(exc.value) == "launcher_config.num_nodes=0 is invalid; it must be >= 1."
+        )
+
+    @pytest.mark.parametrize(
+        "layers,name",
+        [
+            ({"compute_config": "x"}, "compute_config"),
+            ({"launcher_config": "x"}, "launchers.<name>.config"),
+            ({"config": {"launcher_config": "x"}}, "launcher_config"),
+        ],
+    )
+    def test_a_layer_that_is_not_a_mapping_fails_clearly(self, layers, name):
+        """Not an AttributeError from .get() on a str."""
+        with pytest.raises(ValueError) as exc:
+            self._resolve(**layers)
+        assert str(exc.value) == f"{name} must be a mapping, got str."
+
     @pytest.mark.parametrize(
         "launcher_config,config",
         [
@@ -3020,6 +3259,150 @@ class TestMultinodeSupportPreflight:
         ):
             with pytest.raises(RuntimeError, match="predates LSF multi-node"):
                 _num_nodes_from_configs({"num_nodes": 2}, {}, {}, cloud="lsf")
+
+
+class TestValidateLaunchNumNodes:
+    """The step-creation entry point: a step's filled configs in, the count out."""
+
+    @staticmethod
+    def _env(single_node):
+        from gbserver.types.stepconfig import StepEnvironmentTypeConfig
+
+        return StepEnvironmentTypeConfig.model_validate(
+            {"launchers": {}, "single_node": single_node}
+        )
+
+    def test_reads_compute_config_from_the_step_config(self):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        assert (
+            validate_launch_num_nodes(
+                self._env(False), {}, {"compute_config": {"num_nodes": 3}}
+            )
+            == 3
+        )
+
+    def test_enforces_the_step_flag(self):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        with pytest.raises(ValueError, match="this step is single-node"):
+            validate_launch_num_nodes(
+                self._env(True), {}, {"compute_config": {"num_nodes": 3}}
+            )
+
+    @pytest.mark.parametrize(
+        "launcher_config,config",
+        [(None, None), ({}, {"compute_config": None}), ({}, {"launcher_config": None})],
+    )
+    def test_tolerates_missing_layers(self, launcher_config, config):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        assert validate_launch_num_nodes(self._env(True), launcher_config, config) == 1
+
+    def test_no_step_env_config_means_no_flag(self):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        assert (
+            validate_launch_num_nodes(None, {}, {"compute_config": {"num_nodes": 2}})
+            == 2
+        )
+
+    @staticmethod
+    def _check(launcher_config=None, config=None, single_node=True, **kwargs):
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        return validate_launch_num_nodes(
+            TestValidateLaunchNumNodes._env(single_node),
+            launcher_config or {},
+            config or {},
+            **kwargs,
+        )
+
+    @pytest.mark.parametrize("value", [None, 1, 1.0, "1", "01", " 1", "+1"])
+    def test_single_node_accepts_one(self, value):
+        """Exactly what int() reads as 1, as the launch parses it."""
+        assert self._check(config={"compute_config": {"num_nodes": value}}) == 1
+
+    @pytest.mark.parametrize(
+        "launcher_config,config,source",
+        [
+            ({}, {"compute_config": {"num_nodes": 2}}, "compute_config.num_nodes"),
+            ({}, {"compute_config": {"num_nodes": 2.0}}, "compute_config.num_nodes"),
+            ({"num_nodes": 2}, {}, "launchers.<name>.config.num_nodes"),
+            ({}, {"launcher_config": {"num_nodes": "2"}}, "launcher_config.num_nodes"),
+        ],
+    )
+    def test_single_node_refuses_more_than_one_and_names_the_layer(
+        self, launcher_config, config, source
+    ):
+        with pytest.raises(ValueError) as exc:
+            self._check(launcher_config, config)
+        assert str(exc.value) == (
+            f"num_nodes resolved to 2 (from {source}), but this step is single-node "
+            "(environment_configs.Skypilot.single_node); set num_nodes to 1 or "
+            "remove it."
+        )
+
+    def test_the_error_names_the_step_environment(self):
+        """A managed-jobs step declares the flag under its own block."""
+        with pytest.raises(ValueError) as exc:
+            self._check(
+                config={"compute_config": {"num_nodes": 2}}, env_type="Skypilot_managed"
+            )
+        assert "(environment_configs.Skypilot_managed.single_node)" in str(exc.value)
+
+    def test_single_node_checks_the_resolved_count(self):
+        """Only the count the launch would use matters: the last layer wins."""
+        assert (
+            self._check(
+                config={
+                    "compute_config": {"num_nodes": 2},
+                    "launcher_config": {"num_nodes": 1},
+                }
+            )
+            == 1
+        )
+
+    def test_single_node_keeps_the_parse_error(self):
+        with pytest.raises(ValueError, match="is not an integer"):
+            self._check(config={"compute_config": {"num_nodes": "many"}})
+
+    @pytest.mark.parametrize("config", ["abc", ["compute_config"]])
+    def test_a_step_config_that_is_not_a_mapping_fails_clearly(self, config):
+        """TargetStepRun only warns when the filled step config is not a dict;
+        this runs for every SkyPilot step, so it must not crash on .get()."""
+        from gbserver.environment.skypilot import validate_launch_num_nodes
+
+        with pytest.raises(ValueError) as exc:
+            validate_launch_num_nodes(self._env(False), {}, config)
+        assert str(exc.value) == (
+            f"The step config must be a mapping, got {type(config).__name__}."
+        )
+
+    def test_does_not_repeat_the_misplaced_resources_warning(self, caplog):
+        """The launch resolves num_nodes again and warns there; warning at
+        creation too would read as a second problem."""
+        with caplog.at_level(logging.WARNING):
+            assert (
+                self._check(
+                    launcher_config={"resources": {"num_nodes": 4}}, single_node=False
+                )
+                == 1
+            )
+        assert "resources.num_nodes" not in caplog.text
+
+    def test_leaves_the_lsf_preflight_to_the_launch(self):
+        """It has no target cloud; the launch runs the LSF check."""
+        with patch(
+            "gbserver.environment.skypilot.importlib.util.find_spec",
+            return_value=None,
+        ):
+            assert (
+                self._check(
+                    config={"compute_config": {"num_nodes": 2}}, single_node=False
+                )
+                == 2
+            )
 
 
 class TestNumNodesReachesSkyTask:

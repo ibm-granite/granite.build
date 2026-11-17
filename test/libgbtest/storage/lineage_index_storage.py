@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Shared tests for the lineage index table, ``gb_lineage_index``.
 
@@ -612,3 +600,54 @@ class BaseLineageIndexStorageTest(AbstractStorageTest):
         with pytest.raises(IntegrityError):
             storage.add_replacing(row(job_id="J"), [terminal.uuid])
         assert len(storage.get_rows_by_job("J")) == 2
+
+    def test_row_over_index_byte_cap_dropped_stored_keeps_merging(self):
+        """~450 CJK characters per side fit the columns but overflow the Postgres
+        btree entry (``index row size 3240 exceeds btree maximum 2704``) on every
+        retry. A new such row is refused; one long multi-byte side still fits; and a
+        row already stored keeps merging, so nothing indexed before is cut off."""
+        from gbserver.lineage.merge import (
+            ADDED,
+            REJECTED,
+            UNCHANGED,
+            UPDATED,
+            rows_to_add,
+            upsert_row,
+        )
+
+        storage = self._get_tested_storage()
+        prefix = "https://huggingface.co/org/"
+        wide = prefix + "模" * 450
+        assert len(wide) <= MAX_LINEAGE_URI_LENGTH
+        assert upsert_row(storage, row(job_id="J1", input=wide, output=wide + "x")) == (
+            REJECTED
+        )
+        assert storage.get_rows_by_job("J1") == []
+        assert rows_to_add([row(job_id="J1", input=wide, output=wide + "x")]) == []
+        assert upsert_row(storage, row(job_id="J2", input=wide)) == ADDED
+
+        # Stored before the guard existed: written past upsert_row.
+        storage.add(row(job_id="J3", input=wide, output=wide + "x"))
+        again = row(job_id="J3", input=wide, output=wide + "x")
+        assert upsert_row(storage, again) in (UNCHANGED, UPDATED)
+
+    def test_purge_scheme_drops_mem_endpoints_and_keeps_real_artifacts(self):
+        """#561: rows indexed before mem:// was excluded. A real side left with no row
+        becomes a terminal row; jobs without mem:// are untouched."""
+        storage = self._get_tested_storage()
+        storage.add(row(job_id="J1", input="s3://b/in", output="mem://svc"))
+        storage.add(row(job_id="J2", input="s3://b/in", output="mem://svc"))
+        storage.add(row(job_id="J2", input="s3://b/in", output="s3://b/out"))
+        storage.add(row(job_id="J3", input="MEM://k", output="s3://b/out2"))
+        storage.add(row(job_id="J4", input="s3://b/x", output="s3://b/y"))
+
+        assert storage.purge_scheme("mem") == (3, 2)
+
+        def pairs(job_id):
+            return sorted((r.input, r.output) for r in storage.get_rows_by_job(job_id))
+
+        assert pairs("J1") == [("s3://b/in", TERMINAL)]
+        assert pairs("J2") == [("s3://b/in", "s3://b/out")]
+        assert pairs("J3") == [(TERMINAL, "s3://b/out2")]
+        assert pairs("J4") == [("s3://b/x", "s3://b/y")]
+        assert storage.purge_scheme("mem") == (0, 0)

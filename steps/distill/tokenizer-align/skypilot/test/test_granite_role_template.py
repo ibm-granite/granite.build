@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The granite-native ``{% generation %}`` template, and the one property it must have.
 
 ``align_config.chat_template`` installs a template on the retagged student, and the

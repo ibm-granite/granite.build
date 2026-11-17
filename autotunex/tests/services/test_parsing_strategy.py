@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pure parsing-strategy helpers: application + JS-regex compatibility."""
 
 from __future__ import annotations

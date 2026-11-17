@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``gbserver lineage-index-init``: seed, keep, force and show the indexer checkpoint.
 
 Drives the real indexer seeding (W&B source, whose API is a mock) against an
@@ -178,3 +180,22 @@ def test_empty_from_beginning_does_not_change_a_non_empty_source(env):
     result = _run("--empty-from-beginning", "--base-timestamp", "from-latest")
     assert result.exit_code == 0, result.output
     assert env.kv_pair_storage.values[KEY]["timestamp"] == "2026-03-01T00:00:00Z"
+
+
+def test_purge_mem_cleans_the_rows_and_leaves_the_checkpoint(env):
+    env.kv_pair_storage.set_value(KEY, {"timestamp": D1})
+    env.lineage_row_storage.purge_scheme.return_value = (3, 1)
+    result = _run("--purge-mem")
+    assert result.exit_code == 0, result.output
+    env.lineage_row_storage.purge_scheme.assert_called_once_with("mem")
+    assert "Deleted 3" in result.output and "added 1" in result.output
+    assert env.kv_pair_storage.values[KEY]["timestamp"] == D1
+
+
+@pytest.mark.parametrize(
+    "args", [("--show",), ("--rebuild",), ("--base-timestamp", D1), ("--force",)]
+)
+def test_purge_mem_must_be_alone(env, args):
+    result = _run("--purge-mem", *args)
+    assert result.exit_code != 0
+    env.lineage_row_storage.purge_scheme.assert_not_called()

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The two-stage principal dependency.
 
 Stage one never touches the database — these tests prove that by driving it

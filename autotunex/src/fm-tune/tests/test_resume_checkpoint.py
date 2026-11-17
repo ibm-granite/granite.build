@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the --resume_from_checkpoint feature.
 
 Covers three GPU-free units:

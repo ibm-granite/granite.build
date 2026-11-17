@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """User schema validation: strict role input, lenient role output."""
 
 from __future__ import annotations

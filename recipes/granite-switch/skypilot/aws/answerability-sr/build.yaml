@@ -67,7 +67,7 @@ granite.build:
           uri: "env://$${ADAPTER_ROOT}/$${RUN_ID}"
           type: model
       steps:
-        - step_uri: space://steps/misc/byoc
+        - step_uri: space://steps/aux/byoc
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             compute_config:
@@ -232,7 +232,7 @@ granite.build:
           uri: "env://$${REPORT_ROOT}/$${RUN_ID}"
           type: dataset
       steps:
-        - step_uri: space://steps/misc/byoc
+        - step_uri: space://steps/aux/byoc
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             compute_config:

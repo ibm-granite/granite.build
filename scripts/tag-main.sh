@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Tags the main branch with a tag provided on the command line.
 # tags are generally of the form vX.Y.z, for example v0.2.36
 # Warning: there is not check for tag collision

@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Base storage interface and implementation for lineage rows.
 
@@ -180,6 +168,17 @@ class ILineageRowStorage(IItemStorage[StoredLineageRow]):
         gbserver or indexer) keeps its cached model and never recreates a dropped
         table, so its reads would see an empty index and its writes fail until a
         restart.
+        """
+        raise NotImplementedError
+
+    def purge_scheme(self, scheme: str) -> Tuple[int, int]:
+        """Remove every row with a ``scheme://`` endpoint; return ``(deleted, added)``.
+
+        For cleaning rows a since-changed rule no longer writes (``mem://``).
+        Each affected job ends up as the indexer would write it today: a real
+        endpoint whose only rows went is kept as a terminal row (``uri -> ""`` or
+        ``"" -> uri``), so the job does not vanish from its real artifacts. Done
+        per job, in one transaction each.
         """
         raise NotImplementedError
 

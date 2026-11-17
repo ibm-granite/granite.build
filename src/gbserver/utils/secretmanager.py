@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# SPDX-License-Identifier: Apache-2.0
+
 """
 A client for the IBM Cloud Secrets Manager API.
 """

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # Run pylint + mypy on the python files changed vs main, and only those.
 #

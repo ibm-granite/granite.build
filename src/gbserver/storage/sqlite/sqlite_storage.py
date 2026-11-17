@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 
 import multiprocessing
@@ -335,3 +323,18 @@ class SqliteKeyValuePairStorage(SqliteStorageOverrides, SQLKeyValuePairStorage):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+
+    def _run_attempts(self, attempt) -> bool:
+        """The compare-and-set's attempts under the file lock, one at a time.
+
+        The read and the conditional update are separate statements; holding the
+        lock across both keeps another process from writing between them, and a
+        ``database is locked`` from a writer outside the lock is retried rather
+        than surfaced. The lock is held per attempt, never across a backoff.
+        """
+
+        def locked() -> bool:
+            with self._db_file_lock:
+                return attempt()
+
+        return super()._run_attempts(locked)

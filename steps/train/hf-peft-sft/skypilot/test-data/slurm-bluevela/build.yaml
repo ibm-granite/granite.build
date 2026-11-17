@@ -30,7 +30,8 @@ granite.build:
               resources:
                 # H200 is the only GPU bluevela schedules (its constraint).
                 accelerators: "H200:2"
-                # gbserver drops compute_config memory on slurm; bare GiB string.
+                # Explicit memory wins over compute_config on every cluster; bare
+                # GiB string.
                 memory: "128"
               envs:
                 CLEARML_OFFLINE_MODE: "1"

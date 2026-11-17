@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The host seam on ui-core's API clients: that it reshapes the requests it owns
  * and leaves alone the ones that opted out.

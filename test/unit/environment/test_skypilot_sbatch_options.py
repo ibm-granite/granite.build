@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Per-step SLURM ``sbatch_options`` passthrough for SkyPilot launches.
 
 Covers the layered resolver (``Skypilot._resolve_sbatch_options``) and the

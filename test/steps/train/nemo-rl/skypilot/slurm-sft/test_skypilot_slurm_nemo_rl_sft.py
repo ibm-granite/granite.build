@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """NeMo-RL SFT end to end on skypilot/slurm against IBM BlueVela (real GPU node).
 
@@ -24,9 +12,13 @@ produces a non-empty HF dir, and the ``model`` artifact is registered from the
 step's marker.
 
 **Real cluster — never runs by accident.** It is extended-suite only, marked
-``ibm`` (it needs IBM infrastructure), and skips unless the BlueVela key for the
-``granitebuild`` functional ID is present at the path the environment names. It
-also skips in SPS CI, which has no key on the host.
+``ibm`` (it needs IBM infrastructure), and skips unless
+``~/.ssh/ibm-bluevela.key`` exists on the host — the key the shared
+environment's ``BV_SSH_PRIVATE_KEY`` space secret is created from
+(``gb secret create BV_SSH_PRIVATE_KEY --from-file ~/.ssh/ibm-bluevela.key``);
+the environment resolves the secret, never an on-host path, so the space this
+test runs in must hold that secret. It also skips in SPS CI, which has no key
+on the host.
 
 Fixtures (build.yaml/buildtest.yaml) live in the ``test-data/`` dir mirroring this
 file, resolved by the repo's ``test/`` <-> ``test-data/`` helper so the pairing

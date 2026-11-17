@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Theme preference resolution, kept free of DOM access so it can be unit-tested.
 //
 // Preference is tri-state. "system" (the default, and what an absent stored

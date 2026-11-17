@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Add ``datasets.status`` and ``datasets.status_detail``.
 
 Phase 1 dataset upload introduces a status lifecycle

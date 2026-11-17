@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Where shared components should link for builds and artifacts — the pure half.
  *

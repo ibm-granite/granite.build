@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the builtin s3push step.
 
 After the env-class-match migration, each `environment_configs` block of the

@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # SSH directly to the host VM (not the container) for a SkyPilot cluster.
 # Usage: ./scripts/ssh-host.sh <cluster-name> [command...]
 

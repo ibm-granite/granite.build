@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.utils.cleanup — verifies it wipes the launcher's
 transient artifact dirs (now including <output_dir>/logs/) and leaves
 unrelated content alone.

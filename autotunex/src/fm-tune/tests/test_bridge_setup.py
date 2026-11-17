@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.bridge_setup — the opt-in gate for AutoTuneX bridge logging."""
 
 from autotune.bridge_setup import resolve_bridge_settings

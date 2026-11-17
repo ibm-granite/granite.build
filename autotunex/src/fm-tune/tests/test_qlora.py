@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for QLoRA (4-bit quantized LoRA) support.
 
 Covers:

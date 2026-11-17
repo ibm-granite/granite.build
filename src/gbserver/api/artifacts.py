@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
+from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Annotated, Any, List, Optional, Tuple, Union, cast
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -35,6 +25,7 @@ from gbserver.api.utils import (
     split_tags,
 )
 from gbserver.lineage.jobstats import get_lineage_store
+from gbserver.lineage.lineage_reconciler import as_aware
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.spaces.hf_push_config import resolve_space_resource_group_id
 from gbserver.storage.artifact_registration import (
@@ -53,6 +44,9 @@ from gbserver.types.constants import (
     LAKEHOUSE_ENVIRONMENT,
     get_hf_token,
 )
+from gbserver.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 artifacts_api = FastAPI()
 
@@ -652,7 +646,14 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
     Opt-in because it scans the scoped registry and can resolve to a registration
     whose raw URI differs (``cos://`` vs ``s3://``), which a caller asking for an
     exact URI -- gbcli's ``get_artifact_uri`` -- must not get.
+
+    Normalization is memoized (:func:`_normalized`), so repeat clicks over the
+    same registry do not re-parse every URI. Several registrations can share one
+    identity; they come back in a fixed order -- not archived first, then newest
+    -- so a caller taking the first gets the same one every time.
     """
+    # The request's own uri is normalized once, uncached: it is caller-supplied
+    # and unbounded, so caching it would let any client fill the cache.
     wanted = normalize_uri(uri)
     if not wanted:
         return []
@@ -660,7 +661,40 @@ def _by_lineage_uri(storage, uri: str, **filters) -> List[ArtifactRegistration]:
         List[ArtifactRegistration],
         storage.artifact_registry.get_by_where(get_row_filter(uri="", **filters)),
     )
-    return [item for item in candidates if normalize_uri(item.uri or "") == wanted]
+    matches = [item for item in candidates if _normalized(item.uri or "") == wanted]
+    # Not archived first, then newest, then by uuid: one key, so the order reads
+    # directly and does not rest on two stable sorts.
+    matches.sort(
+        key=lambda item: (
+            not item.is_archived,
+            (
+                as_aware(item.created_at)
+                if item.created_at
+                else datetime.min.replace(tzinfo=timezone.utc)
+            ),
+            item.uuid or "",
+        ),
+        reverse=True,
+    )
+    return matches
+
+
+# Registry URIs longer than this are normalized uncached, so the cache stays
+# bounded in bytes, not just in entries (16k x 2 KiB, about 32 MiB at most).
+_MAX_CACHED_URI_LENGTH = 2048
+
+
+def _normalized(uri: str) -> str:
+    """:func:`normalize_uri`, memoized for registry URIs: it is pure, and the
+    registry repeats. Never for a request's own URI (see ``_by_lineage_uri``)."""
+    if len(uri) > _MAX_CACHED_URI_LENGTH:
+        return normalize_uri(uri)
+    return _normalized_cached(uri)
+
+
+@lru_cache(maxsize=16384)
+def _normalized_cached(uri: str) -> str:
+    return normalize_uri(uri)
 
 
 @artifacts_api.get("/tags")
@@ -793,16 +827,47 @@ class HFDatasetRegistrationRequest(BaseArtifactRequest):
     table_name: str = ""
 
 
+def _hf_uri_from_request(
+    owner: str, repo: str, hf_type: HfType, revision: Optional[str]
+) -> HfURI:
+    """The hf:// URI a typed registration request names.
+
+    Args:
+        owner: The request's organization.
+        repo: The request's model, dataset or bucket id.
+        hf_type: The resource type the route registers.
+        revision: The request's revision; ``None`` or ``""`` means ``main``.
+
+    Returns:
+        The URI, from :meth:`HfURI.from_parts`.
+
+    Raises:
+        HTTPException: 400 with a generic message if the fields cannot form a
+            valid hf:// URI (e.g. a quote, a ``#`` or a leading ``-``); the
+            reason is logged server-side only.
+    """
+    try:
+        return HfURI.from_parts(
+            owner=owner, repo=repo, hf_type=hf_type, revision=revision or "main"
+        )
+    except ValueError as e:
+        logger.info("Rejected HF artifact registration fields: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid HuggingFace organization, repository id or revision",
+        ) from e
+
+
 @artifacts_api.post("/hf/model")
 def register_hf_model(
     request: Request, artifact_request: HFModelRegistrationRequest
 ) -> RegisterArtifactResponse:
     """Register a HuggingFace model."""
-    hf_uri = HfURI.from_parts(
-        owner=artifact_request.organization,
-        repo=artifact_request.model_id,
-        hf_type=HfType.MODEL,
-        revision=artifact_request.revision or "main",
+    hf_uri = _hf_uri_from_request(
+        artifact_request.organization,
+        artifact_request.model_id,
+        HfType.MODEL,
+        artifact_request.revision,
     )
     uri_str = hf_uri.get_uristr(hf_uri)
 
@@ -820,11 +885,11 @@ def register_hf_dataset(
     artifact_request: HFDatasetRegistrationRequest,
 ) -> RegisterArtifactResponse:
     """Register a HuggingFace dataset."""
-    hf_uri = HfURI.from_parts(
-        owner=artifact_request.organization,
-        repo=artifact_request.dataset_id,
-        hf_type=HfType.DATASET,
-        revision=artifact_request.revision or "main",
+    hf_uri = _hf_uri_from_request(
+        artifact_request.organization,
+        artifact_request.dataset_id,
+        HfType.DATASET,
+        artifact_request.revision,
     )
     uri_str = hf_uri.get_uristr(hf_uri)
 
@@ -850,11 +915,11 @@ def register_hf_bucket(
     artifact_request: ArtifactBucketRequest,
 ) -> RegisterArtifactResponse:
     """Register a HuggingFace bucket."""
-    hf_uri = HfURI.from_parts(
-        owner=artifact_request.organization,
-        repo=artifact_request.bucket_id,
-        hf_type=HfType.BUCKET,
-        revision=artifact_request.revision or "main",
+    hf_uri = _hf_uri_from_request(
+        artifact_request.organization,
+        artifact_request.bucket_id,
+        HfType.BUCKET,
+        artifact_request.revision,
     )
     uri_str = hf_uri.get_uristr(hf_uri)
 

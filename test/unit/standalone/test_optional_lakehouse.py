@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Test that gbserver core modules can be imported without lakehouse/dmf installed."""
 
 import importlib

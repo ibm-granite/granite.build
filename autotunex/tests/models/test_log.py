@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the log API schemas."""
 
 from __future__ import annotations

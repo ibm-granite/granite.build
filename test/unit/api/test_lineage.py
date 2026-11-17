@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for per-run access filtering in the OpenLineage-backed routes.
 
@@ -222,7 +210,7 @@ def test_search_lineage_events_redacts_step_config_and_metadata():
     my_run["run"]["facets"]["job_input_params"] = {
         "steps": [
             {
-                "uri": "space://steps/misc/byoc",
+                "uri": "space://steps/aux/byoc",
                 "config": {
                     "byoc_config": {"repo": "https://example/r.git", "token": "sekret"}
                 },
@@ -245,7 +233,7 @@ def test_search_lineage_events_redacts_step_config_and_metadata():
             _fake_request("member", "member@example.com"), TagSearchRequest(tags=[])
         )
     step = resp.runs[0]["run"]["facets"]["job_input_params"]["steps"][0]
-    assert step["uri"] == "space://steps/misc/byoc"
+    assert step["uri"] == "space://steps/aux/byoc"
     # config surfaces (redacted), consistent with the by-id jobstats endpoints.
     assert step["config"]["byoc_config"]["repo"] == "https://example/r.git"
     assert step["config"]["byoc_config"]["token"] == "<redacted>"
@@ -389,6 +377,11 @@ def test_query_graph_holds_a_non_admin_to_the_user_limits(kwargs):
                 LineageQueryRequest(uri="s3://b/x", **kwargs),
             )
     assert caught.value.status_code == 422
+    code = (caught.value.headers or {}).get(lineage_mod.LINEAGE_ERROR_CODE_HEADER)
+    if "max_depth" in kwargs:
+        assert code == lineage_mod.DEPTH_LIMIT_ERROR_CODE
+    else:
+        assert code is None
 
 
 def test_query_graph_accepts_job_ids_alone_as_a_seed():

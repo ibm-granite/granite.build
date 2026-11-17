@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for post-launch host SSH bounding/retry (_skypilot_ssh).
 
 A slow-banner host used to hang to the 600s blanket timeout, since ConnectTimeout

@@ -94,7 +94,9 @@ The central registry is `src/gbserver/types/constants.py`. All gbserver env vars
 - Formatting: **black** (default config) + **isort** (profile: black)
 - Linting: **pylint** (config in `.pylintrc`) + **mypy** (`--disable-error-code=import-untyped`)
 - Python 3.11+ required (3.12 for pylint target)
-- Apache License 2.0
+- Apache License 2.0. Every source file needs the license header (see
+  "License headers" in [CONTRIBUTING.md](CONTRIBUTING.md)); add it with
+  `python scripts/check_license_headers.py --fix FILE...`
 
 ## Frontend (gb-ui)
 

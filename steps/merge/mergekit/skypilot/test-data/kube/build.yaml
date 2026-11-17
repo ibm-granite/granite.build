@@ -1,0 +1,57 @@
+granite.build:
+  name: skypilot-kube-mergekit
+  # MergeKit's examples/gradient-slerp.yml, scaled to a public 135M base / instruct pair
+  # (HuggingFaceTB/SmolLM2-135M and -Instruct: Llama architecture, 30 layers, Apache-2.0,
+  # not gated, so no HF_TOKEN). Same shape as the example: `slices` with both models
+  # over every layer, `base_model`, and a per-filter `t` gradient. Measured on an M5
+  # Max with mergekit 0.1.5: 2-4 s, 1.25 GB peak RSS, 259 MB output, and the merged
+  # model still answers "The capital of France is" with " Paris.".
+  #
+  # Both models come in as step inputs (one hfpull each). The recipe then names them by
+  # input name (`model: base_model`), not `{{ bindings... }}`: the inputs say which models
+  # are staged, the recipe says how they're merged, and the step swaps each name for the
+  # staged path (see USAGE, "Naming models in the recipe"). So the run exercises the
+  # substitution in slices[].sources[].model and base_model. The merged model goes to the
+  # cluster's shared filesystem (/shared, the env's gb-shared volume), as dpk's kube
+  # fixtures do.
+  #
+  # Memory: no launcher_config.resources.memory here. On the local kind cluster,
+  # the step's compute_config.total_memory_per_node (4Gi) is the pod's request, which
+  # covers the measured 1.25 GB peak.
+  targets:
+    merge:
+      environment_uri: space://environments/skypilot/kubernetes/local
+      inputs:
+        model_1:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M-Instruct
+        base_model:
+          uri: hf:///HuggingFaceTB/SmolLM2-135M
+      outputs:
+        model:
+          # env:// moves no bytes, so no push step runs. The path must equal
+          # mergekit_config.output_path below.
+          uri: "env:///shared/mergekit-test/kube/model"
+          type: model
+      steps:
+        - step_uri: space://steps/merge/mergekit
+          config:
+            poll_interval_seconds: 5
+            mergekit_config:
+              output_path: /shared/mergekit-test/kube/model
+              merge_config:
+                slices:
+                  - sources:
+                      - model: base_model
+                        layer_range: [0, 30]
+                      - model: model_1
+                        layer_range: [0, 30]
+                merge_method: slerp
+                base_model: base_model
+                parameters:
+                  t:
+                    - filter: self_attn
+                      value: [0, 0.5, 0.3, 0.7, 1]
+                    - filter: mlp
+                      value: [1, 0.5, 0.7, 0.3, 0]
+                    - value: 0.5
+                dtype: bfloat16

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Artifact metadata models."""
 
 from dataclasses import dataclass

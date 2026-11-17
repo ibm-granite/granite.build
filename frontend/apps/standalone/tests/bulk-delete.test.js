@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The AutoTuneX list views delete a multi-select one id at a time. Aborting on
  * the first rejection left the already-deleted rows on screen and re-DELETEd

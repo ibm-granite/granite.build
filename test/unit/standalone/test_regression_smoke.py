@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Regression smoke tests for standalone mode development.
 
 These tests lock in current import chains, factory wiring, CLI discovery,

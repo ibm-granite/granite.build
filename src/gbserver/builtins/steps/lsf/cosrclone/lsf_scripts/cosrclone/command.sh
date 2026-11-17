@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 trap 'EC=$?; rm -f "${tmpconf:-}"; if [[ $EC -ne 0 ]]; then echo "${LLMB_LSF_JOB_NAME:-cosrclone}: cosrclone failed at line $LINENO, exit code: $EC" >&2; fi; exit $EC' EXIT
 

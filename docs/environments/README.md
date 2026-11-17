@@ -191,6 +191,13 @@ environment_configs:
 The sub-type filter is applied wherever the resolver finds a copy of the step, so the restriction
 holds regardless of which base or folder the file is in.
 
+### Single-node steps (`single_node`)
+
+A step's `environment_configs.<Class>` may set `single_node: true`: gbserver then fails the step
+at creation unless the `num_nodes` the launch would use is 1. The SkyPilot environments enforce
+it (see [SkyPilot](skypilot.md#single-node-steps)); any other environment refuses a step that
+sets it rather than ignore it.
+
 ### Asset stores
 
 `assetstores` map a store URI to the **pull** (input) and **push** (output) behaviour for this

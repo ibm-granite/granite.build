@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Add jobs reward function columns.
 
 Revision ID: c628b830e8a3

@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for gbserver.utils.redaction.
 
@@ -70,7 +58,7 @@ def test_masks_common_secret_key_names():
 @pytest.mark.standalone
 def test_non_secret_keys_pass_through():
     """Operational keys (e.g. commit_hash) are returned unchanged."""
-    data = {"commit_hash": "deadbeef", "uri": "space://steps/misc/byoc", "count": 3}
+    data = {"commit_hash": "deadbeef", "uri": "space://steps/aux/byoc", "count": 3}
     assert redact_sensitive(data) == data
 
 
@@ -136,7 +124,7 @@ def test_scrub_url_credentials_leaves_clean_urls_untouched():
     """
     for clean in (
         "https://github.com/org/repo.git",
-        "space://steps/misc/byoc",
+        "space://steps/aux/byoc",
         "https://github.com/org/repo/path@ref",  # @ after a path segment, not userinfo
         "git+ssh://git@github.com/org/repo.git",  # bare username, no password
         "https://ghp_TOKEN@github.com/org/repo",  # token-as-username, no ':' (see caveat)

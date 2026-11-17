@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Verifies the Next.js static export (out/) has the expected routes.
  * Run after `yarn build` — tests will fail if the output directory is missing.

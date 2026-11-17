@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the opt-in FastMCP server (:mod:`autotunex.api.mcp`).
 
 Guarded by ``pytest.importorskip("fastmcp")`` — the base test suite must not

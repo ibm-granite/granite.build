@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
 
@@ -21,9 +9,13 @@ import re
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
 import wandb
-from huggingface_hub import dataset_info, model_info
+from huggingface_hub import (  # pylint: disable=wrong-import-order
+    dataset_info,
+    model_info,
+)
 
 from gbcommon.uri.hf import HfURI
+from gbserver.lineage.mem_artifacts import is_mem_resource
 from gbserver.lineage.openlineage_service import LineageService
 from gbserver.lineage.openlineage_utils import (
     get_hf_artifact_uri,
@@ -213,6 +205,11 @@ class WandBLineageService(LineageService):
         ):
             is_output = direction == "output"
             for resource in resources:
+                # mem:// is a build-local Memstore key, not data; there is
+                # nothing to version. _build_events_for_target already drops
+                # these, this guards events from any other producer.
+                if is_mem_resource(resource):
+                    continue
                 resource_name = self._dataset_name(resource)
                 resource_type = self._get_hf_type(resource)
                 artifact_type = (
@@ -470,13 +467,11 @@ class WandBLineageService(LineageService):
             or "huggingface://dataset" in namespace
         ):
             return "dataset"
-        elif "huggingface://models" in namespace or "huggingface://model" in namespace:
+        if "huggingface://models" in namespace or "huggingface://model" in namespace:
             return "model"
-        elif (
-            "huggingface://buckets" in namespace or "huggingface://bucket" in namespace
-        ):
+        if "huggingface://buckets" in namespace or "huggingface://bucket" in namespace:
             return "bucket"
-        elif "huggingface" in namespace:
+        if "huggingface" in namespace:
             return "dataset"
         return None
 

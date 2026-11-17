@@ -558,7 +558,7 @@ Three keys are read:
 |---|---|
 | `num_nodes` | Becomes `sky.Task(num_nodes=...)`. Overridable by `launcher_config.num_nodes`. |
 | `num_cpus_per_node` | A low-precedence `cpus` floor on `sky.Resources`. |
-| `total_memory_per_node` | A low-precedence `memory` floor (skipped on slurm/lsf). |
+| `total_memory_per_node` | A low-precedence `memory` floor. Skipped on LSF, and on SLURM clusters that don't track memory (see [skypilot-slurm.md](skypilot-slurm.md#step-memory-total_memory_per_node)). |
 
 `num_gpus_per_node` is **not** read. Request GPUs with `resources.accelerators` (in the step.yaml or
 the build.yaml), e.g. `accelerators: "H100:8"`. A step that needs the count at runtime can read
@@ -576,6 +576,29 @@ SkyPilot discards it silently. gbserver warns when it sees one, and the run proc
 The K8s-only `gb.step_contents_in_env`, `k8s.*`, and `lsf.*` blocks are ignored — step-asset code is
 not copied into the pod; if the `run:` script needs files, use `file_mounts` or fetch them in
 `setup:` / `run:`.
+
+### Single-node steps
+
+A step that cannot run on more than one node sets `single_node: true` on its environment
+config:
+
+```yaml
+environment_configs:
+  Skypilot:
+    single_node: true
+```
+
+gbserver then resolves `num_nodes` as the launch does (`compute_config.num_nodes`, then the
+step's launcher config, then the build's `launcher_config.num_nodes`; the last one set wins)
+and fails the step at creation, before anything is provisioned, unless it is 1. The error names
+the key that set the count (`compute_config.num_nodes`, `launchers.<name>.config.num_nodes` or
+`launcher_config.num_nodes`). The step needs no Jinja check of its own. `Skypilot_managed`
+enforces it the same way, with the flag under `environment_configs.Skypilot_managed`.
+`gb step describe` lists it.
+
+A count is read as `int()` reads it (`2.0` and `"02"` are 2), except that a boolean or a
+fractional float is refused. A malformed count fails every SkyPilot step at creation, with or
+without the flag.
 
 ## See also
 

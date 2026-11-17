@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Base storage interface and implementation for lineage job records.
 
@@ -22,7 +10,7 @@ so the batched :meth:`BaseLineageJobStorage.get_jobs` is the one that matters: a
 graph walk resolves all of a level's jobs in one query rather than one per row.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 from gbserver.storage.storage import BaseItemStorage, IItemStorage
 from gbserver.storage.stored_lineage_job import StoredLineageJob
@@ -31,6 +19,12 @@ from gbserver.types.constants import GB_LINEAGE_JOB_TABLE_NAME
 
 class ILineageJobStorage(IItemStorage[StoredLineageJob]):
     """Interface for lineage job storage implementations."""
+
+    def get_paged(
+        self, where: Optional[Union[str, dict]] = None, page_size: int = 200
+    ) -> Iterator[List[StoredLineageJob]]:
+        """Yield pages of jobs; see ``BaseItemStorage.get_paged``."""
+        raise NotImplementedError
 
     def get_job(self, job_id: str) -> Optional[StoredLineageJob]:
         """Return the job record for ``job_id``, or ``None``."""

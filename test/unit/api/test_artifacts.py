@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for GET /artifacts/decode?id= and GET /artifacts/{id} per-object
 authorization.
@@ -43,7 +31,7 @@ confirm_space_member_access is never stubbed by conftest.
 
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -58,12 +46,16 @@ from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_
 
 from gbserver.api import artifacts as artifacts_module
 from gbserver.api.artifacts import (
+    ArtifactBucketRequest,
+    HFDatasetRegistrationRequest,
     HFModelRegistrationRequest,
     decode_uri,
     list_artifact_tags,
     list_artifacts,
     read_artifact,
     register_artifact,
+    register_hf_bucket,
+    register_hf_dataset,
     register_hf_model,
 )
 from gbserver.api.utils import (
@@ -368,6 +360,47 @@ def test_typed_register_rejects_before_touching_space(username, is_member):
     lineage_store.assert_not_called()
 
 
+# HfURI.from_parts raises ValueError for fields an hf:// URI may not hold (a
+# quote, a "#", a leading "-", ...); the typed routes must answer 400, not 500.
+_HF_TYPED_ROUTES = {
+    "model": (register_hf_model, HFModelRegistrationRequest, "model_id"),
+    "dataset": (register_hf_dataset, HFDatasetRegistrationRequest, "dataset_id"),
+    "bucket": (register_hf_bucket, ArtifactBucketRequest, "bucket_id"),
+}
+
+
+_INVALID_HF_FIELDS = [
+    (route, field, value)
+    for route in sorted(_HF_TYPED_ROUTES)
+    for field, value in [
+        ("organization", "o'x"),
+        ("id", "r$(id)"),
+        ("organization", "--x"),
+        ("revision", "v1#x"),
+    ]
+    if not (route == "bucket" and field == "revision")  # a bucket has none
+]
+
+
+@pytest.mark.parametrize(("route", "field", "value"), _INVALID_HF_FIELDS)
+def test_typed_register_rejects_an_invalid_hf_field_as_400(route, field, value):
+    register, request_cls, id_field = _HF_TYPED_ROUTES[route]
+    fields = {"organization": "team-b", id_field: "new-repo"}
+    fields[id_field if field == "id" else field] = value
+    req = request_cls(space_name=VICTIM_SPACE, username=VICTIM_OWNER, **fields)
+    # Registration itself can also answer 400 (e.g. an uncertified artifact),
+    # so fail if the request gets that far: it must be refused before it.
+    with patch.object(
+        artifacts_module,
+        "_create_and_register_artifact",
+        side_effect=AssertionError("an invalid HF field reached registration"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            register(_fake_request(VICTIM_OWNER, f"{VICTIM_OWNER}@example.com"), req)
+    assert exc.value.status_code == 400
+    assert value not in str(exc.value.detail)  # a generic message
+
+
 # ------------------------------------------------------------------ list_artifacts / list_artifact_tags
 #
 # Regression coverage for the cross-space list-endpoint disclosure: list_artifacts
@@ -528,3 +561,74 @@ def test_the_normalized_match_keeps_the_space_scope():
             match_lineage_uri=True,
         )
     assert resp.artifacts == []
+
+
+def test_several_registrations_of_one_identity_come_back_in_a_fixed_order():
+    """``cos://`` and ``s3://`` (or two spellings of one HF repo) normalize to one
+    id; the panel takes the first, so it must be the same one every time: not
+    archived first, then newest."""
+    from datetime import datetime, timezone
+
+    old = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    old.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    new = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    new.uri = f"https://huggingface.co/{ALICE_SPACE}/alice-model"
+    new.created_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    archived = _artifact_in(ALICE_SPACE, ALICE, "alice-model")
+    archived.created_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    archived.is_archived = True
+    for order in ([old, new, archived], [archived, new, old]):
+        with (
+            _patched_list_registry(order),
+            patch("gbserver.api.utils.is_super_admin", return_value=False),
+            patch("gbserver.api.utils.get_space_access_manager") as manager,
+        ):
+            _set_alice_access(manager)
+            resp = list_artifacts(
+                _fake_request(ALICE, f"{ALICE}@example.com"),
+                uri=f"https://huggingface.co/{ALICE_SPACE}/alice-model/",
+                match_lineage_uri=True,
+            )
+        assert [a.uuid for a in resp.artifacts] == [new.uuid, old.uuid, archived.uuid]
+
+
+def test_lineage_uri_match_does_not_cache_the_request_uri_or_long_uris():
+    """The request's uri is caller-supplied and unbounded: caching it would let
+    any client fill the module cache. Long registry URIs skip it too."""
+    from gbserver.api import artifacts as api
+
+    api._normalized_cached.cache_clear()
+    storage = MagicMock()
+    storage.artifact_registry.get_by_where.return_value = []
+    api._by_lineage_uri(storage, "hf://org/" + "x" * 5000)
+    assert api._normalized_cached.cache_info().currsize == 0
+    api._normalized("hf://org/" + "y" * (api._MAX_CACHED_URI_LENGTH + 1))
+    assert api._normalized_cached.cache_info().currsize == 0
+    api._normalized("hf://org/model")
+    assert api._normalized_cached.cache_info().currsize == 1
+
+
+def test_lineage_uri_matches_come_unarchived_first_then_newest():
+    from datetime import datetime, timezone
+
+    from gbserver.api import artifacts as api
+
+    def reg(uuid, archived, day):
+        return MagicMock(
+            uri="https://huggingface.co/org/model",
+            uuid=uuid,
+            is_archived=archived,
+            created_at=datetime(2026, 1, day, tzinfo=timezone.utc),
+        )
+
+    storage = MagicMock()
+    storage.artifact_registry.get_by_where.return_value = [
+        reg("old", False, 1),
+        reg("archived-new", True, 9),
+        reg("new", False, 5),
+        reg("none", None, 7),
+    ]
+    order = [
+        m.uuid for m in api._by_lineage_uri(storage, "https://huggingface.co/org/model")
+    ]
+    assert order == ["none", "new", "old", "archived-new"]

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Launcher selection from settings."""
 
 from __future__ import annotations

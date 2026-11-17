@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The shipped builds stay internally consistent with the step contract.
 
 Not a GB render test — it asserts that every build.yaml this step ships (the

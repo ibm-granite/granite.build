@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Fixtures for the chat-service tests.
 
 Provides a session factory bound to the shared in-memory test engine (so a

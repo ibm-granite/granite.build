@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for :class:`AutotuneLocalTrainer`.
 
 Ray and ``autotune`` are installed in this environment, so the lazy import guard

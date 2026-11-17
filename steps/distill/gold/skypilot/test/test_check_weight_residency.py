@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The residency preflight, tested against the two readings it has to separate.
 
 Ported alongside src/check_weight_residency.py from this repo's standalone audit script,

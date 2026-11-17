@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ColumnMapping } from '../../types'
 
 /** The target vocabulary a suggestion is normalised against. */

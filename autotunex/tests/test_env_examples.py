@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Each ``envs/*.env.example`` file loads into a valid ``Settings`` for its runner.
 
 These files exist to give someone setting up one job runner a focused,

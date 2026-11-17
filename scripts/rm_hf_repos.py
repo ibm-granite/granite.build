@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Delete Hugging Face repositories in an organization whose names match a regex,
 optionally filtering by HF Enterprise resource group.

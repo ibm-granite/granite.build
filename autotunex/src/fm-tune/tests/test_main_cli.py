@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Smoke tests for main.py — verify imports and CLI argument shape via --help.
 
 main.py builds its argparse parser inside `if __name__ == "__main__":`, so

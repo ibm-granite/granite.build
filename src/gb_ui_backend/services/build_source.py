@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared data types for build discovery (K8s and other sources)."""
 
 from __future__ import annotations

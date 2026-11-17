@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SkyPilot environment backend (unmanaged mode).
 
 Manages build step execution on SkyPilot-provisioned pods/VMs using
@@ -81,6 +83,7 @@ from gbserver.utils.unwrap_errors import (
 if TYPE_CHECKING:
     from gbserver.monitoring.logfile_monitor import LogFileMonitor
     from gbserver.resilience.retry_handler import RetryStrategy
+    from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 
 logger = get_logger(__name__)
 
@@ -295,6 +298,59 @@ def _lsf_client(lsf_cluster: str):
         ssh_proxy_jump=cfg.get("proxyjump"),
         identities_only=lsf_utils.get_identities_only(cfg),
     )
+
+
+# Bound on gbserver's SelectTypeParameters probe (_slurm_tracks_memory). SkyPilot
+# runs the underlying `scontrol show config` over SSH with no timeout, so a wedged
+# login node would otherwise hang the launch at this probe, before sky.launch.
+# (When the floor is then skipped, SkyPilot's slurm catalog may repeat the same
+# check, uncapped, inside sky.launch; this bound does not cover that.) Issue #657.
+_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS = 60
+
+
+def _slurm_tracks_memory(cluster: str) -> bool:
+    """Whether a SLURM cluster schedules memory as a consumable resource.
+
+    Asks SkyPilot's own probe (``scontrol show config`` over the cluster's
+    ``~/.slurm/config`` entry, cached for an hour in SkyPilot's kv cache) for
+    ``SelectTypeParameters``. Only a ``CR_*_Memory`` value counts as tracked:
+    on ``CR_CPU``/``CR_Core`` clusters a ``--mem`` request can fail scheduling,
+    so the step memory floor must stay off there. Blocking (SSH); call it via
+    ``_sky_submit_to_thread`` from async code. Issue #657.
+
+    :param cluster: the SLURM cluster alias (the ``slurm/<cluster>`` infra
+        segment, equal to the SSH ``Host`` alias).
+    :returns: ``True`` if memory is tracked; ``False`` if it is not, or if the
+        value cannot be determined (probe failure fails safe to the old
+        behavior of skipping memory).
+    """
+    try:
+        from sky.provision.slurm import utils as slurm_utils
+
+        value = slurm_utils.get_select_type_parameters(cluster)
+    except Exception as e:  # noqa: BLE001 - fail safe: skip the memory floor
+        logger.warning(
+            "SLURM cluster %s: could not read SelectTypeParameters (%s); "
+            "not applying the step memory floor (set resources.memory to force it)",
+            cluster,
+            e,
+        )
+        return False
+    if value is None:
+        logger.warning(
+            "SLURM cluster %s: SelectTypeParameters undetermined; not applying "
+            "the step memory floor (set resources.memory to force it)",
+            cluster,
+        )
+        return False
+    tracked = "MEMORY" in value.upper()
+    logger.debug(
+        "SLURM cluster %s SelectTypeParameters=%s (memory tracked: %s)",
+        cluster,
+        value,
+        tracked,
+    )
+    return tracked
 
 
 def _lsf_job_alive(lsf_cluster: str, job_name: str) -> Optional[bool]:
@@ -829,8 +885,9 @@ RETRY_RELAUNCH_TIMEOUT_SECONDS = 1800
 # SSH-provisioned bare HPC schedulers. They don't support SkyPilot autostop, and
 # commonly don't track memory as a consumable resource (RealMemory unset in
 # slurm.conf), so a --memory request fails resource matching. Cloud-specific
-# handling groups them: skip the compute_config memory floor and force autostop
-# off. Compared against the normalized first infra segment (lowercased).
+# handling groups them: skip the compute_config memory floor (on slurm, only when
+# the cluster doesn't track memory -- see _slurm_tracks_memory) and force
+# autostop off. Compared against the normalized first infra segment (lowercased).
 _SSH_HPC_CLOUDS = ("slurm", "lsf")
 
 
@@ -1360,6 +1417,7 @@ class _LoginNodeRotator:
         selected: Dict[str, Dict[str, Any]],
         target_candidates: List[Dict[str, Any]],
         candidate_hostnames: Optional[Dict[str, Set[str]]] = None,
+        target_alias: Optional[str] = None,
     ) -> None:
         """Initialize a rotator over pre-resolved per-alias selections.
 
@@ -1373,8 +1431,11 @@ class _LoginNodeRotator:
         :param candidate_hostnames: ``{alias: {candidate HostName, …}}`` for every alias,
             forwarded to the merge so an interchangeable-login-node overwrite of another
             environment's block is distinguished from a different-cluster alias reuse.
+        :param target_alias: The effective launch alias (after the single-host
+            fallback for a bare infra), or ``None`` when there is no unambiguous one.
         """
         self._cloud = cloud
+        self.target_alias = target_alias
         self._env_name = env_name
         self._secrets = secrets
         self._selected = selected
@@ -2067,7 +2128,7 @@ def _build_skypilot_mounts(
 
 
 def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
-    """The ``hf download`` line an inline hfpull adds to a step's setup script.
+    """The ``hf download`` lines an inline hfpull adds to a step's setup script.
 
     Every value is ``shlex.quote``d, so a ``"``, ``$`` or backtick in one can
     neither break the setup line nor be expanded by the shell. The repo and
@@ -2076,22 +2137,36 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     ``pullasset_hfstore`` refuses one containing ``$``.
 
     :param pull_info: A binding's ``_hfpull`` dict (``repo``, ``path``, and the
-        optional ``revision``, ``type`` and ``path_in_repo``; with a path in the
-        repo only it is downloaded, as ``HfURI.pull`` does).
-    :returns: The shell command line.
+        optional ``revision``, ``type`` and ``path_in_repo``). With a path in the
+        repo, only it is downloaded, and a second line exits the setup when it
+        matched nothing, as ``HfURI.pull`` does.
+    :returns: The shell command line(s).
     """
+    from gbcommon.uri.hf import hf_path_patterns
+
+    dest = str(pull_info["path"])
     cmd = (
         f"hf download {shlex.quote(str(pull_info['repo']))} "
-        f"--local-dir {shlex.quote(str(pull_info['path']))}"
+        f"--local-dir {shlex.quote(dest)}"
     )
     if pull_info.get("revision"):
         cmd += f" --revision {shlex.quote(str(pull_info['revision']))}"
     if pull_info.get("type"):
         cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
     path_in_repo = str(pull_info.get("path_in_repo") or "").strip("/")
+    for pattern in hf_path_patterns(path_in_repo) or []:
+        cmd += f" --include {shlex.quote(pattern)}"
     if path_in_repo:
-        for pattern in (path_in_repo, f"{path_in_repo}/*"):
-            cmd += f" --include {shlex.quote(pattern)}"
+        # A failed test left of `||` does not trip the setup's `set -e`, and a
+        # bare `[ -e ]` would fail with no message: report it and exit.
+        missing = (
+            f"hfpull: '{path_in_repo}' matched nothing in {pull_info['repo']} "
+            f"(type={pull_info.get('type')}, rev={pull_info.get('revision')})"
+        )
+        cmd += (
+            f"\n[ -e {shlex.quote(f'{dest}/{path_in_repo}')} ] || "
+            f"{{ echo {shlex.quote(missing)} >&2; exit 1; }}"
+        )
     return cmd
 
 
@@ -2113,62 +2188,89 @@ def aws_credentials_present() -> bool:
     return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
 
 
-def _num_nodes_from_configs(
-    compute_config: Dict,
-    launcher_config: Dict,
-    config: Dict,
-    cloud: str = "",
-) -> int:
-    """Resolve the node count for a ``sky.Task``.
+def _parse_num_nodes(value: Any, key: str) -> int:
+    """Parse one layer's ``num_nodes`` as the launch uses it.
 
-    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it
-    is resolved separately from the resource layers and is NOT read from
-    ``resources``. Precedence mirrors the cpus/memory layering (last wins):
+    Fail fast rather than fall back to one node: a bad value (an unsubstituted
+    parameter, say) would otherwise run single-node and report success, the
+    outcome the resolver exists to prevent.
 
-    1. ``config.compute_config.num_nodes`` — the portable surface. This key
-       already exists for k8s/lsf/runpod, so one build.yaml expresses a
-       multi-node request across environments.
-    2. ``launcher_config.num_nodes``
-    3. ``config.launcher_config.num_nodes`` (from build.yaml)
-
-    A ``num_nodes`` placed under ``resources`` is dropped by
-    ``sky.Resources``, silently, so it is warned about here rather than left
-    to fail as a single-node run that looks successful.
-
-    :param compute_config: The step's raw ``compute_config`` dict.
-    :param launcher_config: The resolved launcher config.
-    :param config: The step config (its ``launcher_config`` wins).
-    :param cloud: Normalized target cloud, used only for the preflight check.
-    :returns: Node count, at least 1.
-    :raises ValueError: If a ``num_nodes`` is not an integer >= 1.
+    :param value: The layer's ``num_nodes`` value (not ``None``).
+    :param key: The layer's key path, named in the error.
+    :returns: The node count, at least 1.
+    :raises ValueError: If ``value`` is not a whole number >= 1.
     """
-    num_nodes = 1
-    for source in (
-        compute_config,
-        launcher_config,
-        config.get("launcher_config", {}) or {},
-    ):
-        value = (source or {}).get("num_nodes")
-        if value is None:
-            continue
-        # Fail fast rather than fall back to one node: a bad value (an
-        # unsubstituted parameter, say) would otherwise run single-node and
-        # report success, the outcome this resolver exists to prevent.
+    try:
+        # bool subclasses int, so int(True) == 1 would let a YAML `true` (or a
+        # bad substitution) through as one node.
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = int(value)
         # int() truncates a float, so 2.5 would quietly become 2: accept a
         # float only when it is already whole (YAML's `2.0`).
-        try:
-            parsed = int(value)
-            if isinstance(value, float) and parsed != value:
-                raise ValueError
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"num_nodes={value!r} is not an integer; set compute_config."
-                "num_nodes to a whole number of nodes >= 1."
-            ) from None
-        if parsed < 1:
-            raise ValueError(f"num_nodes={parsed} is invalid; it must be >= 1.")
-        num_nodes = parsed
+        if isinstance(value, float) and parsed != value:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{key}={value!r} is not an integer; set {key} to a whole number of "
+            "nodes >= 1."
+        ) from None
+    if parsed < 1:
+        raise ValueError(f"{key}={parsed} is invalid; it must be >= 1.")
+    return parsed
 
+
+def _resolve_num_nodes(
+    compute_config: Any, launcher_config: Any, config: Dict
+) -> Tuple[int, str]:
+    """Resolve ``num_nodes`` across its layers, the last one set winning.
+
+    Precedence mirrors the cpus/memory layering:
+
+    1. ``config.compute_config.num_nodes``: the portable surface. This key
+       already exists for k8s/lsf/runpod, so one build.yaml expresses a
+       multi-node request across environments.
+    2. ``launcher_config.num_nodes``: the step's launcher block.
+    3. ``config.launcher_config.num_nodes`` (from build.yaml).
+
+    :param compute_config: The step's raw ``compute_config``.
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config (its ``launcher_config`` wins).
+    :returns: The node count (1 when no layer sets it) and the key path it came
+        from (``""`` when none did).
+    :raises ValueError: If a layer is not a mapping, or a count is not a whole
+        number >= 1.
+    """
+    num_nodes, resolved_from = 1, ""
+    for name, layer in (
+        ("compute_config", compute_config),
+        ("launchers.<name>.config", launcher_config),
+        ("launcher_config", config.get("launcher_config")),
+    ):
+        if layer is None:
+            continue
+        if not isinstance(layer, dict):
+            raise ValueError(f"{name} must be a mapping, got {type(layer).__name__}.")
+        value = layer.get("num_nodes")
+        if value is None:
+            continue
+        key = f"{name}.num_nodes"
+        num_nodes, resolved_from = _parse_num_nodes(value, key), key
+    return num_nodes, resolved_from
+
+
+def _warn_misplaced_num_nodes(
+    launcher_config: Dict, config: Dict, num_nodes: int
+) -> None:
+    """Warn about a ``num_nodes`` placed under ``resources``.
+
+    ``sky.Resources`` drops it silently, so without the warning it would fail
+    as a single-node run that looks successful.
+
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config.
+    :param num_nodes: The resolved count, named in the warning.
+    """
     # `or {}` on every layer: a present-but-null `resources:` key returns None
     # from .get(), not the default.
     misplaced = (launcher_config.get("resources") or {}).get("num_nodes") or (
@@ -2184,9 +2286,101 @@ def _num_nodes_from_configs(
             num_nodes,
         )
 
+
+def _num_nodes_from_configs(
+    compute_config: Dict,
+    launcher_config: Dict,
+    config: Dict,
+    cloud: str = "",
+) -> int:
+    """Resolve the node count for a ``sky.Task``, at launch.
+
+    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it
+    is resolved separately from the resource layers (see
+    :func:`_resolve_num_nodes`) and is NOT read from ``resources``.
+
+    :param compute_config: The step's raw ``compute_config`` dict.
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config (its ``launcher_config`` wins).
+    :param cloud: Normalized target cloud, used only for the preflight check.
+    :returns: Node count, at least 1.
+    :raises ValueError: As :func:`_resolve_num_nodes`.
+    """
+    num_nodes, _ = _resolve_num_nodes(compute_config, launcher_config, config)
+    _warn_misplaced_num_nodes(launcher_config, config, num_nodes)
     if num_nodes > 1:
         _check_multinode_supported(cloud, num_nodes)
     return num_nodes
+
+
+def validate_launch_num_nodes(
+    step_env_config: Optional["StepEnvironmentTypeConfig"],
+    launcher_config: Optional[Dict],
+    config: Any,
+    env_type: str = "Skypilot",
+) -> int:
+    """Resolve ``num_nodes`` from a step's filled configs, as its launch will.
+
+    The step-creation check behind :class:`SkypilotLaunchConfigCheck`: a
+    malformed count, or more than one node for a step that sets
+    ``single_node``, fails the step before anything is launched or
+    provisioned. The launch resolves the count again and leaves the
+    misplaced-``resources`` warning and the LSF multi-node preflight (which
+    needs the target cloud) to that pass.
+
+    :param step_env_config: The step's environment config (``None``: no flag).
+    :param launcher_config: The filled launcher block ``config``.
+    :param config: The filled step config; ``compute_config`` and the build's
+        ``launcher_config`` live here.
+    :param env_type: The step's ``environment_configs`` key, named in the
+        ``single_node`` error.
+    :returns: The resolved node count.
+    :raises ValueError: If the step config is not a mapping, as
+        :func:`_resolve_num_nodes`, or if ``single_node`` is set and the count
+        resolves to more than 1.
+    """
+    config = {} if config is None else config
+    # TargetStepRun only warns when the filled step config is not a dict, and
+    # this runs for every SkyPilot step.
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"The step config must be a mapping, got {type(config).__name__}."
+        )
+    num_nodes, resolved_from = _resolve_num_nodes(
+        config.get("compute_config"), launcher_config, config
+    )
+    if getattr(step_env_config, "single_node", False) and num_nodes != 1:
+        raise ValueError(
+            f"num_nodes resolved to {num_nodes} (from {resolved_from}), but this "
+            f"step is single-node (environment_configs.{env_type}.single_node); "
+            "set num_nodes to 1 or remove it."
+        )
+    return num_nodes
+
+
+class SkypilotLaunchConfigCheck:  # pylint: disable=too-few-public-methods
+    """``validate_launch_config`` shared by ``Skypilot`` and ``Skypilot_managed``.
+
+    Listed before ``Environment`` in both classes' bases so it overrides the
+    base method, which refuses ``single_node``.
+    """
+
+    type: str
+
+    def validate_launch_config(
+        self: Self,
+        step_env_config: "StepEnvironmentTypeConfig",
+        launcher_config: Dict,
+        config: Dict,
+    ) -> None:
+        """Resolve ``num_nodes`` as the launch will and enforce ``single_node``.
+
+        See :meth:`Environment.validate_launch_config` and
+        :func:`validate_launch_num_nodes`.
+        """
+        validate_launch_num_nodes(
+            step_env_config, launcher_config, config, env_type=self.type
+        )
 
 
 def _resolve_infra_and_zone(
@@ -2379,7 +2573,7 @@ def _merge_sbatch_export_items(
 _PROVIDER_UNSET = object()
 
 
-class Skypilot(Environment):
+class Skypilot(SkypilotLaunchConfigCheck, Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 
     # Class-level semaphore so the cap applies across all Skypilot
@@ -2607,7 +2801,13 @@ class Skypilot(Environment):
             hosts, target_alias, on_disk
         )
         rotator = _LoginNodeRotator(
-            cloud, name, secrets, selected, target_candidates, candidate_hostnames
+            cloud,
+            name,
+            secrets,
+            selected,
+            target_candidates,
+            candidate_hostnames,
+            target_alias=target_alias,
         )
         await rotator.materialize()
         return rotator
@@ -3166,8 +3366,8 @@ class Skypilot(Environment):
         # a 2-CPU cleanup that cannot land just orphans the per-run tree. On cloud
         # catalogs 1 vCPU alone could match a sub-1-GiB t2.nano/micro too small
         # for SkyPilot's Ray runtime, so pair it with a 2-GiB memory floor there
-        # (slurm/lsf match CPUs directly and don't track memory, so it is skipped
-        # for them, mirroring _resources_from_compute_config). _cpus_floor gates
+        # (slurm/lsf match CPUs directly and may not track memory, so it is
+        # skipped for them; a 1-vCPU rm needs no memory floor). _cpus_floor gates
         # the "N+" minimum form (crashes LSF/SLURM). Issue #425.
         cloud = self._get_cloud()
         res_kwargs: Dict[str, Any] = {"infra": cloud}
@@ -3380,8 +3580,88 @@ class Skypilot(Environment):
         except ValueError:
             return None
 
+    @classmethod
+    def _memory_floor(cls, compute_config: Dict) -> Optional[str]:
+        """Format a step's ``total_memory_per_node`` as a SkyPilot memory minimum.
+
+        Emitted as a minimum (``"{n}+"``), not an exact float: an exact
+        ``memory=1.0`` matches no cloud instance type (SkyPilot dies with
+        "Catalog does not contain any instances satisfying ... AWS(mem=1.0)").
+        SkyPilot's SLURM catalog strips the ``+`` and requests ``--mem`` of that
+        size. Formatted without an exponent and with trailing zeros stripped
+        (1.0 -> ``"1+"``, 0.5 -> ``"0.5+"``); ``:g`` would switch large values to
+        scientific notation (``"1e+06+"``), which SkyPilot cannot parse. Not
+        valid for LSF, whose cloud calls ``float()`` on the value.
+
+        :param compute_config: the step's ``config.compute_config`` dict.
+        :returns: the ``"{n}+"`` GiB-minimum string, or ``None`` when
+            ``total_memory_per_node`` is unset or unparseable.
+        """
+        memory = cls._parse_memory_gib(compute_config.get("total_memory_per_node", ""))
+        if memory is None:
+            return None
+        mem_str = f"{memory:f}".rstrip("0").rstrip(".")
+        return f"{mem_str}+"
+
+    async def _slurm_memory_tracked_for_launch(
+        self: Self,
+        cloud_group: str,
+        target_alias: Optional[str],
+        compute_config: Dict,
+        override_res: Dict,
+    ) -> bool:
+        """Decide whether a launch's SLURM cluster should get the memory floor.
+
+        Probes the cluster (:func:`_slurm_tracks_memory`, offloaded to a thread
+        because it SSHes) only when the result matters: a slurm launch that
+        names a cluster, declares a parseable ``total_memory_per_node``, and
+        has no ``resources.memory`` key. Any such key overrides the floor in
+        the merge, so it skips the probe too: a size is sent as-is, ``0``
+        omits ``--mem`` (SkyPilot allows 0 on Slurm), and ``memory: null``
+        drops the step memory so SkyPilot applies its own default (1 GB per
+        CPU, or 4 GB per CPU with GPUs, on a memory-tracking cluster). Every
+        other launch skips the SSH round-trip. Must run after the cluster's
+        SSH config is materialized. The probe runs on the dedicated SkyPilot
+        pool (``_sky_submit_to_thread``), so a stuck one can't hold a slot in
+        the loop's shared pool, and is bounded by
+        ``_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS`` (SkyPilot runs it with no SSH
+        timeout). A timeout fails safe to ``False``. SkyPilot's catalog may
+        then run the same ``scontrol`` check itself, uncapped, inside
+        ``sky.launch``. Issue #657.
+
+        :param cloud_group: the normalized target cloud (first infra segment).
+        :param target_alias: the SLURM cluster alias (second infra segment),
+            or ``None`` when the infra names no cluster.
+        :param compute_config: the step's ``config.compute_config`` dict.
+        :param override_res: the merged higher-precedence resources.
+        :returns: ``True`` if the cluster tracks memory and the floor applies.
+        """
+        if (
+            cloud_group != "slurm"
+            or not target_alias
+            or "memory" in override_res
+            or self._memory_floor(compute_config) is None
+        ):
+            return False
+        try:
+            return await asyncio.wait_for(
+                _sky_submit_to_thread(_slurm_tracks_memory, target_alias),
+                timeout=_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "SLURM cluster %s: SelectTypeParameters probe timed out after %ss; "
+                "not applying the step memory floor (set resources.memory to force it)",
+                target_alias,
+                _SLURM_MEMORY_PROBE_TIMEOUT_SECONDS,
+            )
+            return False
+
     def _resources_from_compute_config(
-        self: Self, compute_config: Dict, cloud: str = ""
+        self: Self,
+        compute_config: Dict,
+        cloud: str = "",
+        memory_tracked: bool = False,
     ) -> Dict:
         """Derive a ``sky.Resources`` floor from a step's ``compute_config``.
 
@@ -3395,20 +3675,25 @@ class Skypilot(Environment):
         any instances satisfying the request: 1x AWS(mem=1.0)" / ``cpus=3``). The
         ``"+"`` form crashes SkyPilot's LSF cloud, so on slurm/lsf ``cpus`` stays
         a bare int (those schedulers match CPUs directly, not via a cloud
-        catalog) and ``memory`` is skipped entirely (below).
+        catalog). ``memory`` is skipped on LSF always, and on SLURM unless the
+        cluster tracks memory (``memory_tracked``, below).
 
         :param compute_config: the step's ``config.compute_config`` dict.
         :param cloud: the normalized target cloud (lowercased first infra
             segment, e.g. ``"slurm"``, ``"lsf"``, ``"k8s"``).
+        :param memory_tracked: for ``cloud == "slurm"``, whether the target
+            cluster schedules memory as a consumable resource (see
+            :func:`_slurm_tracks_memory`). Ignored on every other cloud.
         :returns: a dict optionally containing ``cpus`` (a ``"{n}+"`` minimum on
             cloud catalogs, or a bare int on slurm/lsf, when ``num_cpus_per_node``
             > 0) and ``memory`` (a ``"{n}+"`` GiB-minimum string, when
-            ``total_memory_per_node`` parses and the cloud is not slurm/lsf).
+            ``total_memory_per_node`` parses and the cloud is not lsf, nor a
+            slurm cluster that doesn't track memory).
         """
         resources: Dict = {}
         num_cpus = compute_config.get("num_cpus_per_node", 0)
         if isinstance(num_cpus, int) and num_cpus > 0:
-            # Same exact-match trap as memory (below): a bare number is an EXACT
+            # Same exact-match trap as memory: a bare number is an EXACT
             # request and no cloud catalog has an instance with, e.g., exactly 3
             # vCPUs, so SkyPilot dies with "Catalog does not contain any
             # instances satisfying the request". _cpus_floor emits a minimum
@@ -3416,26 +3701,19 @@ class Skypilot(Environment):
             # vCPUs; slurm/lsf keep the bare int (the "+" form crashes SkyPilot's
             # LSF cloud, and those schedulers match CPUs directly).
             resources["cpus"] = _cpus_floor(cloud, num_cpus)
-        # SLURM/LSF (bare HPC schedulers) commonly don't track memory as a
-        # consumable resource (RealMemory unset in slurm.conf), so a --memory
-        # request fails at resource matching ("Catalog does not contain any
-        # instances satisfying ..."). Skip the compute_config memory floor for
-        # them; an explicit launcher/build resources.memory still applies (and
-        # works on clusters that do configure memory).
-        if cloud not in _SSH_HPC_CLOUDS:
-            memory = self._parse_memory_gib(
-                compute_config.get("total_memory_per_node", "")
-            )
-            if memory is not None:
-                # Emit as a minimum ("{n}+"), not an exact float: an exact
-                # memory=1.0 matches no cloud instance type (SkyPilot dies with
-                # "Catalog does not contain any instances satisfying ...
-                # AWS(mem=1.0)"). Format without an exponent and strip the
-                # trailing ".0"/zeros (1.0 -> "1+", 0.5 -> "0.5+"); ":g" would
-                # switch large values to scientific notation (e.g. "1e+06+")
-                # which SkyPilot cannot parse. Safe here: slurm/lsf excluded.
-                mem_str = f"{memory:f}".rstrip("0").rstrip(".")
-                resources["memory"] = f"{mem_str}+"
+        # SLURM clusters on CR_CPU/CR_Core don't track memory as a consumable
+        # resource, so a --mem request can fail scheduling: apply the floor on
+        # slurm only when the cluster tracks memory (issue #657 — without it
+        # SkyPilot sends its own 1 GB per CPU, which OOM-killed hfpull on
+        # BlueVela). LSF never
+        # gets it (its cloud can't parse "N+", and an env-wide bsub M covers it).
+        # An explicit launcher/build resources.memory still applies everywhere.
+        apply_memory = cloud not in _SSH_HPC_CLOUDS or (
+            cloud == "slurm" and memory_tracked
+        )
+        memory = self._memory_floor(compute_config) if apply_memory else None
+        if memory is not None:
+            resources["memory"] = memory
         return resources
 
     @staticmethod
@@ -3790,9 +4068,15 @@ class Skypilot(Environment):
             # step's config.compute_config (num_cpus_per_node/total_memory_per_node)
             # is the lowest-precedence floor; override_res wins. GPUs/accelerators
             # are not sourced from compute_config — they flow via override_res.
+            # A bare `slurm` infra names no cluster; the SSH step above resolves
+            # the env's single declared host as the target in that case.
+            probe_alias = target_alias or getattr(ssh_rotator, "target_alias", None)
+            memory_tracked = await self._slurm_memory_tracked_for_launch(
+                cloud_group, probe_alias, compute_config, override_res
+            )
             res_config = {
                 **self._resources_from_compute_config(
-                    compute_config, cloud=cloud_group
+                    compute_config, cloud=cloud_group, memory_tracked=memory_tracked
                 ),
                 # override_res is passed VERBATIM to sky.Resources. On cloud
                 # catalogs (aws/gcp/azure/k8s) an explicit resources.cpus/memory
@@ -5499,7 +5783,7 @@ class Skypilot(Environment):
         deferred to the main step's setup phase (no separate cluster launched).
         This is required for environments without shared filesystems (e.g. AWS).
         """
-        from gbcommon.uri.hf import HfURI
+        from gbcommon.uri.hf import HfType, HfURI
         from gbserver.asset.hfstore import Hfstore
         from gbserver.environment.local_assets import get_hf_cache_dir
 
@@ -5549,7 +5833,15 @@ class Skypilot(Environment):
                 "repo": f"{hfuri.get_owner()}/{hfuri.get_repo()}",
                 "revision": hfuri.get_revision(),
                 "type": hfuri.get_hf_type() or "model",
-                "path_in_repo": hfuri.get_path_in_repo(),
+                # A bucket is bound at the download dir (HfURI.local_path), so
+                # it gets no filter, as in Hfstore.build_hfpull_step_config.
+                # (`hf download` has no bucket repo type, so an inline bucket
+                # pull fails either way.)
+                "path_in_repo": (
+                    ""
+                    if hfuri.get_hf_type() == HfType.BUCKET
+                    else hfuri.get_path_in_repo()
+                ),
                 "uri": str(hfuri),
                 "hf_token": hf_token,
             }

@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Publishes frontend/packages/ui-core as a standalone git ref that external consumers
 # (e.g. the internal deployment repo) can depend on directly via yarn's git dependency
 # shorthand, without granite.build needing to publish to an npm registry.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.optimizer._stop_dict_* and _auto_derive_asha_max_t.
 
 The stop dicts no longer cap training_iteration — the HF Trainer bounds

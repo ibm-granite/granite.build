@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.utils.validate_search_alg_scheduler_combo.
 
 The compatibility matrix is derived from per-searcher source-code analysis;

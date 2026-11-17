@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for autotune.validation.validate_config_for_pipeline."""
 
 import pytest

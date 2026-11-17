@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 """Refuse a pinned corpus that this build does not describe.
 
 The corpus is DEFINED by the retagged tokenizer and by the prep policies: the rows were

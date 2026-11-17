@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SQL storage tests against the hosted PostgreSQL (GBSERVER_SQL_* from the environment).
 
 The non-legacy test bodies live in

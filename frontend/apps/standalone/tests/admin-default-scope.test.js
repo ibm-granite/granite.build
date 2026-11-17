@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * AUTOTUNEX_ADMIN_DEFAULT_SCOPE picks where an admin's Mine/All list toggle
  * starts. Anything but the exact string "all" must fall back to "own", so a

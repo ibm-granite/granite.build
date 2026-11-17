@@ -364,7 +364,7 @@ Values use SLURM's own formats — e.g. `time` accepts bare minutes (`240`),
 > |---|---|
 > | `gres` | `launcher_config.resources.accelerators` — typed `"H100:2"` → `--gres=gpu:H100:2`, or untyped `":2"` → `--gres=gpu:2`. Always quote the value (a YAML int like `2` errors, and a bare `"2"` is read as *type* `2`, count 1 → `--gres=gpu:2:1`). |
 > | `cpus-per-task` | `compute_config.num_cpus_per_node`, or `resources.cpus` |
-> | `mem` | `resources.memory` (the `compute_config.total_memory_per_node` floor is intentionally skipped on slurm/lsf, so set an explicit `resources.memory`) |
+> | `mem` | `compute_config.total_memory_per_node` on a cluster that tracks memory, or `resources.memory` (see [Step memory](#step-memory-total_memory_per_node)) |
 > | `partition` | the `infra` string / `zone` (`"slurm/<cluster>/<partition>"`) — see [`cluster` / `zone`](#cluster--zone) |
 > | `nodes` | `compute_config.num_nodes` — plumbed to `sky.Task.num_nodes`, from which the provisioner generates `--nodes` (see [Multi-node jobs and NCCL](#multi-node-jobs-and-nccl)) |
 >
@@ -401,6 +401,39 @@ Notes:
   the GPU type/count means setting `gpus-per-node` yourself: an explicit `gpus`
   is a *different* key, and both would be emitted. See the GPU note under
   [No `image_id` on bare-host clusters](#no-image_id-on-bare-host-clusters).
+
+### Step memory (`total_memory_per_node`)
+
+gbserver applies a step's `compute_config.total_memory_per_node` as `#SBATCH --mem` only on a
+cluster that schedules memory as a consumable resource. Before the first launch that needs it,
+gbserver reads the cluster's `SelectTypeParameters` (`scontrol show config`, cached for an hour).
+When gbserver sends no memory, SkyPilot's SLURM catalog decides `--mem` itself:
+
+| `SelectTypeParameters` | gbserver sends | The job gets |
+|---|---|---|
+| `CR_CPU_Memory`, `CR_Core_Memory` (combined values like `CR_Core_Memory,CR_ONE_TASK_PER_CORE` too) | the step's memory | `--mem` of the declared size (e.g. 10 GiB for the built-in `hfpull`/`hfpush`). |
+| `CR_CPU`, `CR_Core` | nothing | no `--mem`, so the partition default. SkyPilot omits it because a `--mem` request can fail to schedule there. |
+| Can't be read (SSH error, or no answer within 60 s) | nothing (gbserver logs a WARNING) | usually `--mem` = 1 GB per requested CPU. SkyPilot runs its own check, with no time limit, and assumes memory is tracked unless it finds otherwise. |
+
+A step without `total_memory_per_node` also gets SkyPilot's 1 GB per CPU on a memory-tracking
+cluster. That is what starved `hfpull` (`num_cpus_per_node: 1`) on BlueVela before this was
+applied: 1 GB is too little for an `hf download` of a multi-GB repo.
+
+Any `launcher_config.resources.memory` key (in the step, build, or the environment's `steps:`
+overrides) wins over the step memory, and the cluster isn't probed then:
+
+- A size (e.g. `memory: "16"`) is sent as-is.
+- `memory: 0` sends no `--mem` at all; SkyPilot allows 0 on SLURM and leaves the directive out.
+  On a memory-tracking cluster that's the only way to turn `--mem` off, for example for a
+  partition whose own `SelectTypeParameters` override doesn't track memory: gbserver reads the
+  cluster-wide value only.
+- `memory: null` drops the step memory, and SkyPilot applies its own default (see the table
+  above): on a memory-tracking cluster that's still `--mem` of 1 GB per CPU, or 4 GB per CPU with
+  GPUs.
+
+The probe needs to know the cluster. With a bare `slurm` infra (no `slurm/<cluster>`), gbserver
+probes the environment's one declared host. If it declares several, gbserver sends nothing and
+SkyPilot checks every cluster in `~/.slurm/config`.
 
 ### No `image_id` on bare-host clusters
 

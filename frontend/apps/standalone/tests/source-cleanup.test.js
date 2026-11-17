@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Verifies the source tree no longer contains dead code that was supposed to be removed.
  * These are static checks on the filesystem and file contents — no build required.

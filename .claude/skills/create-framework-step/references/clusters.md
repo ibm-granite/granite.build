@@ -28,9 +28,12 @@ from gbserver.environment.skypilot import aws_credentials_present               
 from libgbtest.kube import KUBE_XDIST_GROUP, kind_cluster_reachable, kind_skip_reason  # kube
 ```
 
-**BlueVela memory.** gbserver drops `compute_config.total_memory_per_node` on slurm and
-lsf, and BlueVela enforces per-job memory (the partition default is 2 CPUs / 2G). Request
-memory in the fixture's step config: `launcher_config: {resources: {memory: "16"}}` (bare GiB, as a string).
+**BlueVela memory.** BlueVela enforces per-job memory. On SLURM gbserver sends
+`compute_config.total_memory_per_node` as `--mem` only on clusters that track memory (BlueVela
+does); without it SkyPilot defaults to 1 GB per CPU (4 GB per CPU with GPUs). LSF never applies
+it. Pin the request in the fixture's step config, which wins on every cluster:
+`launcher_config: {resources: {memory: "16"}}` (bare GiB, as a string). See
+`docs/environments/skypilot-slurm.md#step-memory-total_memory_per_node`.
 
 The BlueVela CI skip used by existing tests:
 
@@ -63,7 +66,7 @@ means the build's own directory, so it resolves in both test modes. Keep
 For BlueVela SLURM, copy
 `configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml`, and
 replace its header comment with one saying it's a build-test copy and where it came
-from. `steps/misc/byoc/skypilot/test-data/slurm-bluevela/` ships such a copy as an
+from. `steps/aux/byoc/skypilot/test-data/slurm-bluevela/` ships such a copy as an
 example, though its own `build.yaml` uses the shared environment.
 
 ## Any other IBM space
