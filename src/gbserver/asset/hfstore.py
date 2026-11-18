@@ -208,8 +208,7 @@ class Hfstore(Assetstore):
             "revision": hfuri.get_revision(),
             # Sub-path within the repo ("" when none). The skypilot/LSF hfpull
             # scripts download only it (``--include``), into ``path`` with the
-            # repo layout kept; the k8s template pulls by re-parsing it from
-            # ``uri``, then checks ``path``/``path_in_repo`` exists.
+            # repo layout kept; the k8s template re-parses it from ``uri``.
             # A bucket is bound at ``path`` itself (HfURI.local_path), so it
             # gets no filter. (The scripts' ``hf download`` has no bucket repo
             # type, so they cannot pull a bucket either way.)

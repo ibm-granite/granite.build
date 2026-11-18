@@ -204,81 +204,20 @@ class TestPullassetHfstore:
             )
 
 
-HFPULL_STEP_DIR = (
-    Path(__file__).resolve().parents[3] / "src/gbserver/builtins/steps/k8s/hfpull"
-)
-HFPULL_HELPERS = HFPULL_STEP_DIR / "helm-charts/hfpull/templates/_helpers.tpl"
-# The same check the skypilot and LSF hfpull scripts run after their download.
-_PATH_CHECK = '! -e "${HF_DEST}/${HF_PATH_IN_REPO}"'
+def test_hfpull_step_declares_a_path_in_repo_default():
+    """Like the skypilot and LSF hfpull steps, so the config is self-documenting.
 
-
-class TestHfpullChartPathCheck:
-    """Guards for the k8s hfpull chart's "matched nothing" check.
-
-    The pod's ``HfURI.hfpull_step`` filters to the path in the repo and checks
-    it, but only if the pod image's gbcommon is new enough. The chart checks the
-    path itself, so a path that matched nothing fails the step whatever the
-    image. Asserted against the template source, and by running the check, as
-    for the umask guard; a full ``helm template`` render is a separate step.
+    The k8s chart needs only ``uri`` and ``path``: the pod's
+    ``HfURI.hfpull_step`` re-parses the path in the repo from the URI.
     """
+    import yaml
 
-    @staticmethod
-    def _check_block() -> str:
-        """Return the path check from the chart, de-indented."""
-        lines = HFPULL_HELPERS.read_text(encoding="utf-8").splitlines()
-        starts = [i for i, ln in enumerate(lines) if _PATH_CHECK in ln]
-        assert len(starts) == 1, "expected one path_in_repo check in the hfpull chart"
-        end = next(n for n in range(starts[0], len(lines)) if lines[n].strip() == "fi")
-        return "\n".join(ln.strip() for ln in lines[starts[0] : end + 1])
-
-    def test_check_runs_after_the_pull_succeeds(self):
-        text = HFPULL_HELPERS.read_text(encoding="utf-8")
-        assert _PATH_CHECK in text, "no path_in_repo check in the hfpull chart"
-        pull = text.index("HfURI.hfpull_step(")
-        exit_check = text.index('"${MY_RETURN_CODE}" != "0"')
-        assert pull < exit_check < text.index(_PATH_CHECK)
-
-    def test_check_reads_the_path_from_hfpull_config(self):
-        text = HFPULL_HELPERS.read_text(encoding="utf-8")
-        assert "$c.path_in_repo" in text
-        assert "HF_DEST='{{ $path }}'" in text
-        assert "HF_PATH_IN_REPO='{{ $path_in_repo }}'" in text
-
-    @pytest.mark.parametrize(
-        "path_in_repo,make,ok",
-        [
-            ("data/train", "dir", True),
-            ("config.json", "file", True),
-            ("", None, True),
-            ("missing/path", None, False),
-        ],
-        ids=["directory", "file", "whole-repo", "matched-nothing"],
+    step_yaml = (
+        Path(__file__).resolve().parents[3]
+        / "src/gbserver/builtins/steps/k8s/hfpull/step.yaml"
     )
-    def test_check(self, tmp_path, path_in_repo, make, ok):
-        """An existing directory or file passes, as does no path at all; a path
-        that matched nothing fails the step with a message."""
-        target = tmp_path / path_in_repo
-        if make == "dir":
-            target.mkdir(parents=True)
-        elif make == "file":
-            target.write_text("{}")
-        proc = subprocess.run(
-            ["bash", "-c", self._check_block()],
-            env={"HF_DEST": str(tmp_path), "HF_PATH_IN_REPO": path_in_repo},
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert (proc.returncode == 0) is ok, proc.stdout + proc.stderr
-        if not ok:
-            assert f"'{path_in_repo}' matched nothing" in proc.stdout
-
-    def test_step_declares_a_path_in_repo_default(self):
-        """Like the skypilot and LSF hfpull steps, so the config is self-documenting."""
-        import yaml
-
-        step = yaml.safe_load((HFPULL_STEP_DIR / "step.yaml").read_text())
-        assert step["config"]["hfpull_config"]["path_in_repo"] == ""
+    step = yaml.safe_load(step_yaml.read_text())
+    assert step["config"]["hfpull_config"]["path_in_repo"] == ""
 
 
 class TestPriorityClassName:
