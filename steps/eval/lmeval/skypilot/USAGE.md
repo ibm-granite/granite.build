@@ -84,8 +84,19 @@ metric; `n` sums their sizes, `per_task` keeps each task's numbers, and
 `tasks` are expanded by the harness; only leaf tasks are averaged. `limit` is
 lm-eval's own (the first N docs per task), and `repeats` runs the whole set k times
 and averages — no pass@k here, since per-example scores have no meaning for every
-metric family. `dataset`/`dataset_revision` do not apply (every task pins its own
-data; the class pin is the harness repo at the release the image pins).
+metric family. `dataset`/`dataset_revision` do not apply (every task names its own
+dataset; the class pin is the harness repo at the release the image pins). One
+caveat the curated benchmarks do not have: the harness's task yamls name their
+datasets but pin no revisions, so a bridge run reads each dataset at the hub's
+current snapshot.
+
+The composed run dir is `$output_root/$run_name/lm-eval-<tasks>` (the tasks,
+commas to dashes, suffix the benchmark id so two bridge recipes scoring one model
+don't share an output dir).
+
+Two recipes ship as templates: `recipes/evals/lmeval/hellaswag` (base mode —
+multiple-choice loglikelihood, the leaderboard-standard `metric=acc_norm`) and
+`recipes/evals/lmeval/gsm8k` (chat mode — 5-shot generation, `exact_match`).
 
 Resume is the curated benchmarks' care: the harness response cache
 (`repeat-<k>/lm_cache`) keeps every finished request, so a restarted run only sends
@@ -100,7 +111,7 @@ the missing ones.
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark` (the `lm-eval` bridge suffixes the tasks: `…/lm-eval-hellaswag`). |
 | `run_name` | basename of `model_path` | Run directory under `output_root`. |
 | `limit` | `""` (full set) | **Smoke knob:** first N examples. mmlu-prox-lite orders by (question_id, language), so a small N covers every language; include-44 orders by (in-task index, language), so a small N covers the first languages' tasks (LIMIT=5 sees Albanian's five); lm-eval uses the harness's own per-task first N. |
 | `repeats` | `""` (1) | Repeats of the whole run. mmlu-prox-lite samples afresh at temperature 1.0; include-44 reports pass@1[avg-of-k] with `details.pass_at_k`; lm-eval reports the mean over repeats (no pass@k). |

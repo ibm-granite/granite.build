@@ -166,12 +166,20 @@ environment_configs:
             if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
             # Either a full output_dir, or output_root composed per benchmark; with
             # neither set, fail here rather than deep inside a harness.
+            # The generic bridge (benchmark lm-eval) runs many benchmarks through
+            # one id; suffix the composed dir with the tasks so two bridge recipes
+            # scoring one model don't share an output dir (results.json would
+            # overwrite): tasks=hellaswag -> .../lm-eval-hellaswag.
+            BENCH_DIR="$BENCHMARK"
+            for kv in {{ config.options }}; do
+              case "$kv" in tasks=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#tasks=}" | tr ',' '-')";; esac
+            done
             if [ -z "$OUTPUT_DIR" ]; then
-                if [ -z "$OUTPUT_ROOT" ]; then
-                    echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCHMARK) or output_dir" >&2
-                    exit 1
-                fi
-                OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCHMARK"
+              if [ -z "$OUTPUT_ROOT" ]; then
+                echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCH_DIR) or output_dir" >&2
+                exit 1
+              fi
+              OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCH_DIR"
             fi
             case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
             mkdir -p "$OUTPUT_DIR"

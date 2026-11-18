@@ -59,12 +59,16 @@ cache for the next run (the curated modules' adapters and cache care --
 ``chat_if``/``include`` -- reused as is).
 
 Not available generically: ``dataset``/``dataset_revision`` overrides (each
-task pins its own data; setting them fails fast) and ``answers=gold`` (the
-gold responses are task-specific). The class-level pin every benchmark
+task names its own dataset; setting them fails fast) and ``answers=gold``
+(the gold responses are task-specific). The class-level pin every benchmark
 carries is the harness repo itself, at the release the pyproject extra
-pins -- the task yamls and their dataset pins live there. Protocol
-decisions a curated benchmark freezes -- sampling, stop strings, thinking
-mode -- are the tasks' own here unless ``gen_kwargs`` overrides them.
+pins -- the task yamls live there. One caveat the curated benchmarks do
+not have: the harness's task yamls name their datasets but do not pin
+revisions, so a bridge run reads each dataset at the hub's current
+snapshot (results.json records the harness pin, not per-task dataset
+revisions). Protocol decisions a curated benchmark freezes -- sampling,
+stop strings, thinking mode -- are the tasks' own here unless
+``gen_kwargs`` overrides them.
 """
 
 from __future__ import annotations
