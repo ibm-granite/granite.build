@@ -101,6 +101,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The fm-tune step moves from the `tune` category to `train` (#677).** Its URI changes from
+  `space://steps/tune/fm-tune` to `space://steps/train/fm-tune`. The source is now
+  `steps/train/fm-tune/`, and the published copies are
+  `configurations/assets/environments/{bash,skypilot}/steps/train/fm-tune/`. The build tests,
+  docs and unit tests are updated. **Breaking:** a build.yaml outside this repo that uses
+  `space://steps/tune/fm-tune` must switch to the new URI. The old one is not kept as an alias.
 - **The `misc` step category is now `aux` (#671).** The byoc step moves from
   `space://steps/misc/byoc` to `space://steps/aux/byoc`; its source is now `steps/aux/byoc/` and
   its published copy is `configurations/assets/environments/skypilot/steps/aux/byoc/`. The
@@ -108,6 +114,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that uses `space://steps/misc/byoc` must switch to the new URI; the old one is not kept as an
   alias. Environment overrides keyed `steps.byoc:` still apply, because they match only the last
   part of the step URI.
+- **Framework steps: share Jinja between templates with `gb-include` (#651).** A
+  `{#- gb-include <path> -#}` line in a `step-template.yaml` is replaced by the file it
+  names, after a `{#- included from steps/<file> -#}` comment, when `make space` /
+  `make publish-step` render the step (`steps/scripts/render_step_template.py`, which
+  replaces the `sed` render; steps without such lines render byte-identically). The
+  SkyPilot `openinstruct-sft` and `hf-peft-sft` steps now share their `args` checks and
+  `args` argv rendering (`steps/train/shared/trainer_args.j2`) and define their
+  `validate` macro once (`macros/validate.j2`) instead of in both `setup:` and `run:`.
+  `fms-hf-tuning` writes its `validate` once the same way (its `args` go to the job as
+  JSON, so it keeps its own checks). All three share one shell-quoting `q()`
+  (`steps/train/shared/q.j2`). Messages are unchanged; the one behaviour change is that
+  a `null` config value (e.g. `clearml_project: null`, `dataset_config: null`) now
+  reaches openinstruct-sft's and hf-peft-sft's scripts as empty, i.e. unset, instead of
+  as the word `None`. The CI test that checks every published `step.yaml` against its
+  source now renders the source as `make publish-step` does, so it also covers
+  `${IMAGE_REF}` and `gb-include` steps.
+
 - **Step resolution: `base_uris` order decides, and environments own steps by `environment.yaml`
   (#558).** `space://steps/<name>` now resolves to the first base, in `base_uris` order, that
   holds a copy serving the active environment, so an earlier base always outranks a later one.

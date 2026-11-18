@@ -9,6 +9,9 @@ a directory) and nothing else, keeps the repo layout under the pull
 destination, and binds ``<dest>/data/train``. Every pull path does this: the
 Python ``HfURI.pull`` (bash, docker, k8s), the skypilot and LSF hfpull shell
 scripts, and the skypilot inline download line.
+
+The ``mocked`` tests turn HF mocking back on: a mocked pull downloads nothing
+but still creates ``<dest>/<path>``, so the binding exists.
 """
 
 import ast
@@ -490,6 +493,62 @@ def test_pull_evicted_before_the_path_lands_rewaits(tmp_path):
     assert len(calls) == 2
 
 
+def test_mocked_pull_creates_the_bound_path(tmp_path, monkeypatch):
+    """A mocked pull downloads nothing, but the input is still bound at the path."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    uri = HfURI.parse(_URI)
+    with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+        assert uri.pull(tmp_path / "d") is True
+    mock_dl.assert_not_called()
+    assert uri.local_path(tmp_path / "d").is_dir()
+
+
+def test_mocked_pull_keeps_a_file_already_at_the_path(tmp_path, monkeypatch):
+    """A live run may have left the real file there (a shared cache)."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    pulled = tmp_path / "d" / "config.json"
+    pulled.parent.mkdir(parents=True)
+    pulled.write_text("{}")
+    assert HfURI.parse("hf:///org/m/main/config.json").pull(tmp_path / "d") is True
+    assert pulled.read_text() == "{}"
+
+
+def test_mocked_pull_tolerates_a_concurrent_mocked_pull(tmp_path, monkeypatch):
+    """Another mocked pull may create the path between the check and the mkdir."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    uri = HfURI.parse(_URI)
+    bound = uri.local_path(tmp_path / "d")
+    real_exists = Path.exists
+
+    def exists_but_lose_the_race(self, *args, **kwargs):
+        if self == bound:
+            bound.mkdir(parents=True)  # the other pull creates it first
+            return False
+        return real_exists(self, *args, **kwargs)
+
+    with patch.object(Path, "exists", exists_but_lose_the_race):
+        assert uri.pull(tmp_path / "d") is True
+    assert bound.is_dir()
+
+
+def test_mocked_pull_returns_false_when_the_path_cannot_be_made(tmp_path, monkeypatch):
+    """A file where a parent directory should be fails the pull, as a live one does."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    (tmp_path / "data").write_text("x")
+    uri = HfURI.parse("hf:///datasets/o/r/main/data/train")
+    assert uri.pull(tmp_path) is False
+
+
+@pytest.mark.parametrize(
+    "uri", ["hf:///datasets/org/repo", "hf:///buckets/org/b/some/dir"]
+)
+def test_mocked_pull_without_a_path_creates_nothing(tmp_path, monkeypatch, uri):
+    """Without a path in the repo the binding is dest, which the caller owns."""
+    monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
+    assert HfURI.parse(uri).pull(tmp_path / "d") is True
+    assert not (tmp_path / "d").exists()
+
+
 # ── hfpull step configs and bindings ─────────────────────────────────────────
 
 
@@ -559,17 +618,6 @@ async def test_skypilot_inline_pull_carries_the_path(skypilot_env):
 
 
 @pytest.mark.asyncio
-async def test_skypilot_inline_bucket_pull_has_no_path(skypilot_env):
-    binding, _ = await skypilot_env.pullasset_hfstore(
-        uri=HfURI.parse("hf:///buckets/org/b/some/dir"),
-        assetstore=_hfstore(),
-        storeload_config=_storeload(inline=True),
-    )
-    assert binding["_hfpull"]["path_in_repo"] == ""
-    assert binding["binding"]["path"] == binding["_hfpull"]["path"]
-
-
-@pytest.mark.asyncio
 async def test_lsf_binds_the_path_under_the_download_dir():
     from gbserver.environment.lsf import Lsf
 
@@ -594,13 +642,24 @@ async def test_lsf_binds_the_path_under_the_download_dir():
 # ── shell paths ──────────────────────────────────────────────────────────────
 
 
-def _stub_hf(tmp_path, creates):
-    """A stub `hf` that records its argv and makes ``--local-dir/<creates>``."""
+# What each CLI generation prints for `hf version`. huggingface_hub < 1.0 parses a
+# repeated --include as nargs="*" without append (only the LAST flag survives), so the
+# scripts must pass both patterns after one --include there; 1.x needs one per flag.
+_HF_V1 = "version=1.33.0"
+_HF_V0 = "huggingface_hub version: 0.36.2"
+
+
+def _stub_hf(tmp_path, creates, version=_HF_V1):
+    """A stub `hf` that records its argv and makes ``--local-dir/<creates>``.
+
+    ``hf version`` prints ``version`` and records nothing, like the real CLI.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir()
     hf = bindir / "hf"
     hf.write_text(
         "#!/bin/sh\n"
+        f'[ "$1" = version ] && {{ echo "{version}"; exit 0; }}\n'
         'printf "%s\\n" "$@" > "$HF_ARGV"\n'
         'while [ $# -gt 0 ]; do [ "$1" = --local-dir ] && dir="$2"; shift; done\n'
         f'[ -z "{creates}" ] || mkdir -p "$dir/{creates}"\n'
@@ -609,10 +668,10 @@ def _stub_hf(tmp_path, creates):
     return bindir
 
 
-def _run(tmp_path, script, creates):
+def _run(tmp_path, script, creates, version=_HF_V1):
     env = {
         **os.environ,
-        "PATH": f"{_stub_hf(tmp_path, creates)}:{os.environ['PATH']}",
+        "PATH": f"{_stub_hf(tmp_path, creates, version)}:{os.environ['PATH']}",
         "HF_ARGV": str(tmp_path / "argv"),
         "GB_HFPULL_LOCK_TIMEOUT": "5",
         "LLMB_LSF_LAUNCH_ID": "test",
@@ -645,6 +704,31 @@ def test_inline_line_includes_only_the_path(tmp_path):
     assert argv[argv.index("--include") + 1] == _SUB
     assert argv.count("--include") == 2
     assert f"{_SUB}/*" in argv
+
+
+def test_inline_line_passes_both_patterns_to_one_include_on_hf_0x(tmp_path):
+    """On huggingface_hub < 1.0 a second --include would replace the first."""
+    cmd = _inline_hf_download_cmd(
+        {
+            "repo": "org/repo",
+            "path": str(tmp_path / "dest"),
+            "revision": "main",
+            "type": "dataset",
+            "path_in_repo": _SUB,
+        }
+    )
+    proc, argv = _run(tmp_path, cmd, _SUB, version=_HF_V0)
+    assert proc.returncode == 0, proc.stderr
+    assert argv.count("--include") == 1
+    i = argv.index("--include")
+    assert argv[i + 1 : i + 3] == [_SUB, f"{_SUB}/*"]
+
+
+def test_inline_line_without_a_path_has_no_include(tmp_path):
+    cmd = _inline_hf_download_cmd(
+        {"repo": "org/repo", "path": str(tmp_path / "dest"), "path_in_repo": ""}
+    )
+    assert "--include" not in cmd and "hf version" not in cmd
 
 
 def test_inline_line_fails_when_the_path_matches_nothing(tmp_path):
@@ -751,6 +835,19 @@ def test_hfpull_script_includes_only_the_path(tmp_path, script):
 
 
 @_SCRIPTS
+def test_hfpull_script_passes_both_patterns_to_one_include_on_hf_0x(tmp_path, script):
+    """On huggingface_hub < 1.0 a second --include would replace the first, and a
+    file-scoped path_in_repo then downloaded nothing (the 'matched nothing' failure)."""
+    dest = tmp_path / "dest"
+    proc, argv = _run(tmp_path, _pull_slice(script, _SUB, dest), _SUB, version=_HF_V0)
+    assert proc.returncode == 0, proc.stderr
+    assert argv.count("--include") == 1
+    i = argv.index("--include")
+    assert argv[i + 1 : i + 3] == [_SUB, f"{_SUB}/*"]
+    assert (dest / _SUB).is_dir()
+
+
+@_SCRIPTS
 def test_hfpull_script_strips_slashes_from_the_path(tmp_path, script):
     proc, argv = _run(tmp_path, _pull_slice(script, f"/{_SUB}/", tmp_path / "d"), _SUB)
     assert proc.returncode == 0, proc.stderr
@@ -769,3 +866,44 @@ def test_hfpull_script_whole_repo_has_no_include(tmp_path, script):
     proc, argv = _run(tmp_path, _pull_slice(script, "", tmp_path / "d"), "")
     assert proc.returncode == 0, proc.stderr
     assert "--include" not in argv
+
+
+@_SCRIPTS
+@pytest.mark.parametrize("path_in_repo", ["", f"/{_SUB}/"])
+def test_mocked_hfpull_script_creates_the_bound_path(tmp_path, script, path_in_repo):
+    """The mock branch exits before any download, but the binding must exist."""
+    dest = tmp_path / "dest"
+    text = _render(script(), path_in_repo).replace("DEST_PLACEHOLDER", str(dest))
+    proc = subprocess.run(
+        ["bash", "-c", text],
+        env={**os.environ, ENV_VAR_GBTEST_MOCK_HF: "true"},
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "mocking hfpull" in proc.stdout
+    assert (dest / path_in_repo.strip("/")).is_dir()
+    if not path_in_repo:
+        # A whole-repo mock makes only HF_DEST, holding just the mock marker.
+        assert [p.name for p in dest.iterdir()] == [".gbtest_mock_hfpull"]
+
+
+@_SCRIPTS
+def test_mocked_hfpull_script_keeps_a_file_already_at_the_path(tmp_path, script):
+    """A live run may have left the real file there (a shared cache)."""
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "config.json").write_text("{}")
+    text = _render(script(), "config.json").replace("DEST_PLACEHOLDER", str(dest))
+    proc = subprocess.run(
+        ["bash", "-c", text],
+        env={**os.environ, ENV_VAR_GBTEST_MOCK_HF: "true"},
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (dest / "config.json").read_text() == "{}"

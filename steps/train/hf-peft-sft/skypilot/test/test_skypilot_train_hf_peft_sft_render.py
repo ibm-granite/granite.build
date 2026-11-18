@@ -14,13 +14,17 @@ import subprocess
 import hf_peft_sft_train as train
 import pytest
 import yaml
+from libgbtest.step_templates import expanded_step_template
 
 from gbserver.environment.skypilot import validate_launch_num_nodes
 from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
-_TEMPLATE = yaml.safe_load((_STEP_DIR / "step-template.yaml").read_text())
+_SOURCE = (_STEP_DIR / "step-template.yaml").read_text()
+_VALIDATE = (_STEP_DIR / "macros" / "validate.j2").read_text()
+# As `make space` renders it: gb-include lines expanded.
+_TEMPLATE = expanded_step_template(_STEP_DIR / "step-template.yaml")
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
     "config"
 ]
@@ -82,14 +86,14 @@ def _tail(argv):
 
 
 def _owned():
-    text = (_STEP_DIR / "step-template.yaml").read_text()
+    text = _VALIDATE
     return set(
         re.findall(r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", text)[0])
     )
 
 
 def _exempt():
-    text = (_STEP_DIR / "step-template.yaml").read_text()
+    text = _VALIDATE
     found = re.findall(r"set full_flags = \[(.*?)\]", text)
     return set(re.findall(r'"([a-z_0-9]+)"', found[0])) if found else set()
 
@@ -137,12 +141,18 @@ class TestContract:
     def test_requests_no_gpus_itself(self):
         assert _LAUNCHER["resources"] == {}
 
-    @pytest.mark.parametrize("name", ["validate", "q"])
-    def test_macro_copies_are_identical(self, name):
-        macro = re.compile(r"\{%- macro " + name + r"\(.*?\{%- endmacro %\}", re.S)
-        setup = macro.findall(_LAUNCHER["setup"])
-        assert len(setup) == 1
-        assert setup == macro.findall(_LAUNCHER["run"])
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_blocks_include_the_shared_macros(self, block):
+        source = yaml.safe_load(_SOURCE)["environment_configs"]["Skypilot"][
+            "launchers"
+        ]["hf_peft_sft"]["config"][block]
+        for marker in (
+            "{#- gb-include ../../shared/q.j2 -#}",
+            "{#- gb-include ../../shared/trainer_args.j2 -#}",
+            "{#- gb-include macros/validate.j2 -#}",
+        ):
+            assert source.count(marker) == 1, marker
+        assert "{%- macro" not in _SOURCE
 
     def test_template_carries_the_image_ref_token(self):
         assert _DEFAULTS["image_id"] == "docker:${IMAGE_REF}"
@@ -226,6 +236,24 @@ class TestValidation:
             "run", _ctx(method="alora", alora_invocation_string="x", args={flag: True})
         )
         assert "packing" in err
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            # foo's shared checks run before packing's aLoRA check...
+            ({"foo": [], "packing": True}, "is an empty list"),
+            # ...and packing's aLoRA check before foo's shared checks.
+            ({"packing": True, "foo": []}, "cannot train with packing"),
+        ],
+    )
+    def test_alora_check_runs_per_key_with_the_shared_args_checks(
+        self, block, args, expected
+    ):
+        err = _render_error(
+            block, _ctx(method="alora", alora_invocation_string="x", args=args)
+        )
+        assert expected in err
 
     def test_alora_packing_false_is_fine(self):
         _render(
@@ -480,6 +508,19 @@ class TestGuardArgv:
 
 
 class TestRunArgv:
+    @pytest.mark.parametrize(
+        "key,flag",
+        [
+            ("clearml_project", "--clearml-project"),
+            ("clearml_task_name", "--clearml-task"),
+            ("dataset_config", "--dataset_config"),
+        ],
+    )
+    def test_a_null_value_is_passed_as_empty_not_none(self, key, flag):
+        """q() renders YAML null as empty (unset), not as the word None."""
+        argv = _argv("run", _ctx(**{key: None}), "hf_peft_sft_run.sh")
+        assert _opt(argv, flag) == ""
+
     def test_defaults(self):
         argv = _argv("run", _ctx(), "hf_peft_sft_run.sh")
         assert argv[: argv.index("--")] == [

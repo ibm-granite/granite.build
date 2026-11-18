@@ -53,6 +53,14 @@ uvicorn autotunex.main:app --reload
 `autotune` catalog that the configuration-template, dataset-format and `suggest-mapping`
 endpoints need — without it they return `503`.
 
+For the `llmb` job backend (and live build logs), also install granite.build from
+this checkout, so the `llmb` CLI and the `gbcli` package match the gbserver in the
+same commit:
+
+```bash
+uv pip install -e ..
+```
+
 The server starts on <http://127.0.0.1:8000> and creates a local SQLite database
 (`autotunex.db`) on first run. No database server needed.
 
@@ -84,11 +92,16 @@ Every default is overridable at run time with `-e AUTOTUNEX_...`.
 
 ```bash
 # Build
-docker build -t autotunex:local .
+docker build -f Dockerfile -t autotunex:local ..   # context: the repo root
 
 # Run (data persists in the named volume)
 docker run --rm -p 8000:8000 -v autotunex-data:/data autotunex:local
 ```
+
+> The build context is the repository root (`..`). Always pass `-f Dockerfile`:
+> without it Docker builds the root `Dockerfile` — the gbserver image — instead.
+> `--build-arg JOB_BACKEND=llmb` builds the image for the `llmb` backend; see
+> [deployment](docs/operations/deployment.md).
 
 Then open:
 
@@ -102,8 +115,7 @@ Or with Compose:
 docker compose up --build
 ```
 
-> **Podman works too.** Every command above runs unchanged under Podman — it is a
-> drop-in replacement (`podman build`, `podman run`, `podman compose up`).
+> **Podman works too**, with one addition: pass the ignore file explicitly, e.g. `podman build --ignorefile Dockerfile.dockerignore -f Dockerfile ..` — Podman does not pick up a per-Dockerfile ignore file on its own. Compose (`docker compose up --build`) is Docker-only for the same reason.
 
 **Overriding defaults** — for example, to attribute writes to a named owner:
 
@@ -126,7 +138,7 @@ kernel base (below), so the build compiles nothing and takes minutes. The CUDA
 image is linux/amd64 only:
 
 ```bash
-docker build --platform linux/amd64 -t autotunex:cuda --build-arg DEVICE=cuda .
+docker build --platform linux/amd64 -f Dockerfile -t autotunex:cuda --build-arg DEVICE=cuda ..
 
 docker run --rm --gpus all -p 8000:8000 -v autotunex-cuda-data:/data autotunex:cuda
 ```
@@ -148,7 +160,7 @@ CUDA stage at another kernel base, e.g. one you built yourself (below).
 > **Expect a large image** — a `-devel` CUDA base (needed for deepspeed's runtime
 > JIT compilation) plus verl/vLLM is several times the size of the CPU image. Running the result needs an NVIDIA
 > driver that supports CUDA 13 (>= 580). The CPU image itself is unaffected: a plain
-> `docker build .` still produces it, with the identical package set it has today.
+> `docker build -f Dockerfile ..` still produces it, with the identical package set it has today.
 
 > **The kernel base.** flash-attn, mamba-ssm and causal-conv1d have no official
 > wheel for torch 2.11 + CUDA 13, so they are compiled from source in
@@ -158,7 +170,7 @@ CUDA stage at another kernel base, e.g. one you built yourself (below).
 > the CUDA stage above pins it by digest. Rebuild it when torch, CUDA, one of the
 > three kernel pins, or fm-tune's `[tool.uv.extra-build-variables]` (the CUDA arch
 > list) changes: bump `CUDA_BASE_IMAGE_VERSION`, run `make publish-base-image`,
-> and pin the digest it prints in the root `Dockerfile`'s `CUDA_KERNEL_BASE`. The
+> and pin the digest it prints in `autotunex/Dockerfile`'s `CUDA_KERNEL_BASE`. The
 > CUDA build refuses a base whose kernel or torch pins no longer match fm-tune's;
 > it cannot tell a changed arch list, so rebuild for that by hand. The quay
 > repository must be Public, since every CUDA build pulls it anonymously. Compiling takes ~35 minutes and needs a
@@ -168,8 +180,8 @@ CUDA stage at another kernel base, e.g. one you built yourself (below).
 >
 > ```bash
 > docker build --platform linux/amd64 -f docker/cuda-base/Dockerfile -t autotunex-cuda-base:local .
-> docker build --platform linux/amd64 -t autotunex:cuda --build-arg DEVICE=cuda \
->   --build-arg CUDA_KERNEL_BASE=autotunex-cuda-base:local .
+> docker build --platform linux/amd64 -f Dockerfile -t autotunex:cuda --build-arg DEVICE=cuda \
+>   --build-arg CUDA_KERNEL_BASE=autotunex-cuda-base:local ..
 > ```
 
 > **Training execution.** The default (CPU) image installs the lean

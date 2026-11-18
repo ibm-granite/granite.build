@@ -15,14 +15,17 @@ import subprocess
 
 import pytest
 import yaml
+from libgbtest.step_templates import expanded_step_template
 
 from gbserver.environment.skypilot import validate_launch_num_nodes
 from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 from gbserver.utils.template import fill_template
 
 _STEP_DIR = pathlib.Path(__file__).resolve().parents[1]
-_TEXT = (_STEP_DIR / "step-template.yaml").read_text()
-_TEMPLATE = yaml.safe_load(_TEXT)
+_SOURCE = (_STEP_DIR / "step-template.yaml").read_text()
+_VALIDATE = (_STEP_DIR / "macros" / "validate.j2").read_text()
+# As `make space` renders it: gb-include lines expanded.
+_TEMPLATE = expanded_step_template(_STEP_DIR / "step-template.yaml")
 _SKY = _TEMPLATE["environment_configs"]["Skypilot"]
 _LAUNCHER = _SKY["launchers"]["fms_hf_tuning"]["config"]
 _ENV = StepEnvironmentTypeConfig.model_validate(_SKY)
@@ -86,7 +89,9 @@ def _b64(argv, name):
 
 def _owned():
     return set(
-        re.findall(r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _TEXT)[0])
+        re.findall(
+            r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _VALIDATE)[0]
+        )
     )
 
 
@@ -122,16 +127,19 @@ class TestContract:
         msg = [f for f in rule["event_fields"] if f["field_name"] == "message"][0]
         assert re.search(msg["field_regex"], line)[0] == line
 
-    def test_both_blocks_carry_the_same_validate_macro(self):
-        def macro(block):
-            text = _LAUNCHER[block]
-            return text[
-                text.index("{%- macro validate") : text.index(
-                    "{%- endmacro %}\n{%- set c"
-                )
-            ]
-
-        assert macro("setup") == macro("run")
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_blocks_include_the_macros(self, block):
+        """q is the shared one; validate is written once, in macros/validate.j2."""
+        source = yaml.safe_load(_SOURCE)["environment_configs"]["Skypilot"][
+            "launchers"
+        ]["fms_hf_tuning"]["config"][block]
+        for marker in (
+            "{#- gb-include ../../shared/q.j2 -#}",
+            "{#- gb-include macros/validate.j2 -#}",
+        ):
+            assert source.count(marker) == 1, marker
+        assert "{%- macro" not in _SOURCE
+        assert "macro q(" not in _VALIDATE
 
     def test_no_gpu_request_in_the_template(self):
         assert _LAUNCHER["resources"] == {}

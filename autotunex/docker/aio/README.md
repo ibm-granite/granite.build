@@ -15,9 +15,9 @@ ones each have their own virtualenv, while Caddy is a static binary lifted from
 its official image. The proxy owns the exposed `:8080` and dials gbserver over
 loopback, so gbserver sees a `127.0.0.1` peer for every caller — which is what
 its standalone auth requires (see [`Caddyfile`](Caddyfile)).
-granite.build is built from the `main` branch of
-`ibm-granite/granite.build` (override `GB_REPO`/`GB_REF`) via its public **standalone** path (no
-internal Artifactory). AutoTuneX submits builds to the co-located gbserver
+granite.build — gbserver, its dashboard and the `llmb` CLI — is built from the
+checkout the image is built from (it needs granite.build's `v*` tags), via its
+public **standalone** path (no internal Artifactory). AutoTuneX submits builds to the co-located gbserver
 through the `llmb` CLI (`AUTOTUNEX_JOB_BACKEND=llmb`, `GB_ENVIRONMENT=standalone`).
 
 ## Configuration
@@ -62,13 +62,15 @@ docker compose --profile aio up --build
 Or plain Docker:
 
 ```bash
-docker build -f Dockerfile.aio -t autotunex-aio:local .
+docker build -f Dockerfile.aio -t autotunex-aio:local ..   # context: the repo root
 docker run --rm \
   --env-file .env.aio \
   -p 8000:8000 -p 8080:8080 \
   -v autotunex-aio-data:/data \
   autotunex-aio:local
 ```
+
+> With Podman, add `--ignorefile Dockerfile.aio.dockerignore` to `podman build`; Podman does not pick up a per-Dockerfile ignore file on its own, and `podman compose` cannot pass one, so use Docker Compose for the compose route.
 
 Then open `http://localhost:8000/autotune` (AutoTuneX) and
 `http://localhost:8080` (granite.build).
@@ -98,7 +100,7 @@ are needed.
 ```bash
 DOCKER_BUILDKIT=1 docker build -f Dockerfile.aio \
   --build-arg INSTALL_AUTOTUNE_CORE=1 \
-  -t autotunex-aio:local .
+  -t autotunex-aio:local ..
 ```
 
 Then, to actually run on it, set `AUTOTUNEX_JOB_BACKEND=local` in `.env.aio`.

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# CUDA kernel base for the root Dockerfile's DEVICE=cuda build: the CUDA devel
+# CUDA kernel base for the autotunex/Dockerfile's DEVICE=cuda build: the CUDA devel
 # toolchain, python3.12 in /opt/venv, torch, and flash-attn / mamba-ssm /
 # causal-conv1d compiled from source. The projects ship no wheel for torch 2.11 +
 # CUDA 13, and compiling them is ~35 minutes on 29 cores, so they live here,
@@ -13,7 +13,7 @@
 #   docker build --platform linux/amd64 -f docker/cuda-base/Dockerfile -t <ref> .
 #
 # `make publish-base-image` does that and pushes it under a tag that is never
-# reused. The root Dockerfile pins the published image by digest.
+# reused. The autotunex/Dockerfile pins the published image by digest.
 #
 # The pins below must equal torch in fm-tune's [core] and the three kernels in
 # its [full] (tests/test_dockerfile_variants.py checks this): the app build
@@ -29,7 +29,7 @@
 ARG CUDA_BASE=docker.io/nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
 FROM ${CUDA_BASE}
 
-# python3.12 specifically, to match the CPU stage of the root Dockerfile. Ubuntu
+# python3.12 specifically, to match the CPU stage of the autotunex/Dockerfile. Ubuntu
 # 24.04's system python already IS 3.12, so no third-party PPA is needed.
 # python3.12-dev provides Python.h, which the kernels' C++ sources include through
 # torch's headers.
@@ -43,7 +43,7 @@ FROM ${CUDA_BASE}
 # The venv is not cosmetic either: Ubuntu marks its system python PEP 668
 # "externally-managed" and pip refuses to install into it. Putting the venv's
 # bin on PATH also makes bare `python` and `pip` resolve, which is what lets the
-# root Dockerfile's shared runtime stage (pip calls, HEALTHCHECK, CMD) work
+# autotunex/Dockerfile's shared runtime stage (pip calls, HEALTHCHECK, CMD) work
 # unchanged on this base and on the CPU one.
 #
 # userdel: Ubuntu 24.04 ships a stock `ubuntu` account at UID 1000, which the

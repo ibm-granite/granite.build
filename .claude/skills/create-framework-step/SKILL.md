@@ -24,7 +24,7 @@ default option and says in its text to type the answer under "Other".
 
 1. **Step name** (`<name>`): options `new-step` (placeholder, rename later) and
    "Type a name under Other". Lowercase, hyphens ok, no slashes.
-2. **Category** (`<category>`): options `eval`, `train`, `tune`, `data`, `aux` (the tool adds
+2. **Category** (`<category>`): options `eval`, `train`, `data`, `aux` (the tool adds
    "Other" for the user's own). It becomes the directory under `steps/`:
    `steps/<category>/<name>/<env>/`, published as `space://steps/<category>/<name>`.
 3. **Inputs**: "A comma-separated list of input names, typed under Other." Options
@@ -110,7 +110,10 @@ must equal the target's output name.
 **Configuration.** Launcher text renders strictly: a missing leaf key renders as `""`
 and a missing parent block is an error at launch. So every key needs a default in
 `step-template.yaml`. Escape every value that goes into the shell with a `q()` macro,
-defined in **both** `setup` and `run`, because Jinja macros are block-scoped. Pass
+defined in **both** `setup` and `run`, because Jinja macros are block-scoped. A longer
+macro both blocks need (e.g. a `validate` of `raise_error` checks) goes in
+`macros/<name>.j2`, pulled into each block by a `{#- gb-include macros/<name>.j2 -#}`
+line (steps/README.md, "Sharing Jinja between templates"). Pass
 values to `src/*.sh` as argv; keep shell logic in scripts, not in the template.
 The dict-method trap applies to config keys too: when the user later asks for a key
 like `items` or `keys`, suggest another name, or read it as
