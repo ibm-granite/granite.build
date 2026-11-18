@@ -138,7 +138,7 @@ TASK_DIGESTS = {
     "train-fasttext": "460fc0818971ec83545a76805267b65459128fad52e68c26a199a0d74022badb",
     "tune-mjcf": "7da0fd3b906624df9eff8829ccd4f19cbb1ba967411b6d64d92b85b2f3fbdfb0",
     "video-processing": "d3f02e177b49e5768b6ce6709fc4ae3ef2ce0cdecb63b09fc9b07f9d3ddb7203",
-    "vulnerable-secret": "d76dfa9e256487c5542905b892156f694137aeef784e1abf3f41e15a8c946eac",
+    "vulnerable-secret": "d76dfa9e256487c5542905b892156f694137aeef784e1abf3f41e15a8c946eac",  # hashicorpignore: the Terminal-Bench task's name, not a secret
     "winning-avg-corewars": "a9f2c630fb7d656e96f3a42ade600a8abcb500631d153d62d5ceb2df073bc256",
     "write-compressor": "d9ddd9a8e925e2c566b37b2492cbf995afecefe58874e4043ef78d7f3c892c7e",
 }
