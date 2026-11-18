@@ -21,6 +21,13 @@ OUTPUT_ROOT: ""
 # HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.
 HF_HOME: ""
 
+# ─── Dataset swap ─────────────────────────────────────────────────────
+# Empty = the module's pinned dataset. Set both to score a different set in
+# the same format (DATASET: a hub id or path; DATASET_REVISION: its commit,
+# for reproducibility -- an unpinned swap floats with the source).
+DATASET: ""
+DATASET_REVISION: ""
+
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
 IMAGE: "quay.io/granitebuild/steps/eval/judged/images/gpu:136b0f80"
 IMAGE_CPU: "quay.io/granitebuild/steps/eval/judged/images/cpu:136b0f80"

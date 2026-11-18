@@ -176,14 +176,25 @@ environment_configs:
             if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
             # Either a full output_dir, or output_root composed per benchmark; with
             # neither set, fail here rather than deep inside a harness.
-            # The generic bridge (benchmark lm-eval) runs many benchmarks through
-            # one id; suffix the composed dir with the tasks so two bridge recipes
+            # The generic bridges run many benchmarks through one id; suffix the
+            # composed dir with what the recipe selected, so two bridge recipes
             # scoring one model don't share an output dir (results.json would
-            # overwrite): tasks=hellaswag -> .../lm-eval-hellaswag.
+            # overwrite): tasks=hellaswag -> .../lm-eval-hellaswag,
+            # domains=airline,retail -> .../tau3-airline-retail,
+            # service=filesystem -> .../mcpmark-filesystem, and a dataset-pinned
+            # bridge (swebench, terminal-bench) takes the dataset's basename.
             BENCH_DIR="$BENCHMARK"
             for kv in {{ config.options }}; do
-              case "$kv" in tasks=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#tasks=}" | tr ',' '-')";; esac
+              case "$kv" in
+                tasks=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#tasks=}" | tr ',' '-')";;
+                domains=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#domains=}" | tr ',' '-')";;
+                service=*) BENCH_DIR="$BENCHMARK-${kv#service=}";;
+                categories=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#categories=}" | tr ',' '-')";;
+              esac
             done
+            {% if config.dataset and config.benchmark in ("swebench", "terminal-bench") %}
+            d="$(basename "{{ config.dataset }}")"; case "$d" in "$BENCHMARK"-*) BENCH_DIR="$d";; *) BENCH_DIR="$BENCHMARK-$d";; esac
+            {% endif %}
             if [ -z "$OUTPUT_DIR" ]; then
               if [ -z "$OUTPUT_ROOT" ]; then
                 echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCH_DIR) or output_dir" >&2

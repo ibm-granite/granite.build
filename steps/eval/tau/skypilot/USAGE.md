@@ -26,6 +26,7 @@ steps:
 | `tau3-bench` | pass@1 (avg of 3) | the mean of per-domain pass@1 over airline, retail and telecom, as the τ²-bench leaderboard's Overall |
 | `tau3-retail` | pass@1 | 114 retail tasks |
 | `tau3-telecom` | pass@1 | 114 telecom tasks |
+  | `tau3` | pass@1 (mean over the chosen domains) | The generic bridge: `domains=` (required) runs any combination of the pinned tau2-bench data; `task_split=`/`tasks=` select within a domain. |
 
 See `granite-evals list` for the current, authoritative set and sizes.
 

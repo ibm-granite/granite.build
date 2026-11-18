@@ -46,6 +46,7 @@ steps:
 | `mcpmark-filesystem` | pass@1 | 30 standard + 10 easy tasks |
 | `mcpmark-postgres` | pass@1 | 21 standard + 10 easy tasks |
 | `mcpmark-playwright` | pass@1 | 4 standard tasks (no easy suite) |
+  | `mcpmark` | pass@1 | The generic bridge: `service=` (required) runs any service the pinned MCPMark checkout ships, with `task_suite=standard\|easy`. |
 
 See `granite-evals list` for the current, authoritative set and sizes.
 

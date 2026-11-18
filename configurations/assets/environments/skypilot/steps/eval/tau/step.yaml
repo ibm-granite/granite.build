@@ -175,6 +175,25 @@ environment_configs:
             # run_name defaults to the model_path basename (the same defaulting as
             # served_model_name), so one output_root serves every model.
             if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
+            # The generic bridges run many benchmarks through one id; suffix the
+            # composed dir with what the recipe selected, so two bridge recipes
+            # scoring one model don't share an output dir (results.json would
+            # overwrite): tasks=hellaswag -> .../lm-eval-hellaswag,
+            # domains=airline,retail -> .../tau3-airline-retail,
+            # service=filesystem -> .../mcpmark-filesystem, and a dataset-pinned
+            # bridge (swebench, terminal-bench) takes the dataset's basename.
+            BENCH_DIR="$BENCHMARK"
+            for kv in {{ config.options }}; do
+              case "$kv" in
+                tasks=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#tasks=}" | tr ',' '-')";;
+                domains=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#domains=}" | tr ',' '-')";;
+                service=*) BENCH_DIR="$BENCHMARK-${kv#service=}";;
+                categories=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#categories=}" | tr ',' '-')";;
+              esac
+            done
+            {% if config.dataset and config.benchmark in ("swebench", "terminal-bench") %}
+            d="$(basename "{{ config.dataset }}")"; case "$d" in "$BENCHMARK"-*) BENCH_DIR="$d";; *) BENCH_DIR="$BENCHMARK-$d";; esac
+            {% endif %}
             # Either a full output_dir, or output_root composed per benchmark; with
             # neither set, fail here rather than deep inside a harness.
             if [ -z "$OUTPUT_DIR" ]; then

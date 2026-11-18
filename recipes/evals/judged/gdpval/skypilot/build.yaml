@@ -29,6 +29,8 @@ granite.build:
             phase: "generate"
             tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
             hf_home: "$${HF_HOME}"
+            dataset: "$${DATASET}"
+            dataset_revision: "$${DATASET_REVISION}"
             sandbox_cache: "$${SANDBOX_CACHE if SANDBOX_CACHE else OUTPUT_ROOT ~ '/' ~ RUN_NAME ~ '/enroot-cache'}"
             launcher_config:
               resources:
@@ -63,6 +65,8 @@ granite.build:
             phase: "score"
             tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
             hf_home: "$${HF_HOME}"
+            dataset: "$${DATASET}"
+            dataset_revision: "$${DATASET_REVISION}"
             sandbox_cache: "$${SANDBOX_CACHE if SANDBOX_CACHE else OUTPUT_ROOT ~ '/' ~ RUN_NAME ~ '/enroot-cache'}"
             skypilot:
               secrets:
