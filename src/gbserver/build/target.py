@@ -222,7 +222,9 @@ class Target(BuildEntity):
                 "artifact_config: %s uri_to_handle: %s", artifact_config, uri_to_handle
             )
             artifact_config_uri = URI.get_uri(uri_to_handle)
-            task = self.environment.pullasset(task_group=tg, uri=artifact_config_uri)
+            task = self.environment.pullasset(
+                task_group=tg, uri=artifact_config_uri, setup_config=self.setup_config
+            )
             if (
                 artifact_config.input_binding_id is None
                 or artifact_config.input_binding_id == ""

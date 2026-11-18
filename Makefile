@@ -430,6 +430,7 @@ check_hf_token:
 .test:	check_hf_token
 	source $(VENVDIR)/bin/activate && \
 		export GBTEST_MOCK_HF=${GBTEST_MOCK_HF} &&	\
+		export GBTEST_MOCK_COS=${GBTEST_MOCK_COS} &&	\
 		export GBTEST_MODE=${GBTEST_MODE} && \
 		export GBSERVER_IMAGE_TAG=${IMAGE_TAG} && \
 		export GBSERVER_SIDECAR_MONITORING_IMAGE_TAG=${SIDECAR_IMAGE_TAG} && \
@@ -521,8 +522,9 @@ kube-teardown:
 	source .venv/bin/activate;\
 	bash scripts/kube/teardown-kind.sh
 
-# Local S3-compatible store (SeaweedFS) for the SLURM demo's artifact push.
-# Demo-only — keep out of CI setup targets (Docker Hub anonymous rate limit).
+# Local S3-compatible store (SeaweedFS) for the SLURM demo's artifact push and the
+# s3:// SLURM integration tests (test_skypilot_s3.py, via the s3-local assetstore).
+# Local-only — keep out of CI setup targets (Docker Hub anonymous rate limit).
 .PHONY: s3-setup
 s3-setup:
 	source .venv/bin/activate;\
@@ -747,7 +749,7 @@ $(VENVDIR): pyproject.toml
 	rm -rf $(VENVDIR)
 	$(PYTHON) -m venv $(VENVDIR)
 	echo '[global]' > $(VENVDIR)/pip.conf
-	if [ -n "$(VENV_USE_ARTIFACTORY)" ]; then \
+	@if [ -n "$(VENV_USE_ARTIFACTORY)" ]; then \
 		echo "extra-index-url = https://$$ARTIFACTORY_USER:$$ARTIFACTORY_API_KEY@na.artifactory.swg-devops.com/artifactory/api/pypi/res-data-model-factory-team-pypi-local/simple" >> $(VENVDIR)/pip.conf; : hashicorpignore;\
 	fi
 	source $(VENVDIR)/bin/activate &&			\

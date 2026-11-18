@@ -1648,6 +1648,13 @@ def _is_interactive_auth_stdin_failure(exc: BaseException) -> bool:
     return False
 
 
+from gbserver.environment._skypilot_cos import (
+    DEFAULT_S3PULL_STEP_URI,
+    DEFAULT_S3PUSH_STEP_URI,
+    build_s3_step_config,
+    resolve_step_uri,
+    store_nonneg_int,
+)
 from gbserver.environment._skypilot_metadata import (
     apply_slurm_comment_override,
     normalize_run_metadata,
@@ -1661,6 +1668,23 @@ from gbserver.environment._skypilot_ssh import (
 from gbserver.environment._skypilot_ssh import (
     extract_host_ssh_info as _extract_host_ssh_info,
 )
+
+
+def _s3_run_link(setup_config: Optional[Dict], uri_hash: str) -> str:
+    """The per-run path an s3:// input is bound to, or '' without a run workdir.
+
+    ``<run workdir>/.gb_inputs/<uri hash>``, where the run workdir is the target
+    run's ``$GB_BUILD_WORKDIR`` that ``setup_skypilot`` publishes as
+    ``setup_config.skypilot.build_workdir``. s3pull points it at the version the
+    run leased; it lives in the run dir, so it goes away with the lease.
+
+    :param setup_config: the consuming target's setup config (may be None).
+    :param uri_hash: the input URI's hash (its cache entry name).
+    :returns: the link path, or '' when there is no per-run workdir.
+    """
+    sky = (setup_config or {}).get("skypilot") or {}
+    workdir = sky.get("build_workdir") if isinstance(sky, dict) else None
+    return os.path.join(workdir, ".gb_inputs", uri_hash) if workdir else ""
 
 
 def _escapes_parent(rel_path: str) -> bool:
@@ -6031,6 +6055,42 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         """
         return "nccl_error"
 
+    def _worker_cache_dir(
+        self: Self,
+        storeload_config: Any,
+        resolve: Callable[..., str],
+        store_kind: str,
+        uri: Any,
+    ) -> str:
+        """Return a pull cache directory that is valid on the remote workers.
+
+        The storeload ``cache_path`` if set, else ``{shared_workdir}/<x>_cache``
+        via ``resolve`` (``get_hf_cache_dir`` / ``get_cos_cache_dir``). Their
+        last-resort ``~/.cache/gbserver/...`` default is expanded on the
+        gbserver host -- right for Bash/Docker, which run there, but a path on
+        the wrong machine for a SkyPilot worker (a macOS server would send a
+        Linux node to /Users/...). Without a shared filesystem a separate pull
+        step can't hand data to its consumer anyway, so this refuses instead.
+
+        :param storeload_config: the store's pull config (may be None).
+        :param resolve: the store's cache-dir resolver.
+        :param store_kind: store name for the error message (e.g. "s3/cos").
+        :param uri: the URI being pulled, for the error message.
+        :returns: the cache directory to use on the workers.
+        :raises ValueError: when neither ``cache_path`` nor ``shared_workdir``
+            is set.
+        """
+        shared_workdir = resolve_shared_workdir(self.config)
+        config = getattr(storeload_config, "config", None)
+        has_cache_path = isinstance(config, dict) and bool(config.get("cache_path"))
+        if not has_cache_path and not shared_workdir:
+            raise ValueError(
+                f"cannot pull {uri}: a {store_kind} pull on Skypilot "
+                "needs a cache directory on the workers; set the environment's "
+                "shared_workdir or the store's pull config cache_path"
+            )
+        return resolve(storeload_config, default_workdir=shared_workdir)
+
     async def pullasset_hfstore(
         self: Self,
         uri: Optional[URI] = None,
@@ -6077,7 +6137,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             )
         shared_workdir = resolve_shared_workdir(self.config)
         cache_dir = Path(
-            get_hf_cache_dir(storeload_config, default_workdir=shared_workdir)
+            self._worker_cache_dir(storeload_config, get_hf_cache_dir, "hf", uri)
         )
         binding_path = (
             cache_dir / hfuri.get_owner() / hfuri.get_repo() / hfuri.get_revision()
@@ -6241,6 +6301,106 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             },
         )
 
+    def _caches_pulled_binding(self: Self, uristr: str) -> bool:
+        """Never reuse a pulled s3:// / cos:// binding across consumers.
+
+        Each consuming target run queues its own s3pull, which takes that run's
+        reader lease on the cache entry (so pruning and eviction can't delete
+        what it reads). The repeat pull is cheap: an unchanged object is kept and
+        unchanged prefix files are hard-linked. Other URIs keep the base caching.
+
+        :param uristr: the URI being pulled.
+        :returns: False for S3/COS URIs, else the base behaviour.
+        """
+        if uristr.startswith(("s3://", "cos://")):
+            return False
+        return super()._caches_pulled_binding(uristr)
+
+    async def pullasset_cosstore(
+        self: Self,
+        uri: Optional[URI] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        assetstore=None,
+        secrets: Optional[dict] = None,
+        **kwargs,
+    ) -> tuple:
+        """Pull an S3/COS object or prefix onto the cluster via the s3pull step.
+
+        Settings (endpoint, region, credential secret names) come from the
+        dispatched ``assetstore``, so an environment with several Cosstores
+        (one per endpoint) pulls each URI from its own store. With a per-run
+        workdir (``shared_workdir``), the binding is
+        ``<run workdir>/.gb_inputs/<uri hash>``, a link s3pull points at the
+        version this run leased, so every step of the run reads that one version
+        even when other builds re-pull the URI. The shared cache entry is
+        ``<cache>/<uri hash>`` (a directory, as on K8s/LSF; a single object lands
+        inside it under its basename), where ``<cache>`` is the storeload
+        ``cache_path``, else ``{shared_workdir}/cos_cache``. The cache is shared
+        across builds: the s3pull step serializes pulls of a URI with a lock and
+        points the binding (a symlink) at a fresh, complete version, so objects
+        deleted upstream disappear and concurrent pulls never see each other's
+        partial writes. Entries downloaded more than ``cache_max_age_days`` ago
+        (storeload config; default 30, 0 disables) are evicted by later pulls
+        under their own lock, unless a target run that may still read them holds
+        a reader lease (see builtins/steps/skypilot/s3pull/step.yaml).
+
+        :param uri: the ``s3://`` / ``cos://`` URI to pull.
+        :param binding: unused (the binding is derived from the cache path).
+        :param storeload_config: the store's pull config (``cache_path``,
+            ``cache_max_age_days``, ``lease_max_age_days``, ``step_uri`` override).
+        :param assetstore: the dispatched Cosstore.
+        :param secrets: unused; credentials are resolved by the store
+            (``Cosstore.resolve_credentials``, as hf's ``resolve_token``).
+        :returns: ``(binding_config, BuildTargetStepConfig)`` for the s3pull step.
+        :raises AssertionError: if ``assetstore``/``uri`` are not Cosstore/CosURI.
+        :raises ValueError: for an empty uri, a bad endpoint, missing credential
+            secrets, no worker cache directory, or an
+            invalid ``cache_max_age_days`` / ``lease_max_age_days``.
+        """
+        from gbcommon.uri.cos import CosURI
+        from gbserver.asset.cosstore import Cosstore
+        from gbserver.environment.local_assets import get_cos_cache_dir
+
+        if uri is None or uri == "":
+            raise ValueError("Empty uri received for pullasset_cosstore")
+        assert isinstance(
+            assetstore, Cosstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Cosstore')"
+        self._warn_non_default_mode(storeload_config, uri)
+        cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        assert isinstance(cosuri, CosURI), f"expected CosURI, got {type(cosuri)}"
+
+        cache_dir = self._worker_cache_dir(
+            storeload_config, get_cos_cache_dir, "s3/cos", uri
+        )
+        cache_entry = str(Path(cache_dir) / cosuri.hash())
+        # Bind consumers to a per-run link that s3pull points at the version it
+        # leased, not at the shared cache entry: another build's pull re-points
+        # the shared entry, and a running job must not switch versions mid-run.
+        run_link = _s3_run_link(kwargs.get("setup_config"), cosuri.hash())
+        binding_path = run_link or cache_entry
+        step_uri = resolve_step_uri(storeload_config, DEFAULT_S3PULL_STEP_URI)
+        step_config = build_s3_step_config(
+            "s3pull",
+            cosuri,
+            assetstore,
+            cache_entry,
+            run_link=run_link,
+            cache_max_age_days=store_nonneg_int(storeload_config, "cache_max_age_days"),
+            lease_max_age_days=store_nonneg_int(storeload_config, "lease_max_age_days"),
+        )
+        logger.info(
+            "pullasset_cosstore: queuing s3pull step_uri=%s s3=%s dest=%s endpoint=%s",
+            step_uri,
+            step_config["s3pull_config"]["s3_uri"],
+            binding_path,
+            step_config["s3pull_config"]["endpoint_url"],
+        )
+        return {"binding": {"path": binding_path}}, BuildTargetStepConfig(
+            step_uri=step_uri, config=step_config
+        )
+
     async def pushasset_cosstore(
         self: Self,
         binding: Any,
@@ -6250,77 +6410,46 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         assetstore=None,
         **kwargs,
     ) -> BuildTargetStepConfig:
-        """Push artifact to S3/COS by queuing the builtin s3push step."""
+        """Push a cluster file or directory to S3/COS via the s3push step.
+
+        Settings come from the dispatched ``assetstore`` (see
+        :meth:`pullasset_cosstore`). A file is copied to the exact object key; a
+        directory is synced under the URI as a prefix.
+
+        :param binding: the output binding; ``binding["path"]`` is the source.
+        :param binding_id: the output's binding id, echoed back by the step so
+            its monitor can mark the artifact pushed.
+        :param storepush_config: the store's push config (``step_uri`` override).
+        :param uri: the ``s3://`` / ``cos://`` destination URI.
+        :param assetstore: the dispatched Cosstore.
+        :returns: the BuildTargetStepConfig for the s3push step.
+        :raises AssertionError: for a bad binding or a non-Cosstore/CosURI.
+        :raises ValueError: for an empty uri, a bad endpoint or missing secrets.
+        """
         from gbcommon.uri.cos import CosURI
-        from gbserver.asset.asset import Asset
+        from gbserver.asset.cosstore import Cosstore
 
         self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received for pushasset: {binding}")
-
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"expected CosURI, got {type(cosuri)}"
-
+        assert isinstance(
+            assetstore, Cosstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Cosstore')"
         assert (
             isinstance(binding, dict) and "path" in binding
         ), f"expected binding dict with 'path', got {binding}"
-        local_path = binding["path"]
 
-        metadata = cosuri.get_metadata()
-        bucket_path = metadata["bucket_path"]
-        s3_uri = f"s3://{bucket_path}"
-
-        cos_md = Asset(cosuri).get_metadata() if assetstore else {}
-        cos_config = cos_md.get("config", cos_md) if cos_md else {}
-        endpoint_url = cos_config.get("cos_endpoint", "") if cos_config else ""
-
-        # Resolve AWS credentials from assetstore secrets, environment, or kwargs
-        secrets = kwargs.get("secrets", {}) or {}
-        aws_key_id = (
-            secrets.get("AWS_ACCESS_KEY_ID")
-            or secrets.get("COS_ACCESS_KEY_ID")
-            or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        step_uri = resolve_step_uri(storepush_config, DEFAULT_S3PUSH_STEP_URI)
+        step_config = build_s3_step_config(
+            "s3push", cosuri, assetstore, binding["path"], binding_id or ""
         )
-        aws_secret = (
-            secrets.get("AWS_SECRET_ACCESS_KEY")
-            or secrets.get("COS_SECRET_ACCESS_KEY")
-            or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-        )
-
-        s3push_config: Dict[str, Any] = {
-            "s3push_config": {
-                "local_path": local_path,
-                "s3_uri": s3_uri,
-                "endpoint_url": endpoint_url,
-            },
-            "launcher_config": {
-                "envs": {
-                    "AWS_ACCESS_KEY_ID": aws_key_id,
-                    "AWS_SECRET_ACCESS_KEY": aws_secret,
-                },
-            },
-        }
-
-        s3push_stepuri = "file://" + str(
-            Path(__file__).parent.parent / "builtins" / "steps" / "s3push"
-        )
-        if (
-            storepush_config is not None
-            and hasattr(storepush_config, "config")
-            and storepush_config.config is not None
-            and "step_uri" in storepush_config.config
-        ):
-            s3push_stepuri = storepush_config.config["step_uri"]
-
         logger.info(
             "pushasset_cosstore: queuing s3push step_uri=%s local=%s s3=%s endpoint=%s",
-            s3push_stepuri,
-            local_path,
-            s3_uri,
-            endpoint_url,
+            step_uri,
+            binding["path"],
+            step_config["s3push_config"]["s3_uri"],
+            step_config["s3push_config"]["endpoint_url"],
         )
-
-        return BuildTargetStepConfig(
-            step_uri=s3push_stepuri,
-            config=s3push_config,
-        )
+        return BuildTargetStepConfig(step_uri=step_uri, config=step_config)

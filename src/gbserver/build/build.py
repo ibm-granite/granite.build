@@ -640,6 +640,24 @@ class Build(BuildEntity):
         subtype = subtype_val if isinstance(subtype_val, str) and subtype_val else None
         return class_name, subtype
 
+    def __input_exists(self: Self, target_name: str, uri: URI) -> bool:
+        """Check an input against the store its target's environment pulls from.
+
+        Uses the target's loaded environment (:meth:`Environment.input_exists`)
+        so stores needing settings or credentials (e.g. S3/COS) are checked as
+        that environment will use them. Falls back to ``uri.exists()`` when the
+        target has no environment (e.g. it failed to load).
+
+        :param target_name: the target the input belongs to.
+        :param uri: the input URI.
+        :returns: whether the input exists.
+        """
+        target = (getattr(self, "targets", None) or {}).get(target_name)
+        environment = getattr(target, "environment", None)
+        if environment is None:
+            return uri.exists()
+        return environment.input_exists(uri)
+
     def __validate_target_inputs(self: Self) -> GBValidationErrors:
         logger.info("validating the inputs of the build")
         errors = GBValidationErrors()
@@ -663,7 +681,7 @@ class Build(BuildEntity):
                         secrets=self.space.get_secrets() if self.space else None,
                     )
 
-                    if not target_input_uri.exists():
+                    if not self.__input_exists(target_name, target_input_uri):
                         err = f"{err_prefix} the input URI {target_input.uri} doesn't exist"
                         errors.add(err=err, type=GBValidationErrorType.NOT_EXIST)
                         continue

@@ -6,13 +6,17 @@
 #
 # Usage:
 #   bash scripts/s3/teardown-s3.sh                # stop + remove container, keep data
-#   bash scripts/s3/teardown-s3.sh --remove-data  # also remove the data volume
+#   bash scripts/s3/teardown-s3.sh --remove-data  # also remove the data volume and
+#                                                 # the space secrets file setup-s3.sh wrote
 
 set -euo pipefail
 
 # ── Configurable defaults (must match setup-s3.sh) ────────────────────
 GB_S3_CONTAINER_NAME="${GB_S3_CONTAINER_NAME:-gb-s3}"
 GB_S3_DATA_VOLUME="${GB_S3_DATA_VOLUME:-gb-s3-data}"
+GB_S3_SECRETS_SPACE="${GB_S3_SECRETS_SPACE:-public}"
+GB_S3_HOME_DIR="${GB_HOME_DIR:-${HOME}/.granite.build}"
+GB_S3_SECRETS_FILE="${GB_S3_HOME_DIR/#\~/${HOME}}/space_secrets/${GB_S3_SECRETS_SPACE}/s3-local.yaml"
 
 # ── Parse arguments ──────────────────────────────────────────────────────
 REMOVE_DATA=false
@@ -21,7 +25,8 @@ for arg in "$@"; do
         --remove-data) REMOVE_DATA=true ;;
         --help|-h)
             echo "Usage: bash scripts/s3/teardown-s3.sh [--remove-data]"
-            echo "  --remove-data  Also remove the persistent data volume"
+            echo "  --remove-data  Also remove the persistent data volume and the"
+            echo "                 s3-local space secrets file written by setup-s3.sh"
             exit 0
             ;;
         *) echo "Unknown argument: $arg"; exit 1 ;;
@@ -72,6 +77,17 @@ remove_volume() {
     log_remove "Volume '${vol}'"
 }
 
+# ── Remove space secrets file ────────────────────────────────────────────
+remove_space_secrets() {
+    local file="${GB_S3_SECRETS_FILE}"
+    if [[ ! -f "${file}" ]]; then
+        log_skip "Space secrets file ${file} does not exist"
+        return
+    fi
+    rm -f "${file}"
+    log_remove "Space secrets file ${file}"
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────
 main() {
     echo ""
@@ -85,6 +101,7 @@ main() {
 
     if [[ "${REMOVE_DATA}" == "true" ]]; then
         remove_volume
+        remove_space_secrets
     else
         log_info "Data volume '${GB_S3_DATA_VOLUME}' preserved (use --remove-data to remove)"
     fi

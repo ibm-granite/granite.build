@@ -860,7 +860,7 @@ class HfURI(URI):
         )
         return self.parts
 
-    def exists(self: Self, force: bool = False) -> bool:
+    def exists(self: Self, force: bool = False, token: Optional[str] = None) -> bool:
         """Check whether the HF repo/bucket (and revision) actually exists on the Hub.
 
         Returns ``False`` on any error, but logs the failure with a severity
@@ -869,6 +869,11 @@ class HfURI(URI):
         server (``5xx``), or auth (``401``/``403``) error logs at WARNING/ERROR.
         The latter are dangerous here: the resource may actually exist but we
         would still report it missing, so they must be visible in logs.
+
+        :param force: unused (kept for the URI interface).
+        :param token: an HF token to use instead of the URI's own lookup
+            (``HF_TOKEN`` in its secrets, then the env); see ``Hfstore.uri_exists``.
+        :returns: whether the repo/bucket (and revision) exists.
         """
         if is_hf_mocked():
             return True
@@ -876,7 +881,9 @@ class HfURI(URI):
         try:
             p = self._parts()
             repo_id = f"{p.owner}/{p.repo}"
-            token = self._resolve_token()
+            # A store-resolved token (Hfstore.uri_exists, honoring the store's
+            # token_secretname) wins over the URI's own HF_TOKEN lookup.
+            token = token or self._resolve_token()
 
             if p.hf_type == HfType.BUCKET:
                 endpoint = f"https://{p.host}" if p.host != HF_HOST else None

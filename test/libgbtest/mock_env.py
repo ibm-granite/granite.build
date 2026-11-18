@@ -21,7 +21,8 @@ MOCK_ENV_FORCED = {
     "WANDB_MODE": "disabled",
 }
 
-# NOTE: GBTEST_MOCK_HF is deliberately NOT listed here. It needs three-way
+# NOTE: GBTEST_MOCK_HF (and GBTEST_MOCK_COS, resolved the same way) is
+# deliberately NOT listed here. It needs three-way
 # precedence (mock-mode default, then an explicit non-blank override, then the
 # GBTEST_LIVE_HF opt-out) and the resolved value written back to the environment
 # for dispatched workers, which neither the forced nor the setdefault pass can

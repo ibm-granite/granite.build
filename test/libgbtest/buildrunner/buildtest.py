@@ -25,6 +25,7 @@ from libgbtest.abort_cleanup import (
     get_timeout_deadline,
     wait_deadline,
 )
+from libgbtest.buildrunner.artifact_exists import ArtifactExistenceChecker
 from libgbtest.buildrunner.placeholder import PLACEHOLDER
 from libgbtest.buildrunner.utils import (
     ExceptionRaisingThread,
@@ -1311,6 +1312,9 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         artifacts = self.storage.artifact_registry.get_by_where(
             {"created_by_build_id": build_id}
         )
+        # Store-backed URIs (s3://, hf://) are checked via the store their
+        # target's environment routed them to, not a bare uri.exists().
+        checker = ArtifactExistenceChecker(self.storage)
         for artifact in artifacts:
             assert artifact.status in status_list, self._failed_build_msg(
                 build_id,
@@ -1322,8 +1326,8 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
                 raise AssertionError(
                     f"Could not resolve artifact uri {artifact.uri} to an object: {e}"
                 ) from e
-            assert (
-                uri.exists()
+            assert checker.exists(
+                artifact, uri
             ), f"URI {artifact.uri} does not exist in artifact storage"
 
     def _verify_target_artifacts(

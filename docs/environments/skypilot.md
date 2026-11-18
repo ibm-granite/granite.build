@@ -71,11 +71,69 @@ assetstores:
     pull:
       - mode: default              # Dispatch is by store type (hf) — queues the builtin hfpull step.
         config:
-          cache_path: /tmp/hf_cache  # Optional. Defaults to {shared_workdir}/hf_cache when set,
-                                     # else ~/.cache/gbserver/hf on the worker.
+          cache_path: /tmp/hf_cache  # Optional. Defaults to {shared_workdir}/hf_cache. With
+                                     # neither set, the pull fails (see below).
+    push:
+      - mode: default
+  - store_uri: space://assetstores/s3/   # s3:// / cos:// (Cosstore) — queues the builtin
+    pull:                                # s3pull / s3push steps (AWS CLI).
+      - mode: default
+        config:
+          cache_path: /shared/cos_cache  # Optional. Defaults to {shared_workdir}/cos_cache. With
+                                         # neither set, the pull fails (see below).
+          cache_max_age_days: 30         # Optional. Evict cached inputs downloaded more than this
+                                         # many days ago (default 30; 0 disables).
+          lease_max_age_days: 0          # Optional. Treat reader leases older than this as dead
+                                         # (default 0: a lease lasts as long as its build).
     push:
       - mode: default
 ```
+
+> **S3 / COS (`s3://`, `cos://`).** A pull is bound at `<cache>/<uri hash>`, a directory; a
+> single object is copied into it under its basename, and a prefix is synced into it. The cache
+> is shared across builds:
+>
+> - **Pulls are serialized.** A per-URI lock lets one pull at a time write, so concurrent pulls
+>   never see each other's partial writes. A dead holder's lock is reclaimed after its TTL.
+> - **Readers always see a complete version.** The binding is a symlink that is swapped
+>   atomically to a fresh version, so objects deleted upstream disappear on the next pull.
+> - **Each run reads one version.** Consumers aren't bound to the shared `<cache>/<uri hash>`
+>   link, which other builds' pulls re-point. They're bound to a per-run link,
+>   `<run workdir>/.gb_inputs/<uri hash>`, which `s3pull` points at the version that run leased.
+>   A long job therefore never mixes files from two versions when upstream changes mid-run.
+>   Without a `shared_workdir` there's no per-run workdir, and consumers read the cache entry
+>   directly.
+> - **Readers hold leases.** Each pull, under the lock, records a lease for its target run in
+>   `<cache>/.<hash>.leases/<targetrun id>`, naming the run's workdir and the version it reads.
+>   Every target that reads an input runs its own `s3pull`; the repeat pull is cheap, because
+>   unchanged data is kept or hard-linked. A lease is live while the run's workdir exists, and
+>   gbserver removes that directory when the build ends.
+> - **Old versions are pruned unless leased.** A pull keeps the live version, the one it
+>   replaced, and every version a live lease pins, and removes the rest.
+> - **Old inputs are evicted unless leased.** After each pull, `s3pull` deletes cache entries
+>   whose data was downloaded more than `cache_max_age_days` ago (default 30; 0 disables) and
+>   that no live lease holds. It takes each entry's lock without waiting and skips entries being
+>   pulled. Only names that are URI hashes are considered, so other content of a `cache_path` is
+>   left alone. An unchanged single object older than `cache_max_age_days` is downloaded again
+>   rather than reused.
+> - **Crashed builds keep their leases.** A build that dies before teardown leaves its workdir,
+>   so its lease stays live and the input it pins is never deleted. Skips are logged with the
+>   holding target runs.
+>   - `scripts/s3/s3pull-leases.sh list --cache <cache>` shows each lease and whether it's live.
+>   - `release --cache <cache> <targetrun id>` drops the leases of a run you know is dead.
+>     Deleting that run's workdir does the same.
+>   - `lease_max_age_days` can expire leases automatically instead.
+> - **Leases need a shared workdir.** Without `shared_workdir`, a run has no lifetime to tie a
+>   lease to, so none is taken.
+>
+> A push copies a file to the exact object key, or syncs a directory under the URI as a prefix. The endpoint,
+> region and credential secret names come from the matched store's `store.yaml`. Credentials
+> resolve the way hf's `token_secretname` does: space secrets first, then the same-named env var.
+> They reach the step as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. One environment can
+> serve several endpoints by listing one store per endpoint, each with a distinct `base_uri`
+> prefix (see [asset stores](../asset-stores/README.md#multiple-s3cos-endpoints)). Both steps run
+> separately from the main step, so they need a `shared_workdir`. There is no inline mode yet
+> (see [AWS](skypilot-aws.md)).
 
 > Outside k8s, `mode` must be unset or `default` — dispatch is by store type, not `mode`. See
 > [asset stores](../asset-stores/README.md#load-and-push-modes).
@@ -112,8 +170,10 @@ admin provisions — gbserver does not create or mount it. When set, `shared_wor
   through the SkyPilot API, since it can't reach the cluster's shared FS where `job.log` lives; read
   `job.log` itself for the plain output of every attempt.
 
-When unset, gbserver-managed caches fall back to `~/.cache/gbserver/<store>` on the worker, which only
-works when consecutive steps land on the same machine. Example paths per backend: `slurm: /shared`
+When unset, an `hf://` or `s3://` / `cos://` pull also needs the store's pull config `cache_path`;
+with neither, the pull fails before anything launches. There is no home-directory fallback: it
+would be resolved on the gbserver host, not on the worker, and a separate pull step on another
+machine couldn't hand its data to the consumer anyway. Example `shared_workdir` paths per backend: `slurm: /shared`
 (NFS/Lustre/GPFS), `k8s: /mnt/shared` (RWX PVC), `aws: /mnt/efs` (EFS/FSx).
 
 #### Containerized steps must also see the shared workdir *inside* the container

@@ -51,6 +51,11 @@ export GB_ENVIRONMENT=STANDALONE
 export GBSERVER_HOST="http://127.0.0.1:${PORT}"
 export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-gbadmin}"
 export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-gbadmin}"
+# The demo space's env secret manager serves GBSERVER_SECRET_<NAME> as secret
+# <NAME>; its cos store names COS_ACCESS_KEY_ID / COS_SECRET_ACCESS_KEY, which
+# the s3push step receives as AWS_* launcher envs.
+export GBSERVER_SECRET_COS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+export GBSERVER_SECRET_COS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
 
 # Colors
 GREEN='\033[0;32m'

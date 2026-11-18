@@ -29,8 +29,10 @@ def get_hf_cache_dir(storeload_config, default_workdir: Optional[str] = None) ->
         2. ``{default_workdir}/hf_cache`` if a ``default_workdir`` is provided
            (typically the Skypilot env's ``shared_workdir`` — a path mounted
            on every worker).
-        3. ``~/.cache/gbserver/hf`` as a last-resort process-local default
-           (correct for single-host envs like Bash and Docker).
+        3. ``~/.cache/gbserver/hf`` as a last-resort process-local default,
+           expanded on *this* host: correct for single-host envs like Bash and
+           Docker. Remote envs (Skypilot) must not use it; Skypilot requires
+           ``cache_path`` or ``shared_workdir`` instead (``_worker_cache_dir``).
 
     Args:
         storeload_config: StoreLoad config object (may be None).
@@ -41,6 +43,46 @@ def get_hf_cache_dir(storeload_config, default_workdir: Optional[str] = None) ->
     Returns:
         Absolute path string to the HF cache directory.
     """
+    return _resolve_cache_dir(storeload_config, default_workdir, "hf_cache", "hf")
+
+
+def get_cos_cache_dir(storeload_config, default_workdir: Optional[str] = None) -> str:
+    """Resolve the S3/COS pull cache directory from step config or a default path.
+
+    Same resolution order as :func:`get_hf_cache_dir`:
+        1. ``storeload_config.config["cache_path"]`` if explicitly set.
+        2. ``{default_workdir}/cos_cache`` if a ``default_workdir`` (the Skypilot
+           env's ``shared_workdir``) is provided.
+        3. ``~/.cache/gbserver/cos`` as a last-resort process-local default,
+           expanded on *this* host (so not for remote envs; see
+           :func:`get_hf_cache_dir`).
+
+    Args:
+        storeload_config: StoreLoad config object (may be None).
+        default_workdir: Optional cross-worker shared filesystem root.
+
+    Returns:
+        Path string to the COS cache directory.
+    """
+    return _resolve_cache_dir(storeload_config, default_workdir, "cos_cache", "cos")
+
+
+def _resolve_cache_dir(
+    storeload_config, default_workdir: Optional[str], workdir_leaf: str, home_leaf: str
+) -> str:
+    """Shared cache-dir resolution for the per-store ``get_*_cache_dir`` helpers.
+
+    Args:
+        storeload_config: StoreLoad config object (may be None); its
+            ``config["cache_path"]`` wins when present.
+        default_workdir: Optional shared filesystem root; yields
+            ``{default_workdir}/{workdir_leaf}`` when no explicit cache_path.
+        workdir_leaf: directory name under ``default_workdir`` (e.g. ``hf_cache``).
+        home_leaf: directory name under ``~/.cache/gbserver`` (e.g. ``hf``).
+
+    Returns:
+        The resolved cache directory path string.
+    """
     if (
         storeload_config is not None
         and hasattr(storeload_config, "config")
@@ -49,8 +91,8 @@ def get_hf_cache_dir(storeload_config, default_workdir: Optional[str] = None) ->
     ):
         return storeload_config.config["cache_path"]
     if default_workdir:
-        return os.path.join(default_workdir, "hf_cache")
-    return os.path.join(os.path.expanduser("~"), ".cache", "gbserver", "hf")
+        return os.path.join(default_workdir, workdir_leaf)
+    return os.path.join(os.path.expanduser("~"), ".cache", "gbserver", home_leaf)
 
 
 def pull_asset_hfstore(
