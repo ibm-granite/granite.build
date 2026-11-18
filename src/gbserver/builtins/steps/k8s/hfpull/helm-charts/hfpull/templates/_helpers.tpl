@@ -23,10 +23,10 @@ if [[ "${MY_RETURN_CODE}" != "0" ]] ; then
     exit 1
 fi
 
-{{- /* A path in the repo that matched nothing fails the pull, as in the
-       skypilot and LSF hfpull steps. hfpull_step checks it too, but only if
-       this pod image's gbcommon is new enough; this check needs no gbcommon.
-       A bucket gets an empty path_in_repo (it is bound at the pull dir). */}}
+{{/* A path in the repo that matched nothing fails the pull, as in the
+      skypilot and LSF hfpull steps. hfpull_step checks it too, but only if
+      this pod image's gbcommon is new enough; this check needs no gbcommon.
+      A bucket gets an empty path_in_repo (it is bound at the pull dir). */ -}}
 if [[ -n "${HF_PATH_IN_REPO}" && ! -e "${HF_DEST}/${HF_PATH_IN_REPO}" ]]; then
     echo "hfpull: '${HF_PATH_IN_REPO}' matched nothing in {{ $uri }}"
     exit 1
