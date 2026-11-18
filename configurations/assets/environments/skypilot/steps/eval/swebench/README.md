@@ -23,6 +23,7 @@ steps:
 | `swebench-verified` | 500 instances (`SWE-bench/SWE-bench_Verified`, pinned) | mini-swe-agent against the upstream task, graded with the `swebench` harness |
 | `swebench-pro` | 642 tasks, V2 public set | follows Scale's V2 locked protocol ([SWE-bench_Pro-os](https://github.com/scaleapi/SWE-bench_Pro-os) v2.0.0): mini-swe-agent with the protocol's tool-calling config works each task's `instruction.md` |
 | `swebench-multilingual` | 300 instances, 9 languages (C/C++, Go, Java, JavaScript/TypeScript, PHP, Ruby, Rust) | same pipeline as `swebench-verified`, mini-swe-agent's `swebench.yaml` config |
+  | `swebench` | pass@1 resolve rate | The generic bridge: `dataset=` (required) runs any swebench-format set that carries each instance's image, eval_script and log_parser; `instances=` subsets. |
 
 See `granite-evals list` for the current, authoritative set and sizes.
 

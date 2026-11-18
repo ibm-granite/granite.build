@@ -173,6 +173,7 @@ environment_configs:
                 domains=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#domains=}" | tr ',' '-')";;
                 service=*) BENCH_DIR="$BENCHMARK-${kv#service=}";;
                 categories=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#categories=}" | tr ',' '-')";;
+                benchmark=*) BENCH_DIR="$BENCHMARK-${kv#benchmark=}";;
               esac
             done
             {% if config.dataset and config.benchmark in ("swebench", "terminal-bench") %}
