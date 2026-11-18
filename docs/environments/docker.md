@@ -131,7 +131,10 @@ and translates it to Docker container limits:
   `{{ bindings.<name>.binding.path }}`. For HuggingFace inputs loaded via the `hf` asset store, what
   the input names is bind-mounted read-only, and the binding is the in-container path: the pull dir
   at `/gb-hf-models/<owner>/<repo>/<revision>`, or the file or directory a URI's path in the repo
-  names, at `/gb-hf-models/<owner>/<repo>/<revision>/<path>`. `env://` inputs (a
+  names, at `/gb-hf-models/<owner>/<repo>/<revision>/<path>`. Buckets are the exception: a bucket
+  input mounts the bucket's whole pull dir at `/gb-hf-models/<owner>/<bucket>`, with or without a
+  path in the bucket, so it also sees what other paths of that bucket synced
+  ([#715](https://github.com/ibm-granite/granite.build/issues/715)). `env://` inputs (a
   path another target left on this host) are bind-mounted read-only under `/gb-env-inputs/<n>` (a
   file's parent directory, or the directory itself), and the binding is the in-container path. The
   mount goes only into the containers of the target that takes the input. The mount source is

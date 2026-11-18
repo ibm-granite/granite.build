@@ -470,6 +470,11 @@ class Docker(Environment):
         different paths of one repo and revision get their own container paths.
         The pull writes real files (``local_dir``), so the mount needs no HF
         cache ``blobs/`` directory.
+
+        Buckets are the exception: a bucket's pull dir
+        (``<cache_dir>/<owner>/<bucket>``) is mounted whole, with or without a
+        path in the bucket. It also holds what other paths of that bucket
+        synced, and a same-named model repo's revision dirs (#715).
         """
         self._warn_non_default_mode(storeload_config, uri)
         assert assetstore is not None, "assetstore is required for hfstore loading"

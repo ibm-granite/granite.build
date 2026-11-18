@@ -1,8 +1,8 @@
 granite.build:
   name: path_in_repo_docker-test
   # Single docker target with two hf:// inputs from the same repo and revision,
-  # each naming one file. The pull root is mounted once in the container, and
-  # each input is bound at its own file inside it, so the two can't collide.
+  # each naming one file. Each file is mounted on its own, at its own path
+  # under /gb-hf-models, so the two can't collide.
   #
   # This is an extended/nightly test (see the @extended_testing_only marker on
   # the test class): it performs a REAL HuggingFace pull of two small files of a
@@ -25,7 +25,9 @@ granite.build:
               # at a path of its own. Under `set -e` any failed
               # test fails the build. The leading `sleep 5` keeps the build in
               # RUNNING long enough for the runner_cancellation test (as in
-              # docker/1step).
+              # docker/1step). The test class inherits that test from
+              # AbstractYamlBuildRunnerTest; buildtest.yaml sets no `tests`, so
+              # it runs by default.
               # NOTE: this is a folded (>-) scalar, so an inline `#` here would
               # fold into the single command line and comment out the rest.
               image: quay.io/fedora/fedora-minimal:42

@@ -6,6 +6,10 @@ The fixture's build.yaml and buildtest.yaml live in the directory returned by
 _get_yaml_spec_dir below. The step checks that each input is bound at its own
 downloaded file inside the container.
 
+The class inherits ``test_runner`` and ``test_runner_cancellation`` from
+AbstractYamlBuildRunnerTest. The fixture's ``sleep 5`` keeps the build RUNNING
+long enough for the cancel to land.
+
 The Docker daemon must be available.
 """
 
