@@ -369,8 +369,8 @@ class TestValidation:
         assert _render_error(block, _ctx(args=args)) == (
             f"openinstruct-sft: openinstruct_sft_config.args.{key} has a value that "
             f"starts with '-' ('{shown}'); finetune.py would read it as a flag, which "
-            "could override a step-owned one. Only a negative number may start "
-            "with '-'."
+            "could override a step-owned one. A value may start with '-' only when "
+            "a digit or '.' follows, as in a negative number."
         )
 
     def test_negative_number_args_values_pass(self):

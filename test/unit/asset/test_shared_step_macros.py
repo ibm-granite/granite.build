@@ -70,7 +70,8 @@ class TestArgsValuesThatStartWithADash:
         assert _refusal(args) == (
             f"s: s_config.args.{key} has a value that starts with '-' ('{shown}'); "
             "the trainer would read it as a flag, which could override a "
-            "step-owned one. Only a negative number may start with '-'."
+            "step-owned one. A value may start with '-' only when a digit or '.' "
+            "follows, as in a negative number."
         )
 
     @pytest.mark.parametrize(
@@ -92,4 +93,15 @@ class TestArgsValuesThatStartWithADash:
     def test_negative_numbers_and_inner_dashes_pass(self, value):
         """argparse reads a negative number as a value, a lone '-' too, and a value
         is never split into words, so only a leading dash matters."""
+        _validate_args({"x": value})
+
+    @pytest.mark.parametrize(
+        "value", ["-1--output_dir", "-1--output_dir=/x", "-.5--output_dir=/x", "-1abc"]
+    )
+    def test_a_digit_or_dot_after_the_dash_passes_even_when_not_a_number(self, value):
+        """The rule is a digit or '.' after the '-', not "a negative number". argparse
+        can't read these as --output_dir: its option strings start with '--', and
+        no step-owned flag starts with '-' and a digit, so such a word is at worst
+        an unknown option, which the trainer rejects at run time; it never sets a
+        step-owned flag."""
         _validate_args({"x": value})

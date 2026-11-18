@@ -364,8 +364,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creation (#613).** Each value is its own argv word after the step's flags, so a value
   such as `--output_dir=/x`, or a list item `--output_dir`, was read by the trainer's
   argparse as a flag and could override a step-owned one (`output_dir`, `report_to`,
-  `push_to_hub`). Only negative numbers (`-1`, `-0.5`, `-.5`) may now start with `-`; the
-  check lives in `validate_args` in `steps/train/shared/trainer_args.j2`.
+  `push_to_hub`). A value or list item that starts with `-` followed by anything but a
+  digit or `.` (`-x`, `--x`, `--`) is now refused; negative numbers (`-1`, `-0.5`, `-.5`)
+  and a lone `-` pass. The check lives in `validate_args` in
+  `steps/train/shared/trainer_args.j2`.
 
 - **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
   memory (#657).** Before, it was always dropped on SLURM, so jobs got SkyPilot's 1 GB per CPU.

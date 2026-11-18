@@ -131,8 +131,8 @@ a message that starts `hf-peft-sft:`. They are:
 - `args` not a map; an `args` key that is not a bare field name (empty, or with `=`,
   a leading `-` or whitespace); a step-owned flag in `args`, or an abbreviation of
   one (a key that is a proper prefix of it, such as `output_d`); a map or empty-list
-  value in `args`, or a value or list item that starts with `-` and is not a
-  negative number;
+  value in `args`, or a value or list item that starts with `-` followed by anything
+  but a digit or `.` (`-x`, `--x`, `--`);
 - `args.packing` or `args.padding_free` true with `method: alora`.
 
 The step also fails at step creation, with gbserver's own message, unless the `num_nodes`
@@ -162,13 +162,17 @@ expansion. Parameterise the build with `$${PARAM}` instead.
 | null: `seed: null` | omitted |
 | empty list: `foo: []` | refused at step creation (`--foo` alone would take the next flag as its value) |
 | map | refused at step creation |
-| value starting with `-`: `[a, --output_dir, /x]`, `"--output_dir=/x"` | refused at step creation (the trainer would read it as a flag); a negative number such as `-0.5` or `-1` renders as usual |
+| value starting with `-` and a non-digit: `[a, --output_dir, /x]`, `"--output_dir=/x"` | refused at step creation (the trainer would read it as a flag); a `-` followed by a digit or `.` (a negative number such as `-0.5`, `-1` or `-.5`), and a lone `-`, render as usual |
+
+A negative number in exponent form passes the step's check, but the trainer's parser
+reads it as a flag, so the run fails. A small YAML float such as `-0.00001` renders in
+that form, `-1e-05`; quote it, `"-0.00001"`, to pass it as written.
 
 The step sets these flags itself, so they are refused in `args`, as keys (also with
 `-` in place of `_`, and abbreviated: `output_d` or `push_to` is refused too, since
 the parser would take it as the full flag; `gradient_checkpointing` is its own flag,
 not an abbreviation of `gradient_checkpointing_kwargs`) and inside values (any value
-that starts with `-` and is not a negative number is refused):
+that starts with `-` followed by anything but a digit or `.` is refused):
 
 ```
 output_dir, report_to, push_to_hub, hub_model_id, hub_strategy, hub_token,
