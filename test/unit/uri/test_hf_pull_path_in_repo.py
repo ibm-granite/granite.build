@@ -389,7 +389,10 @@ def _kwargs_of(program, func):
             "hfpull",
             "hfpull_step",
             "dest",
-            ["Pulling HF {u} into {p}", "Pulled HF URI: {u} into cache {p}"],
+            [
+                "Pulling HF {u} into {p}",
+                "Pulled HF URI: {u} into cache {p}, bound at {b}",
+            ],
         ),
         (
             "hfpush",
@@ -403,9 +406,20 @@ def test_k8s_helm_helpers_pass_the_uri_literally(
     tmp_path, chart, func, path_kwarg, echoes
 ):
     uris = [str(uri) for uri in _uris_that_parse()]
-    p = "/cache/x"
+    p = str(tmp_path / "cache")
     values = {"path": p, "bindingId": "out", "resourceGroupId": ""}
-    script = "\n".join(_helm_helper(chart, {**values, "uri": u}) for u in uris)
+    # Each URI's path_in_repo as the step config carries it. The stub python3
+    # pulls nothing, so make each path exist for the hfpull chart's check.
+    pir = {
+        u: Hfstore.build_hfpull_step_config(HfURI.parse(u), p)["path_in_repo"]
+        for u in uris
+    }
+    for path in filter(None, pir.values()):
+        (Path(p) / path).mkdir(parents=True, exist_ok=True)
+    bound = {u: f"{p}/{pir[u]}" if pir[u] else p for u in uris}
+    script = "\n".join(
+        _helm_helper(chart, {**values, "uri": u, "path_in_repo": pir[u]}) for u in uris
+    )
     log = tmp_path / "py.log"
     proc = subprocess.run(
         ["bash", "-c", script],
@@ -420,7 +434,9 @@ def test_k8s_helm_helpers_pass_the_uri_literally(
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.splitlines() == [
-        e.replace("{u}", u).replace("{p}", p) for u in uris for e in echoes
+        e.replace("{u}", u).replace("{p}", p).replace("{b}", bound[u])
+        for u in uris
+        for e in echoes
     ]
     programs = log.read_text(encoding="utf-8").split("\0")[:-1]
     called = [_kwargs_of(prog, func) for prog in programs]
