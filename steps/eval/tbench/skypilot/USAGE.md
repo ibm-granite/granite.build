@@ -38,6 +38,7 @@ steps:
 | `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Shared squashfs cache for task images; every benchmark in this family sandboxes, so recipes always set this. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
+| `hf_offline` | `""` | Warm-cache mode: `HF_HUB_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`; gated datasets need a token with access) and share it across runs; a cold cache fails fast. |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none. The dataset and the task images (Docker Hub) are public; no token is

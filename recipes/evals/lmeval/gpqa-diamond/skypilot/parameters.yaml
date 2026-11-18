@@ -1,0 +1,66 @@
+# GPQA Diamond on BlueVela (SkyPilot / SLURM), lmeval family image -- the generic
+# lm-eval bridge: lm-eval's own `gpqa_diamond_zeroshot` task (198 questions,
+# 4-choice), base-mode multiple choice over the served model's loglikelihoods,
+# acc_norm. The curated nemoskills-family `gpqa` benchmark (NeMo-Skills'
+# protocol, pass@1[avg-of-2]) measures the same data another way; this recipe
+# is the lm-eval/leaderboard-style number.
+#
+# RUN FROM A WARM HF CACHE. Idavidrein/gpqa is access-gated on the Hub: accept
+# its terms once (huggingface.co/datasets/Idavidrein/gpqa), then warm a shared
+# cache with a token that has access -- the token never enters the repo or the
+# job:
+#   HF_TOKEN=<token> make -C steps/eval prefetch HF_HOME=<shared-cache> --benchmark gpqa
+# and run with --param HF_HOME=<shared-cache> (a writable path the cluster
+# nodes see; datasets takes cache locks). The job runs with HF_HUB_OFFLINE=1:
+# it never reaches the Hub -- the dataset resolves from the cache (the cache's
+# pinned snapshot is the run's dataset revision), and the model is staged by
+# hfpull (public, no token) rather than downloaded by vLLM.
+#
+# LIMIT is empty: the full benchmark (198 questions). For a quick functional
+# check, score only the first N questions:
+#   gb build start -f recipes/evals/lmeval/gpqa-diamond/skypilot/build.yaml --space <space> --param OUTPUT_ROOT=<root> --param HF_HOME=<warm-cache> --param LIMIT=5
+# Override any value with --param KEY=VALUE. More bridge options in
+# steps/eval/lmeval/skypilot/USAGE.md.
+
+# ─── Model ────────────────────────────────────────────────────────────
+# Staged by the queued hfpull step (the hf:/// binding in build.yaml); the
+# served name is pinned because the staged path's basename is not the model
+# name. https://huggingface.co/ibm-granite/granite-4.2-3b (public, no token).
+MODEL: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: "granite-4.2-3b"
+# Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
+# artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
+# Empty derives it from MODEL's basename (the step's own defaulting).
+RUN_NAME: ""
+# Runs land in $OUTPUT_ROOT/$RUN_NAME/lm-eval-gpqa_diamond_zeroshot. Required, no
+# default: pass --param OUTPUT_ROOT=<root>, somewhere the dispatching user can write.
+OUTPUT_ROOT: ""
+# REQUIRED here (see the runbook above): the warm cache, writable by the job.
+HF_HOME: ""
+
+# ─── Images (GPU only) ────────────────────────────────────
+# This branch's lmeval image (built from the commit this tag names, on quay).
+IMAGE: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:33c5f810"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+LIMIT: ""
+REPEATS: ""
+WORKERS: 64
+OPTIONS: "tasks=gpqa_diamond_zeroshot metric=acc_norm"
+TENSOR_PARALLEL_SIZE: 1
+
+# ─── Warm cache ────────────────────────────────────────────────────────
+# On: the job runs offline against HF_HOME's cache (see the runbook above).
+HF_OFFLINE: "1"
+
+# ─── Cluster ──────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
+CLUSTER: "bluevela"
+QUEUE: "gpu-mid"
+GPU_MEMORY: 256
+CPU_QUEUE: "cpu"
+SCORE_CPUS: 8
+SCORE_MEMORY: 64
+MAX_RETRIES: 2
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

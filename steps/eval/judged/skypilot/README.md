@@ -69,6 +69,7 @@ has `details.judge_usage` (tokens, cache hits, estimated cost) and `details.api_
 | `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Shared squashfs cache. Set it (recipes do, per benchmark) only for the sandboxed benchmarks in the table above; leave empty for the rest. |
 | `hf_home` | Overrides `HF_HOME`. |
+| `hf_offline` | Warm-cache mode: `HF_HUB_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`; gated datasets need a token with access) and share it across runs; a cold cache fails fast. |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none. Every dataset in this family is public; no HF token is needed.

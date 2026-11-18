@@ -1,0 +1,50 @@
+granite.build:
+  name: eval-gpqa-diamond
+  # GPQA Diamond through the generic lm-eval bridge (lmeval family), from a
+  # warm HF cache -- the dataset is Hub-gated, so the job runs offline against
+  # a cache warmed with a token (the runbook is in parameters.yaml). One GPU
+  # target: the bridge scores inside generation (--phase all).
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+    gpqa-diamond:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The model as a real HF artifact: the launcher queues an hfpull step
+        # (public model, no token) and stages the download -- offline mode
+        # inside the job must not need the Hub for the model either.
+        model:
+          uri: "hf:///$${MODEL}"
+          type: model
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/lmeval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            benchmark: "lm-eval"
+            image: "$${IMAGE}"
+            # The staged HF artifact path (its basename is not the model name,
+            # so served_model_name pins the name vLLM advertises).
+            model_path: "{{ bindings.model.binding.path }}"
+            served_model_name: "$${SERVED_MODEL_NAME}"
+            output_root: "$${OUTPUT_ROOT}"
+            run_name: "$${RUN_NAME}"
+            limit: "$${LIMIT}"
+            repeats: "$${REPEATS}"
+            workers: "$${WORKERS}"
+            options: "$${OPTIONS}"
+            phase: "all"
+            tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+            hf_home: "$${HF_HOME}"
+            hf_offline: "$${HF_OFFLINE}"
+            launcher_config:
+              resources:
+                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}

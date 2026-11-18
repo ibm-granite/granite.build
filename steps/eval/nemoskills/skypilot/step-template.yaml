@@ -129,6 +129,14 @@ config:
   sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
   hf_home: ""
+  # Warm-cache mode: run with HF_HUB_OFFLINE=1 (HF_DATASETS_OFFLINE=1), so every
+  # hub read -- datasets, and the model if model_path is a hub id -- resolves from
+  # hf_home's cache instead of the hub. Warm the cache first (HF_TOKEN=... make -C
+  # steps/eval prefetch HF_HOME=<same cache>; gated datasets need a token with
+  # access granted) and share it across runs: a job with a warm cache skips every
+  # dataset download. A cold cache fails fast. Bind the model (hf://) or warm it
+  # too; hf_offline without hf_home is refused.
+  hf_offline: ""
 outputs:
   optional:
     # phase all | score: the scored results.json.
@@ -178,6 +186,8 @@ environment_configs:
             test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
 
             {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
+            {% if config.hf_offline and not config.hf_home %}echo "granite: hf_offline needs hf_home pointing at a cache warmed by make -C steps/eval prefetch" >&2; exit 1{% endif %}
+            {% if config.hf_offline %}export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1  # warm-cache mode: hub reads hit HF_HOME's cache only, never the hub{% endif %}
 
             OUTPUT_DIR="{{ config.output_dir }}"
             OUTPUT_ROOT="{{ config.output_root }}"

@@ -97,6 +97,9 @@ don't share an output dir).
 Two recipes ship as templates: `recipes/evals/lmeval/hellaswag` (base mode —
 multiple-choice loglikelihood, the leaderboard-standard `metric=acc_norm`) and
 `recipes/evals/lmeval/gsm8k` (chat mode — 5-shot generation, `exact_match`).
+A third, `recipes/evals/lmeval/gpqa-diamond`, is the warm-cache example: the
+dataset is Hub-gated, so the recipe runs `hf_offline` against a cache warmed by
+`make -C steps/eval prefetch` (see steps/eval/README.md, "The warm HF cache").
 
 Resume is the curated benchmarks' care: the harness response cache
 (`repeat-<k>/lm_cache`) keeps every finished request, so a restarted run only sends
@@ -125,6 +128,7 @@ the missing ones.
 | `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Unused: these benchmarks run no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
+| `hf_offline` | `""` | Warm-cache mode: `HF_HUB_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`; gated datasets need a token with access) and share it across runs; a cold cache fails fast. |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none. The data is public; no token is needed.
