@@ -13,7 +13,7 @@ DOCKER ?= docker
 # The published CUDA kernel base (docker/cuda-base/Dockerfile), which the root
 # Dockerfile's DEVICE=cuda build starts from. A tag must keep pointing at one image:
 # bump the suffix for a new build, the prefix with the CUDA / torch pins, then pin
-# the new digest in the root Dockerfile's CUDA_KERNEL_BASE.
+# the new digest in autotunex/Dockerfile's CUDA_KERNEL_BASE.
 CUDA_BASE_IMAGE_VERSION ?= cu130-torch2.11-1
 CUDA_BASE_IMAGE_REF ?= quay.io/granitebuild/autotunex/cuda-base:$(CUDA_BASE_IMAGE_VERSION)
 PUBLISH_OVERWRITE ?= false
@@ -116,9 +116,9 @@ publish-base-image:  ## Build the CUDA kernel base and push it to CUDA_BASE_IMAG
 		|| $(DOCKER) push $(CUDA_BASE_IMAGE_REF)
 	@# Pin the REGISTRY digest (the pushed manifest), not the local image ID.
 	@if [ -s .cuda-base.digest ]; then \
-		echo "Pushed. Pin in the root Dockerfile: ARG CUDA_KERNEL_BASE=$(CUDA_BASE_IMAGE_REF)@$$(cat .cuda-base.digest)"; \
+		echo "Pushed. Pin in autotunex/Dockerfile: ARG CUDA_KERNEL_BASE=$(CUDA_BASE_IMAGE_REF)@$$(cat .cuda-base.digest)"; \
 	else \
-		echo "Pushed. Pin its registry digest in the root Dockerfile's CUDA_KERNEL_BASE: $(DOCKER) buildx imagetools inspect $(CUDA_BASE_IMAGE_REF), or skopeo inspect --format '{{.Digest}}' docker://$(CUDA_BASE_IMAGE_REF)"; \
+		echo "Pushed. Pin its registry digest in autotunex/Dockerfile's CUDA_KERNEL_BASE: $(DOCKER) buildx imagetools inspect $(CUDA_BASE_IMAGE_REF), or skopeo inspect --format '{{.Digest}}' docker://$(CUDA_BASE_IMAGE_REF)"; \
 	fi; rm -f .cuda-base.digest
 
 clean:  ## Remove caches and build artifacts
