@@ -1,0 +1,15 @@
+# Expectations for test/integration/standalone/buildrunner/docker/test_docker_path_in_repo.py.
+# build_yaml defaults to ./build.yaml (sibling) when omitted.
+targets:
+  - image-run
+target_expectations:
+  - target_name: image-run
+    # One `command` step: the docker hf pull is inline (no extra pull step), and
+    # each hf:// input is registered as an input artifact.
+    step_count: 1
+    input_artifact_count: 2
+    output_artifact_count: 0
+# Use the shared standalone space at <repo>/configurations/spaces/local so the
+# BuildRunner resolves space:// URIs without cloning from GitHub.
+space_uri: ../../../../../../configurations/spaces/local
+timeout_minutes: 10
