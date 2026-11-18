@@ -11,6 +11,7 @@ require it unless a Skypilot environment is actually configured.
 
 import asyncio
 import concurrent.futures
+import contextvars
 import functools
 import glob
 import importlib.util
@@ -24,6 +25,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -40,6 +42,7 @@ from typing import (
     Union,
 )
 
+import pydantic
 from tenacity import (
     AsyncRetrying,
     retry,
@@ -93,7 +96,12 @@ if HAS_SKYPILOT:
     import sky
     import sky.exceptions
 
+    from gbserver.environment import skypilot_kube
     from gbserver.utils import sky_patches
+
+    # Requests built while an environment instance's kube_configs scope is
+    # active carry its own KUBECONFIG; a no-op everywhere else.
+    skypilot_kube.install()
 else:
     sky = None  # type: ignore[assignment]
     sky_patches = None  # type: ignore[assignment]
@@ -621,9 +629,88 @@ async def _sky_submit_to_thread(
     :returns: the call's result once the worker thread completes.
     """
     loop = asyncio.get_running_loop()
+    # run_in_executor (unlike asyncio.to_thread) drops contextvars, which carry
+    # the environment instance's request KUBECONFIG (skypilot_kube).
+    context = contextvars.copy_context()
     return await loop.run_in_executor(
-        _get_sky_executor(), functools.partial(func, *args, **kwargs)
+        _get_sky_executor(), context.run, functools.partial(func, *args, **kwargs)
     )
+
+
+def _env_allowed_contexts(cloud_config: Dict) -> Any:
+    """The Kubernetes ``allowed_contexts`` an env's own ``cloud_config`` sets, or None.
+
+    SkyPilot's precedence (``sky.clouds.Kubernetes.existing_allowed_contexts``):
+    the active workspace's value when it sets one, else the top-level one. The
+    active workspace is the env's ``active_workspace``, else ``default``.
+
+    :param cloud_config: The environment's ``cloud_config`` block.
+    :returns: A list of names, ``'all'``, or ``None`` when unset.
+    """
+    workspace = cloud_config.get("active_workspace") or "default"
+    workspaces = cloud_config.get("workspaces")
+    ws = workspaces.get(workspace) if isinstance(workspaces, dict) else None
+    ws_k8s = ws.get("kubernetes") if isinstance(ws, dict) else None
+    if isinstance(ws_k8s, dict) and ws_k8s.get("allowed_contexts") is not None:
+        return ws_k8s["allowed_contexts"]
+    k8s = cloud_config.get("kubernetes")
+    return k8s.get("allowed_contexts") if isinstance(k8s, dict) else None
+
+
+def _env_remote_identities(cloud_config: Dict) -> List[str]:
+    """``kubernetes.remote_identity`` values an env's ``cloud_config`` sets.
+
+    Covers the top-level ``kubernetes`` block and every workspace's. A value may
+    be one string or a list of ``{cluster-pattern: value}`` maps.
+
+    :param cloud_config: The environment's ``cloud_config`` block.
+    :returns: Every value set, in no particular order (empty when unset).
+    """
+    from gbserver.environment.skypilot_kube import remote_identity_values
+
+    blocks = [cloud_config.get("kubernetes")]
+    workspaces = cloud_config.get("workspaces")
+    if isinstance(workspaces, dict):
+        blocks += [
+            ws.get("kubernetes") for ws in workspaces.values() if isinstance(ws, dict)
+        ]
+    return [
+        v
+        for b in blocks
+        if isinstance(b, dict)
+        for v in remote_identity_values(b.get("remote_identity"))
+    ]
+
+
+def _kube_scoped(strict: bool) -> Callable:
+    """Decorate a ``Skypilot`` coroutine so its SkyPilot requests carry its kubeconfig.
+
+    Every request built while the coroutine runs, including in tasks it starts
+    and in ``asyncio.to_thread`` / ``_sky_submit_to_thread`` workers, carries
+    ``KUBECONFIG`` = the user's files + this instance's own file
+    (``skypilot_kube``). Without ``kube_configs`` it does nothing.
+
+    :param strict: Passed to :meth:`Skypilot._kube_request_kubeconfig`: True
+        for setup and launch, False for polls, cleanup and teardown.
+    """
+
+    def decorate(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        async def wrapper(self: "Skypilot", *args: Any, **kwargs: Any) -> Any:
+            cfg = self.config.config if self.config else {}
+            if not cfg.get("kube_configs") or not HAS_SKYPILOT:
+                return await fn(self, *args, **kwargs)
+            value = await asyncio.to_thread(self._kube_request_kubeconfig, strict)
+            token = skypilot_kube.set_request_kubeconfig(value)
+            try:
+                return await fn(self, *args, **kwargs)
+            finally:
+                skypilot_kube.reset_request_kubeconfig(token)
+
+        wrapper.__kube_scoped__ = strict  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorate
 
 
 def _require_skypilot():
@@ -1280,6 +1367,10 @@ _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
     "no such identity",
     "invalid privatekey",
     "unprotected private key file",
+    # The kube_configs credential-upload refusal (sky_patches
+    # KUBE_CREDENTIAL_UPLOAD_REFUSED, lowercase like the rest): SkyPilot reports
+    # it as ResourcesUnavailableError, but it's a configuration error.
+    "kube_configs credentials are never uploaded",
 )
 
 
@@ -2633,6 +2724,11 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         **kwargs,
     ) -> None:
         self._cluster_names: Dict[str, str] = {}  # launch_id -> cluster_name
+        # kube_configs: this instance's own kubeconfig file, written on first
+        # use (see _kube_request_kubeconfig), and the lock serializing that.
+        self._kube_file: Optional[Path] = None
+        self._kube_lock = threading.Lock()
+        self._kube_warned = False
         self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
         # launch_id -> LSF cluster name (the ~/.lsf/config host), for lsf launches
         # only: what the poll loop asks `bjobs` before tearing a cluster down.
@@ -2742,6 +2838,164 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         """This environment's ``cloud_config`` block, or ``None``."""
         cfg = self.config.config if self.config else {}
         return cfg.get("cloud_config") or None
+
+    def _kube_config_entries(self: Self) -> List[Any]:
+        """This environment's ``kube_configs`` entries, validated.
+
+        :returns: The ``KubeConfigEntry`` list (empty when unset).
+        :raises ValueError: If ``kube_configs`` is malformed or unpinned, or the
+            env's config asks for something ``kube_configs`` can't be used with.
+        """
+        raw = (self.config.config if self.config else {}).get("kube_configs")
+        if not raw:
+            return []
+        entries = self._parse_kube_config_entries(raw)
+        self._check_kube_contexts_allowed(entries)
+        self._check_kube_identity_settings()
+        return entries
+
+    def _parse_kube_config_entries(self: Self, raw: Any) -> List[Any]:
+        """``kube_configs`` as ``KubeConfigEntry`` objects.
+
+        :param raw: The ``kube_configs`` value from the environment config.
+        :returns: The parsed entries.
+        :raises ValueError: If it isn't a list of well-formed entries. The
+            message names fields only: pydantic's echoes the input, which may be
+            a pasted kubeconfig.
+        """
+        from gbserver.types.environmentconfig import KubeConfigEntry
+
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs must be a list"
+            )
+        try:
+            return [KubeConfigEntry.model_validate(e) for e in raw]
+        except pydantic.ValidationError as e:
+            fields = sorted({".".join(map(str, err["loc"])) for err in e.errors()})
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs entries are "
+                f"malformed (fields {fields}); each needs a context and the name "
+                "of a kubeconfig secret"
+            ) from None
+
+    def _check_kube_contexts_allowed(self: Self, entries: List[Any]) -> None:
+        """Each ``kube_configs`` context must be in the env's ``allowed_contexts``.
+
+        Pinned at the top level or in the active workspace, or
+        ``allowed_contexts: all``: otherwise SkyPilot wouldn't use the context,
+        and a typo would only surface at launch.
+
+        :param entries: The parsed ``kube_configs`` entries.
+        :raises ValueError: If a context isn't allowed.
+        """
+        allowed = _env_allowed_contexts(self._cloud_config() or {})
+        if allowed == "all":
+            return
+        pinned = allowed if isinstance(allowed, list) else []
+        missing = [e.context for e in entries if e.context not in pinned]
+        if missing:
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs contexts "
+                f"{missing} must also be listed in "
+                "cloud_config.kubernetes.allowed_contexts (or the active "
+                "workspace's)"
+            )
+
+    def _check_kube_identity_settings(self: Self) -> None:
+        """Refuse settings of this env's that ``kube_configs`` can't be used with.
+
+        Reads only the env's own ``cloud_config``, never the host-shared
+        ``~/.sky/config.yaml``, which other environments rewrite: a value there
+        can change after this check, and an unrelated env's value must not
+        refuse this one. A ``LOCAL_CREDENTIALS`` that reaches SkyPilot another
+        way is refused where the credentials would leave, by the server plugin
+        (``sky_patches._refuse_instance_credential_upload``); this check only
+        reports the env's own setting early.
+
+        :raises ValueError: If the env sets ``remote_identity:
+            LOCAL_CREDENTIALS``, or ``SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS``
+            is set.
+        """
+        if os.environ.get("SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS"):
+            # SkyPilot's refresh rebuilds a cached client from os.environ at
+            # refresh time, which can be the server's own on a thread without a
+            # request context.
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs can't be used "
+                "with SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS set"
+            )
+        if "LOCAL_CREDENTIALS" in _env_remote_identities(self._cloud_config() or {}):
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs can't be used "
+                "with kubernetes.remote_identity: LOCAL_CREDENTIALS (SkyPilot "
+                "would leave the credentials in a temporary file); use the "
+                "default SERVICE_ACCOUNT"
+            )
+
+    def _kube_request_kubeconfig(self: Self, strict: bool) -> Optional[str]:
+        """The ``KUBECONFIG`` this instance's requests carry, or ``None``.
+
+        ``None`` without ``kube_configs``: requests then behave exactly as
+        before. Otherwise writes this instance's file on first use (or if it
+        has gone missing) and returns the user's kubeconfig files plus that
+        file. An instance's secrets are fixed for its life, so a rotated secret
+        takes effect with the next build's instance. Blocking (file I/O, and on
+        strict calls an API server check), so callers run it off the event
+        loop.
+
+        :param strict: Setup and launch: validate ``kube_configs`` and the
+            server, and raise on a problem. Polls, cleanup and teardown pass
+            False: once the instance's file exists they reuse it without
+            validating again, so a later change elsewhere (another env's
+            ``cloud_config``, say) can't cut a running cluster off from its own
+            ``sky.down``. If they have to build it and can't, the error is
+            logged once and their requests carry a ``KUBECONFIG`` that resolves
+            nothing, so they fail rather than reach a same-named context in the
+            user's or the server's kubeconfig.
+        :raises ValueError: If ``strict`` and ``kube_configs`` is invalid or
+            the API server would drop the per-request ``KUBECONFIG``.
+        :raises SkypilotConfigCollisionError: If ``strict`` and a context clashes
+            with the user's own kubeconfig.
+        """
+        try:
+            if not strict:
+                with self._kube_lock:
+                    existing = self._kube_file
+                if existing is not None and existing.exists():
+                    self._kube_warned = False
+                    return skypilot_kube.request_kubeconfig(existing)
+            entries = self._kube_config_entries()
+            if not entries:
+                return None
+            if strict:
+                _ensure_skypilot_api_running()
+                skypilot_kube.check_server_forwards_kubeconfig(self._env_name())
+            with self._kube_lock:
+                if self._kube_file is None:
+                    self._kube_file = skypilot_kube.instance_kubeconfig_path(
+                        uuid.uuid4().hex[:12]
+                    )
+                    skypilot_kube.remove_when_collected(self, self._kube_file)
+                if not self._kube_file.exists():
+                    doc = skypilot_kube.build_instance_kubeconfig(
+                        entries, self.secrets or {}, self._env_name()
+                    )
+                    skypilot_kube.write_instance_kubeconfig(doc, self._kube_file)
+                path = self._kube_file
+            self._kube_warned = False
+            return skypilot_kube.request_kubeconfig(path)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            if strict:
+                raise
+            if not self._kube_warned:
+                logger.warning(
+                    "environment '%s': kube_configs not applied: %s",
+                    self._env_name(),
+                    e,
+                )
+                self._kube_warned = True
+            return skypilot_kube.unresolvable_kubeconfig()
 
     async def _materialize_ssh_for_launch(
         self: Self, cloud: str, target_alias: Optional[str]
@@ -3151,6 +3405,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         base = "-".join(parts).rstrip("-_.")
         return f"{base}{retry}"
 
+    @_kube_scoped(strict=True)
     async def setup_skypilot(
         self: Self,
         setup_id: str,
@@ -3282,6 +3537,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             "skypilot": {"build_workdir": workdir, "shared_fs_mounts": shared_fs_mounts}
         }
 
+    @_kube_scoped(strict=False)
     async def teardown_skypilot(self: Self, setup_id: str, **kwargs) -> None:
         """Remove the per-run workdir provisioned by ``setup_skypilot``.
 
@@ -3850,6 +4106,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             env["GB_JOB_LOG_DIR"] = job_log_dir
         return env
 
+    @_kube_scoped(strict=True)
     async def launch_skypilot(
         self: Self,
         launch_id: str,
@@ -4759,6 +5016,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             on_abort=_teardown_cluster,
         )
 
+    @_kube_scoped(strict=False)
     async def monitor_skypilot_monitor(
         self: Self,
         launch_id: str,
@@ -5537,6 +5795,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
                 return
             logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
 
+    @_kube_scoped(strict=False)
     async def cleanup_skypilot(
         self: Self,
         launch_id: Optional[str] = None,
@@ -5575,6 +5834,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             self._log_lines_parsed.pop(launch_id, None)
             self._job_log_dirs.pop(launch_id, None)
 
+    @_kube_scoped(strict=False)
     async def launch_skypilot_teardown(
         self: Self,
         launch_id: Optional[str] = None,
