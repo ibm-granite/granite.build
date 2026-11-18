@@ -525,6 +525,12 @@ def replace_file_atomically(src: Any, dst_dir: Any) -> None:
 #: never imports ``gbserver.environment``.
 GBSERVER_KUBE_DIR = "gbserver-kube"
 
+#: How the credential-upload refusal starts (:func:`_refuse_instance_credential_upload`).
+#: gbserver matches it to treat the refusal as permanent: SkyPilot re-raises it
+#: as ``ResourcesUnavailableError``, which would otherwise be retried as a
+#: capacity error (``skypilot._NON_TRANSIENT_PROVISION_SUBSTRINGS``).
+KUBE_CREDENTIAL_UPLOAD_REFUSED = "kube_configs credentials are never uploaded"
+
 #: Why this process's ``kube_configs`` patches failed, or None if applied.
 #: Reported by :func:`kubeconfig_forwarding_endpoint`, so a failure refuses
 #: ``kube_configs`` only, instead of stopping the server for every build.
@@ -560,7 +566,7 @@ def _refuse_instance_credential_upload() -> None:
     def get_credential_file_mounts(self: Any) -> dict:
         if carries_instance_kubeconfig(os.environ.get("KUBECONFIG")):
             raise exceptions.InvalidCloudConfigs(
-                "kube_configs credentials are never uploaded: this launch would "
+                f"{KUBE_CREDENTIAL_UPLOAD_REFUSED}: this launch would "
                 "copy the request's kubeconfig to the cluster (remote_identity "
                 "resolves to LOCAL_CREDENTIALS, the cluster is a controller, or "
                 "the launch targets a cloud other than Kubernetes). Use the default "

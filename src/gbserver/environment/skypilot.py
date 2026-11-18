@@ -1364,6 +1364,10 @@ _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
     "no such identity",
     "invalid privatekey",
     "unprotected private key file",
+    # The kube_configs credential-upload refusal (sky_patches
+    # KUBE_CREDENTIAL_UPLOAD_REFUSED, lowercase like the rest): SkyPilot reports
+    # it as ResourcesUnavailableError, but it's a configuration error.
+    "kube_configs credentials are never uploaded",
 )
 
 

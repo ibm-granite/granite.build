@@ -1,7 +1,7 @@
 # Test-local space for the kube_configs build test (#505).
 #
 # Its secret manager reads a per-run directory the test writes (holding the kind
-# cluster's kubeconfig as the secret `kind-kubeconfig`), and it carries its own
+# cluster's kubeconfig as the secret `KIND-KUBECONFIG-SECRET`), and it carries its own
 # `skypilot/kubernetes/secret` environment, which supplies that secret through
 # `kube_configs:`. Everything else falls through to configurations/assets.
 name: kubeconfig-secret-test
@@ -11,5 +11,3 @@ secret_manager:
     secrets_dir: ${GBTEST_KUBE_SECRETS_DIR}
 base_uris:
   - file://../../../../../../../configurations/assets
-variables:
-  DEFAULT_ENVIRONMENT: skypilot/kubernetes/secret

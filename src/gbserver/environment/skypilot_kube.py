@@ -823,14 +823,18 @@ def check_server_forwards_kubeconfig(env_name: str) -> None:
         "GET", KUBECONFIG_FORWARDING_ROUTE, retry=False
     )
     try:
-        body = response.json() if response.ok else {}
+        body = response.json() if response.ok else None
     except ValueError:  # not JSON: an old server, or no gbserver plugin
-        body = {}
+        body = None
     if not isinstance(body, dict) or body.get("forwarded") is not True:
-        reason = body.get("reason") if isinstance(body, dict) else None
+        if not isinstance(body, dict):
+            reason = "no answer from gbserver's plugin"
+        else:
+            # A server started by an older gbserver says no without a reason.
+            reason = body.get("reason") or "the plugin gave no reason"
         raise ValueError(
             f"environment '{env_name}': the SkyPilot API server can't apply "
-            f"per-request KUBECONFIG safely ({reason or 'no gbserver plugin answer'}), "
+            f"per-request KUBECONFIG safely ({reason}), "
             "so kube_configs credentials would be ignored or exposed. Restart "
             "it as a local server (`sky api stop`; gbserver starts it again)."
         )

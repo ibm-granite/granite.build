@@ -65,6 +65,9 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.delenv("SKYPILOT_IN_CLUSTER_CONTEXT_NAME", raising=False)
     # Each test's home gets its own owner lock, as one process's home would.
     monkeypatch.setattr(sk, "_OWNER_LOCK", None)
+    yield
+    if sk._OWNER_LOCK is not None and sk._OWNER_LOCK.pid == os.getpid():
+        os.close(sk._OWNER_LOCK.fd)  # releases the flock too
 
 
 @pytest.fixture
@@ -839,6 +842,25 @@ class TestServerPrecondition:
             sk.check_server_forwards_kubeconfig("e")
 
     @pytest.mark.parametrize(
+        "response,reason",
+        [
+            ((True, False), "the plugin gave no reason"),  # an older gbserver's
+            ((False, True), "no answer from gbserver's plugin"),
+        ],
+    )
+    def test_no_answer_is_told_from_no_reason(self, monkeypatch, response, reason):
+        from sky.server import common
+
+        monkeypatch.setattr(common, "is_api_server_local", lambda *a: True)
+        monkeypatch.setattr(
+            common,
+            "make_authenticated_request",
+            lambda *a, **k: self._response(*response),
+        )
+        with pytest.raises(ValueError, match=reason):
+            sk.check_server_forwards_kubeconfig("e")
+
+    @pytest.mark.parametrize(
         "flag,forwarded", [("0", True), ("1", False), (None, False)]
     )
     def test_endpoint_reports_the_servers_flag(self, monkeypatch, flag, forwarded):
@@ -1025,6 +1047,43 @@ class TestCredentialUpload:
     def test_other_kubeconfigs_upload_as_before(self, guarded, tmp_path, monkeypatch):
         monkeypatch.setenv("KUBECONFIG", str(tmp_path / "user-kubeconfig"))
         assert guarded.get_credential_file_mounts(None) == {"~/.kube/config": "merged"}
+
+    def test_refusal_is_not_retried_as_a_capacity_error(self, guarded, monkeypatch):
+        """SkyPilot's failover re-raises the refusal as ResourcesUnavailableError
+        with the reason under "Provision failures"; gbserver must not retry it."""
+        import textwrap
+
+        from sky import exceptions
+
+        from gbserver.utils import sky_patches
+
+        monkeypatch.setenv(
+            "KUBECONFIG", sk.request_kubeconfig(sk.instance_kubeconfig_path("abc"))
+        )
+        with pytest.raises(exceptions.InvalidCloudConfigs) as refused:
+            guarded.get_credential_file_mounts(None)
+        message = str(refused.value)
+        assert message.startswith(sky_patches.KUBE_CREDENTIAL_UPLOAD_REFUSED)
+        assert "\n" not in message  # kept whole by the failover's indented block
+        assert sky_patches.KUBE_CREDENTIAL_UPLOAD_REFUSED.lower() in (
+            sp._NON_TRANSIENT_PROVISION_SUBSTRINGS
+        )
+        # As cloud_vm_ray_backend's failover reports it, then ends it.
+        per_cloud = exceptions.ResourcesUnavailableError(
+            "Failed to provision on cloud Kubernetes due to invalid cloud "
+            f"config: InvalidCloudConfigs: {message}"
+        )
+        final = exceptions.ResourcesUnavailableError(
+            "Failed to provision all possible launchable resources.\n"
+            "Provision failures (tried 1 infra):\n"
+            f"\u2717 Kubernetes (kind-skypilot) \u2014 1x cpus=1\n"
+            + textwrap.indent(str(per_cloud), "  "),
+            failover_history=[per_cloud],
+        )
+        assert not sp._is_transient_provision_error(final, "kubernetes")
+        # Control: the same shape without the refusal is retried.
+        capacity = exceptions.ResourcesUnavailableError("Insufficient cpu")
+        assert sp._is_transient_provision_error(capacity, "kubernetes")
 
     def test_server_and_client_agree_on_the_directory(self):
         from gbserver.utils import sky_patches

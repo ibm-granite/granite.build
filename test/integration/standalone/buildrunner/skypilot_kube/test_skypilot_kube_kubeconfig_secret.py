@@ -7,7 +7,7 @@
 Reuses the local kind cluster rather than a second one:
 
 * the kind context's kubeconfig (``kubectl config view --minify --flatten``) is
-  written as the space secret ``kind-kubeconfig``;
+  written as the space secret ``KIND-KUBECONFIG-SECRET``;
 * the build runs with ``KUBECONFIG`` pointing at a copy of the developer's
   kubeconfig *without* the kind context, so SkyPilot cannot reach the cluster
   from the host's kubeconfig at all;
@@ -30,7 +30,9 @@ import base64
 import os
 import shutil
 import subprocess
+import urllib.parse
 from pathlib import Path
+from typing import Optional
 
 import pytest
 import yaml
@@ -58,6 +60,46 @@ def _kubectl_view(*args: str) -> dict:
         timeout=30,
     ).stdout
     return yaml.safe_load(out) or {}
+
+
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _endpoint(server: Optional[str]) -> tuple:
+    """A cluster ``server`` URL as ``(host, port)``, with loopback names unified."""
+    url = urllib.parse.urlsplit(server or "")
+    host = (url.hostname or "").lower()
+    return ("loopback" if host in _LOOPBACK_HOSTS else host, url.port or 443)
+
+
+def _context_unresolvable(kubeconfig: Path, context: str) -> bool:
+    """Whether ``kubeconfig`` neither names ``context`` nor has a cluster at its server.
+
+    kubectl must fail to find the context, and no cluster entry may point at
+    the kind API server's host and port (``localhost`` and ``127.0.0.1`` count
+    as the same), so a copy under another context name is caught too. It
+    checks the kubeconfig the build sees, not the network. The API server,
+    started before ``KUBECONFIG`` changes, still has the kind context in its
+    own environment; that it uses each request's ``KUBECONFIG`` instead is
+    what ``check_server_forwards_kubeconfig`` guarantees.
+    """
+    kind_server = next(
+        c["cluster"]["server"]
+        for c in _kubectl_view("--minify", "--context", context)["clusters"]
+    )
+    named = subprocess.run(
+        [shutil.which("kubectl") or "kubectl", "config", "get-contexts", context],
+        env={**os.environ, "KUBECONFIG": str(kubeconfig)},
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    doc = yaml.safe_load(kubeconfig.read_text()) or {}
+    endpoints = {
+        _endpoint((c.get("cluster") or {}).get("server"))
+        for c in doc.get("clusters") or []
+    }
+    return named.returncode != 0 and _endpoint(kind_server) not in endpoints
 
 
 def _without_context(doc: dict, context: str) -> dict:
@@ -103,11 +145,14 @@ class TestSkypilotKubeKubeconfigSecret(AbstractYamlBuildRunnerTest):
         # The local secret store's flat format holds base64 values.
         encoded = base64.b64encode(yaml.safe_dump(kind_only).encode()).decode()
         (secrets_dir / "kube.yaml").write_text(
-            yaml.safe_dump({"kind-kubeconfig": encoded})
+            yaml.safe_dump({"KIND-KUBECONFIG-SECRET": encoded})
         )
         host = tmp_path / "host-kubeconfig"
         host.write_text(yaml.safe_dump(_without_context(_kubectl_view(), context)))
         os.chmod(host, 0o600)
+        # Negative control: the build's own KUBECONFIG must not reach the kind
+        # cluster, or a passing build wouldn't prove the secret worked.
+        assert _context_unresolvable(host, context)
         monkeypatch.setenv("GBTEST_KUBE_SECRETS_DIR", str(secrets_dir))
         monkeypatch.setenv("KUBECONFIG", str(host))
         yield
