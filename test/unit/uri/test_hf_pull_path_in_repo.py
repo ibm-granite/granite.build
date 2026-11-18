@@ -417,12 +417,19 @@ def test_k8s_helm_helpers_pass_the_uri_literally(
     for path in filter(None, pir.values()):
         (Path(p) / path).mkdir(parents=True, exist_ok=True)
     bound = {u: f"{p}/{pir[u]}" if pir[u] else p for u in uris}
-    script = "\n".join(
-        _helm_helper(chart, {**values, "uri": u, "path_in_repo": pir[u]}) for u in uris
+    # Run the script from a file: as one `bash -c` argument it exceeds Linux's
+    # 128 KiB per-argument limit (E2BIG), which macOS does not have.
+    script = tmp_path / f"{chart}.sh"
+    script.write_text(
+        "\n".join(
+            _helm_helper(chart, {**values, "uri": u, "path_in_repo": pir[u]})
+            for u in uris
+        ),
+        encoding="utf-8",
     )
     log = tmp_path / "py.log"
     proc = subprocess.run(
-        ["bash", "-c", script],
+        ["bash", str(script)],
         env={
             **os.environ,
             "PATH": f"{_stub_python3(tmp_path)}:{os.environ['PATH']}",
