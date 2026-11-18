@@ -393,7 +393,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provisioned 2 nodes that each trained on their own (the #609 bug, fixed for the framework
   step in #625). It now sets `single_node: true`, and gbserver refuses any resolved
   `num_nodes` other than 1 at step creation. The `skypilot/lsf/ibm-bluevela` copy is
-  unchanged: LSF is no longer supported.
+  unchanged: the pinned SkyPilot 0.14.2 has no LSF cloud, so it can't launch (LSF is being
+  retired, #631).
 
 - **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
   memory (#657).** Before, it was always dropped on SLURM, so jobs got SkyPilot's 1 GB per CPU.

@@ -7,8 +7,9 @@ It trains on one machine (``accelerate launch --num_machines 1``), but with
 ``num_nodes: 2`` SkyPilot would provision 2 nodes and each would train on its own,
 the #609 bug that #625 fixed for the framework step. The copy declares
 ``environment_configs.Skypilot.single_node``, so gbserver refuses, at step creation,
-any build whose resolved ``num_nodes`` is not 1. The ``lsf/ibm-bluevela`` copy is
-left as is: LSF is no longer supported.
+any build whose resolved ``num_nodes`` is not 1. The ``skypilot/lsf/ibm-bluevela``
+copy is unchanged: the pinned SkyPilot 0.14.2 has no LSF cloud, so it can't launch
+(LSF is being retired, #631).
 """
 
 import pathlib
