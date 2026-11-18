@@ -1,0 +1,54 @@
+# Containment of the parts of a build.yaml.
+# Render: d2 --layout elk docs/images/build-yaml-containment.d2 docs/images/build-yaml-containment.svg
+# `style.multiple: true` draws a box as a stack, standing for repeated elements.
+
+classes: {
+  leaf: {
+    style: {
+      fill: "#ffffff"
+      stroke: "#5b6b7f"
+      border-radius: 4
+      font-size: 14
+    }
+  }
+}
+
+build: "Build" {
+  grid-columns: 1
+  grid-gap: 24
+  style: {fill: "#eef3fb"; stroke: "#2f5597"; stroke-width: 2; font-size: 20; bold: true}
+
+  settings: "Build settings" {class: leaf}
+
+  target: "Target" {
+    grid-columns: 1
+    grid-gap: 24
+    style: {multiple: true; shadow: true; fill: "#fffaf0"; stroke: "#b58900"; font-size: 16}
+
+    environment: "Environment" {
+      style: {fill: "#e8f5e9"; stroke: "#2e7d32"; font-size: 16}
+    }
+
+    body: "" {
+      grid-columns: 3
+      grid-gap: 24
+      style: {fill: transparent; stroke: transparent}
+
+      input: "Input" {
+        style: {multiple: true; fill: "#f3e5f5"; stroke: "#7b1fa2"; font-size: 16}
+      }
+
+      step: "Step" {
+        grid-columns: 1
+        grid-gap: 16
+        style: {multiple: true; shadow: true; fill: "#fff3f0"; stroke: "#d84315"; font-size: 16}
+        specific: "Step-specific configuration" {class: leaf}
+        independent: "Step-independent configuration" {class: leaf}
+      }
+
+      output: "Output" {
+        style: {multiple: true; fill: "#e0f7fa"; stroke: "#00838f"; font-size: 16}
+      }
+    }
+  }
+}

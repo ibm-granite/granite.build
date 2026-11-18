@@ -97,7 +97,7 @@ inputs:
 | `uri`            | string  | one of uri/binding | —       | Direct artifact URI. Schemes: `hf://`, `file://`, `git://`, `cos://`, `lh://`, `s3://`, plus `env://` (a path on the worker's own filesystem) and `mem://` (an opaque value in the build's shared memory). See [Asset stores](../asset-stores/README.md#store-types-and-uri-schemes). |
 | `binding`        | string  | one of uri/binding | —       | `<target-name>.<output-name>` — points at another target's output in this build. The upstream output's URI scheme decides how the value arrives: a filesystem output resolves to `{{ bindings.<name>.binding.path }}`, a `mem://` output to `{{ bindings.<name>.binding.state }}` (see [Jinja templating](#jinja-templating)). |
 | `wait_for_push`  | bool    | no                 | `false` | If `true`, wait for the upstream's push to complete before starting. |
-| `event`          | string  | no                 | —       | Event-driven trigger (e.g. `evalresults.success`); fires this target only when an upstream emits the event. |
+| `event`          | string  | no                 | —       | **Not supported.** Accepted by the schema but not implemented by the build runner: an input with only `event` logs `unsupported input.event being used`, and on an input that also has a `binding`, `event` is ignored. |
 | `metadata`       | object  | no                 | —       | Runtime-populated; usually omitted in user YAML. |
 
 A bound input must reference an existing target name and an output name on
@@ -126,7 +126,7 @@ outputs:
 | `uri`             | string  | no       | —       | Output URI. Supports Jinja templating, e.g. `hf://huggingface.co/datasets/.../{{ run_metadata.targetsteprun_id \| short_hash }}`. |
 | `public`          | bool    | no       | `false` | HuggingFace-only convenience flag: publish the pushed repo. Default (private) needs no key. Only valid on `hf://` outputs. See [`hf-push.md`](hf-push.md#making-an-output-public). |
 | `store_push`      | object  | no       | —       | Push to a remote store after the step writes the artifact. See [`hf-push.md`](hf-push.md) for the HF case. |
-| `event_selectors` | list    | no       | `[]`    | Event-payload matchers used by downstream `inputs.event` triggers. |
+| `event_selectors` | list    | no       | `[]`    | Event-payload matchers that let this output claim an artifact event whose ID matches no output name. See [`event_selectors`](#event_selectors). |
 
 ### `mem://` outputs — passing a value, not a file
 
@@ -175,6 +175,11 @@ relationship between `store_push` here and the environment-level `store_push`
 block.
 
 ### `event_selectors`
+
+When a step reports an artifact whose ID matches none of the target's output names, the build
+runner checks each output's `event_selectors` against the artifact event's payload. The first
+output whose selectors match receives the artifact. An artifact whose ID does match an output
+name goes to that output, and selectors are not consulted.
 
 ```yaml
 outputs:
@@ -393,7 +398,7 @@ outputs:
 These samples in the repo exercise the schema end to end:
 
 - [`samples/standalone/standalone-quickstart/build.yaml`](../../samples/standalone/standalone-quickstart/) — single target, multiple environment options, basic `compute_config`.
-- [`samples/templates/local_multi_stage/build.yaml`](../../samples/templates/local_multi_stage/) — four targets chained by binding, event-driven trigger.
+- [`samples/templates/local_multi_stage/build.yaml`](../../samples/templates/local_multi_stage/) — four targets chained by binding. (Its `event:` input is not supported by the runner; see [Inputs](#inputs).)
 - [`samples/tests/digit-tuning-fmeval/build.yaml`](../../samples/tests/digit-tuning-fmeval/) — multi-GPU pipeline with templated Lakehouse URIs.
 - [`test-data/integration/standalone/buildrunner/bash/retry/build.yaml`](../../test-data/integration/standalone/buildrunner/bash/retry/) — top-level `retries` block with `max_retries`.
 
