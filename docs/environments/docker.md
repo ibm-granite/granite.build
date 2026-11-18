@@ -128,10 +128,10 @@ and translates it to Docker container limits:
 
 - **Inputs.** Unlike [bash](bash.md), the Docker environment does **not** auto-export input paths as
   env vars. Wire a resolved binding into the container explicitly, e.g. via `launcher_config.env` using
-  `{{ bindings.<name>.binding.path }}`. For HuggingFace inputs loaded via the `hf` asset store, the
-  pull dir is bind-mounted read-only at `/gb-hf-models/<owner>/<repo>/<revision>`, and the binding is
-  the in-container path: that dir, or the file or directory a URI's path in the repo names inside it.
-  Inputs from the same repo and revision share the one mount. `env://` inputs (a
+  `{{ bindings.<name>.binding.path }}`. For HuggingFace inputs loaded via the `hf` asset store, what
+  the input names is bind-mounted read-only, and the binding is the in-container path: the pull dir
+  at `/gb-hf-models/<owner>/<repo>/<revision>`, or the file or directory a URI's path in the repo
+  names, at `/gb-hf-models/<owner>/<repo>/<revision>/<path>`. `env://` inputs (a
   path another target left on this host) are bind-mounted read-only under `/gb-env-inputs/<n>` (a
   file's parent directory, or the directory itself), and the binding is the in-container path. The
   mount goes only into the containers of the target that takes the input. The mount source is

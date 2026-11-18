@@ -35,7 +35,6 @@ from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.local_assets import (
     get_hf_cache_dir,
-    hf_pull_dest,
     pull_asset_hfstore,
     push_asset_hfstore,
 )
@@ -464,34 +463,24 @@ class Docker(Environment):
     ) -> Tuple[Dict, None]:
         """Download an HF snapshot and bind it through a container volume mount.
 
-        The pull root (``<cache_dir>/<owner>/<repo>/<revision>``) is mounted
-        read-only at ``/gb-hf-models/<owner>/<repo>/<revision>``, and the input
-        is bound where its content lands inside it (``HfURI.local_path``): the
-        root itself, or ``<root>/<path_in_repo>`` when the URI names a path in
-        the repo, whether that is a directory or a single file. Inputs from the
-        same repo and revision share the one mount, so their paths can't
-        collide. The pull writes real files (``local_dir``), so the mount needs
-        no HF cache ``blobs/`` directory.
-
-        The whole pull root is mounted, so the container also sees anything an
-        earlier pull of that repo and revision left in the shared cache.
+        Only what the input names is mounted, read-only: the pull dir
+        (``<cache_dir>/<owner>/<repo>/<revision>``), or the directory or file
+        a URI's path in the repo names inside it (``HfURI.local_path``). It is
+        mounted at the same path under ``/gb-hf-models``, so inputs naming
+        different paths of one repo and revision get their own container paths.
+        The pull writes real files (``local_dir``), so the mount needs no HF
+        cache ``blobs/`` directory.
         """
-        from gbcommon.uri.hf import HfURI
-
         self._warn_non_default_mode(storeload_config, uri)
         assert assetstore is not None, "assetstore is required for hfstore loading"
-        hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
-        assert isinstance(hfuri, HfURI), f"expected HfURI, got: {type(hfuri)}"
-        dest = hf_pull_dest(hfuri, storeload_config)
-        pull_asset_hfstore(hfuri, assetstore, storeload_config, dest=dest)
-        container_root = f"{_HF_MODELS_MOUNT}/{assetstore.get_relpath(hfuri)}"
-        self._extra_volumes[str(dest)] = {"bind": container_root, "mode": "ro"}
+        local_path = pull_asset_hfstore(uri, assetstore, storeload_config)
+        relpath = local_path.relative_to(get_hf_cache_dir(storeload_config))
+        container_path = f"{_HF_MODELS_MOUNT}/{relpath.as_posix()}"
+        self._extra_volumes[str(local_path)] = {"bind": container_path, "mode": "ro"}
 
         from gbserver.environment.environment import BINDING_KEY
 
-        binding_config = {
-            BINDING_KEY: {"path": str(hfuri.local_path(Path(container_root)))}
-        }
+        binding_config = {BINDING_KEY: {"path": container_path}}
         return binding_config, None
 
     # ------------------------------------------------------------------
