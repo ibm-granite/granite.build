@@ -69,3 +69,7 @@ benchmarks:
   # The generic harness bridges: no fixed protocol -- the recipe's options
   # pick the tasks (see the family module's docstring).
   - {id: lm-eval, group: extras, name: "lm-eval (generic: any task in the pinned harness)", metric: "macro mean of the tasks' primary metrics"}
+  - {id: tau3, group: extras, name: "τ³-bench (generic: any domain combination)", metric: "pass^1 over the chosen domains"}
+  - {id: mcpmark, group: extras, name: "MCPMark (generic: any service in the pinned harness)", metric: pass@1}
+  - {id: swebench, group: extras, name: "SWE-bench (generic: any per-instance-spec dataset)", metric: "pass@1 resolve rate"}
+  - {id: terminal-bench, group: extras, name: "Terminal-Bench (generic: any Terminal-Bench-format dataset)", metric: "pass@1 resolve rate"}

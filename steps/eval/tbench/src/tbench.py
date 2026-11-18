@@ -235,8 +235,15 @@ def load_tasks(source: str, revision: str | None, local_dir: Path) -> tuple[Path
 
         log.info("downloading %s@%s to %s", source, revision or "main", local_dir)
         root = Path(snapshot_download(source, repo_type="dataset", revision=revision, local_dir=local_dir))
-    registry = json.loads((root / "registry.json").read_text())
-    rows = [dict(t) for entry in registry for t in entry["tasks"]]
+    if (root / "registry.json").is_file():
+        registry = json.loads((root / "registry.json").read_text())
+        rows = [dict(t) for entry in registry for t in entry["tasks"]]
+    else:
+        # Registry-less layouts (the terminal-bench-2.0 mirror): one task
+        # directory per task at the root, each with its task.toml.
+        rows = [{"name": d.name, "path": d.name} for d in sorted(root.iterdir()) if (d / "task.toml").is_file()]
+        if not rows:
+            raise SystemExit(f"{source}: no registry.json and no root task directories with a task.toml")
     return root, rows
 
 
