@@ -47,7 +47,15 @@ echo "lm-engine: node_rank=$RANK nnodes=$NNODES gpus=$GPUS master=$MADDR k8s_nod
 mkdir -p "$TRAIN_DIR/logs"
 
 if [ "$LME_PHASE" = data-check ]; then
-  exec "${PY[@]}" "$HERE/data_check.py" --knobs "$LME_KNOBS_JSON"
+  # Not `exec`: the artifact line must follow a successful check. A binding is the
+  # only thing that orders two targets, and an output exists only once its
+  # workload has printed GB_ARTIFACT_ID for it -- so without this line a recipe
+  # that orders `train` after a `data-check` target would never dispatch `train`.
+  # data_check.py stays free of the marker: it is a plain checker, and emitting
+  # gbserver's protocol is this launch script's job (as for `checkpoint` below).
+  "${PY[@]}" "$HERE/data_check.py" --knobs "$LME_KNOBS_JSON"
+  echo "GB_ARTIFACT_ID:data_check GB_ARTIFACT_PATH:$TRAIN_DIR"
+  exit 0
 fi
 
 # ── the resume decision ───────────────────────────────────────────────────────

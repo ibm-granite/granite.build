@@ -41,6 +41,10 @@ value_of() {
 echo "stub-python: $mod ${rest[*]}"
 case "$mod" in
   data_check.py)
+    if [ -n "${STUB_DATA_CHECK_RC:-}" ] && [ "${STUB_DATA_CHECK_RC}" != 0 ]; then
+      echo "error: dataset_path is empty" >&2
+      exit "$STUB_DATA_CHECK_RC"
+    fi
     echo "data-check: ok"
     ;;
   resume.py)
@@ -294,3 +298,26 @@ def test_the_data_check_phase_execs_and_never_reaches_the_trainer(world):
     assert "data-check: ok" in proc.stdout
     assert not (world.stub_dir / "torchrun.ran").exists()
     assert not (world.stub_dir / "resume.ran").exists()
+
+
+def test_a_passing_data_check_emits_its_artifact(world):
+    """Without this line `train` never dispatches.
+
+    A binding is the only thing that orders two targets, and an output comes into
+    existence only when its workload prints GB_ARTIFACT_ID for it. A recipe that
+    orders `train` after a `data-check` target binds this artifact, so a silent
+    data-check leaves the build waiting on a target that can never arrive.
+    """
+    proc = world.run(phase="data-check")
+    assert proc.returncode == 0, proc.stderr
+    lines = [ln for ln in proc.stdout.splitlines() if "GB_ARTIFACT_ID:" in ln]
+    assert lines == [f"GB_ARTIFACT_ID:data_check GB_ARTIFACT_PATH:{world.train_dir}"]
+    # the trainer's own artifact must not leak into the check phase
+    assert "GB_ARTIFACT_ID:checkpoint " not in proc.stdout
+
+
+def test_a_failing_data_check_emits_no_artifact(world):
+    """A failed check must not publish an output a downstream target can bind."""
+    proc = world.run(phase="data-check", STUB_DATA_CHECK_RC="1")
+    assert proc.returncode == 1
+    assert "GB_ARTIFACT_ID:" not in proc.stdout
