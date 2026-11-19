@@ -659,12 +659,24 @@ A `config.steps.<slug>` key that matches no step in the build is silently ignore
 override seems to have no effect, check the slug first. SkyPilot's overridable launcher keys are
 listed in [D.6](#d6-skypilot-overrides).
 
-### C.6 Parameters and templating
+### C.6 Parameters and Jinja templating
 
-There are two substitution mechanisms, applied at different times.
+A `build.yaml` can contain two kinds of placeholder. They are filled at different times, by
+different parts of the system:
 
-**Build parameters (`$${NAME}`)** are filled in by the `gb` CLI before submission. Values are
-layered, later layers overriding earlier ones:
+| Placeholder | Filled by | When | Sees |
+|-------------|-----------|------|------|
+| `$${NAME}` | the `gb` CLI | before the build is submitted | parameter values |
+| `{{ … }}` | gbserver | while the build runs, field by field | the variables listed below |
+
+The CLI fills `$${…}` first, by plain text substitution across the whole file, so a parameter
+can appear anywhere: in a key, a URI, a number or inside a `{{ … }}` expression. gbserver never
+sees `$${…}`. It receives the file with every parameter already replaced and then evaluates
+`{{ … }}` as each field is used.
+
+#### Build parameters (`$${NAME}`)
+
+Values are layered, later layers overriding earlier ones:
 
 1. `parameters.yaml` next to the `build.yaml`, if there is one;
 2. each `--param-file <file>`, in order;
@@ -674,20 +686,83 @@ Only top-level keys merge, and a later file replaces a list or map whole. `gb bu
 `gb build validate` write the final values to `parameters-applied.yaml`. To see the rendered build
 without submitting it, use `gb build start --dry-run` or `gb build describe --raw --param-file …`.
 
-**Jinja templates (`{{ … }}`)** are evaluated by gbserver at run time. They are allowed in
-`environment_uri`, in input and output `uri`s, and in step `config` values. Not every variable
-is available everywhere: `environment_uri` sees only `space.*`, and the table notes the other
-limits.
+#### Jinja templates (`{{ … }}`)
+
+gbserver evaluates `{{ … }}` with [Jinja](https://jinja.palletsprojects.com/). Expressions,
+filters and `{% if %}` blocks all work. Each field is rendered at the moment gbserver needs its
+value, and what an expression can see depends on that moment. A variable that doesn't exist yet
+at that point can't be used.
+
+**Where templates can appear, and what each place can see:**
+
+| Field in `build.yaml` | Rendered | Variables available | Unknown variable |
+|-----------------------|----------|---------------------|------------------|
+| `environment_uri`, `step_uri` | when the URI is resolved | `space.*` | error |
+| input `uri` | when the input is resolved | `space.*` | error |
+| output `uri` | when the output is pushed | `space.*`, `run_metadata.*`, `unique_hash`, `binding.*` | error |
+| step `config` values | when the step is prepared, before it launches | `space.*`, `run_metadata.*`, `bindings.*`, `step.name` | left as written |
+
+Keys, `name`, `version`, `retries` and the target names are not templated; use a `$${…}`
+parameter if one of them must vary.
+
+**Variables:**
 
 | Variable | Meaning |
 |----------|---------|
-| `run_metadata.*` | Per-run identifiers, such as `build_id` and `targetsteprun_id`. |
-| `unique_hash` | In output `uri`s only: a new value for each push. |
-| `space.variables.*` | The space's `variables`. |
-| `bindings.<name>.*` | Resolved inputs by input name: paths (`.path`) and `mem://` values (`.state`). |
+| `space.variables.<key>` | A value from the space's `space.yaml` `variables`. |
+| `space.name` | The name of the space the build runs in. |
+| `run_metadata.<field>` | Identifiers of the current run: `build_id`, `build_config_name`, `username`, `target_name`, `targetrun_id`, `targetsteprun_id`, `target_hash`. |
+| `bindings.<input>.binding.path` | The local path of the target's input named `<input>`. |
+| `bindings.<input>.binding.state` | The value of a `mem://` input named `<input>`. |
+| `binding.path` | In an output `uri` only: the path the step reported for this output. |
+| `unique_hash` | In an output `uri` only: a hash that changes with each push of the output. |
+| `step.name` | The name of the step being configured. |
 
-Available filters: `short_hash`, `path_basename`, `to_yaml`, `json_dumps` and `indent(N)`.
-Example: `hf:///datasets/my-org/synth_{{ run_metadata.targetsteprun_id | short_hash }}`.
+**Unknown variables.** URIs are rendered strictly, so a misspelled or unavailable variable fails
+the build with a template error. Step `config` values are rendered leniently: an unknown name is
+left in the value as the literal text `{{ name }}`, and the step receives that text. Check a
+`config` value that uses `bindings` against the target's input names, because a misspelled
+input name is not reported.
+
+**Filters:** `short_hash` (a short alphanumeric hash, handy for unique names), `path_basename`,
+`to_yaml`, `json_dumps` and `indent(N)`, plus Jinja's built-in filters such as `default`.
+
+**Examples:**
+
+```yaml
+targets:
+  train:
+    # space.* only: pick the environment from a space variable
+    environment_uri: space://environments/{{ space.variables.DEFAULT_ENVIRONMENT }}
+    inputs:
+      base_model:
+        uri: hf:///{{ space.variables.BASE_MODEL_ORG }}/granite-4.0-350m
+    outputs:
+      # run_metadata and unique_hash: a fresh repository for each run
+      checkpoint:
+        uri: hf:///my-org/ckpt-{{ run_metadata.targetrun_id | short_hash }}
+      # binding.path: register the output where the step wrote it
+      results:
+        uri: env://{{ binding.path }}
+    steps:
+      - step_uri: space://steps/command
+        config:
+          command_config:
+            # bindings and run_metadata: wire an input and the run ID into the command
+            command: >-
+              python train.py --model {{ bindings.base_model.binding.path }}
+              --run {{ run_metadata.build_id }}
+```
+
+**Mixing with shell syntax.** `{{ … }}` is processed before a command reaches the shell, so
+shell variables such as `$HOME` or `${MAX_TOKENS}` pass through untouched. Two character pairs
+are special to Jinja, though:
+
+- `{{` starts an expression. A literal `{{` that the command needs, for example in a Go
+  template, must be written `{{ '{{' }}`.
+- `{#` starts a Jinja comment, so shell syntax such as `${#array[@]}` breaks.
+
+Wrap any such text in `{% raw %}…{% endraw %}` to pass it through unchanged.
 
 ### C.7 Retries
 
