@@ -17,6 +17,7 @@ import gbserver.commands.command_create_spaces as create_spaces
 import gbserver.spaces.db_space as db_space
 from gbcommon.uri.git import GitURI
 from gbcommon.uri.uri import URI
+from gbserver.storage import singleton_storage
 from gbserver.storage.singleton_storage import get_admin_storage
 from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 from gbserver.types import constants as c
@@ -33,6 +34,18 @@ def _snapshot() -> RepoSnapshot:
     snap = RepoSnapshot(source_uri=PUBLIC_GIT, source_ref="gbspace-config")
     snap.save_archive(buf.getvalue())
     return snap
+
+
+@pytest.fixture(autouse=True)
+def _fresh_admin_storage(monkeypatch):
+    """Build the admin storage afresh, on this test's temp db.
+
+    Every test here adds a "public" space. A test that ran earlier on this
+    worker (e.g. an integration build) may have built the singleton on a db it
+    shares, and test/unit/conftest.py restores that singleton after each test
+    rather than clearing it, so without this the second test's add collides.
+    """
+    monkeypatch.setattr(singleton_storage, "__STORAGE", None)
 
 
 @pytest.fixture
