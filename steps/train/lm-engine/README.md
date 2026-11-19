@@ -95,6 +95,104 @@ and `tools.model_conversion`, prints the checked-out sha and the torch / flash-a
 versions, and checks that `gcc`, `rsync` and `ibv_devinfo` exist. It does not *run* `ibv_devinfo` —
 the image's job is to carry the RDMA userspace, not to have a NIC.
 
+## Scanning
+
+Scan before `make publish-image`. Both gates run as pinned containers, so nothing has to
+be installed locally.
+
+| | what it reads | needs a build? |
+| --- | --- | --- |
+| `make scan-lock` | `lock/` — the Python set this image installs, via OSV | **no** |
+| `make scan-image` | the built image: base + apt packages, the venv, the uv binary, via trivy | yes |
+
+`scan-image` depends on `scan-lock`, and `publish-image` depends on `scan-image`, so an
+image is never pushed unscanned and a lock that will fail the gate fails it before the
+long build rather than after. `SKIP_SCAN=true` skips both.
+
+Both fail on a **fixable** finding at `SCAN_SEVERITY` (default `CRITICAL`) and print every
+fixable finding at HIGH and above as a report. Unfixable findings never fail a gate.
+
+### The lock is vendored, and why
+
+`lock/pyproject.toml` is upstream's file at the `UPSTREAM` sha with **one appended
+`[tool.uv]` block**, and `lock/uv.lock` is what `uv lock` resolved from it. The Dockerfile
+copies both over the clone before `uv sync --locked`, so that pair — not upstream's —
+decides what the image installs.
+
+Two things follow. The image no longer installs exactly what upstream resolved, which is a
+real cost: that block is a deliberate divergence from the set upstream tested, so every
+pin in it is bounded and cites the advisory it answers. In exchange, the pre-build scan is
+honest — the set `scan-lock` reads and the set the image installs are the same file, not
+two resolutions that happen to agree — and a fix can be applied at all.
+
+`tests/test_vendored_lock.py` holds `lock/pyproject.toml` byte-identical to upstream's at
+the pinned sha *above* the appended block. Without that, bumping `UPSTREAM` to a sha whose
+dependencies changed would silently keep installing the old set against new source while
+every other pin test passed.
+
+### Overrides, constraints, and what cannot be fixed
+
+Upstream pins **every base dependency exactly**:
+
+```
+datasets==5.0.0  gitpython==3.1.50  numpy==2.5.1  pydantic==2.13.4
+transformers==4.57.3  wandb==0.28.0  ninja==1.13.0  multi-storage-client==0.51.0
+```
+
+So a fixable advisory in a base package needs `override-dependencies`. A constraint cannot
+move an `==` pin — it only makes the resolution unsatisfiable. Constraints are for
+transitive packages. Three outcomes are possible, and all three occur here:
+
+- **fixable by constraint** — a transitive package, e.g. `anyio`, `certifi`;
+- **fixable by override** — a base pin, e.g. `gitpython`, `datasets`; a divergence from
+  upstream, so bound it to the pinned minor and cite the advisory;
+- **not fixable** — either a transitive pin rules the fix out (`filelock>=4.2.1` is
+  refused: `multi-storage-client==0.51.0` requires `filelock<4`), or the bump is too large
+  to take (`transformers` 5.x, `torch` 2.13). Those go in `scan-ignore`.
+
+To change the block: edit `lock/pyproject.toml`, run `make relock`, review `git diff
+lock/`, then `make scan-lock`. `relock` extracts the **pinned** uv and runs it inside a
+Python image — `uv lock` needs an interpreter and the uv image is distroless — because a
+different uv can resolve differently, and then the lock the build consumes is not the one
+that was scanned.
+
+There is no `fix-locks` here, unlike `steps/train/distill`. That target only writes
+`constraint-dependencies`, which for this image would silently fail to move the packages
+that matter.
+
+### Accepted exceptions
+
+`scan-ignore` beside this file, one advisory id per line with `#` comments. It is the
+`.trivyignore` format, so both gates read the same file. A listed finding is still
+printed, marked `IGNORED`, and never fails a gate. An entry that matches nothing is
+reported, so stale ones get deleted.
+
+### State at `UPSTREAM` sha `a9c6e2b8`
+
+Upstream's own resolution reports **91 advisory groups (5 CRITICAL, 56 HIGH), 5 fixable at
+CRITICAL** — the gate fails. The vendored block fixes four and ignores the fifth:
+
+| package | upstream | vendored | how |
+| --- | --- | --- | --- |
+| `gitpython` | 3.1.50 | 3.1.62 | override, bounded `<3.2` (9.8, 9.3) |
+| `datasets` | 5.0.0 | 5.0.1 | override (9.1-class) |
+| `anyio` | 4.14.1 | 4.16.0 | constraint (9.3) |
+| `certifi` | 2026.6.17 | 2026.10.23 | constraint (9.1) |
+| `transformers` | 4.57.3 | 4.57.3 | **`scan-ignore`** — 5.x is a major break |
+
+Four packages move; nothing is added or removed. `make scan-lock` then reports **60
+advisory groups, 0 fixable at CRITICAL, 1 ignored** and passes.
+
+The HIGH findings are deliberately left: 35 groups remain, including `gitpython` advisories
+fixed only in 3.2.x (the `<3.2` bound keeps about seven of them), the unsatisfiable
+`filelock`, and `torch`/`transformers`. Clearing them is a larger exercise, partly
+impossible, and wants `scan-ignore` entries rather than pins.
+
+### After the push
+
+Check quay's own scan of the pushed tag too. Clair's database is not trivy's or OSV's and
+can flag a package no gate here does. Record the CRITICAL and HIGH counts in the PR.
+
 ## Divergence from the reference image
 
 This image replaces `us.icr.io/cil15-shared-registry/lm-engine:0.1.0-cuda-fa2cc`, which trained the

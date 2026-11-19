@@ -1,0 +1,10 @@
+# Accepted advisories, one id per line. .trivyignore format, so scan-lock's
+# osv-gate.py and scan-image's trivy both read this file.
+#
+# transformers 4.57.3 -> 5.5.0 (CVSS 9.6). BLOCKED, not deferred: upstream pins
+# transformers ==4.57.3 in its base dependencies, 5.x is a major break, and the
+# lm-engine-export step reads config fields whose shape differs between 4.x and
+# 5.x (rope_theta top-level vs nested under rope_parameters), so the export would
+# need reworking alongside the bump. Revisit when upstream moves to 5.x.
+PYSEC-2026-2290
+GHSA-fgcw-684q-jj6r
