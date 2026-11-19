@@ -1,0 +1,103 @@
+# **************************************************
+# Copyright (c) 2025, Mayank Mishra
+# **************************************************
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lm-engine"
+version = "0.1.0"
+description = "A library for efficient LLM training."
+requires-python = ">=3.12"
+authors = [
+    { name = "Mayank Mishra", email = "mayank31398@gmail.com" },
+]
+dependencies = [
+    "datasets==5.0.0",
+    "gitpython==3.1.50",
+    "multi-storage-client[google-cloud-storage]==0.51.0",
+    "ninja==1.13.0",
+    "numpy==2.5.1",
+    "pydantic==2.13.4",
+    "transformers==4.57.3",
+    "wandb==0.28.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/open-lm-engine/lm-engine"
+Repository = "https://github.com/open-lm-engine/lm-engine"
+
+[project.optional-dependencies]
+coda = [
+    "coda-kernels==0.2",
+]
+cuda = [
+    "torch==2.10.0",
+    "apache-tvm-ffi==0.1.12",
+    "nvidia-cutlass-dsl==4.6.0",
+]
+dev = [
+    "pre-commit==4.6.0",
+    "pytest==9.1.1",
+]
+mamba2 = [
+    "mamba-ssm==2.2.6.post3",
+]
+quack = [
+    "quack-kernels==0.6.1",
+]
+tpu = [
+    "google-api-core==2.31.0",
+    "google-cloud-storage==3.12.0",
+    "torch-xla[pallas,tpu]==2.8.0",
+]
+data = [
+    "ray[default]==2.56.0",
+    "torch==2.10.0",
+    "zstandard==0.25.0",
+    "aiobotocore==3.7.0",
+]
+torch = [
+    "torch==2.10.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["lm_engine"]
+
+[tool.isort]
+ensure_newline_before_comments = true
+force_grid_wrap = 0
+include_trailing_comma = true
+line_length = 119
+lines_after_imports = 2
+multi_line_output = 3
+use_parentheses = true
+
+# ── Security overrides and constraints (granite.build) ────────────────────────
+# Not upstream's. Added by steps/train/lm-engine so the image does not ship the
+# fixable CRITICAL advisories `make scan-lock` reports against upstream's own
+# resolution. Keep this block LAST and keep everything above it byte-identical to
+# upstream at the UPSTREAM sha -- tests/test_vendored_lock.py enforces both.
+#
+# Upstream pins every base dependency EXACTLY, so a fixable advisory in one of them
+# needs an override, not a constraint: a constraint cannot move an `==` pin, it only
+# makes the resolution unsatisfiable. An override is a deliberate divergence from the
+# set upstream tested, so each one is bounded to the pinned minor and justified here.
+[tool.uv]
+override-dependencies = [
+    # PYSEC-2026-3786 / GHSA-284h-m62q-gf8w (9.8) and PYSEC-2026-3947 (9.3).
+    # Upstream pins ==3.1.50. Bounded to <3.2: 3.2.x is a minor bump of a package
+    # lm-engine's train.py uses for run metadata, and upstream pinned it exactly.
+    "gitpython>=3.1.59,<3.2",
+    # PYSEC-2026-3716 / GHSA-379c-qx7v-6h59. Upstream pins ==5.0.0; patch bump.
+    "datasets>=5.0.1",
+]
+# Transitive packages: a constraint is enough.
+constraint-dependencies = [
+    # PYSEC-2026-4025 / GHSA-82r6-8w77-94w6 (9.3).
+    "anyio>=4.14.2",
+    # PYSEC-2026-4320 / GHSA-6q48-6c7w-9gw2 (9.1).
+    "certifi>=2026.10.18",
+]

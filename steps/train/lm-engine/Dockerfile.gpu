@@ -106,6 +106,22 @@ COPY patches/ /tmp/patches/
 # here). scripts/check-patches.sh, which tests/test_patches.py runs, gets this right.
 RUN set -e; cd src; for p in /tmp/patches/*.patch; do git apply --check "$p"; git apply "$p"; done; rm -rf /tmp/patches
 
+# The VENDORED dependency metadata, copied over the clone's own. lock/pyproject.toml is
+# upstream's at LME_SHA with ONE appended [tool.uv] block that raises the packages
+# `make scan-lock` reports fixable CRITICAL advisories against; lock/uv.lock is what
+# `uv lock` resolved from it (regenerate with `make relock`). Four packages move against
+# upstream's resolution -- gitpython, datasets, anyio, certifi -- and nothing is added or
+# removed. See README.md "Scanning".
+#
+# This is also what makes the pre-build scan honest: `uv sync --locked` installs exactly
+# what lock/uv.lock pins, so the set `make scan-lock` scans and the set the image
+# installs are the same file, not two resolutions that happen to agree.
+#
+# tests/test_vendored_lock.py holds lock/pyproject.toml byte-identical to upstream's at
+# the sha above the appended block, so bumping UPSTREAM without re-vendoring fails a
+# test rather than silently installing the old dependency set against new source.
+COPY lock/pyproject.toml lock/uv.lock /app/src/
+
 # deps only (code is on PYTHONPATH, so .git and tools/ stay available)
 RUN cd src && UV_PROJECT_ENVIRONMENT=/app/venv UV_CACHE_DIR=/tmp/uvc \
       uv sync --locked --python "$PYTHON_VERSION" --extra cuda --no-install-project && rm -rf /tmp/uvc
