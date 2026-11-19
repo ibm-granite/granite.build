@@ -31,6 +31,7 @@ benchmarks:
   # Chat & Instruction Following
   - {id: mmlu-pro, group: chat-if, name: MMLU-Pro, metric: "5-shot CoT symbolic correct"}
   - {id: mmlu-prox-lite, group: chat-if, name: MMLU-ProX lite (IBM), metric: exact match (custom-extract)}
+  - {id: include-44, group: chat-if, name: INCLUDE-44, metric: accuracy}
   - {id: arena-hard-v2, group: chat-if, name: Arena-Hard-V2, metric: win rate}
   - {id: ifbench, group: chat-if, name: IFBench (prompt), metric: "pass@1 prompt loose / strict accuracy"}
   - {id: multi-challenge, group: chat-if, name: Scale AI Multi-Challenge, metric: "pass@1 correct (--repeats 8: pass@1[avg-of-8])"}
@@ -49,3 +50,6 @@ benchmarks:
   - {id: profbench, group: extras, name: ProfBench, metric: overall}
   - {id: pinchbench, group: extras, name: PinchBench, metric: reward}
   - {id: omniscience-hallucination, group: extras, name: Omniscience (hallucination), metric: pass@1 judge_omni_hallucination}
+  # The generic harness bridges: no fixed protocol -- the recipe's options
+  # pick the tasks (see the family module's docstring).
+  - {id: lm-eval, group: extras, name: "lm-eval (generic: any task in the pinned harness)", metric: "macro mean of the tasks' primary metrics"}

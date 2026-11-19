@@ -1,6 +1,8 @@
 name: lmeval
 version: 0.1.0
-# Granite benchmark: MMLU-ProX lite (IBM), exact match (custom-extract).
+# Granite benchmarks: MMLU-ProX lite (IBM), exact match (custom-extract), and
+# INCLUDE-44, accuracy. The generic `lm-eval` id runs any task in the pinned
+# harness -- the recipe's options pick the tasks (see USAGE.md).
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `benchmark` selects which
 # benchmark in this family to run; every steps/eval/*/ template has the same shape
@@ -15,13 +17,18 @@ version: 0.1.0
 # The image is chosen at run time from config.image. Nothing is cloned or
 # mounted at launch.
 #
-# WHAT RUNS. `granite-evals run mmlu-prox-lite` serves model_path with vLLM inside the
-# job and runs lm-evaluation-harness's own mmlu_prox_lite_<lang>_<subject> tasks
-# (5-shot CoT, custom-extract regex, exact_match) against it in chat mode
-# (local-chat-completions, apply_chat_template, fewshot_as_multiturn), over the 11
-# Granite languages MMLU-ProX has, on li-lab/MMLU-ProX-Lite at a pinned commit.
-# The value is the mean over languages. Writes one results.json
-# (schema: granite_evals/results.py).
+# WHAT RUNS. `granite-evals run <benchmark>` serves model_path with vLLM inside the
+# job and runs lm-evaluation-harness's own tasks against it. mmlu-prox-lite runs the
+# mmlu_prox_lite_<lang>_<subject> tasks (5-shot CoT, custom-extract regex,
+# exact_match) in chat mode (local-chat-completions, apply_chat_template,
+# fewshot_as_multiturn), over the 11 Granite languages MMLU-ProX has, on
+# li-lab/MMLU-ProX-Lite at a pinned commit. include-44 runs the
+# include_base_44_<lang>_<domain> tasks (CohereLabs/include-base-44 at a pinned
+# commit, 44 languages x 11 domains) in the harness's base mode -- one
+# loglikelihood request per option letter, acc = the argmax letter. The generic
+# lm-eval id runs whatever `options` names. Each writes one results.json
+# (schema: granite_evals/results.py) whose value is the mean over languages
+# (lm-eval: the macro mean over the tasks).
 #
 # PHASES. This benchmark scores inside generation, so it runs as one GPU job
 # (phase: all); see the sibling granite-* steps for the generate/score split.
@@ -70,6 +77,10 @@ config:
   # "thinking=off" (chat_template_kwargs.enable_thinking=false),
   # "answers=gold" (reference answers through the same extraction and scoring;
   # model_path may be "none", no GPU needed).
+  # lm-eval (the generic bridge) instead takes: "tasks=hellaswag,arc_easy"
+  # (required; comma-separated harness task/group ids), "mode=auto|chat|base"
+  # (auto: each task's output_type picks), "num_fewshot=5", "gen_kwargs=k=v,..."
+  # (percent-decoded values), "metric=acc_norm" (default: each task's primary).
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""
@@ -142,12 +153,20 @@ environment_configs:
             if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
             # Either a full output_dir, or output_root composed per benchmark; with
             # neither set, fail here rather than deep inside a harness.
+            # The generic bridge (benchmark lm-eval) runs many benchmarks through
+            # one id; suffix the composed dir with the tasks so two bridge recipes
+            # scoring one model don't share an output dir (results.json would
+            # overwrite): tasks=hellaswag -> .../lm-eval-hellaswag.
+            BENCH_DIR="$BENCHMARK"
+            for kv in {{ config.options }}; do
+                case "$kv" in tasks=*) BENCH_DIR="$BENCHMARK-$(printf '%s' "${kv#tasks=}" | tr ',' '-')";; esac
+            done
             if [ -z "$OUTPUT_DIR" ]; then
                 if [ -z "$OUTPUT_ROOT" ]; then
-                    echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCHMARK) or output_dir" >&2
+                    echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCH_DIR) or output_dir" >&2
                     exit 1
                 fi
-                OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCHMARK"
+                OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCH_DIR"
             fi
             case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
             mkdir -p "$OUTPUT_DIR"
