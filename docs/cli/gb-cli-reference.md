@@ -88,6 +88,8 @@ Upload, download, register, and tag artifacts produced or consumed by builds.
 `--remote` and `--redirect-port` require `--sso` and can't be combined. Over
 SSH, or with no desktop browser, `--sso` exits right away and points to
 `--sso --remote`; use that too if `--sso` times out or can't listen on the port.
+If the redirect can reach this machine anyway (VS Code Remote-SSH, or SSH port
+forwarding of 48731), a set `BROWSER` variable skips that check.
 
 Paste a verification code only into a `gb` you started yourself, and never
 send it to anyone: whoever started the login can use it to sign in as you. Only
