@@ -202,6 +202,27 @@ EXPORT_RUNGS: ""
 EVAL_RUNGS: ""
 FULL_EVAL_RUNGS: ""
 
+# ─── The export ────────────────────────────────────────────────
+# The Hugging Face architecture each rung is exported as. `auto` reads the knobs this
+# file already carries -- muP set and dense is `granite`, standard parametrization is
+# `llama` (a Granite config with attention_multiplier null is refused upstream), and
+# MLP_TYPE MoE or MAMBA_HYBRID is `granitemoehybrid` -- so it is right by
+# construction for every model this recipe can train. Set it to one of those three
+# names to override; a fourth fails the render.
+EXPORT_MODEL_TYPE: "auto"
+# Relative tolerance for the export's logit parity check between the unsharded
+# lm-engine model and the exported Hugging Face model. This is the step's own
+# default, kept deliberately: the measured max |delta logits| of a faithful export is
+# ~7e-07, so the headroom is for a different dtype or kernel path, not for a wrong
+# model -- a wrong model is off by orders of magnitude. The config scalars are
+# compared EXACTLY and this does not loosen them.
+EXPORT_PARITY_TOLERANCE: 0.05
+# One CPU pod per rung. Memory, not accelerators, is what an export needs: upstream's
+# unshard is single-process, and it holds the unsharded checkpoint and the Hugging
+# Face copy in host memory. Raise EXPORT_MEMORY for a model much larger than 350M.
+EXPORT_CPUS: 8
+EXPORT_MEMORY: 64
+
 # ─── Resuming ─────────────────────────────────────────────────────────
 # Empty: a fresh run, and a retry resumes from whatever RUN_DIR/train already holds.
 # Set to another run's train directory to continue it in a new build; it is ignored

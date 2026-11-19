@@ -88,6 +88,34 @@ $${ EXPORT_RUNGS_and_EVAL_RUNGS_must_not_be_past_NUM_TRAINING_STEPS }
 $${ FULL_EVAL_RUNGS_must_be_a_subset_of_EVAL_RUNGS }
 <%- endif %>
 <%- endfor %>
+# ── The export architecture, resolved once ─────────────────────────────────
+# EXPORT_MODEL_TYPE `auto` reads the knobs the run actually trains with, because the
+# Hugging Face architecture is not a free choice: _export_llama_config ASSERTS the
+# four muP multipliers are null and refuses a muP model, _export_granite_config
+# substitutes 1 for a null one (so a muP model exported as `granite` by mistake keeps
+# a plausible-looking config), and only the granitemoehybrid config has anywhere to
+# put experts or Mamba2 layers. MoE is keyed on MLP_TYPE, the only knob
+# render_config._mlp_block consults; MAMBA_HYBRID joins it because the hybrid is the
+# same HF architecture. An explicit value overrides the resolution and is checked
+# against the three names the step accepts -- the step would refuse a fourth when
+# gbserver creates the step, but this costs no round trip at all.
+<%- set MUP = [] %>
+<%- for v in [M_WIDTH, M_EMB, M_RESIDUAL, ATTENTION_MULTIPLIER] if (v | string | trim | lower) not in ("", "null", "none") %>
+<%- set _ = MUP.append(v) %>
+<%- endfor %>
+<%- set MOE = (MLP_TYPE | string | trim) == "MoE" or (MAMBA_HYBRID | string | trim | lower) in ("true", "yes", "on", "1", "y") %>
+<%- set AUTO_MODEL_TYPE = "granitemoehybrid" if MOE else ("granite" if MUP else "llama") %>
+<%- set MODEL_TYPE = AUTO_MODEL_TYPE if (EXPORT_MODEL_TYPE | string | trim | lower) in ("", "auto") else (EXPORT_MODEL_TYPE | string | trim) %>
+<%- if MODEL_TYPE not in ("granite", "granitemoehybrid", "llama") %>
+$${ EXPORT_MODEL_TYPE_must_be_auto_granite_granitemoehybrid_or_llama }
+<%- endif %>
+# Sliding-window attention is per layer and no Hugging Face config expresses it, so
+# an export of such a model is a DIFFERENT model, which then serves and scores
+# without complaint. A SWA run is trainable here; it is only not exportable, so the
+# rungs and SLIDING_WINDOW are mutually exclusive rather than SWA being refused.
+<%- if RUNGS and (SLIDING_WINDOW | string | trim | lower) not in ("", "null", "none") %>
+$${ SLIDING_WINDOW_must_not_be_set_when_a_run_has_export_or_eval_rungs }
+<%- endif %>
 # ── The lm-engine knobs, in one place ──────────────────────────────────────
 # Every key of render_config.DEFAULT_KNOBS in the lm-engine-pretrain step, which is
 # the authority on what lm-engine accepts; the step's src/render_config.py turns this
@@ -333,7 +361,91 @@ $${ wandb_block() }
 
     # ─── exports ────────────────────────────────────────────────────────────
     # One export-<N> per rung in EXPORT_RUNGS union EVAL_RUNGS, binding
-    # train.checkpoint_<N>, lands here.
+    # train.checkpoint_<N>: one CPU pod per rung, unsharding checkpoint <N> and
+    # rewriting it as a Hugging Face model directory WHILE TRAINING CONTINUES. The
+    # binding is what makes that possible -- checkpoint_<N> is emitted mid-run, so
+    # export-<N> dispatches as soon as rung <N> is completely written.
+<%- for N in RUNGS %>
+
+    export-$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The rung itself. The export reads the sharded tree IN PLACE, through
+        # train_dir and iteration, so this edge carries the ordering and the
+        # guarantee that checkpoint $${N} is finished -- not the data.
+        checkpoint:
+          binding: train.checkpoint_$${N}
+      outputs:
+        # One directory per rung, under this run's own RUN_DIR, so no two exports --
+        # here or in another build -- can claim one URI. A collision is silent: the
+        # second target reports SUCCESS with an EMPTY output list, and everything
+        # downstream of it then waits forever.
+        hf_model:
+          uri: "env://$${RUN_DIR}/export/ckpt_$${N}/hf"
+          type: model
+      steps:
+        - step_uri: space://steps/train/lm-engine/export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            image: "$${LME_IMAGE}"
+            # The run's ONE training directory; the rung is `iteration`, which is
+            # what makes each export read its own global_step<N>/.
+            train_dir: "$${RUN_DIR}/train"
+            iteration: $${N}
+            # Must equal the path in the hf_model URI above.
+            output_dir: "$${RUN_DIR}/export/ckpt_$${N}/hf"
+            # The trained tokenizer, copied byte for byte -- the same directory the
+            # run trained with, so the exported model cannot segment text
+            # differently from the model that was fit.
+            tokenizer_path: "$${TOKENIZER_NAME}"
+            model_type: "$${MODEL_TYPE}"
+            parity_tolerance: $${EXPORT_PARITY_TOLERANCE}
+            # What the written config.json must still say, keyed by the pretrain
+            # step's own knob names -- src/export_checks.py maps them onto the HF
+            # field names, where sequence_length -> max_position_embeddings is the
+            # only rename. ONLY the keys present here are checked, so this block IS
+            # the config check and thinning it thins the check. rope_theta is here
+            # because a transformers release that nests it under rope_parameters
+            # drops it on export, and a granite-4 model trained at 1e7 and then
+            # served at the 1e4 default produced fluent text and scored 0.000 on a
+            # benchmark whose baseline was 0.8075.
+            expected:
+              # Checked first: an export that came out `llama` where the recipe
+              # asked for `granite` would otherwise skip every muP check below.
+              model_type: "$${MODEL_TYPE}"
+              rope_theta: $${ROPE_THETA}
+              vocab_size: $${VOCAB_SIZE}
+              tie_word_embeddings: $${ TIE_WORD_EMBEDDINGS | string | lower }
+              bos_token_id: $${BOS_TOKEN_ID}
+              eos_token_id: $${EOS_TOKEN_ID}
+              pad_token_id: $${PAD_TOKEN_ID}
+              # The HF config's max_position_embeddings.
+              sequence_length: $${SEQ_LEN}
+<%- if MUP and MODEL_TYPE != "llama" %>
+              # muP, for a muP run exported as one of the two Granite types. Both
+              # Granite exporters write `1` for a multiplier they receive as null,
+              # so a lost multiplier is a plausible number rather than an absent
+              # field and nothing but a comparison against what the run trained
+              # with catches it. Omitted for a standard-parametrization run: the
+              # llama config has no such fields (upstream asserts they are null),
+              # and a Granite config of an SP run says `1` BECAUSE it trained
+              # without them, which is faithful and not a dropped value.
+              m_emb: $${M_EMB}
+              m_residual: $${M_RESIDUAL}
+              m_width: $${M_WIDTH}
+              attention_multiplier: $${ATTENTION_MULTIPLIER}
+<%- endif %>
+            # One CPU pod: upstream's unshard is single-process and there is no
+            # torchrun. Memory, not accelerators, is the constraint -- the unsharded
+            # checkpoint and the Hugging Face copy are both held in host memory.
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${EXPORT_CPUS}
+            launcher_config:
+              resources:
+                cpus: $${EXPORT_CPUS}
+                memory: $${EXPORT_MEMORY}
+<%- endfor %>
 
     # ─── evals (shared with pretrain-eval) ───
     # ─── end evals ───

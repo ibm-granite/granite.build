@@ -455,3 +455,250 @@ def test_parameters_yaml_leaks_no_site_value():
     )
     for key, value in _yaml(_PARAMS).items():
         assert not bad.search(str(value)), (key, value)
+
+
+# ─── The export fan-out ───────────────────────────────────────────────────────
+
+# Standard parametrization: the four muP knobs null together, and param_groups with
+# them (render_config.validate refuses either half alone).
+_SP = {
+    "M_WIDTH": "",
+    "M_EMB": "",
+    "M_RESIDUAL": "",
+    "ATTENTION_MULTIPLIER": "",
+    "PARAM_GROUPS": "configs/param-groups/normal.yml",
+}
+
+# A mixture of experts, keyed off MLP_TYPE -- the only knob render_config._mlp_block
+# consults to build a MoE block.
+_MOE = {
+    "MLP_TYPE": "MoE",
+    "MOE_NUM_EXPERTS": "32",
+    "MOE_NUM_EXPERTS_PER_TOK": "4",
+    "MOE_SHARED_INTERMEDIATE_SIZE": "512",
+}
+
+_MUP_EXPECTED = {"m_emb", "m_residual", "m_width", "attention_multiplier"}
+
+_PLAIN_EXPECTED = {
+    "model_type",
+    "rope_theta",
+    "vocab_size",
+    "tie_word_embeddings",
+    "bos_token_id",
+    "eos_token_id",
+    "pad_token_id",
+    "sequence_length",
+}
+
+
+def _exports(rendered):
+    return {
+        name: target
+        for name, target in _targets(rendered).items()
+        if name.startswith("export-")
+    }
+
+
+def test_no_export_target_without_rungs(tmp_path):
+    """The train-only slice has no export at all, not an export of nothing."""
+    assert _exports(_render(tmp_path)) == {}
+
+
+def test_one_export_target_per_rung_and_no_more(tmp_path):
+    rendered = _render(tmp_path, EXPORT_RUNGS="20000,10000", EVAL_RUNGS="30000,10000")
+    assert set(_exports(rendered)) == {
+        "export-10000",
+        "export-20000",
+        "export-30000",
+    }
+
+
+def test_each_export_exports_its_own_rung(tmp_path):
+    """The pairing, not just the count: an off-by-one here exports the wrong
+    checkpoint and every number downstream is attributed to the wrong step."""
+    rendered = _render(tmp_path, EXPORT_RUNGS="10000,20000,120000")
+    exports = _exports(rendered)
+    assert len(exports) == 3
+    for name, target in exports.items():
+        rung = name.split("-", 1)[1]
+        bindings = [spec["binding"] for spec in target["inputs"].values()]
+        assert bindings == [f"train.checkpoint_{rung}"], name
+        config = _config(rendered, name)
+        assert str(config["iteration"]) == rung, name
+        # train_dir is the run's ONE training directory; the rung is `iteration`.
+        assert config["train_dir"] == _config(rendered, "train")["train_dir"], name
+        assert config["output_dir"].endswith(f"/export/ckpt_{rung}/hf"), name
+        hf_model = target["outputs"]["hf_model"]
+        assert hf_model["type"] == "model", name
+        assert hf_model["uri"] == f"env://{config['output_dir']}", name
+
+
+def test_export_output_uris_are_unique(tmp_path):
+    """A URI two targets share is registered once: the second target still reports
+    SUCCESS with an empty output list and its consumers wait forever."""
+    rendered = _render(tmp_path, EXPORT_RUNGS="10000,20000", EVAL_RUNGS="30000")
+    uris = [t["outputs"]["hf_model"]["uri"] for t in _exports(rendered).values()]
+    dirs = [_config(rendered, name)["output_dir"] for name in _exports(rendered)]
+    assert len(set(uris)) == len(uris) == 3, uris
+    assert len(set(dirs)) == len(dirs) == 3, dirs
+    assert _targets(rendered)["train"]["outputs"]["checkpoint"]["uri"] not in uris
+
+
+def test_export_runs_the_export_step_on_one_cpu_pod(tmp_path):
+    rendered = _render(tmp_path, EXPORT_RUNGS="10000")
+    step = _step(rendered, "export-10000")
+    assert step["step_uri"] == "space://steps/train/lm-engine/export"
+    config = step["config"]
+    assert config["image"] == _SITE_KEYS["LME_IMAGE"]
+    assert config["tokenizer_path"] == _SITE_KEYS["TOKENIZER_NAME"]
+    assert config["compute_config"]["num_nodes"] == 1
+    assert "num_gpus_per_node" not in config["compute_config"]
+    assert "accelerators" not in config["launcher_config"]["resources"]
+
+
+def test_export_keeps_the_steps_parity_tolerance(tmp_path):
+    """The measured max |dlogits| is ~7e-07; the step's default 0.05 is deliberate
+    headroom, and a tighter invented value fails faithful exports."""
+    config = _config(_render(tmp_path, EXPORT_RUNGS="10000"), "export-10000")
+    schema = _schema("space://steps/train/lm-engine/export")
+    assert float(config["parity_tolerance"]) == float(schema["parity_tolerance"])
+
+
+# ─── `expected`: what the exported config.json must still say ─────────────────
+
+
+def test_expected_keys_are_exactly_intended_for_mup(tmp_path):
+    """`expected` is checked key by key and ONLY for the keys it carries, so an
+    empty or thinned block silently disables the config check that caught a
+    dropped rope_theta."""
+    config = _config(_render(tmp_path, EXPORT_RUNGS="10000"), "export-10000")
+    assert set(config["expected"]) == _PLAIN_EXPECTED | _MUP_EXPECTED
+
+
+def test_expected_omits_the_mup_fields_for_llama(tmp_path):
+    """_export_llama_config writes no multiplier at all (it asserts they are None),
+    so pinning them would fail every standard-parametrization export."""
+    config = _config(_render(tmp_path, EXPORT_RUNGS="10000", **_SP), "export-10000")
+    assert set(config["expected"]) == _PLAIN_EXPECTED
+
+
+def test_expected_carries_the_mup_fields_for_granitemoehybrid(tmp_path):
+    config = _config(_render(tmp_path, EXPORT_RUNGS="10000", **_MOE), "export-10000")
+    assert set(config["expected"]) == _PLAIN_EXPECTED | _MUP_EXPECTED
+
+
+@pytest.mark.parametrize(
+    "params", [dict(_MOE, **_SP), {"EXPORT_MODEL_TYPE": "granite"}]
+)
+def test_expected_pins_no_multiplier_for_a_standard_parametrization_run(
+    tmp_path, params
+):
+    """A Granite config of an SP run says `1` BECAUSE nothing was trained -- the
+    exporters substitute 1 for a null multiplier -- so pinning the null would fail
+    a faithful export. What is pinned is what training set, never a placeholder."""
+    config = _config(
+        _render(tmp_path, EXPORT_RUNGS="10000", **dict(_SP, **params)), "export-10000"
+    )
+    assert set(config["expected"]) == _PLAIN_EXPECTED
+    assert not set(config["expected"]) & _MUP_EXPECTED
+
+
+def test_expected_values_are_the_knobs_that_were_trained(tmp_path):
+    """Keyed by the pretrain step's knob names, which is what export_checks reads:
+    `sequence_length` is the one rename, onto the config's
+    max_position_embeddings."""
+    rendered = _render(tmp_path, EXPORT_RUNGS="10000")
+    lme = _config(rendered, "train")["lme"]
+    expected = _config(rendered, "export-10000")["expected"]
+    for knob in sorted(set(expected) - {"model_type"}):
+        assert expected[knob] == lme[knob], knob
+    assert expected["sequence_length"] == _layered(tmp_path)["SEQ_LEN"]
+    assert expected["rope_theta"] == _layered(tmp_path)["ROPE_THETA"]
+    assert expected["tie_word_embeddings"] is True
+
+
+def test_expected_is_keyed_the_way_export_checks_reads_it(tmp_path):
+    """The authority is the step's own module, not this recipe: `expected` is keyed
+    by TRAINING knob names and export_checks owns the rename, so a recipe that keyed
+    it by the Hugging Face field name would pin nothing at all."""
+    source = (
+        _STEPS / "train/lm-engine/export/skypilot/src/export_checks.py"
+    ).read_text(encoding="utf-8")
+    assert '"sequence_length": "max_position_embeddings"' in source
+    expected = _config(_render(tmp_path, EXPORT_RUNGS="10000"), "export-10000")[
+        "expected"
+    ]
+    assert "max_position_embeddings" not in expected
+    knobs = set(_render_config().DEFAULT_KNOBS)
+    assert set(expected) - {"model_type"} <= knobs, sorted(set(expected) - knobs)
+
+
+# ─── EXPORT_MODEL_TYPE ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "params,model_type",
+    [
+        # Dense muP: a Granite config, the only dense one carrying the multipliers.
+        ({}, "granite"),
+        # Standard parametrization: llama, because a Granite config with
+        # attention_multiplier null is refused upstream.
+        (_SP, "llama"),
+        # MoE, and the hybrid, both of which are granitemoehybrid.
+        (_MOE, "granitemoehybrid"),
+        ({"MAMBA_HYBRID": "true"}, "granitemoehybrid"),
+        (dict(_MOE, **_SP), "granitemoehybrid"),
+        # An explicit value wins over the resolution.
+        ({"EXPORT_MODEL_TYPE": "llama"}, "llama"),
+        ({"EXPORT_MODEL_TYPE": "granitemoehybrid"}, "granitemoehybrid"),
+    ],
+)
+def test_export_model_type_auto_resolves_from_the_knobs(tmp_path, params, model_type):
+    rendered = _render(tmp_path, EXPORT_RUNGS="10000", **params)
+    config = _config(rendered, "export-10000")
+    assert config["model_type"] == model_type
+    # ... and it is pinned in `expected`, which is what catches a muP model that
+    # came out as `llama` and so skipped every multiplier check.
+    assert config["expected"]["model_type"] == model_type
+
+
+def test_an_unknown_export_model_type_fails_the_render(tmp_path):
+    with pytest.raises(
+        Exception,
+        match="EXPORT_MODEL_TYPE_must_be_auto_granite_granitemoehybrid_or_llama",
+    ):
+        _render_text(tmp_path, EXPORT_RUNGS="10000", EXPORT_MODEL_TYPE="gpt_bigcode")
+
+
+def test_an_unknown_export_model_type_fails_even_train_only(tmp_path):
+    """The check is in the prelude, so a typo is caught before a rung is added."""
+    with pytest.raises(
+        Exception,
+        match="EXPORT_MODEL_TYPE_must_be_auto_granite_granitemoehybrid_or_llama",
+    ):
+        _render_text(tmp_path, EXPORT_MODEL_TYPE="granite4")
+
+
+def test_sliding_window_with_rungs_fails_the_render(tmp_path):
+    """There is no faithful Hugging Face target for per-layer sliding window, so a
+    run that wants exports may not use it."""
+    with pytest.raises(
+        Exception,
+        match="SLIDING_WINDOW_must_not_be_set_when_a_run_has_export_or_eval_rungs",
+    ):
+        _render_text(tmp_path, EXPORT_RUNGS="10000", SLIDING_WINDOW="4096")
+
+
+def test_sliding_window_with_eval_rungs_fails_the_render(tmp_path):
+    with pytest.raises(
+        Exception,
+        match="SLIDING_WINDOW_must_not_be_set_when_a_run_has_export_or_eval_rungs",
+    ):
+        _render_text(tmp_path, EVAL_RUNGS="10000", SLIDING_WINDOW="4096")
+
+
+def test_sliding_window_is_fine_for_a_train_only_run(tmp_path):
+    rendered = _render(tmp_path, SLIDING_WINDOW="4096")
+    assert _exports(rendered) == {}
+    assert _config(rendered, "train")["lme"]["sliding_window"] == "4096"
