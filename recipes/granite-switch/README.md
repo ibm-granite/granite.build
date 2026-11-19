@@ -7,7 +7,7 @@ model. It brings the rigor and modularity of software engineering to LLMs.
 
 Recipes are grouped by the SkyPilot cluster they run on, as
 `skypilot/<cluster>/<recipe>`; the cluster names match the step framework's
-(`steps/*/skypilot/test/<cluster>/`): `aws`, `slurm-bluevela`.
+(`steps/*/*/skypilot/test/<cluster>/`): `aws`, `slurm-bluevela`.
 
 | Recipe | What it builds |
 |---|---|
