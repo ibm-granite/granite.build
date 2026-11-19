@@ -9,18 +9,168 @@
 # expiry is a finding nobody is tracking.
 
 # vllm 0.11.0: CRITICAL, fixed in 0.14.1 / 0.22.0. vllm is pinned exactly to match torch
-# 2.8.0, trl 0.26.2 and the Mamba2 kernel cache; the upgrade is #676.
+# 2.8.0, trl 0.26.2 and the Mamba2 kernel cache; the upgrade is #676. Until 2027-05-31.
 # RCE in vLLM video processing. Not reachable: the student is a text-only model, served
 # through trl's vllm_serve with our own prompts.
 PYSEC-2026-565
 GHSA-4r2x-xpjr-7cvv
 CVE-2026-22778
-# Auth bypass of vLLM's OpenAI API server AuthenticationMiddleware. Accepted: the
-# rollout server (student-rollout-generator, via run_vllm_serve.py wrapping
-# trl.scripts.vllm_serve) does run this server, but it binds the allocation's own
-# address (--host "$ADDR", not every interface) and its generate/weight-update
-# endpoints are used only by the trainer inside the same allocation; no credentials
-# exist to bypass. Revisit if the server is ever reachable outside the allocation.
+# Auth bypass of vLLM's OpenAI API server AuthenticationMiddleware. Accepted with
+# eyes open: the rollout server (student-rollout-generator, via run_vllm_serve.py
+# wrapping trl.scripts.vllm_serve) runs this server unauthenticated, bound to one
+# interface (--host "$ADDR") but reachable from the whole cluster network, not only
+# this allocation -- the trainer that calls it runs in a different allocation
+# (student-rollout-generator/skypilot/step-template.yaml). No credentials exist to
+# bypass and the endpoints are generate/weight-update only, but a cluster-local
+# adversary could call them. Revisit if the server is ever reachable outside the
+# cluster or if authentication is added upstream. The upgrade is #676.
+# Until 2027-05-31.
 PYSEC-2026-226
 GHSA-94f4-hr76-p5j6
 CVE-2026-48746
+
+# ---- accepted HIGH advisories blocked by the exact pins (the upgrade is #676) ----
+# Until 2027-05-31 for every entry below; delete them all when #676 lands.
+
+# vllm 0.11.0: HIGH advisories fixed across 0.11.1-0.32.0. Pinned exactly to match
+# torch 2.8.0, trl 0.26.2 and the Mamba2 kernel cache (same pin as the two
+# CRITICAL entries above).
+CVE-2025-62164
+CVE-2025-62372
+CVE-2025-66448
+CVE-2026-100650
+CVE-2026-103241
+CVE-2026-105759
+CVE-2026-114053
+CVE-2026-114054
+CVE-2026-114055
+CVE-2026-115912
+CVE-2026-115915
+CVE-2026-116176
+CVE-2026-116177
+CVE-2026-22773
+CVE-2026-22807
+CVE-2026-24779
+CVE-2026-27893
+CVE-2026-34760
+CVE-2026-41523
+CVE-2026-53923
+CVE-2026-54232
+CVE-2026-5497
+CVE-2026-55574
+CVE-2026-56340
+CVE-2026-90553
+CVE-2026-93436
+CVE-2026-93592
+CVE-2026-94622
+CVE-2026-94623
+CVE-2026-94624
+CVE-2026-94626
+GHSA-25q3-v2hm-8vpf
+GHSA-2pc9-4j83-qjmr
+GHSA-3c86-2m5g-59q7
+GHSA-5fj9-pfhr-6j48
+GHSA-5jv2-g5wq-cmr4
+GHSA-6757-hggm-hp2w
+GHSA-6c4r-fmh3-7rh8
+GHSA-7972-pg2x-xr59
+GHSA-8fr4-5q9j-m8gm
+GHSA-frvg-qw88-hww9
+GHSA-grg2-63fw-f2qr
+GHSA-gx7p-2j49-hfq4
+GHSA-h3rc-6mm3-gc2m
+GHSA-h3rc-j82p-2c3h
+GHSA-jrf6-vqxq-pjv2
+GHSA-mcmc-2m55-j8jj
+GHSA-mm38-5f96-7j6x
+GHSA-mrw7-hf4f-83pf
+GHSA-p6g9-7v3x-m8mv
+GHSA-pmqf-x6x8-p7qw
+GHSA-q8gq-377p-jq3r
+GHSA-qh4c-xf7m-gxfc
+GHSA-rh6f-3x46-j33q
+GHSA-rwxx-mrjm-wc2m
+GHSA-vfp2-c8pq-v6h6
+GHSA-wcwg-c5fc-9vrc
+PYSEC-2026-143
+PYSEC-2026-2010
+PYSEC-2026-2015
+PYSEC-2026-2018
+PYSEC-2026-2019
+PYSEC-2026-2020
+PYSEC-2026-227
+PYSEC-2026-2297
+PYSEC-2026-2299
+PYSEC-2026-2300
+PYSEC-2026-2302
+PYSEC-2026-2304
+PYSEC-2026-250
+PYSEC-2026-3403
+PYSEC-2026-3985
+PYSEC-2026-3996
+PYSEC-2026-3997
+PYSEC-2026-4004
+PYSEC-2026-4005
+PYSEC-2026-4006
+PYSEC-2026-4008
+PYSEC-2026-4184
+PYSEC-2026-4186
+PYSEC-2026-4325
+PYSEC-2026-4345
+PYSEC-2026-4351
+PYSEC-2026-4352
+PYSEC-2026-4362
+
+# torch 2.8.0: vllm==0.11.0 requires torch==2.8.0 exactly, so no raise is
+# satisfiable while vllm stays.
+PYSEC-2026-2286
+GHSA-63cw-57p8-fm3p
+PYSEC-2025-203
+PYSEC-2025-204
+CVE-2025-203
+CVE-2025-204
+CVE-2026-2286
+
+# xgrammar 0.1.25: pinned ==0.1.25 by vllm==0.11.0.
+PYSEC-2026-2322
+GHSA-7rgv-gqhr-fxg3
+CVE-2026-2322
+
+# fsspec 2025.10.0: datasets==4.4.1 caps fsspec[http]<=2025.10.0, so the raise
+# is unsatisfiable under the datasets pin.
+PYSEC-2026-4217
+GHSA-27vj-qcqg-25rc
+CVE-2026-4217
+
+# transformers 5.8.0: pinned exactly for the 5.x properties the vendored
+# trainer depends on.
+PYSEC-2026-3929
+GHSA-xrqw-3rrv-vx5w
+CVE-2026-3929
+
+# ---- accepted HIGH advisories in transitive dependencies ----
+
+# wandb-core (the Go binary inside the wandb wheel, 0.31.0): no wandb release
+# bundles the fixed deps yet (as of 2026-11-19). wandb is tracking-only and
+# defaults off in every step. The upgrade follows the dependency refresh.
+# Until 2027-05-31.
+CVE-2026-78661
+CVE-2026-111943
+
+# ray 2.58.0 (a vllm 0.11.0 dependency) vendors aiohttp 3.14.3 in
+# ray/_private/runtime_env/agent/thirdparty_files and Java jars in ray/jars,
+# neither reachable from these steps (no ray cluster; vLLM runs via trl's
+# vllm_serve in server mode). The upgrade is #676. Until 2027-05-31.
+CVE-2026-111064
+CVE-2026-111066
+CVE-2026-123817
+CVE-2026-128124
+CVE-2026-128126
+CVE-2026-128127
+CVE-2026-128128
+CVE-2026-128129
+CVE-2026-128130
+CVE-2026-128131
+CVE-2026-102554
+CVE-2026-54399
+CVE-2026-68497
