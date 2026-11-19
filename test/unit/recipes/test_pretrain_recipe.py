@@ -39,10 +39,8 @@ _PARAMS = _RECIPE / "parameters.yaml"
 _STEPS = _REPO / "steps"
 _RENDER_CONFIG = _STEPS / "train/lm-engine/pretrain/skypilot/src/render_config.py"
 
-# step_uri -> the file whose `config` is that step's schema. The export and lmeval
-# steps are listed although no target uses them yet: tasks 15 and 16 of the plan add
-# the export fan-out and the eval fan-out, and test_every_expected_step_exists keeps
-# their schemas from moving away under them in the meantime.
+# step_uri -> the file whose `config` is that step's schema. All three are in use;
+# test_every_step_uri_is_expected holds the set to exactly these.
 _STEP_SCHEMAS = {
     "space://steps/train/lm-engine/pretrain": _STEPS
     / "train/lm-engine/pretrain/skypilot/step-template.yaml",
@@ -81,6 +79,13 @@ _SITE_KEYS = {
     "COS_CACHE_DIR": "/cos-cache",
     "GPU_ACCELERATOR": "H100",
     "NCCL_ENV": {"NCCL_SOCKET_IFNAME": "eth0"},
+    # The eval fan-out's site facts: a registry ref, two filesystem roots and the
+    # accelerator model one eval GPU is asked for. None of them is an experiment
+    # knob, so none of them may sit in parameters.yaml.
+    "LMEVAL_IMAGE": "registry.example.org/my-team/granite-evals-lmeval:0.1.0",
+    "EVAL_ROOT": "/shared/evals",
+    "HF_CACHE": "/shared/hf-cache",
+    "EVAL_ACCELERATORS": "H100",
 }
 
 # The knobs the site file sets, so parameters.yaml carries no path at all.
@@ -109,6 +114,16 @@ def _render_config():
 def _site(tmp_path):
     path = tmp_path / "site.yaml"
     path.write_text(yaml.safe_dump(_SITE_KEYS), encoding="utf-8")
+    return path
+
+
+def _layer(tmp_path, name, mapping):
+    """An extra --param-file layer.
+
+    The only way to set a list or a mapping: the CLI hands --param values through as
+    strings, so EVAL_CATALOG -- a list of dicts -- can only arrive in a file."""
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(yaml.safe_dump(mapping), encoding="utf-8")
     return path
 
 
@@ -349,9 +364,9 @@ def test_every_expected_step_exists():
 def test_every_step_uri_is_expected(tmp_path):
     raw = _BUILD.read_text(encoding="utf-8")
     uris = set(re.findall(r"step_uri:\s*\"?([^\s\"]+)", raw))
-    # A subset, not equality: tasks 15 and 16 add the export and eval targets.
-    assert uris
-    assert uris <= set(_STEP_SCHEMAS), sorted(uris - set(_STEP_SCHEMAS))
+    # Equality: every step this recipe runs has its schema listed above, and a step
+    # listed above with no target left using it is dead weight.
+    assert uris == set(_STEP_SCHEMAS), sorted(uris ^ set(_STEP_SCHEMAS))
     for target in _targets(_render(tmp_path)):
         assert _step(_render(tmp_path), target)["step_uri"] in _STEP_SCHEMAS
 
@@ -702,3 +717,303 @@ def test_sliding_window_is_fine_for_a_train_only_run(tmp_path):
     rendered = _render(tmp_path, SLIDING_WINDOW="4096")
     assert _exports(rendered) == {}
     assert _config(rendered, "train")["lme"]["sliding_window"] == "4096"
+
+
+# ─── The eval fan-out (the lmeval bridge) ─────────────────────────────────────
+
+_LMEVAL = "space://steps/eval/lmeval"
+
+
+def _evals(rendered):
+    return {
+        name: target
+        for name, target in _targets(rendered).items()
+        if name.startswith("eval-")
+    }
+
+
+def _catalog():
+    """The recipe's own default catalog: the tests assert against what a user gets,
+    not against a copy of it."""
+    return {e["name"]: e for e in _yaml(_PARAMS)["EVAL_CATALOG"]}
+
+
+def _screen():
+    return str(_yaml(_PARAMS)["SCREEN_EVALS"]).replace(" ", "").split(",")
+
+
+def test_no_eval_target_without_eval_rungs(tmp_path):
+    """Train + export is a mode, not a half-configured eval ladder: EXPORT_RUNGS
+    alone exports every rung and scores none of them."""
+    rendered = _render(tmp_path, EXPORT_RUNGS="10000,20000")
+    assert _evals(rendered) == {}
+    assert set(_exports(rendered)) == {"export-10000", "export-20000"}
+
+
+def test_screen_evals_run_every_rung_and_the_catalog_only_the_full_ones(tmp_path):
+    """The exact target set of a three-rung ladder with one full rung. A non-screen
+    entry on a non-full rung would quietly multiply the GPU cost of a ladder by the
+    size of the catalog."""
+    rendered = _render(
+        tmp_path, EVAL_RUNGS="10000,20000,30000", FULL_EVAL_RUNGS="30000"
+    )
+    assert set(_targets(rendered)) == {
+        "data-check",
+        "train",
+        # EXPORT_RUNGS is empty: the exports exist because an eval rung needs one.
+        "export-10000",
+        "export-20000",
+        "export-30000",
+        # The screening subset, on every evaluated rung.
+        "eval-base-core-ck10000",
+        "eval-base-core-ck20000",
+        "eval-base-core-ck30000",
+        # The rest of the catalog, on the full rung ONLY.
+        "eval-mmlu-ck30000",
+        "eval-mmlu-prox-lite-ck30000",
+    }
+
+
+def test_the_full_rung_runs_the_whole_catalog(tmp_path):
+    rendered = _render(tmp_path, EVAL_RUNGS="10000", FULL_EVAL_RUNGS="10000")
+    assert set(_evals(rendered)) == {f"eval-{name}-ck10000" for name in _catalog()}
+
+
+def test_a_screen_only_rung_runs_only_the_screen_entries(tmp_path):
+    rendered = _render(tmp_path, EVAL_RUNGS="10000")
+    assert set(_evals(rendered)) == {f"eval-{name}-ck10000" for name in _screen()}
+    assert len(_screen()) < len(_catalog())
+
+
+def test_each_eval_scores_its_own_rung(tmp_path):
+    """The pairing, not the count: an off-by-one scores the wrong checkpoint and
+    every number is attributed to the wrong step of the ladder."""
+    rendered = _render(tmp_path, EVAL_RUNGS="10000,20000", FULL_EVAL_RUNGS="20000")
+    evals = _evals(rendered)
+    assert len(evals) == 1 + len(_catalog())
+    for name, target in evals.items():
+        rung = name.rsplit("-ck", 1)[1]
+        bindings = [spec["binding"] for spec in target["inputs"].values()]
+        assert bindings == [f"export-{rung}.hf_model"], name
+        config = _config(rendered, name)
+        assert f"/ckpt_{rung}/" in config["output_dir"], name
+        assert config["served_model_name"].endswith(f"-ckpt_{rung}"), name
+
+
+def test_model_path_is_the_export_binding(tmp_path):
+    """The exported Hugging Face directory, resolved by gbserver from the binding --
+    not a path this recipe spells a second time, and not the sharded checkpoint."""
+    rendered = _render(tmp_path, EVAL_RUNGS="10000")
+    target = _targets(rendered)["eval-base-core-ck10000"]
+    (key,) = [
+        k
+        for k, spec in target["inputs"].items()
+        if spec.get("binding") == "export-10000.hf_model"
+    ]
+    config = _config(rendered, "eval-base-core-ck10000")
+    assert config["model_path"] == "{{ bindings.%s.binding.path }}" % key
+    hf_model = _targets(rendered)["export-10000"]["outputs"]["hf_model"]
+    assert hf_model["uri"].endswith("/export/ckpt_10000/hf")
+
+
+def test_eval_output_dirs_are_unique_and_run_scoped(tmp_path):
+    """The step's own default composes one path per benchmark, which every bridge
+    run of every rung would share. A URI two targets claim is registered once: the
+    second still reports SUCCESS with an empty output list and its consumers wait
+    forever, so the directory must be unique per (run, rung, catalog entry)."""
+    rendered = _render(
+        tmp_path, RUN_NAME="r1", EVAL_RUNGS="10000,20000,30000", FULL_EVAL_RUNGS="30000"
+    )
+    dirs = [_config(rendered, name)["output_dir"] for name in _evals(rendered)]
+    assert len(dirs) == 5
+    assert len(set(dirs)) == len(dirs), dirs
+    # RUN_NAME-scoped, so a re-run of the same experiment writes elsewhere.
+    for path in dirs:
+        assert "/r1/" in path, path
+    other = _render(
+        tmp_path, RUN_NAME="r2", EVAL_RUNGS="10000,20000,30000", FULL_EVAL_RUNGS="30000"
+    )
+    assert not set(dirs) & {
+        _config(other, name)["output_dir"] for name in _evals(other)
+    }
+    # ... and unique against every other output_dir in the build, exports included.
+    every = [
+        _config(rendered, name)["output_dir"]
+        for name in _targets(rendered)
+        if "output_dir" in _config(rendered, name)
+    ]
+    assert len(set(every)) == len(every), every
+
+
+def test_eval_output_dir_is_under_the_site_eval_root(tmp_path):
+    config = _config(_render(tmp_path, EVAL_RUNGS="10000"), "eval-base-core-ck10000")
+    params = _layered(tmp_path)
+    assert config["output_dir"] == (
+        f"{_SITE_KEYS['EVAL_ROOT']}/{params['EXP']}/{params['RUN_NAME']}"
+        f"/ckpt_10000/base-core"
+    )
+    # output_root/run_name would have the step compose it instead; both set is a
+    # contradiction waiting to be resolved in the wrong direction.
+    assert "output_root" not in config
+    assert "run_name" not in config
+
+
+def test_each_eval_target_carries_its_catalog_entry(tmp_path):
+    """`benchmark` and `options` are what the entry says, verbatim: the catalog is
+    the recipe's only statement about what is scored."""
+    catalog = _catalog()
+    rendered = _render(tmp_path, EVAL_RUNGS="10000", FULL_EVAL_RUNGS="10000")
+    for name in _evals(rendered):
+        entry = catalog[name[len("eval-") : -len("-ck10000")]]
+        step = _step(rendered, name)
+        assert step["step_uri"] == _LMEVAL
+        config = step["config"]
+        assert config["benchmark"] == entry["benchmark"]
+        assert str(config["options"]) == str(entry.get("options") or "")
+        assert config["output_dir"].endswith(f"/ckpt_10000/{entry['name']}")
+
+
+def test_eval_serves_one_gpu_with_the_runs_own_context_length(tmp_path):
+    """max_model_len below SEQ_LEN truncates the prompts of a model that was trained
+    to read them; the served name is what results.json records the model as."""
+    params = _layered(tmp_path)
+    config = _config(_render(tmp_path, EVAL_RUNGS="10000"), "eval-base-core-ck10000")
+    assert config["served_model_name"] == f"{params['EXP']}-ckpt_10000"
+    assert int(config["max_model_len"]) == int(params["SEQ_LEN"])
+    assert config["image"] == _SITE_KEYS["LMEVAL_IMAGE"]
+    assert config["hf_home"] == _SITE_KEYS["HF_CACHE"]
+    assert str(config["limit"]) == str(params["EVAL_LIMIT"])
+    assert config["phase"] == "all"
+    assert int(config["tensor_parallel_size"]) == 1
+    assert config["compute_config"] == {"num_nodes": 1, "num_gpus_per_node": 1}
+    resources = config["launcher_config"]["resources"]
+    assert resources["accelerators"] == f"{_SITE_KEYS['EVAL_ACCELERATORS']}:1"
+    assert int(resources["memory"]) == int(params["EVAL_MEMORY"])
+
+
+def test_each_eval_declares_the_results_output(tmp_path):
+    rendered = _render(tmp_path, EVAL_RUNGS="10000", FULL_EVAL_RUNGS="10000")
+    optional = _yaml(_STEP_SCHEMAS[_LMEVAL])["outputs"]["optional"]
+    for name, target in _evals(rendered).items():
+        assert set(target["outputs"]) == {"granite_results"}, name
+        assert target["outputs"]["granite_results"]["type"] == "dataset", name
+        assert "granite_results" in optional, name
+
+
+def test_the_eval_block_is_self_contained_between_its_markers(tmp_path):
+    """Task 20 shares this block verbatim with recipes/pretrain/pretrain-eval, whose
+    inputs are an export directory and the rungs rather than a train target: the
+    block must therefore name no train target and compose its paths from EVAL_ROOT,
+    never from RUN_DIR."""
+    raw = _BUILD.read_text(encoding="utf-8")
+    block = raw.split("─── evals (shared with pretrain-eval) ───", 1)[1].split(
+        "─── end evals ───", 1
+    )[0]
+    assert "space://steps/eval/lmeval" in block
+    assert "train." not in block
+    assert "RUN_DIR" not in block
+    assert "EVAL_ROOT" in block
+
+
+# ─── The catalog's own checks ─────────────────────────────────────────────────
+
+_OK_ENTRY = {
+    "name": "base-core",
+    "benchmark": "lm-eval",
+    "options": "tasks=hellaswag mode=base",
+}
+
+
+@pytest.mark.parametrize(
+    "catalog,message",
+    [
+        # Two entries of one name are two targets of one name: YAML keeps the last
+        # and the other benchmark simply never runs.
+        (
+            [_OK_ENTRY, dict(_OK_ENTRY, options="tasks=mmlu mode=base")],
+            "EVAL_CATALOG_names_must_be_unique",
+        ),
+        # A name is half a target name and half a directory name, so the characters
+        # legal in both are the only ones allowed. Refused, not sanitized: two names
+        # that sanitize alike collide silently.
+        ([dict(_OK_ENTRY, name="base core")], "EVAL_CATALOG_names_must_be"),
+        ([dict(_OK_ENTRY, name="base/core")], "EVAL_CATALOG_names_must_be"),
+        ([dict(_OK_ENTRY, name="Base-Core")], "EVAL_CATALOG_names_must_be"),
+        ([dict(_OK_ENTRY, name="")], "EVAL_CATALOG_names_must_be"),
+        # The step refuses an empty benchmark at launch, an hour into a queue.
+        (
+            [{"name": "base-core", "options": "tasks=hellaswag mode=base"}],
+            "EVAL_CATALOG_entries_must_name_a_benchmark",
+        ),
+        # lm-eval: without tasks= the bridge has nothing to run, and without mode=
+        # it picks one. `auto` on a base model means chat mode on a model with no
+        # chat template -- numbers that look valid and mean nothing.
+        (
+            [dict(_OK_ENTRY, options="mode=base")],
+            "EVAL_CATALOG_lm_eval_entries_must_set_tasks_and_mode",
+        ),
+        (
+            [dict(_OK_ENTRY, options="tasks=hellaswag")],
+            "EVAL_CATALOG_lm_eval_entries_must_set_tasks_and_mode",
+        ),
+        (
+            [dict(_OK_ENTRY, options="")],
+            "EVAL_CATALOG_lm_eval_entries_must_set_tasks_and_mode",
+        ),
+        (
+            [dict(_OK_ENTRY, options="tasks=hellaswag mode=auto")],
+            "EVAL_CATALOG_lm_eval_entries_must_not_score_a_base_model_in_mode_auto",
+        ),
+    ],
+)
+def test_a_bad_catalog_entry_fails_the_render(tmp_path, catalog, message):
+    layer = _layer(tmp_path, "catalog", {"EVAL_CATALOG": catalog})
+    with pytest.raises(Exception, match=message):
+        _render_text(tmp_path, layer, EVAL_RUNGS="10000", SCREEN_EVALS="base-core")
+
+
+def test_a_bad_catalog_fails_even_a_train_only_run(tmp_path):
+    """The catalog is checked in the prelude, so a typo is caught before any rung is
+    added -- the same way EXPORT_MODEL_TYPE is."""
+    layer = _layer(
+        tmp_path, "catalog", {"EVAL_CATALOG": [dict(_OK_ENTRY, options="mode=auto")]}
+    )
+    with pytest.raises(Exception, match="EVAL_CATALOG_lm_eval_entries_must_"):
+        _render_text(tmp_path, layer, SCREEN_EVALS="base-core")
+
+
+def test_screen_evals_must_name_catalog_entries(tmp_path):
+    """A misspelled screening name is not an error at the step: it is a rung that
+    scores nothing at all while the build reports SUCCESS."""
+    with pytest.raises(
+        Exception, match="SCREEN_EVALS_must_name_entries_of_EVAL_CATALOG"
+    ):
+        _render_text(tmp_path, EVAL_RUNGS="10000", SCREEN_EVALS="base-core,mmlu-pro")
+
+
+def test_a_non_lm_eval_benchmark_needs_no_tasks_option(tmp_path):
+    """The tasks=/mode= check is lm-eval's contract, not every benchmark's: the
+    bridge's own benchmarks take their configuration from their id."""
+    layer = _layer(
+        tmp_path,
+        "catalog",
+        {
+            "EVAL_CATALOG": [
+                {"name": "prox", "benchmark": "mmlu-prox-lite", "options": ""}
+            ]
+        },
+    )
+    rendered = _render(tmp_path, layer, EVAL_RUNGS="10000", SCREEN_EVALS="prox")
+    assert set(_evals(rendered)) == {"eval-prox-ck10000"}
+
+
+def test_the_default_catalog_is_the_designed_one(tmp_path):
+    """Base-model screening first: the cheap multiple-choice battery on every rung,
+    the rest only where the whole battery is wanted."""
+    catalog = _catalog()
+    assert set(catalog) == {"base-core", "mmlu", "mmlu-prox-lite"}
+    assert _screen() == ["base-core"]
+    for name in ("base-core", "mmlu"):
+        options = catalog[name]["options"]
+        assert "tasks=" in options
+        assert "mode=base" in options

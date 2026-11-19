@@ -88,6 +88,74 @@ $${ EXPORT_RUNGS_and_EVAL_RUNGS_must_not_be_past_NUM_TRAINING_STEPS }
 $${ FULL_EVAL_RUNGS_must_be_a_subset_of_EVAL_RUNGS }
 <%- endif %>
 <%- endfor %>
+<%- set EVALS = EVALS | unique | sort | list %>
+# ── The eval catalog, checked once ─────────────────────────────────────────
+# EVAL_CATALOG is a list of {name, benchmark, options}. Each entry becomes one eval
+# target per rung it runs on, so a name is half a target name and half a directory
+# name: only the characters legal in both are allowed, and a duplicate is REFUSED
+# rather than sanitized, because two names that sanitize alike become one YAML key
+# and the second benchmark then never runs at all. The lm-eval entries must spell
+# tasks= and mode= themselves -- a from-scratch BASE model handed to the chat
+# protocol by `mode=auto` scores numbers that look valid and mean nothing.
+<%- set CATALOG = EVAL_CATALOG | list %>
+<%- set NAMES = [] %>
+<%- set NAME_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789-" %>
+# TASKS and MODES are the tasks= and mode= values of ONE entry. They are declared
+# here, at template scope, and re-set empty per entry inside the loop: a name whose
+# only assignment is inside a loop body reads as undeclared to a static pass over
+# this file, and test_every_template_name_resolves allows no undeclared name but a
+# render-time check.
+<%- set TASKS = [] %>
+<%- set MODES = [] %>
+<%- for e in CATALOG %>
+<%- set nm = (e.get("name") or "") | string | trim %>
+<%- if not nm %>
+$${ EVAL_CATALOG_names_must_be_lowercase_letters_digits_or_dashes }
+<%- endif %>
+<%- for ch in nm if ch not in NAME_CHARS %>
+$${ EVAL_CATALOG_names_must_be_lowercase_letters_digits_or_dashes }
+<%- endfor %>
+<%- if nm in NAMES %>
+$${ EVAL_CATALOG_names_must_be_unique }
+<%- endif %>
+<%- set _ = NAMES.append(nm) %>
+<%- set bm = (e.get("benchmark") or "") | string | trim %>
+<%- if not bm %>
+$${ EVAL_CATALOG_entries_must_name_a_benchmark }
+<%- endif %>
+<%- if bm == "lm-eval" %>
+<%- set TASKS = [] %>
+<%- set MODES = [] %>
+<%- for t in ((e.get("options") or "") | string).split() %>
+<%- if t.startswith("tasks=") and t[6:] %>
+<%- set _ = TASKS.append(t[6:]) %>
+<%- endif %>
+<%- if t.startswith("mode=") and t[5:] %>
+<%- set _ = MODES.append(t[5:]) %>
+<%- endif %>
+<%- endfor %>
+<%- if not TASKS or not MODES %>
+$${ EVAL_CATALOG_lm_eval_entries_must_set_tasks_and_mode_in_options }
+<%- endif %>
+<%- if "auto" in MODES %>
+$${ EVAL_CATALOG_lm_eval_entries_must_not_score_a_base_model_in_mode_auto }
+<%- endif %>
+<%- endif %>
+<%- endfor %>
+# SCREEN_EVALS names the entries every evaluated rung gets; the rest of the catalog
+# runs on a FULL_EVAL_RUNGS rung only. A misspelled name here is not an error at the
+# step: it is a rung that scores NOTHING while the build reports SUCCESS.
+<%- set SCREEN = [] %>
+<%- for s in (SCREEN_EVALS | string | replace(" ", "")).split(",") if s %>
+<%- if s not in NAMES %>
+$${ SCREEN_EVALS_must_name_entries_of_EVAL_CATALOG }
+<%- endif %>
+<%- set _ = SCREEN.append(s) %>
+<%- endfor %>
+<%- set SCREENED = [] %>
+<%- for e in CATALOG if ((e.get("name") or "") | string | trim) in SCREEN %>
+<%- set _ = SCREENED.append(e) %>
+<%- endfor %>
 # ── The export architecture, resolved once ─────────────────────────────────
 # EXPORT_MODEL_TYPE `auto` reads the knobs the run actually trains with, because the
 # Hugging Face architecture is not a free choice: _export_llama_config ASSERTS the
@@ -448,4 +516,72 @@ $${ wandb_block() }
 <%- endfor %>
 
     # ─── evals (shared with pretrain-eval) ───
+    # One eval-<name>-ck<N> per (evaluated rung, catalog entry), through the generic
+    # lmeval bridge step: every entry of SCREEN_EVALS on every rung in EVAL_RUNGS,
+    # and the WHOLE catalog on a rung in FULL_EVAL_RUNGS. Each target binds
+    # export-<N>.hf_model, so it dispatches as soon as THAT rung's Hugging Face
+    # export is finished -- mid-run, while training continues -- and scores the
+    # checkpoint its own name carries. The model arrives as a path resolved from the
+    # binding, not as a path spelled twice.
+    #
+    # output_dir is EXPLICIT and carries RUN_NAME. The step's own default composes
+    # $output_root/$run_name/$benchmark from the model directory's basename, which
+    # every rung of every run of one benchmark would share. A URI two targets claim
+    # is registered ONCE: the second target still reports SUCCESS with an empty
+    # output list, its consumers never dispatch, and the results are simply absent
+    # while the build reports SUCCESS. So the path is unique per (run, rung, entry).
+<%- set EVAL_DIR = (EVAL_ROOT | string).rstrip("/") ~ "/" ~ EXP ~ "/" ~ RUN_NAME %>
+<%- for N in EVALS %>
+<%- for e in (CATALOG if N in FULL else SCREENED) %>
+<%- set nm = (e.get("name") or "") | string | trim %>
+
+    eval-$${nm}-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Rung $${N}'s exported model, and the ordering that waits for it.
+        hf_model:
+          binding: export-$${N}.hf_model
+      outputs:
+        # The scored results.json the step prints when it finishes.
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/lmeval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            # The benchmark id the bridge passes to `granite-evals run`, and that
+            # benchmark's own options, from the catalog entry verbatim.
+            benchmark: "$${ (e.get('benchmark') or '') | string | trim }"
+            options: "$${ (e.get('options') or '') | string }"
+            image: "$${LMEVAL_IMAGE}"
+            # Resolved by gbserver from the binding above: the exported Hugging Face
+            # directory of THIS rung.
+            model_path: "{{ bindings.hf_model.binding.path }}"
+            # What results.json records the model as, so a row cannot be read as
+            # another rung's.
+            served_model_name: "$${EXP}-ckpt_$${N}"
+            # Unique per (run, rung, entry) -- see above.
+            output_dir: "$${EVAL_DIR}/ckpt_$${N}/$${nm}"
+            # The context length the model was TRAINED at: a shorter one silently
+            # truncates prompts the model can read.
+            max_model_len: $${SEQ_LEN}
+            hf_home: "$${HF_CACHE}"
+            limit: "$${EVAL_LIMIT}"
+            # This family grades inside generation, so there is no CPU score phase
+            # to split off.
+            phase: "all"
+            # ONE GPU. These are small base checkpoints; a ladder's cost is the
+            # number of rungs, not the size of one job.
+            tensor_parallel_size: "1"
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              resources:
+                accelerators: "$${EVAL_ACCELERATORS}:1"
+                memory: $${EVAL_MEMORY}
+<%- endfor %>
+<%- endfor %>
     # ─── end evals ───

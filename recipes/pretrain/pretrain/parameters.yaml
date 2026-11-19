@@ -223,6 +223,47 @@ EXPORT_PARITY_TOLERANCE: 0.05
 EXPORT_CPUS: 8
 EXPORT_MEMORY: 64
 
+# ─── The evals ────────────────────────────────────────────────────────
+# The catalog is the recipe's ONE statement about what a rung is scored on. Every
+# entry becomes one target per rung it runs on, through the generic lmeval bridge
+# step: `benchmark` is the id the bridge passes to `granite-evals run` and `options`
+# is that benchmark's own space-separated key=value options, verbatim.
+#
+# A LIST OF MAPPINGS, so it can only be replaced through a --param-file (--param
+# hands values through as strings and never parses YAML). A site file or an
+# experiment overlay may replace it whole; --param EVAL_CATALOG=... cannot.
+#
+# `mode` is spelled out on every lm-eval entry because a BASE model is being scored:
+# `mode=auto` would hand a model with no chat template to the chat protocol and
+# produce numbers that look valid and mean nothing. The render refuses an lm-eval
+# entry without tasks= and mode=, and refuses mode=auto.
+EVAL_CATALOG:
+  # The cheap multiple-choice screen: likelihood scoring, no generation, minutes.
+  - name: base-core
+    benchmark: lm-eval
+    options: "tasks=hellaswag,arc_easy,arc_challenge,piqa,winogrande,lambada_openai mode=base"
+  - name: mmlu
+    benchmark: lm-eval
+    options: "tasks=mmlu mode=base num_fewshot=5"
+  # Opt-in, and NOT part of the screen: MMLU-ProX lite is 5-shot CoT in CHAT mode,
+  # which a from-scratch base model has no template for. It is in the catalog so a
+  # full rung of an instruction-tuned continuation can ask for it.
+  - name: mmlu-prox-lite
+    benchmark: mmlu-prox-lite
+    options: ""
+# The screening subset, by name: these run on EVERY rung in EVAL_RUNGS, while a rung
+# named by FULL_EVAL_RUNGS runs the whole catalog. A name outside EVAL_CATALOG fails
+# the render -- it would otherwise be a rung that scores nothing while the build
+# reports SUCCESS.
+SCREEN_EVALS: "base-core"
+# Smoke knob: score only the first N examples. Empty is the full benchmark. A handful
+# proves the plumbing of a new ladder for a few GPU-minutes.
+EVAL_LIMIT: ""
+# One eval GPU, so host memory per pod is the only scale knob here; the accelerator
+# model itself is the site's (EVAL_ACCELERATORS). vLLM's weight load plus the
+# harness's request fan-out, not the model, is what this has to hold.
+EVAL_MEMORY: 256
+
 # ─── Resuming ─────────────────────────────────────────────────────────
 # Empty: a fresh run, and a retry resumes from whatever RUN_DIR/train already holds.
 # Set to another run's train directory to continue it in a new build; it is ignored
