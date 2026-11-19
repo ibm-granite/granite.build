@@ -74,7 +74,8 @@ Config errors fail the build at step creation, with a message that starts
 - a bad `clearml_enabled`;
 - in `args`: a key that is not a bare flag name (it holds `=`, a leading `-` or
   whitespace, or is empty), a step-owned flag, an abbreviation of one, or a `no_*`
-  key.
+  key; a value, or list item, that starts with `-` followed by anything but a digit
+  or `.` (`-x`, `--x`, `--`).
 
 The step also fails at step creation, with gbserver's own message, unless the `num_nodes`
 the launch would use is 1: the step sets `single_node: true`, and of `compute_config`, the
@@ -103,12 +104,15 @@ than silently setting a flag. A `_` in a name may be written `-`.
 | null: `seed: null` | omitted |
 | empty list: `foo: []` | refused at step creation (`--foo` alone would take the next flag as its value) |
 | map | refused at step creation |
+| value starting with `-` and a non-digit: `[a, --output_dir, /x]`, `"--output_dir=/x"` | refused at step creation (`finetune.py` would read it as a flag); a `-` followed by a digit or `.` (a negative number such as `-0.5`, `-1` or `-.5`), and a lone `-`, render as usual |
 
-The step sets these flags itself, so they are refused as `args` keys at step
-creation. That covers their `-` spellings and abbreviations too: `output_d` or
-`push_to` is refused. Do not pass a flag inside a value either (for example
-`[a, --output_dir, /x]`): `finetune.py` would read it as a flag. Refusing such
-values is tracked in #613.
+The step sets these flags itself, so they are refused in `args` at step creation:
+as keys, including their `-` spellings and abbreviations (`output_d` or `push_to` is
+refused), and inside values, since any value that starts with `-` followed by anything
+but a digit or `.` is refused. (A negative number in exponent form passes this check,
+but `finetune.py`'s parser reads it as a flag, so the run fails. A small YAML float
+such as `-0.00001` renders in that form, `-1e-05`; quote it, `"-0.00001"`, to pass it
+as written.)
 
 ```
 model_name_or_path, output_dir, dataset_name, dataset_mixer, dataset_mixer_list,
