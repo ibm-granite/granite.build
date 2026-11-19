@@ -50,6 +50,10 @@ RUN pip install --upgrade "pip>=26.2"
 # --timeout/--retries harden large-wheel downloads (pyarrow, torch, …) against pip's
 # 15s socket timeout tripping a ReadTimeoutError mid-download.
 RUN pip install --upgrade --timeout 120 --retries 5 -e ".[all]"
+# Temporary: SkyPilot caps click<8.2, which holds wandb at 0.26.1, whose bundled wandb-core
+# Go binary carries critical x/crypto and go-git CVEs. wandb 0.27.2 works on click 8.1;
+# --no-deps skips only its click>=8.2 floor. Drop once SkyPilot lifts the cap.
+RUN pip install --no-deps "wandb==0.27.2"
 # Drop .git now that setuptools_scm has derived the version. Removing it here (not in
 # the runner, where it would only add a whiteout over a committed layer) actually
 # shrinks the image; the server needs no git history in /app.
