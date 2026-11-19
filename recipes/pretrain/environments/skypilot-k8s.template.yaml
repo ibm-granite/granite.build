@@ -1,0 +1,159 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# A SkyPilot-on-Kubernetes environment for the pretraining recipe, as a TEMPLATE:
+# every site-specific value is a templated key, filled in from a private site file
+# (see ../site.example.yaml), so this file carries no cluster of anyone's.
+#
+#   scripts/setup-local-space.sh \
+#     --template recipes/pretrain/environments/skypilot-k8s.template.yaml \
+#     --site ~/.granite.build/local-env/pretrain-k8s.yaml \
+#     --name pretrain-k8s
+#
+# That renders this file, writes it into a standalone space as
+# space://environments/skypilot-local/pretrain-k8s, and sets ENVIRONMENT_URI in
+# the site file to that URI -- which is the only thing the recipe reads.
+#
+# WHAT THIS ENVIRONMENT HAS TO PROVIDE, beyond a plain SkyPilot-k8s one:
+#
+#  1. A ReadWriteMany volume every pod mounts at the same path. Each target is its
+#     own pod, so without it a checkpoint written by `train` is invisible to
+#     `export-N`, and the ladder's bindings resolve to paths that do not exist.
+#  2. RoCE for the training pods. A multi-node run that falls back to TCP is not
+#     slow, it is unusable: NCCL over sockets on this model's gradient volume
+#     leaves the GPUs idle most of the step.
+#  3. A /dev/shm big enough for the dataloader's workers -- the default 64 MiB
+#     emptyDir makes torch's shared-memory tensors fail with a bus error that
+#     reads as a dataloader crash.
+#
+# WHY RoCE IS HAND-WRITTEN HERE. The pinned SkyPilot has a native knob for exactly
+# this (`kubernetes.rdma.{mode,resource,networks}`, mode `sriov`: it sets the Multus
+# annotation, requests the VF extended resource, sizes the count per GPU and adds
+# IPC_LOCK). It is unusable here: sky/clouds/kubernetes.py `_resolve_rdma_mode`
+# returns None unless `oci_roce_enabled`, which is detected from OCI's own node
+# labels, so on any other cluster declaring the mode changes nothing. Hence the
+# pod_config below. The same code path also means `k8s_host_network` is False here
+# (it is `oci_roce_enabled`), so the pods keep their own network namespace and the
+# Multus attachment is how they reach the fabric -- which is what makes the
+# annotation the right mechanism rather than a hostNetwork pod.
+#
+# Containers are merged BY NAME into SkyPilot's own pod spec (its
+# config_utils._PATCH_MERGE_KEYS: containers and volumes by `name`, volumeMounts by
+# `mountPath`, env by `name`), so the block below patches the `ray-node` container
+# SkyPilot creates (sky/templates/kubernetes-ray.yml.j2) rather than adding a
+# second one. pod_config is scoped to the context, because cloud_config LISTS are
+# replaced rather than merged: a top-level kubernetes.pod_config would wipe out
+# whatever pod_config this machine keeps for other clusters.
+name: pretrain-k8s
+type: Skypilot
+subtype: kubernetes
+config:
+  default_cloud: kubernetes
+  # Applied as AUTODOWN on Kubernetes (a pod cannot be stopped). Per-step cleanup
+  # already `sky down`s each pod, so this only reaps one orphaned by a crashed
+  # gbserver. It must stay well above the steps' poll interval: a shorter window
+  # can delete the pod before the poller sees the job finish, which fails the step.
+  idle_minutes_to_autostop: 15
+  # The RWX volume, mounted at the same path in every pod. The recipe composes
+  # WORKDIR_ROOT and EVAL_ROOT under it.
+  shared_workdir: "$${RW_MOUNT}"
+  cloud_config:
+    kubernetes:
+      # Pin SkyPilot to this cluster: with allowed_contexts set it ignores the
+      # CURRENT kube context, so a build never lands on whatever cluster happens to
+      # be current. NOTE: this lands in the GLOBAL ~/.sky/config.yaml, so plain
+      # `sky` use on the gbserver host is also limited to these contexts until
+      # another environment's build replaces it (last writer wins).
+      allowed_contexts: ["$${KUBE_CONTEXT}"]
+      context_configs:
+        "$${KUBE_CONTEXT}":
+          pod_config:
+            metadata:
+              annotations:
+                # Multus attaches one SR-IOV VF per entry, so the number of
+                # entries must match the roce_gdr count requested below -- a
+                # mismatch fails at CNI time, far from the config that caused it.
+                k8s.v1.cni.cncf.io/networks: "$${ROCE_NETWORK}"
+            spec:
+              # The queue's priority class. Without it the pods land at the
+              # cluster's default priority, which on a shared GPU cluster means
+              # preempted by anything that asked properly.
+              priorityClassName: "$${PRIORITY_CLASS}"
+<%- if EXCLUDE_NODES %>
+              # Nodes to keep off, by hostname. Rendered only when the site file
+              # lists any: an empty nodeSelectorTerms matches NOTHING, so an empty
+              # affinity block would make every pod unschedulable.
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                      - matchExpressions:
+                          - key: kubernetes.io/hostname
+                            operator: NotIn
+                            values:
+<%- for node in EXCLUDE_NODES %>
+                              - "$${node}"
+<%- endfor %>
+<%- endif %>
+              volumes:
+                - name: gb-shared
+                  persistentVolumeClaim:
+                    claimName: "$${RW_PVC}"
+                # The dataloader's workers pass tensors through shared memory; the
+                # pod default is 64 MiB.
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: "$${SHM_SIZE}"
+<%- if TOPOLOGY_CONFIGMAP %>
+                # The cluster's NCCL topology file, if it publishes one. The env
+                # var that points NCCL at it belongs in the site file's NCCL_ENV,
+                # which the recipe passes to the training step.
+                - name: topology
+                  configMap:
+                    name: "$${TOPOLOGY_CONFIGMAP}"
+<%- endif %>
+              containers:
+                # SkyPilot's own container, patched by name.
+                - name: ray-node
+                  resources:
+                    # The VF count, on BOTH limits and requests: an extended
+                    # resource that appears in only one of them is rejected by the
+                    # API server.
+                    limits:
+                      nvidia.com/roce_gdr: $${ROCE_GDR}
+                    requests:
+                      nvidia.com/roce_gdr: $${ROCE_GDR}
+                  securityContext:
+                    capabilities:
+                      add:
+                        # RDMA pins its queue-pair memory; without this NCCL's
+                        # registration fails and it falls back to sockets.
+                        - IPC_LOCK
+                  env:
+                    # Which node a rank ran on, for the per-node logs the train
+                    # step writes. The pod name alone does not say it.
+                    - name: NODE_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: spec.nodeName
+                  volumeMounts:
+                    - name: gb-shared
+                      mountPath: "$${RW_MOUNT}"
+                    - name: dshm
+                      mountPath: /dev/shm
+<%- if TOPOLOGY_CONFIGMAP %>
+                    - name: topology
+                      mountPath: "$${TOPOLOGY_MOUNT}"
+                      readOnly: true
+<%- endif %>
+assetstores:
+  - store_uri: space://assetstores/hf
+    pull:
+      - mode: default
+        config:
+          # On the shared volume, so one pull serves every pod and the eval
+          # targets' task datasets are read from a warm cache.
+          cache_path: "$${HF_CACHE}"
+    push:
+      - mode: default
+        config: {}

@@ -3,7 +3,7 @@
 # The smoke layer: the whole graph in GPU-minutes, on one node.
 #
 #   gb build start -f recipes/pretrain/pretrain/build.yaml \
-#     --param-file ~/.granite.build/local-env/pretrain-vela.yaml \
+#     --param-file ~/.granite.build/local-env/pretrain-k8s.yaml \
 #     --param-file recipes/pretrain/pretrain/smoke.yaml \
 #     --param RUN_NAME=smoke-$(date +%Y%m%d-%H%M)
 #

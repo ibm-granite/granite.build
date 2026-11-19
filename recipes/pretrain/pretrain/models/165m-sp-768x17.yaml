@@ -3,7 +3,7 @@
 # A 165M standard-parametrization (SP) model: 768 hidden x 17 layers.
 #
 #   gb build start -f recipes/pretrain/pretrain/build.yaml \
-#     --param-file ~/.granite.build/local-env/pretrain-vela.yaml \
+#     --param-file ~/.granite.build/local-env/pretrain-k8s.yaml \
 #     --param-file recipes/pretrain/pretrain/models/165m-sp-768x17.yaml \
 #     --param RUN_NAME=sp165m-$(date +%Y%m%d-%H%M)
 #
