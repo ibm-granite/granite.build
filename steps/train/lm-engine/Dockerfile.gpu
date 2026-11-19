@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# lm-engine pretraining image: upstream open-lm-engine/lm-engine at the UPSTREAM sha
+# + patches/. Shared by the steps under steps/train/lm-engine/<step>/<env>/; each
+# step takes the ref from its own config.image, so no step builds an image. Built by
+# the Makefile beside this file (build context = this directory):
+#
+#   make -C steps/train/lm-engine image check-image
+#
+# Not derived from upstream's docker/Dockerfile: that one installs google-cloud-cli +
+# gcsfuse (~1.05 GB, unused here) and `COPY .`s the tree with a .dockerignore that
+# drops uv.lock and .git. We clone at the pinned sha instead, so the committed lock
+# is present (reproducible `uv sync --locked`) and so is .git, which lm-engine's
+# train.py reads for run metadata.
+#
+# CUDA comes entirely from the torch wheel -- the base is plain ubuntu, there is no
+# nvcc and no CUDA toolkit. Keep it that way: the flash-attn wheel below is built
+# against the same torch.
+FROM ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde
+
+# uv 0.13.8 == the version in the reference image
+# us.icr.io/cil15-shared-registry/lm-engine:0.1.0-cuda-fa2cc, whose environment this
+# image reproduces. ghcr.io/astral-sh/uv:0.13.8 is
+# sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85.
+ARG UV_VERSION=0.13.8
+# lm-engine's own .python-version says "3.12" -- a minor-version pin, which would
+# float the patch release at build time. Pin it exactly, at the reference image's
+# interpreter: the flash-attn wheel below is cp312-only.
+ARG PYTHON_VERSION=3.12.16
+ARG LME_REPO=https://github.com/open-lm-engine/lm-engine.git
+# MUST equal UPSTREAM's sha; the RUN below fails the build if it does not, and
+# tests/test_image_pins.py catches the drift without a build.
+ARG LME_SHA=a9c6e2b81ec33143419f82309706929195a740c0
+# Prebuilt upstream release artifact, pinned by URL and sha256 (repo policy allows an
+# upstream release wheel, not a personal build). Its ABI tag encodes torch 2.10 + cu12
+# + cp312 + cxx11abiTRUE, so it is rigidly tied to both pins above -- see README.md.
+# In the URL the file name is percent-encoded, literally `...%2Bcu12...`, so it has to
+# be fetched with curl and decoded on the way to disk -- see the RUN below.
+ARG FLASH_ATTN_WHL=https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+ARG FLASH_ATTN_SHA256=f47361af0ebe127db80040cb72e947e3a2ef97c59d641df0c167c5b48cafdc28
+# flash-attn's one runtime import that lm-engine's lock does not already carry. Pinned
+# like everything else; 0.8.2 is the version in the reference image.
+ARG EINOPS_VERSION=0.8.2
+
+ENV DEBIAN_FRONTEND=noninteractive
+# build-essential: Triton JIT (fused CE) compiles its launcher at runtime.
+# rdma-core/ibverbs-providers: NCCL over RoCE/IB -- what NCCL dlopens is
+# libibverbs.so.1 plus a provider for the host's NIC. ibverbs-utils adds ibv_devinfo /
+# ibv_devices, which is where you start when NCCL cannot find a rail (on jammy those
+# binaries are NOT in rdma-core).
+# The rest: SkyPilot's k8s pod bootstrap, preinstalled so pods need no apt at start.
+# NOT python3-dev: Triton needs the headers of the interpreter it runs under, and that
+# is uv's standalone CPython 3.12 (which ships its own include/python3.12), not the
+# distro's python3.10. python3-dev would install 3.10 headers nothing here compiles
+# against -- the reference image carried them, redundantly.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git curl wget rsync netcat-openbsd gcc patch pciutils openssh-server \
+      build-essential rdma-core ibverbs-providers ibverbs-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
+
+# Keep the managed interpreter under /app, not /root (mode 700): SkyPilot k8s pods may
+# run this image as a non-root user, who must still be able to read it.
+ENV UV_PYTHON_INSTALL_DIR=/app/python UV_LINK_MODE=copy
+
+WORKDIR /app
+# The source of truth for the sha is UPSTREAM, which also documents every patch; keep
+# it in the image as provenance, and refuse to build if LME_SHA has drifted from it.
+COPY UPSTREAM /app/UPSTREAM
+RUN want="$(awk '/^sha:/{print $2}' /app/UPSTREAM)" \
+    && if [ "$want" != "$LME_SHA" ]; then \
+         echo "LME_SHA=$LME_SHA does not match UPSTREAM sha=$want" >&2; exit 1; \
+       fi
+
+RUN uv python install "$PYTHON_VERSION"
+RUN git clone "$LME_REPO" src && git -C src checkout "$LME_SHA"
+COPY patches/ /tmp/patches/
+RUN cd src && for p in /tmp/patches/*.patch; do git apply --check "$p" && git apply "$p"; done \
+    && rm -rf /tmp/patches
+
+# deps only (code is on PYTHONPATH, so .git and tools/ stay available)
+RUN cd src && UV_PROJECT_ENVIRONMENT=/app/venv UV_CACHE_DIR=/tmp/uvc \
+      uv sync --locked --python "$PYTHON_VERSION" --extra cuda --no-install-project && rm -rf /tmp/uvc
+# The wheel keeps its own file name, with %2B decoded back to the `+` of its local
+# version: uv (like pip) parses the name to learn what it is installing and rejects a
+# renamed file ("the wheel filename `fa.whl` is invalid: Must have a version"). Letting
+# curl, not pip, do the fetch is what keeps the `+` from being re-encoded.
+RUN whl="/tmp/$(basename "$FLASH_ATTN_WHL" | sed 's/%2B/+/g')" \
+    && curl -fsSL -o "$whl" "$FLASH_ATTN_WHL" \
+    && echo "$FLASH_ATTN_SHA256  $whl" | sha256sum -c - \
+    && /bin/uv pip install --python /app/venv/bin/python "einops==$EINOPS_VERSION" "$whl" \
+    && rm -f "$whl"
+
+COPY scripts/check-image.sh /app/check-image.sh
+
+# World-readable: see UV_PYTHON_INSTALL_DIR above -- the whole tree has to be usable
+# by whatever uid the cluster gives the container.
+RUN chmod -R a+rX /app
+
+ENV PATH="/app/venv/bin:$PATH" PYTHONPATH=/app/src \
+    PYTORCH_ALLOC_CONF=expandable_segments:True
+WORKDIR /app/src
