@@ -24,7 +24,7 @@ target_expectations:
       - config:
           benchmark: tau3-bench
           phase: score
-          image: us.icr.io/cil15-shared-registry/gb-step-eval-tau-cpu:ce003c94
+          image: quay.io/granitebuild/steps/eval/tau/images/cpu:ea0bc96d
 # The Space rendered by `make space` (the local tau step), as for the other
 # clusters; publish-step rewrites it to configurations/spaces/local. The
 # environment comes from the shared BlueVela SLURM space.

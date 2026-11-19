@@ -13,7 +13,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "mmlu-prox-lite"
-            image: "us.icr.io/cil15-shared-registry/gb-step-eval-lmeval:ce003c94"
+            image: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:ea0bc96d"
             # answers=gold: the GoldLM answers every question with its reference
             # letter, so no model is served and nothing needs a GPU or a key.
             model_path: "none"

@@ -22,11 +22,10 @@ selects which benchmark in the family a target runs.
 
 ## Images
 
-> **The image tags pinned in the recipes live on an IBM-internal registry**
-> (`us.icr.io/cil15-shared-registry`) — a temporary measure until the step
-> framework builds and publishes per-step images to a public registry (#565).
-> Outside IBM, build the family images yourself (below) and point the recipes'
-> `IMAGE` / `IMAGE_CPU` parameters at yours.
+> **The image tags pinned in the recipes live on `quay.io/granitebuild`** —
+> a public registry, so anyone can pull them anonymously; each recipe's
+> `IMAGE` / `IMAGE_CPU` parameters name them. To run your own builds instead,
+> build the family images (below) and repoint those parameters.
 
 `make images REGISTRY=...` from this directory builds every family image from
 `<family>/Dockerfile.{gpu,cpu}` (build context: this directory; see the

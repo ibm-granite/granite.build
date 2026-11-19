@@ -20,8 +20,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:ce003c94"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:ce003c94"
+IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:ba1c2bbe"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:ba1c2bbe"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""

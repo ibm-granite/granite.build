@@ -26,11 +26,11 @@ HF_HOME: ""
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
 # Fill with the tag of a built + pushed family image before the first run (this benchmark's
 # module is new, so existing nemoskills tags predate it):
-#   make -C steps/eval image-nemoskills REGISTRY=us.icr.io/cil15-shared-registry publish-image-nemoskills REGISTRY=...
+#   make -C steps/eval image-nemoskills REGISTRY=quay.io/granitebuild publish-image-nemoskills REGISTRY=...
 #   make -C steps/eval image-cpu-nemoskills REGISTRY=... publish-image-cpu-nemoskills REGISTRY=...
 # (the tag defaults to the building checkout's git short SHA).
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:ce003c94"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:ce003c94"
+IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:ba1c2bbe"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:ba1c2bbe"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""

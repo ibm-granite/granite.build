@@ -16,7 +16,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "math-500"
-            image: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills:ce003c94"
+            image: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:ea0bc96d"
             model_path: "ibm-granite/granite-4.2-3b"
             options: "answers=gold"
             # Relative: composes and then resolves against the per-run
@@ -57,7 +57,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "math-500"
-            image: "us.icr.io/cil15-shared-registry/gb-step-eval-nemoskills-cpu:ce003c94"
+            image: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:ea0bc96d"
             model_path: "ibm-granite/granite-4.2-3b"
             options: "answers=gold"
             # The generate target's output dir, followed from the artifact:

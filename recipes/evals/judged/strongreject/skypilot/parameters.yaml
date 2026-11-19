@@ -21,8 +21,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-judged:ce003c94"
-IMAGE_CPU: "us.icr.io/cil15-shared-registry/gb-step-eval-judged-cpu:ce003c94"
+IMAGE: "quay.io/granitebuild/steps/eval/judged/images/gpu:ea0bc96d"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/judged/images/cpu:ea0bc96d"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""

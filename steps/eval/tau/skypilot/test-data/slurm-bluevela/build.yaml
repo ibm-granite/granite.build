@@ -16,7 +16,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "tau3-bench"
-            image: "us.icr.io/cil15-shared-registry/gb-step-eval-tau:ce003c94"
+            image: "quay.io/granitebuild/steps/eval/tau/images/gpu:ea0bc96d"
             model_path: "ibm-granite/granite-4.2-3b"
             options: "agent=gold"
             # Relative: composes and then resolves against the per-run
@@ -58,7 +58,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "tau3-bench"
-            image: "us.icr.io/cil15-shared-registry/gb-step-eval-tau-cpu:ce003c94"
+            image: "quay.io/granitebuild/steps/eval/tau/images/cpu:ea0bc96d"
             model_path: "ibm-granite/granite-4.2-3b"
             options: "agent=gold"
             # The generate target's output dir, followed from the artifact:

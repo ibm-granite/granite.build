@@ -23,9 +23,9 @@ HF_HOME: ""
 
 # ─── Image (GPU only) ────────────────────────────────────
 # Fill with the tag of a built + pushed family image before the first run:
-#   make -C steps/eval image-mcpmark REGISTRY=us.icr.io/cil15-shared-registry publish-image-mcpmark REGISTRY=...
+#   make -C steps/eval image-mcpmark REGISTRY=quay.io/granitebuild publish-image-mcpmark REGISTRY=...
 # (the tag defaults to the building checkout's git short SHA).
-IMAGE: "us.icr.io/cil15-shared-registry/gb-step-eval-mcpmark:ce003c94"
+IMAGE: "quay.io/granitebuild/steps/eval/mcpmark/images/gpu:ea0bc96d"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
