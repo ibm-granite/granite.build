@@ -132,6 +132,40 @@ def test_the_multipliers_are_not_checked_for_a_llama_export(expected_sp):
     assert check_config(_cfg("llama_faithful"), expected_sp) == []
 
 
+def test_a_collapsed_mup_multiplier_is_an_error_for_a_moe_hybrid_export(expected):
+    """``_export_granitemoehybrid_config`` writes the same four multiplier fields.
+
+    Upstream's MoE/hybrid exporter (``tools/model_conversion/granitemoehybrid.py``,
+    pinned at a9c6e2b8) sets ``embedding_multiplier`` / ``residual_multiplier`` /
+    ``logits_scaling`` / ``attention_multiplier`` with exactly the same
+    ``1 if ... is None`` fallback as the dense ``granite`` exporter, so a MoE muP run
+    can lose a multiplier the same way -- and the recipe reaches that path whenever
+    ``EXPORT_MODEL_TYPE: auto`` resolves to ``granitemoehybrid``.
+    """
+    errors = check_config(_cfg("granitemoehybrid_mup_collapsed"), expected)
+    assert len(errors) == 2
+    assert any("residual_multiplier" in e and "m_residual" in e for e in errors)
+    assert any("logits_scaling" in e and "m_width" in e for e in errors)
+
+
+def test_a_faithful_moe_hybrid_export_reports_nothing(expected):
+    cfg = _cfg("granitemoehybrid_mup_collapsed")
+    cfg["residual_multiplier"] = expected["m_residual"]
+    cfg["logits_scaling"] = expected["m_width"]
+    assert check_config(cfg, expected) == []
+
+
+def test_an_absent_multiplier_field_is_an_error_for_a_moe_hybrid_export(expected):
+    """A lost multiplier is normally written as ``1``, but absence is no better."""
+    cfg = _cfg("granitemoehybrid_mup_collapsed")
+    cfg["residual_multiplier"] = expected["m_residual"]
+    cfg["logits_scaling"] = expected["m_width"]
+    del cfg["embedding_multiplier"]
+    errors = check_config(cfg, expected)
+    assert len(errors) == 1
+    assert "embedding_multiplier" in errors[0]
+
+
 def test_max_position_embeddings_is_compared_against_sequence_length(expected):
     cfg = _cfg("granite_faithful")
     cfg["max_position_embeddings"] = 4096

@@ -27,11 +27,15 @@ cannot load a tokenizer at all it swallows the exception and writes *none*. So t
 copies the tokenizer files byte for byte with ``shutil.copy2`` and :func:`check_tokenizer`
 asserts byte-identity -- a real byte comparison, not a size or mtime check.
 
-**muP multipliers.** ``_export_granite_config`` maps lm-engine's ``m_emb`` / ``m_residual``
-/ ``m_width`` / ``attention_multiplier`` onto ``embedding_multiplier`` /
-``residual_multiplier`` / ``logits_scaling`` / ``attention_multiplier``, substituting ``1``
-for any that is ``None``. Losing one changes the model's effective parametrization while
-the config still looks plausible.
+**muP multipliers.** ``_export_granite_config`` and ``_export_granitemoehybrid_config``
+both map lm-engine's ``m_emb`` / ``m_residual`` / ``m_width`` / ``attention_multiplier``
+onto ``embedding_multiplier`` / ``residual_multiplier`` / ``logits_scaling`` /
+``attention_multiplier``, substituting ``1`` for any that is ``None``. Losing one changes
+the model's effective parametrization while the config still looks entirely plausible --
+the lost value is written as ``1``, not left absent, so nothing short of comparing
+against what the run trained with will catch it. Both are checked: dense muP exports as
+``granite`` and MoE/hybrid muP as ``granitemoehybrid``, and the ``llama`` config has no
+multiplier fields to check.
 
 Both entry points are pure and stdlib-only (``json``, ``pathlib``, ``filecmp``): they run
 in the export pod after the heavy work, and must not need torch or transformers. Each
@@ -63,11 +67,17 @@ _PLAIN_FIELDS = {
     "sequence_length": "max_position_embeddings",
 }
 
-#: The muP mapping ``_export_granite_config`` applies. Checked only for a ``granite``
-#: export, as the recipe's model_type resolution guarantees: a standard-parametrization
-#: run goes out as ``llama``, whose config has no multiplier fields at all. (Upstream's
-#: ``granitemoehybrid`` exporter writes the same four fields, so widening the gate is a
-#: one-line change once a MoE recipe exists.)
+#: The muP mapping the Granite exporters apply. Checked for the two model_types whose
+#: config carries the multipliers, and only those: ``_export_granite_config``
+#: (``tools/model_conversion/granite.py``) and ``_export_granitemoehybrid_config``
+#: (``tools/model_conversion/granitemoehybrid.py``) each write all four, with the same
+#: ``1 if config.m_* is None else config.m_*`` fallback, whereas
+#: ``_export_llama_config`` writes none of them -- it asserts ``attention_multiplier``
+#: is ``None`` and refuses a muP model outright. So a standard-parametrization run goes
+#: out as ``llama`` and has nothing here to check, while both muP paths, dense and
+#: MoE/hybrid, are covered.
+_MUP_CHECKED_MODEL_TYPES = ("granite", "granitemoehybrid")
+
 _MUP_FIELDS = {
     "m_emb": "embedding_multiplier",
     "m_residual": "residual_multiplier",
@@ -128,8 +138,8 @@ def check_config(cfg: dict, expected: dict) -> list[str]:
         if knob in expected:
             errors += _compare(cfg, field, expected[knob], knob)
 
-    # muP: only a granite export carries the multipliers (see _MUP_FIELDS).
-    if model_type == "granite":
+    # muP: only the Granite configs carry the multipliers (see _MUP_FIELDS).
+    if model_type in _MUP_CHECKED_MODEL_TYPES:
         for knob, field in _MUP_FIELDS.items():
             if knob in expected:
                 errors += _compare(cfg, field, expected[knob], knob)

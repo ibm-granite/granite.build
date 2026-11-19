@@ -12,11 +12,11 @@ version: 0.1.0
 # cloned at launch. The step's own Python helpers live in src/ and are file-mounted
 # into the run (.gbignore keeps them out of the Jinja pass).
 #
-# SCAFFOLD. The launcher's `run:` block is deliberately a stub: the two-stage export
-# (`lm_engine.training.unshard`, then tools.model_conversion.export_to_huggingface),
-# the tokenizer copy and the parity check land in a later change. Of src/, only
-# export_checks.py — the post-export verification — exists. Only the config schema
-# below is final.
+# SCAFFOLD. The launcher's `run:` block is deliberately a stub: wiring the config
+# below to src/export.py lands in a later change. src/ itself is complete --
+# export.py drives the two-stage export (`lm_engine.training.unshard`, then
+# tools.model_conversion.export_to_huggingface), the tokenizer copy, the checks and
+# the logit parity comparison; export_checks.py is the post-export verification.
 #
 type: training
 config:

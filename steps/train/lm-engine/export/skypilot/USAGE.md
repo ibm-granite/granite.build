@@ -6,9 +6,9 @@ One target is one rung: it unshards the checkpoint, converts it to a Hugging Fac
 architecture, copies the trained tokenizer in byte for byte, and verifies the result
 against the values the model was trained with.
 
-> **Status: scaffold.** The configuration schema below is final, but the launcher's
-> `run:` block is still a stub that exits non-zero. Until the implementation lands, this
-> step cannot run a build.
+> **Status: scaffold.** The configuration schema below and the export driver
+> (`src/export.py`) are final, but the launcher's `run:` block is still a stub that exits
+> non-zero. Until it lands, this step cannot run a build.
 
 Reference it from a `build.yaml` as:
 
@@ -36,9 +36,9 @@ The exporter supports three architectures, and the recipe picks one from the mod
 
 | The model | `model_type` | Why |
 | --- | --- | --- |
-| muP (`m_emb`/`m_residual`/`m_width`/`attention_multiplier` set) | `granite` | A Granite config is the only one that carries the four multipliers. |
+| muP (`m_emb`/`m_residual`/`m_width`/`attention_multiplier` set) | `granite` | The dense Granite config carries the four multipliers. |
 | standard parametrization | `llama` | A Granite config would have to write `attention_multiplier: null`, which upstream refuses. |
-| MoE / Mamba hybrid | `granitemoehybrid` | The only target with expert and Mamba fields. |
+| MoE / Mamba hybrid | `granitemoehybrid` | The only target with expert and Mamba fields. It carries the four multipliers too, so a MoE muP run is verified the same way. |
 | sliding-window attention | — | Refused: no target architecture reproduces it faithfully. |
 
 ### What `expected` holds
@@ -53,14 +53,58 @@ knobs it trained with:
 | `tie_word_embeddings` | `tie_word_embeddings` | Absent is an error: the Hugging Face default differs by architecture. |
 | `bos_token_id`, `eos_token_id`, `pad_token_id` | the same fields | `null` must be `null` on both sides. |
 | `sequence_length` | `max_position_embeddings` | The one rename. |
-| `m_emb` | `embedding_multiplier` | `granite` only. |
-| `m_residual` | `residual_multiplier` | `granite` only. |
-| `m_width` | `logits_scaling` | `granite` only. |
-| `attention_multiplier` | `attention_multiplier` | `granite` only. |
+| `m_emb` | `embedding_multiplier` | `granite` and `granitemoehybrid` only — the `llama` config has no multiplier fields. |
+| `m_residual` | `residual_multiplier` | `granite` and `granitemoehybrid` only — the `llama` config has no multiplier fields. |
+| `m_width` | `logits_scaling` | `granite` and `granitemoehybrid` only — the `llama` config has no multiplier fields. |
+| `attention_multiplier` | `attention_multiplier` | `granite` and `granitemoehybrid` only — the `llama` config has no multiplier fields. |
 
 Every key present in `expected` must be present in the exported config and compare
 exactly; every divergence is reported, not just the first. Why each check is there is in
 the docstring of `src/export_checks.py`.
+
+## What it does
+
+Per rung, in order, logging each stage:
+
+1. **Unshard.** Writes an `UnshardingArgs` config and runs
+   `python -m lm_engine.training.unshard --config <cfg>` — single process, no `torchrun`
+   and no process group — which turns the sharded `global_step<N>/` tree into an
+   unsharded lm-engine `gpt_base` checkpoint that transformers and vLLM cannot load.
+2. **Convert.** `tools.model_conversion.export_to_huggingface(unsharded, model_type,
+   save_path=output_dir)` rewrites it as the chosen Hugging Face architecture.
+3. **Tokenizer.** Copies the `tokenizer_path` files in with `shutil.copy2`, and never
+   `save_pretrained`. It runs *after* the conversion on purpose: upstream's exporter ends
+   in `tokenizer.save_pretrained(...)` inside a bare `try`/`except`, so the copy has to
+   overwrite whatever that wrote. Any tokenizer file in `output_dir` that
+   `tokenizer_path` does not have is removed — it can only have been synthesised.
+4. **Checks.** `src/export_checks.py` compares the written `config.json` against
+   `expected` and proves the tokenizer files are byte-identical. Every problem is
+   reported, not just the first.
+5. **Parity.** Loads the unsharded lm-engine model and the exported Hugging Face model on
+   the CPU in fp32, runs one forward pass of 4x128 fixed random ids through each, and
+   requires `max |Δ logits| < parity_tolerance`. This is the backstop for a conversion
+   bug no config check can see.
+
+Then it writes `export.json` into `output_dir` — the iteration, `train_dir`, model_type,
+dtype, the pinned lm-engine sha, the image tag, the tokenizer files copied, and the parity
+delta, tolerance and pass flag — deletes the unsharded checkpoint, and prints the one line
+gbserver binds the output from:
+
+```
+GB_ARTIFACT_ID:hf_model GB_ARTIFACT_PATH:<output_dir>
+```
+
+That line is printed **only** after every check and the parity comparison have passed. A
+failed check or a parity delta over the tolerance fails the target, prints every problem,
+and **keeps** the unsharded checkpoint so the conversion can be debugged.
+
+### Re-running
+
+A re-run whose `export.json` records the same iteration, lm-engine sha and `model_type`
+*and* a passing parity check prints the artifact line and exits without doing the work.
+Anything else — a mismatch on any of the three, a recorded parity failure, a manifest that
+will not parse — exports again. Re-exporting costs minutes on a CPU pod; trusting a stale
+manifest costs a whole eval sweep.
 
 ## Inputs
 
