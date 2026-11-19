@@ -104,10 +104,12 @@ def test_pr_messages_stop_once_given_up(monkeypatch):
         username="u",
         build_archive="x",
     )
-    pr_logger = buildlogger.BuildPRLogger(stored_build=build, gh_token="tok")
+    # MyGHApi probes the repo on construction.
     api = MagicMock()
     api.update_issue_comment.side_effect = RuntimeError("github down")
-    pr_logger.github_api = api
+    monkeypatch.setattr(buildlogger, "MyGHApi", MagicMock(return_value=api))
+    pr_logger = buildlogger.BuildPRLogger(stored_build=build, gh_token="tok")
+    assert pr_logger.github_api is api
     try:
         for _ in range(10):
             pr_logger.info("hello")  # never raises

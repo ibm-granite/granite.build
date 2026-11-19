@@ -15,7 +15,8 @@
 #      without which SkyPilot leaves the Kubernetes cloud disabled. `make
 #      kube-setup` runs install-prereqs.sh first, which installs kind, socat and
 #      GNU netcat when it can, so this check mostly catches docker and kubectl
-#   2. Runs `sky local up --no-gpus`, which creates (or reuses) the kind cluster
+#   2. Runs `sky local up --no-gpus`, which creates (or reuses) the kind cluster,
+#      with gbserver's sky_patches plugin configured for the API server it starts
 #   3. Verifies the API server answers, runs `sky check kubernetes` (sky local up
 #      skips it when the cluster already exists) and fails unless Kubernetes is
 #      enabled, then prints each node's allocatable CPU and memory, which is what
@@ -116,6 +117,16 @@ fi
 previous_context="$(kubectl config current-context 2>/dev/null || true)"
 
 # ---- 2. Create (or reuse) the cluster ----
+# `sky local up` may start the API server, which loads plugins only at startup.
+SKYPILOT_SERVER_PLUGINS_CONFIG="$(python -c '
+import os
+from gbcommon.types.constants import get_gb_home_dir
+from gbserver.utils import sky_patches
+sky_patches.ensure_plugin_config(get_gb_home_dir())
+print(os.environ["SKYPILOT_SERVER_PLUGINS_CONFIG"])
+')"
+export SKYPILOT_SERVER_PLUGINS_CONFIG
+
 echo "setup-kind: running 'sky local up --no-gpus --name ${KIND_CLUSTER_NAME}'"
 sky local up --no-gpus --name "${KIND_CLUSTER_NAME}"
 
@@ -184,6 +195,13 @@ check_out="$(sky check kubernetes 2>&1 || true)"
 if ! printf '%s' "$check_out" | sed $'s/\033\\[[0-9;]*m//g' | grep -q "Kubernetes: enabled"; then
   echo "setup-kind: ERROR 'sky check kubernetes' did not report Kubernetes enabled:" >&2
   printf '%s\n' "$check_out" >&2
+  exit 1
+fi
+
+# A server started before this script may lack the plugin.
+if ! python -c 'from gbserver.utils import sky_patches; raise SystemExit(not sky_patches.server_has_patches())'; then
+  echo "setup-kind: ERROR the SkyPilot API server runs without gbserver's sky_patches plugin." >&2
+  echo "setup-kind: run 'sky api stop' and re-run this script." >&2
   exit 1
 fi
 
