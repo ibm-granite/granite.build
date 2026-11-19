@@ -207,6 +207,72 @@ def test_single_gpu_train_runs_sr_train_into_the_efs(tmp_path):
     assert saved["base_model_name_or_path"] == "ibm-granite/granite-4.2-8b"
 
 
+def test_train_writes_the_whole_sr_config(tmp_path):
+    """The command's printf writes the SR training config line by line. A
+    dropped or misspelled key would otherwise surface only in a GPU run, as a
+    wrong loss mask or a key sr-train rejects."""
+    _run(tmp_path, "train", "RUN_ID=t1")
+    cfg = yaml.safe_load((tmp_path / "work" / "sr_answerability.yaml").read_text())
+    data = tmp_path / "repo" / "train"
+    assert cfg == {
+        "model": {"base": str(tmp_path / "base")},
+        "data": {
+            "train_path": str(data / "train.jsonl"),
+            "val_path": str(data / "test.jsonl"),
+            "max_length": 8192,
+            "assistant_marker": "<|im_start|>assistant\n<think></think>",
+        },
+        "adapter": {
+            "target_modules": {
+                "q_proj": 16,
+                "o_proj": 16,
+                "gate_proj": 16,
+                "up_proj": 16,
+                "down_proj": 16,
+                "cross_stream": 16,
+            },
+            "alpha": 32,
+            "dropout": 0.05,
+            "last_context_token": "</think>",
+            "last_token": "<|im_end|>",
+        },
+        "optimizer": {
+            "name": "adamw_torch",
+            "learning_rate": 5.0e-05,
+            "weight_decay": 0.01,
+        },
+        "scheduler": {"type": "cosine", "warmup_ratio": 0.05},
+        "batch": {
+            "per_device_train": 1,
+            "gradient_accumulation": 8,
+            "per_device_eval": 4,
+            "gradient_checkpointing": True,
+        },
+        "validation": {
+            "strategy": "epoch",
+            "load_best_model_at_end": True,
+            "metric_for_best_model": "eval_loss",
+            "greater_is_better": False,
+            "early_stopping_patience": 3,
+            "stop_on_nan": True,
+        },
+        "save": {
+            "strategy": "epoch",
+            "total_limit": 3,
+            "output_dir": str(
+                tmp_path / "efs/granite-switch/answerability-sr/adapters/t1"
+            ),
+        },
+        "runtime": {
+            "num_train_epochs": 3,
+            "seed": 0,
+            "logging_steps": 1,
+            "dataloader_num_workers": 4,
+            "report_to": ["tensorboard"],
+        },
+    }
+
+
 def test_ddp_train_runs_accelerate_with_one_process_per_gpu(tmp_path):
     calls, _, _ = _run(
         tmp_path,
