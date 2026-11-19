@@ -5,7 +5,7 @@ The pin exists because transformers 5.8.0's default mapping resolves mamba-ssm a
 ``version=1`` -- the kernels-community repo's v1 branch -- whose build imports
 ``GreedySearchDecoderOnlyOutput``, a symbol transformers 5.x renamed. Every fresh
 hybrid (granitemoehybrid) model load dies on that import mid-load (measured
-2026-11-13 on BlueVela, image 1e17b9dd: teacher-divergence failed its build,
+2026-11-13 on BlueVela, image b6310378: teacher-divergence failed its build,
 preflight-check's probe reported ``loaded=NONE``). ``v0.0.3`` is the newest
 compatible revision. See ``hub_kernel_pins.py`` for the full measurement.
 

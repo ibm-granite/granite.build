@@ -318,7 +318,7 @@ Worth applying to any result before believing it:
 ### Runtime
 
 - **Type** `custom`; **environment** SkyPilot, LSF only (`subtypes: [lsf]`).
-- **Image** `docker:quay.io/granitebuild/steps/train/distill/images/gpu:1e17b9dd`, prebuilt; this
+- **Image** `docker:quay.io/granitebuild/steps/train/distill/images/gpu:b6310378`, prebuilt; this
   step builds none.
 - **GPU required** — two models' forward passes. Accelerators come from the build.yaml, so one
   step serves a 3B-teacher smoke run and a 30B-teacher reference run.
