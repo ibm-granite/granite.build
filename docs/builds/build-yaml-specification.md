@@ -68,15 +68,19 @@ Asset stores
 ### Capabilities
 
 - **Multiple backends.** Each target picks its compute environment. One build can prepare data on
-  a CPU queue, train on a GPU cluster and evaluate on another backend.
+  a CPU queue, train on a GPU cluster and evaluate on another backend. See
+  [C.2 Environments](#c2-environments) and [D. SkyPilot environment
+  specifics](#d-skypilot-environment-specifics).
 - **Artifact stores.** HuggingFace, S3/COS, Git, local files, worker-local paths and in-memory
-  values are all addressed by URI.
+  values are all addressed by URI. See [Supported URIs](#supported-uris).
 - **Retry and reuse.** Builds retry automatically. Retries can reuse the outputs of targets that
-  already succeeded, and individual steps can retry as well.
+  already succeeded, and individual steps can retry as well. See [C.7 Retries](#c7-retries).
 - **Events and lineage.** Build events feed notifications and the web UI. Lineage records which
-  artifacts produced which.
+  artifacts produced which. See
+  [Lineage](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/lineage.md) and
+  [Event notifications](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/event-notifications.md).
 - **Parameterization.** `$${PARAM}` placeholders and Jinja templates let one `build.yaml` serve
-  many runs.
+  many runs. See [C.6 Parameters and Jinja templating](#c6-parameters-and-jinja-templating).
 
 ### Build orchestration within a space
 
