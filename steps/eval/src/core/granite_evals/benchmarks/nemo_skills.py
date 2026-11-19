@@ -102,6 +102,7 @@ import http.server
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -125,7 +126,7 @@ NS_COMMIT = "bcf059af55c20a89f797724598f9908d126153e6"
 
 JUDGE_BASE_URL = ""  # set --option judge_base_url=<OpenAI-compatible judge endpoint>
 JUDGE_MODEL = "aws/claude-sonnet-5"
-JUDGE_API_KEY_ENV = "GRANITE_EVALS_JUDGE_API_KEY"
+JUDGE_API_KEY_ENV = "EVAL_JUDGE_API_KEY"
 
 AZURE_JUDGE_BASE_URL = JUDGE_BASE_URL
 AZURE_JUDGE_MODEL = "azure/gpt-4o-ncf"
@@ -562,16 +563,23 @@ class NemoSkillsBenchmark(Benchmark):
 
     def judge_overrides(self) -> list[str]:
         module_args = shlex.split(self._module_attr("JUDGE_ARGS", "") or "")
-        return [
+        # Judges run greedy; top_p unset because Anthropic-served judges reject
+        # temperature and top_p together.
+        args = [
             *module_args,
             *self.judge_args,
-            # Judges run greedy; top_p unset because Anthropic-served judges reject
-            # temperature and top_p together.
             "++inference.temperature=0.0",
             "++inference.top_p=null",
             f"++inference.tokens_to_generate={self.opt('judge_max_tokens', 16000)}",
-            *_passthrough(self.config.options, "judge."),
-        ]
+        ]  # fmt: skip
+        model = self.opt("judge_model", self.judge_model_default or JUDGE_MODEL)
+        if _sets_reasoning_effort(module_args, self.judge_args) and _ns_rejects_reasoning_effort(model):
+            # A judge config written for a reasoning model (imo-answerbench's is
+            # gemini-flavoured) must not reach a judge ns's wrapper rejects it
+            # for: every call would ValueError. Null it; a judge.-prefixed option
+            # still overrides (the passthrough lands after: hydra last-wins).
+            args.append("++inference.reasoning_effort=null")
+        return [*args, *_passthrough(self.config.options, "judge.")]
 
     def _judge_all(self, gen_dir: Path, judged_dir: Path, base_url: str, served: str) -> dict[str, Any]:
         ep = self.judge_endpoint(base_url, served)
@@ -807,6 +815,21 @@ def _hydra(value: Any) -> str:
 
 def _passthrough(options: dict[str, Any], prefix: str) -> list[str]:
     return [f"++{k[len(prefix):]}={v}" for k, v in sorted(options.items()) if k.startswith(prefix)]
+
+
+def _ns_rejects_reasoning_effort(model: str) -> bool:
+    """Whether ns's OpenAI wrapper refuses ``reasoning_effort`` for ``model``: it accepts
+    the parameter only from gpt-5*/o*-series models and raises ``ValueError`` for every
+    other one per call (nemo_skills/inference/model/openai.py) -- e.g. the claude judge
+    default, or ``judge_model=self``."""
+    return "gpt-5" not in model and re.match(r"^o\d", model) is None
+
+
+def _sets_reasoning_effort(*arg_lists: list[str] | tuple[str, ...]) -> bool:
+    """Whether any hydra arg in the lists sets a non-null ``inference.reasoning_effort``."""
+    return any(
+        a.startswith("++inference.reasoning_effort=") and not a.endswith("=null") for args in arg_lists for a in args
+    )
 
 
 # -- local OpenAI-compatible helpers ---------------------------------------------
@@ -1094,6 +1117,93 @@ class HMMTFeb25(NemoSkillsBenchmark):
     ns_benchmark = "hmmt_feb25"
     dataset = "MathArena/hmmt_feb_2025"
     dataset_revision = "6fdc4277120810ff75aa22d2d5489b91f7a262a1"
+
+
+@register
+class AIME24(NemoSkillsBenchmark):
+    """AIME 2024 I+II (30 problems), shipped in the ns repo (dataset/aime24/test.txt)."""
+
+    id = "aime24"
+    metric = "pass@1 symbolic correct"
+    ns_benchmark = "aime24"
+    dataset = f"{NS_REPO}/tree/{NS_COMMIT}/nemo_skills/dataset/aime24"
+    dataset_revision = NS_COMMIT
+    prepared_sha256 = "e428f83ec735201c9db2a232727f4c20dbce87079ed386b6e3fb7f756d078756"
+
+
+@register
+class AIME26(NemoSkillsBenchmark):
+    """AIME 2026 I+II (30 problems), MathArena's aime_2026: ns's prepare reads
+    its only split (train) and writes test.jsonl (its --split default)."""
+
+    id = "aime26"
+    metric = "pass@1 symbolic correct"
+    ns_benchmark = "aime26"
+    dataset = "MathArena/aime_2026"
+    dataset_revision = "d61f486805306e6e6b5913504c07763a99e1b112"
+
+
+MATH_500_URL = "https://media.githubusercontent.com/media/openai/prm800k/00811d6de065642a6967b9017d4cee59550c0ef4/prm800k/math_splits/test.jsonl"
+"""prm800k's math_splits/test.jsonl at the file's last commit (2023-05-31). LFS-tracked:
+raw.githubusercontent.com serves only the pointer (a 3-line text file), so this is the
+contents API's download_url, which serves the LFS-resolved bytes; ns's own prepare wgets
+the raw main URL and would get the pointer too. The pin below is the pointer's oid, i.e.
+the content's sha256."""
+MATH_500_SHA256 = "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132"
+MATH_500_N = 500
+
+
+@register
+class Math500(NemoSkillsBenchmark):
+    """MATH-500 (the 500-problem test subset of MATH that openai/prm800k's
+    math_splits holds), ns's generic/math prompt and symbolic answer checking.
+    ns's prepare (a wget of the URL plus field renames) bypasses the pinned
+    urlretrieve, so it runs natively here: the raw jsonl downloaded from the
+    commit-pinned URL and hashed, ``answer``/``solution`` renamed to
+    ``expected_answer``/``reference_solution`` (ns dataset/math-500/prepare.py),
+    test.jsonl written."""
+
+    id = "math-500"
+    metric = "pass@1 symbolic correct"
+    ns_benchmark = "math-500"
+    dataset = MATH_500_URL
+    dataset_revision = f"sha256:{MATH_500_SHA256}"
+
+    def prepare_data(self) -> tuple[Path, dict[str, Any]]:
+        src = self.config.dataset
+        if src and Path(src).exists():
+            return super().prepare_data()  # an already prepared jsonl
+        ddir = self.config.output_dir / "ns-data" / "math-500"
+        ddir.mkdir(parents=True, exist_ok=True)
+        raw = ddir / "original_test.jsonl"
+        if not raw.exists() or _sha256(raw) != MATH_500_SHA256:
+            url = src or MATH_500_URL
+            log.info("%s: downloading %s", self.id, url)
+            r = httpx.get(url, follow_redirects=True, timeout=300)
+            r.raise_for_status()
+            digest = hashlib.sha256(r.content).hexdigest()
+            if digest != MATH_500_SHA256:
+                hint = " (an LFS pointer, not the content?)" if r.content.startswith(b"version https://git-lfs") else ""
+                raise RuntimeError(f"{url}: sha256 {digest}, expected {MATH_500_SHA256}{hint}")
+            raw.write_bytes(r.content)
+        rows = []
+        for line in raw.read_text().splitlines():
+            if line.strip():
+                entry = json.loads(line)
+                entry["expected_answer"] = entry.pop("answer")
+                entry["reference_solution"] = entry.pop("solution")
+                rows.append(entry)
+        if len(rows) != MATH_500_N:
+            raise RuntimeError(f"{raw}: {len(rows)} rows, expected {MATH_500_N}")
+        out = ddir / "test.jsonl"
+        _write_jsonl(out, rows)
+        return out, {
+            "source": "ns math-500 prepare (wget + renames), URL pinned",
+            "url": MATH_500_URL,
+            "raw_sha256": MATH_500_SHA256,
+            "ns_commit": NS_COMMIT,
+            "sha256": _sha256(out),
+        }
 
 
 @register

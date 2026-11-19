@@ -1,0 +1,11 @@
+{
+  "document": {
+    "elements": [
+      {"content": "SYNTHETIC TEST DOCUMENT - OfficeQA build-test fixture. Invented content, not real Treasury data.", "bbox": [{"page_id": 0}]},
+      {"content": "Fiscal Year 2027 projections: total revenue 4,000.0 billion dollars; total outlays 3,876.6 billion dollars; projected surplus 123.4 billion dollars.", "bbox": [{"page_id": 0}]},
+      {"content": "<table><tr><th>Item</th><th>FY2027</th><th>FY2028</th></tr><tr><td>Revenue</td><td>4000.0</td><td>4010.0</td></tr><tr><td>Outlays</td><td>3876.6</td><td>3960.0</td></tr><tr><td>Surplus</td><td>123.4</td><td>50.0</td></tr></table>", "bbox": [{"page_id": 1}]},
+      {"content": "The surplus is projected to decline to 50.0 billion dollars in FY2028, a decline of 73.4 billion dollars from FY2027.", "bbox": [{"page_id": 1}]},
+      {"content": "", "bbox": [{"page_id": 2}]}
+    ]
+  }
+}

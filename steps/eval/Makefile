@@ -20,7 +20,7 @@
 # and the family's benchmark modules in <family>/src/ (which the Dockerfiles
 # overlay onto the core's granite_evals/benchmarks/ package directory).
 #
-#   make images REGISTRY=quay.io/myorg            build all 9 GPU + 7 CPU images (`-cpu` suffix)
+#   make images REGISTRY=quay.io/myorg            build all 12 GPU + 9 CPU images (`-cpu` suffix)
 #   make image-nemoskills REGISTRY=...            build one
 #   make publish-images REGISTRY=...              push all (needs a prior `podman login`)
 #   make test-src                                 run the vendored unit tests (no GPU, no network)
@@ -30,9 +30,9 @@
 # The step images are referenced from each family's step-template.yaml as
 # ${REGISTRY}/gb-step-eval-<family>:${IMAGE_VERSION}.
 
-FAMILIES := bfcl bird ifbench judged lmeval nemoskills swebench tau tbench
+FAMILIES := bfcl bird ifbench judged lmeval mcpmark nemoskills officeqa swebench tau tbench
 # Families whose benchmarks split into GPU generate + CPU score (--phase); lmeval and tbench score inside generation.
-CPU_FAMILIES := bfcl bird ifbench judged nemoskills swebench tau
+CPU_FAMILIES := bfcl bird ifbench judged nemoskills officeqa swebench tau
 
 REGISTRY  ?=
 PLATFORM  ?= linux/amd64
@@ -92,3 +92,24 @@ prefetch:
 
 check-pins:
 	$(PYTHON) scripts/prefetch_datasets.py --check
+
+# Pre-build dependency gate: trivy over the resolved dependency sets -- the
+# shared uv.lock (every family's forks resolve in it) and every family's nested
+# requirement files (e.g. nemoskills' comet-requirements.txt). Catches the
+# lock-level CVE class (a pinned dependency with a fix available) in seconds,
+# before any image build; the image-level scan (the fleet's gate) stays the
+# backstop for what the lock cannot see: apt packages, vendored harnesses, and
+# bits vendored inside tools (pip's own certifi). Same rule as the image gate:
+# zero fixable CRITICALs; scan-ignore is the documented exception list.
+scan-deps:
+	@command -v trivy >/dev/null 2>&1 || { echo "trivy is not on PATH; install it first" >&2; exit 1; }
+	@rc=0; \
+	for f in src/core/uv.lock $$(ls */*requirements*.txt 2>/dev/null); do \
+	  echo "== $$f"; \
+	  trivy fs --scanners vuln --severity CRITICAL --ignore-unfixed \
+	    --ignorefile scan-ignore --format json --output /tmp/scan-deps.json "$$f" 2>/dev/null; \
+	  n=$$(jq "[.Results[]?.Vulnerabilities[]?] | length" /tmp/scan-deps.json 2>/dev/null || echo "?"); \
+	  if [ "$$n" = "0" ]; then echo "OK: no fixable CRITICALs"; \
+	  else echo "SCAN-DEPS FAILED $$f: $$n fixable CRITICALs (trivy fs --severity CRITICAL --ignore-unfixed --ignorefile scan-ignore $$f)"; rc=1; fi; \
+	done; \
+	[ $$rc -eq 0 ] && echo "OK: dependencies clean" || exit 1

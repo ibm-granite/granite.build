@@ -89,8 +89,8 @@ def test_enroot_sandbox_kills_its_leftovers_before_remove(tmp_path, monkeypatch)
 def test_enroot_sandbox_gets_no_secrets(monkeypatch):
     # enroot start passes its environment into the sandbox, where model-written code runs.
     for name in (
-        "GRANITE_EVALS_JUDGE_API_KEY",
-        "GRANITE_EVALS_USER_API_KEY",
+        "EVAL_JUDGE_API_KEY",
+        "EVAL_USER_API_KEY",
         "HF_TOKEN",
         "AWS_SECRET_ACCESS_KEY",
     ):
