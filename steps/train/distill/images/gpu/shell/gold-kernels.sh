@@ -18,8 +18,8 @@
 # where it costs seconds and names its own fix. Three-way gate:
 #
 #   cached                        -> proceed silently
-#   missing, GOLD_PREFETCH_KERNELS=1 -> download now (needs egress), then proceed
-#   missing, otherwise            -> FATAL, naming the out-of-band prefetch job
+#   missing (default)             -> download now (~2s, needs egress), then proceed
+#   missing, GOLD_PREFETCH_KERNELS=0 -> FATAL, naming the out-of-band prefetch job
 #
 # WHICH KERNELS ARE REQUIRED. causal-conv1d and mamba-ssm only. These are the Mamba2
 # mixer kernels a Granite 4 hybrid model actually needs, and they are exactly the two
@@ -138,8 +138,13 @@ MSG
 
   echo "hub kernels: NOT cached -> $out"
 
-  if [[ "${GOLD_PREFETCH_KERNELS:-0}" == "1" ]]; then
-    echo "GOLD_PREFETCH_KERNELS=1: downloading now (needs egress to huggingface.co)..."
+  # Default ON (was opt-in): a cold cache is the NORMAL state on a fresh
+  # node, and the in-job download takes ~2 seconds -- far cheaper than
+  # losing a GPU allocation. Set GOLD_PREFETCH_KERNELS=0 only to enforce
+  # a pre-warmed cache in a controlled environment (the FATAL path below
+  # then names the out-of-band prefetch).
+  if [[ "${GOLD_PREFETCH_KERNELS:-1}" == "1" ]]; then
+    echo "GOLD_PREFETCH_KERNELS on (default): downloading now (needs egress to huggingface.co)..."
     HF_HUB_OFFLINE=0 REQUIRED_KERNEL_REPOS="$repo_list" "$pybin" - <<'PY'
 import os
 from gb_steps_post_training.distillation.hub_kernel_pins import pinned_revision
@@ -193,8 +198,9 @@ FATAL: required hub kernels are not in this account's HF cache:
 
     KERNEL_REPOS=kernels-community/flash-attn2 bash prefetch-kernels.sh
 
-  Or set GOLD_PREFETCH_KERNELS=1 to download inside this job instead. That works, but
-  it spends allocated GPU time on a network fetch and re-does it on every run.
+  Or set GOLD_PREFETCH_KERNELS=0 to enforce a pre-warmed cache (this FATAL)
+  instead of downloading in-job. The download is the default because it
+  costs ~2 seconds; enforcing a warm cache is an operational choice.
 MSG
   return 1
 }
