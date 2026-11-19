@@ -20,6 +20,12 @@ from gbserver.types.constants import (
     derive_analytics_database_url,
     derive_analytics_sql_connect_args,
 )
+from gbserver.types.constants_base import (
+    ENV_VAR_OIDC_CALLBACK_URL,
+    ENV_VAR_OIDC_CLIENT_ID,
+    ENV_VAR_OIDC_CLIENT_SECRET,
+    oidc_setting,
+)
 from gbserver.types.context import CliEnvironment, pass_environment
 from gbserver.utils.logger import get_logger
 
@@ -98,9 +104,9 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
 
 
 _SSO_REQUIRED_VARS = [
-    "GBSERVER_IBMID_CLIENT_ID",
-    "GBSERVER_IBMID_CLIENT_SECRET",
-    "GBSERVER_IBMID_CALLBACK_URL",
+    ENV_VAR_OIDC_CLIENT_ID,
+    ENV_VAR_OIDC_CLIENT_SECRET,
+    ENV_VAR_OIDC_CALLBACK_URL,
 ]
 
 
@@ -115,10 +121,11 @@ def cli(
     auth_mode = os.getenv("GBSERVER_AUTH_MODE", "github")
 
     if auth_mode in ("ibmid", "multi"):
-        missing = [v for v in _SSO_REQUIRED_VARS if not os.getenv(v)]
+        missing = [v for v in _SSO_REQUIRED_VARS if not oidc_setting(v)]
         if missing:
             logger.error(
-                "GBSERVER_AUTH_MODE=%s requires the following env vars: %s",
+                "GBSERVER_AUTH_MODE=%s requires the following env vars "
+                "(or their legacy GBSERVER_IBMID_* names): %s",
                 auth_mode,
                 ", ".join(missing),
             )

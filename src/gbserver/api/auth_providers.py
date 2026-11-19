@@ -332,15 +332,15 @@ def _make_provider(name: str) -> Optional[AuthProvider]:
     try:
         if name == "ibmid":
             from gbserver.types.constants import (
-                GBSERVER_IBMID_CLIENT_ID,
-                GBSERVER_IBMID_ISSUER,
-                GBSERVER_IBMID_JWKS_URI,
+                GBSERVER_OIDC_CLIENT_ID,
+                GBSERVER_OIDC_ISSUER,
+                GBSERVER_OIDC_JWKS_URI,
             )
 
             return cls(
-                issuer=GBSERVER_IBMID_ISSUER,
-                jwks_uri=GBSERVER_IBMID_JWKS_URI,
-                client_id=GBSERVER_IBMID_CLIENT_ID,
+                issuer=GBSERVER_OIDC_ISSUER,
+                jwks_uri=GBSERVER_OIDC_JWKS_URI,
+                client_id=GBSERVER_OIDC_CLIENT_ID,
             )
         # Other providers construct with no args. A provider needing constructor
         # args has no arg source here yet (only the built-in modes are selectable).

@@ -19,12 +19,12 @@ import gbserver.api.auth_routes as auth_routes
 from gbserver.api.auth_routes import auth_api, encode_remote_code
 
 ENV = {
-    "GBSERVER_IBMID_CLIENT_ID": "test-client-id",
-    "GBSERVER_IBMID_CLIENT_SECRET": "test-client-secret",
-    "GBSERVER_IBMID_AUTHORIZE_URL": "https://idp.example.com/authorize",
-    "GBSERVER_IBMID_TOKEN_URL": "https://idp.example.com/token",
-    "GBSERVER_IBMID_USERINFO_URL": "https://idp.example.com/userinfo",
-    "GBSERVER_IBMID_CALLBACK_URL": "https://gbserver.example.com/api/v1/auth/callback",
+    "GBSERVER_OIDC_CLIENT_ID": "test-client-id",
+    "GBSERVER_OIDC_CLIENT_SECRET": "test-client-secret",
+    "GBSERVER_OIDC_AUTHORIZE_URL": "https://idp.example.com/authorize",
+    "GBSERVER_OIDC_TOKEN_URL": "https://idp.example.com/token",
+    "GBSERVER_OIDC_USERINFO_URL": "https://idp.example.com/userinfo",
+    "GBSERVER_OIDC_CALLBACK_URL": "https://gbserver.example.com/api/v1/auth/callback",
 }
 REMOTE_CALLBACK = "https://gbserver.example.com/api/v1/auth/oidc/remote-callback"
 LOOPBACK = "http://127.0.0.1:48731/callback"
@@ -34,7 +34,11 @@ VERIFIER = "v" * 43  # RFC 7636 minimum length
 @pytest.fixture(autouse=True)
 def _env():
     with patch.dict(os.environ, ENV, clear=False):
-        os.environ.pop("GBSERVER_IBMID_REMOTE_CALLBACK_URL", None)
+        for var in (
+            "GBSERVER_OIDC_REMOTE_CALLBACK_URL",
+            "GBSERVER_OIDC_REMOTE_CALLBACK_URL",
+        ):
+            os.environ.pop(var, None)
         yield
 
 
@@ -111,7 +115,7 @@ class TestOIDCAuthorize:
     def test_explicit_remote_callback_env_wins(self):
         with patch.dict(
             os.environ,
-            {"GBSERVER_IBMID_REMOTE_CALLBACK_URL": "https://other.example.com/rc"},
+            {"GBSERVER_OIDC_REMOTE_CALLBACK_URL": "https://other.example.com/rc"},
         ):
             resp = _authorize(redirect_uri=None)
 
@@ -119,7 +123,7 @@ class TestOIDCAuthorize:
         assert qs["redirect_uri"] == ["https://other.example.com/rc"]
 
     def test_remote_without_any_callback_config_is_a_config_error(self):
-        with patch.dict(os.environ, {"GBSERVER_IBMID_CALLBACK_URL": ""}):
+        with patch.dict(os.environ, {"GBSERVER_OIDC_CALLBACK_URL": ""}):
             resp = _authorize(redirect_uri=None)
         assert resp.status_code == 500
         assert "not configured" in resp.json()["detail"]
@@ -152,7 +156,7 @@ class TestOIDCAuthorize:
         assert resp.status_code == 422
 
     def test_fails_without_client_id(self):
-        with patch.dict(os.environ, {"GBSERVER_IBMID_CLIENT_ID": ""}):
+        with patch.dict(os.environ, {"GBSERVER_OIDC_CLIENT_ID": ""}):
             resp = _authorize()
         assert resp.status_code == 500
 
@@ -246,7 +250,7 @@ class TestOIDCToken:
             "expires_in": 3600,
             "user_info": {"sub": "user-1", "email": "user@example.com"},
         }
-        assert post.call_args.args[0] == ENV["GBSERVER_IBMID_TOKEN_URL"]
+        assert post.call_args.args[0] == ENV["GBSERVER_OIDC_TOKEN_URL"]
         sent = post.call_args.kwargs["data"]
         assert sent == {
             "grant_type": "authorization_code",
@@ -327,7 +331,7 @@ class TestOIDCToken:
         assert resp.json()["user_info"] == {}
 
     @pytest.mark.parametrize(
-        "unset", ["GBSERVER_IBMID_CLIENT_ID", "GBSERVER_IBMID_CLIENT_SECRET"]
+        "unset", ["GBSERVER_OIDC_CLIENT_ID", "GBSERVER_OIDC_CLIENT_SECRET"]
     )
     def test_missing_client_credentials_is_a_config_error(self, unset):
         with (
@@ -340,7 +344,7 @@ class TestOIDCToken:
 
     def test_remote_without_callback_config_is_a_config_error(self):
         with (
-            patch.dict(os.environ, {"GBSERVER_IBMID_CALLBACK_URL": ""}),
+            patch.dict(os.environ, {"GBSERVER_OIDC_CALLBACK_URL": ""}),
             patch("gbserver.api.auth_routes.requests.post") as post,
         ):
             resp = self._post()
@@ -511,3 +515,54 @@ def test_legacy_callback_escapes_error_description():
     auth_routes._sessions.clear()
     assert "<script>" not in resp.text
     assert "&lt;script&gt;" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Settings: generic names, legacy GBSERVER_IBMID_* fallback
+# ---------------------------------------------------------------------------
+
+
+class TestOIDCSetting:
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch):
+        for var in ("GBSERVER_OIDC_CLIENT_ID", "GBSERVER_IBMID_CLIENT_ID"):
+            monkeypatch.delenv(var, raising=False)
+        for var in ("GBSERVER_OIDC_TOKEN_URL", "GBSERVER_IBMID_TOKEN_URL"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_generic_name_wins(self, monkeypatch):
+        from gbserver.types.constants_base import ENV_VAR_OIDC_CLIENT_ID, oidc_setting
+
+        monkeypatch.setenv("GBSERVER_OIDC_CLIENT_ID", "new")
+        monkeypatch.setenv("GBSERVER_IBMID_CLIENT_ID", "old")
+        assert oidc_setting(ENV_VAR_OIDC_CLIENT_ID) == "new"
+
+    def test_legacy_name_accepted(self, monkeypatch):
+        from gbserver.types.constants_base import ENV_VAR_OIDC_CLIENT_ID, oidc_setting
+
+        monkeypatch.setenv("GBSERVER_IBMID_CLIENT_ID", "old")
+        assert oidc_setting(ENV_VAR_OIDC_CLIENT_ID) == "old"
+
+    def test_default_when_unset(self):
+        from gbserver.types.constants_base import (
+            ENV_VAR_OIDC_CLIENT_ID,
+            ENV_VAR_OIDC_TOKEN_URL,
+            oidc_setting,
+        )
+
+        assert oidc_setting(ENV_VAR_OIDC_CLIENT_ID) == ""
+        assert oidc_setting(ENV_VAR_OIDC_TOKEN_URL).startswith("https://")
+
+    def test_legacy_names_drive_the_endpoints(self, monkeypatch):
+        """A deployment that still sets only GBSERVER_IBMID_* keeps working."""
+        for k in list(ENV):
+            monkeypatch.delenv(k, raising=False)
+            monkeypatch.setenv(k.replace("GBSERVER_OIDC_", "GBSERVER_IBMID_"), ENV[k])
+        resp = _authorize()
+        qs = parse_qs(urlparse(resp.headers["location"]).query)
+        assert resp.status_code == 302
+        assert qs["client_id"] == ["test-client-id"]
+        resp = _authorize(redirect_uri=None)
+        assert parse_qs(urlparse(resp.headers["location"]).query)["redirect_uri"] == [
+            REMOTE_CALLBACK
+        ]

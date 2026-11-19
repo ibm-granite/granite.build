@@ -376,13 +376,13 @@ class TestBuildProviderList:
         assert len(providers) == 1
         assert providers[0].provider_name == "github"
 
-    @patch.dict(os.environ, {"GBSERVER_IBMID_CLIENT_ID": "test-id"})
+    @patch.dict(os.environ, {"GBSERVER_OIDC_CLIENT_ID": "test-id"})
     def test_ibmid_mode(self):
         providers = build_provider_list("ibmid")
         assert len(providers) == 1
         assert providers[0].provider_name == "ibmid"
 
-    @patch.dict(os.environ, {"GBSERVER_IBMID_CLIENT_ID": "test-id"})
+    @patch.dict(os.environ, {"GBSERVER_OIDC_CLIENT_ID": "test-id"})
     def test_multi_mode(self):
         providers = build_provider_list("multi")
         assert len(providers) == 2

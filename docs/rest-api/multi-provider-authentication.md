@@ -54,7 +54,7 @@ Validated users are cached for 10 minutes, keyed by `"{provider_name}:{token}"` 
 
 ### Token Exchange Proxy
 
-The CLI is a public client and must not embed secrets. To support IBMid OIDC authentication, gbserver acts as a token exchange proxy — it holds the `GBSERVER_IBMID_CLIENT_SECRET` and performs the OAuth token exchange on behalf of the CLI.
+The CLI is a public client and must not embed secrets. To support SSO (OIDC) authentication, gbserver acts as a token exchange proxy — it holds the `GBSERVER_OIDC_CLIENT_SECRET` and performs the OAuth token exchange on behalf of the CLI.
 
 Unauthenticated endpoints in `src/gbserver/api/auth_routes.py` implement this: a stateless flow used by the CLI, and a legacy polling flow kept for older CLIs.
 
@@ -109,21 +109,23 @@ The `auth_provider` field defaults to `"github"` for backward compatibility. Dow
 | `GBSERVER_AUTH_MODE` | `github` | Auth mode: `github`, `ibmid`, `multi`, or `apikey` |
 | `GBSERVER_API_KEY` | (empty) | Static API key for `apikey` mode |
 | `GBSERVER_API_USER` | `standalone` | Username for synthetic user in `apikey` mode |
-| `GBSERVER_IBMID_ISSUER` | `https://login.ibm.com/oidc/endpoint/default` | Expected JWT issuer for IBMid tokens |
-| `GBSERVER_IBMID_JWKS_URI` | `https://login.ibm.com/oidc/endpoint/default/jwks` | JWKS endpoint for IBMid signature verification |
-| `GBSERVER_IBMID_CLIENT_ID` | (empty) | OIDC client ID for audience validation and authorization requests |
-| `GBSERVER_IBMID_CLIENT_SECRET` | (empty) | OIDC client secret for server-side token exchange (required for `--sso ibm`) |
-| `GBSERVER_IBMID_AUTHORIZE_URL` | `https://login.ibm.com/v1.0/endpoint/default/authorize` | IBMid authorization endpoint |
-| `GBSERVER_IBMID_TOKEN_URL` | `https://login.ibm.com/v1.0/endpoint/default/token` | IBMid token endpoint |
-| `GBSERVER_IBMID_USERINFO_URL` | `https://login.ibm.com/v1.0/endpoint/default/userinfo` | IBMid UserInfo endpoint |
-| `GBSERVER_IBMID_CALLBACK_URL` | (empty) | Legacy-flow callback URL registered with the SSO provider (e.g., `https://<gbserver-host>/api/v1/auth/callback`) |
-| `GBSERVER_IBMID_REMOTE_CALLBACK_URL` | derived | `--remote` callback URL registered with the SSO provider. Defaults to `GBSERVER_IBMID_CALLBACK_URL` with `/callback` replaced by `/oidc/remote-callback`. |
+| `GBSERVER_OIDC_ISSUER` | built-in default | Expected JWT issuer for SSO tokens |
+| `GBSERVER_OIDC_JWKS_URI` | built-in default | JWKS endpoint for SSO token signature verification |
+| `GBSERVER_OIDC_CLIENT_ID` | (empty) | OIDC client ID for audience validation and authorization requests |
+| `GBSERVER_OIDC_CLIENT_SECRET` | (empty) | OIDC client secret for server-side token exchange (required for `--sso`) |
+| `GBSERVER_OIDC_AUTHORIZE_URL` | built-in default | Provider authorization endpoint |
+| `GBSERVER_OIDC_TOKEN_URL` | built-in default | Provider token endpoint |
+| `GBSERVER_OIDC_USERINFO_URL` | built-in default | Provider UserInfo endpoint |
+| `GBSERVER_OIDC_CALLBACK_URL` | (empty) | Legacy-flow callback URL registered with the SSO provider (e.g., `https://<gbserver-host>/api/v1/auth/callback`) |
+| `GBSERVER_OIDC_REMOTE_CALLBACK_URL` | derived | `--remote` callback URL registered with the SSO provider. Defaults to `GBSERVER_OIDC_CALLBACK_URL` with `/callback` replaced by `/oidc/remote-callback`. |
+
+Each `GBSERVER_OIDC_*` variable also accepts its legacy name, `GBSERVER_IBMID_*` (read only by `oidc_setting()` in `src/gbserver/types/constants_base.py`); the new name wins if both are set.
 
 ### Mode Details
 
 **`github` (default)** — Only GitHub Enterprise tokens accepted. This is the original behavior. No configuration changes needed for existing deployments.
 
-**`ibmid`** — Only SSO (OIDC) JWT tokens accepted. Requires `GBSERVER_IBMID_CLIENT_ID` to be set for audience validation.
+**`ibmid`** — Only SSO (OIDC) JWT tokens accepted. Requires `GBSERVER_OIDC_CLIENT_ID` to be set for audience validation.
 
 **`multi`** — Both GitHub and SSO tokens accepted simultaneously. The server auto-detects the token type. The SSO provider is checked first (JWT detection), then GitHub (opaque fallback).
 
@@ -139,7 +141,7 @@ SSO authentication requires:
 
 1. An OIDC client registration with the SSO provider (confidential client type) with the `authorization_code` grant type enabled
 2. Register the redirect URIs: `http://127.0.0.1:48731/callback` and `https://<gbserver-host>/api/v1/auth/oidc/remote-callback` (plus `https://<gbserver-host>/api/v1/auth/callback` for older CLIs)
-3. Configure the gbserver with `GBSERVER_IBMID_CLIENT_ID`, `GBSERVER_IBMID_CLIENT_SECRET`, and `GBSERVER_IBMID_CALLBACK_URL`
+3. Configure the gbserver with `GBSERVER_OIDC_CLIENT_ID`, `GBSERVER_OIDC_CLIENT_SECRET`, and `GBSERVER_OIDC_CALLBACK_URL`
 
 The CLI itself requires no OIDC configuration — it only needs the gbserver URL (`GBSERVER_HOST`), which is already configured per environment. The client secret is held exclusively on the server.
 

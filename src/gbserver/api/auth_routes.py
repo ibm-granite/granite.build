@@ -6,7 +6,7 @@
 
 The CLI is a public client and must not hold secrets. These endpoints
 let gbserver act as the confidential client that holds the
-``GBSERVER_IBMID_CLIENT_SECRET`` and performs the token exchange on
+``GBSERVER_OIDC_CLIENT_SECRET`` and performs the token exchange on
 behalf of the CLI.
 
 Stateless flow (``/oidc/*``), used by the CLI:
@@ -45,7 +45,16 @@ from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from gbserver.types.constants_base import ENV_VAR_IBMID_REMOTE_CALLBACK_URL
+from gbserver.types.constants_base import (
+    ENV_VAR_OIDC_AUTHORIZE_URL,
+    ENV_VAR_OIDC_CALLBACK_URL,
+    ENV_VAR_OIDC_CLIENT_ID,
+    ENV_VAR_OIDC_CLIENT_SECRET,
+    ENV_VAR_OIDC_REMOTE_CALLBACK_URL,
+    ENV_VAR_OIDC_TOKEN_URL,
+    ENV_VAR_OIDC_USERINFO_URL,
+    oidc_setting,
+)
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -151,22 +160,19 @@ def authorize(
         )
 
     # Read config at request time (not import time).
-    client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
-    authorize_url = os.getenv(
-        "GBSERVER_IBMID_AUTHORIZE_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/authorize",
-    )
-    callback_url = os.getenv("GBSERVER_IBMID_CALLBACK_URL", "")
+    client_id = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
+    authorize_url = oidc_setting(ENV_VAR_OIDC_AUTHORIZE_URL)
+    callback_url = oidc_setting(ENV_VAR_OIDC_CALLBACK_URL)
 
     if not client_id:
         return JSONResponse(
             status_code=500,
-            content={"detail": "GBSERVER_IBMID_CLIENT_ID is not configured."},
+            content={"detail": "GBSERVER_OIDC_CLIENT_ID is not configured."},
         )
     if not callback_url:
         return JSONResponse(
             status_code=500,
-            content={"detail": "GBSERVER_IBMID_CALLBACK_URL is not configured."},
+            content={"detail": "GBSERVER_OIDC_CALLBACK_URL is not configured."},
         )
 
     _sessions[state] = _AuthSession(code_challenge=code_challenge)
@@ -228,17 +234,11 @@ def callback(
         )
 
     # Exchange the code for tokens (server-side, with client_secret).
-    client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
-    client_secret = os.getenv("GBSERVER_IBMID_CLIENT_SECRET", "")
-    token_url = os.getenv(
-        "GBSERVER_IBMID_TOKEN_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/token",
-    )
-    callback_url = os.getenv("GBSERVER_IBMID_CALLBACK_URL", "")
-    userinfo_url = os.getenv(
-        "GBSERVER_IBMID_USERINFO_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/userinfo",
-    )
+    client_id = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
+    client_secret = oidc_setting(ENV_VAR_OIDC_CLIENT_SECRET)
+    token_url = oidc_setting(ENV_VAR_OIDC_TOKEN_URL)
+    callback_url = oidc_setting(ENV_VAR_OIDC_CALLBACK_URL)
+    userinfo_url = oidc_setting(ENV_VAR_OIDC_USERINFO_URL)
 
     # Token exchange
     try:
@@ -405,10 +405,10 @@ _REMOTE_CODE_HTML_TEMPLATE = (
 def _remote_callback_url() -> str:
     """The ``--remote`` redirect URI: the env override, else derived from the
     legacy callback URL so deployments need no new setting."""
-    url = os.getenv(ENV_VAR_IBMID_REMOTE_CALLBACK_URL, "")
+    url = oidc_setting(ENV_VAR_OIDC_REMOTE_CALLBACK_URL)
     if url:
         return url
-    legacy = os.getenv("GBSERVER_IBMID_CALLBACK_URL", "")
+    legacy = oidc_setting(ENV_VAR_OIDC_CALLBACK_URL)
     if legacy.endswith("/callback"):
         return legacy[: -len("/callback")] + _REMOTE_CALLBACK_PATH
     return ""
@@ -432,7 +432,7 @@ def _bad_redirect_uri(redirect_uri: Optional[str]) -> JSONResponse:
         return JSONResponse(
             status_code=500,
             content={
-                "detail": "GBSERVER_IBMID_REMOTE_CALLBACK_URL (or _CALLBACK_URL) "
+                "detail": "GBSERVER_OIDC_REMOTE_CALLBACK_URL (or _CALLBACK_URL) "
                 "is not configured."
             },
         )
@@ -464,16 +464,13 @@ def oidc_authorize(
     resolved = _resolve_redirect_uri(redirect_uri)
     if resolved is None:
         return _bad_redirect_uri(redirect_uri)
-    client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
+    client_id = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
     if not client_id:
         return JSONResponse(
             status_code=500,
-            content={"detail": "GBSERVER_IBMID_CLIENT_ID is not configured."},
+            content={"detail": "GBSERVER_OIDC_CLIENT_ID is not configured."},
         )
-    authorize_url = os.getenv(
-        "GBSERVER_IBMID_AUTHORIZE_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/authorize",
-    )
+    authorize_url = oidc_setting(ENV_VAR_OIDC_AUTHORIZE_URL)
     params = {
         "response_type": "code",
         "client_id": client_id,
@@ -538,23 +535,17 @@ def oidc_token(body: OIDCTokenRequest):
     redirect_uri = _resolve_redirect_uri(body.redirect_uri)
     if redirect_uri is None:
         return _bad_redirect_uri(body.redirect_uri)
-    client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
-    client_secret = os.getenv("GBSERVER_IBMID_CLIENT_SECRET", "")
+    client_id = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
+    client_secret = oidc_setting(ENV_VAR_OIDC_CLIENT_SECRET)
     if not client_id or not client_secret:
         return JSONResponse(
             status_code=500,
             content={
-                "detail": "GBSERVER_IBMID_CLIENT_ID / _CLIENT_SECRET is not configured."
+                "detail": "GBSERVER_OIDC_CLIENT_ID / _CLIENT_SECRET is not configured."
             },
         )
-    token_url = os.getenv(
-        "GBSERVER_IBMID_TOKEN_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/token",
-    )
-    userinfo_url = os.getenv(
-        "GBSERVER_IBMID_USERINFO_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/userinfo",
-    )
+    token_url = oidc_setting(ENV_VAR_OIDC_TOKEN_URL)
+    userinfo_url = oidc_setting(ENV_VAR_OIDC_USERINFO_URL)
     try:
         token_resp = requests.post(
             token_url,

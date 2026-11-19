@@ -36,11 +36,13 @@ Needed when `GBSERVER_AUTH_MODE` is `ibmid` or `multi` (see [authentication](../
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GBSERVER_IBMID_CLIENT_ID` / `GBSERVER_IBMID_CLIENT_SECRET` | `` | OIDC client credentials (server is the confidential client). |
-| `GBSERVER_IBMID_CALLBACK_URL` | `` | Redirect URI registered with IBMid. |
-| `GBSERVER_IBMID_REMOTE_CALLBACK_URL` | derived from `_CALLBACK_URL` | Redirect URI for `gb auth login --sso --remote` (`…/auth/oidc/remote-callback`). |
-| `GBSERVER_IBMID_ISSUER` / `GBSERVER_IBMID_JWKS_URI` | `login.ibm.com/…` | Issuer + JWKS for token validation. |
-| `GBSERVER_IBMID_AUTHORIZE_URL` / `_TOKEN_URL` / `_USERINFO_URL` | `login.ibm.com/…` | OIDC endpoints. |
+| `GBSERVER_OIDC_CLIENT_ID` / `GBSERVER_OIDC_CLIENT_SECRET` | `` | OIDC client credentials (server is the confidential client). |
+| `GBSERVER_OIDC_CALLBACK_URL` | `` | Legacy-flow redirect URI registered with the SSO provider. |
+| `GBSERVER_OIDC_REMOTE_CALLBACK_URL` | derived from `_CALLBACK_URL` | Redirect URI for `gb auth login --sso --remote` (`…/auth/oidc/remote-callback`). |
+| `GBSERVER_OIDC_ISSUER` / `GBSERVER_OIDC_JWKS_URI` | built-in default | Issuer + JWKS for token validation. |
+| `GBSERVER_OIDC_AUTHORIZE_URL` / `_TOKEN_URL` / `_USERINFO_URL` | built-in default | OIDC endpoints. |
+
+Each `GBSERVER_OIDC_*` variable also accepts its legacy name, `GBSERVER_IBMID_*`; the new name wins if both are set.
 
 ## SQL storage
 
