@@ -1,0 +1,339 @@
+######
+# pretrain -- pretrain an lm-engine model FROM SCRATCH, with a fail-fast corpus
+# check ahead of the multi-node allocation.
+#
+#   gb build start -f recipes/pretrain/pretrain/build.yaml \
+#     --param-file <site.yaml> --param RUN_NAME=<name>
+#
+# Layers: this directory's parameters.yaml (the experiment), then the site file (the
+# cluster, the PVC, the image, the dataset and the tokenizer), then each --param.
+# Later layers win. NOTHING about a site is spelled in this directory.
+#
+# The graph:
+#
+#   data-check --> train --> checkpoint            (train-only: no rungs)
+#      (CPU)    (multi-node GPU)
+#
+# data-check runs the SAME step with phase: data-check on one cheap CPU pod. It
+# reads schemas only, never a table, and fails in seconds on a mis-mounted PVC, a
+# typo'd sub-dataset name or a tokenizer whose special-token ids disagree with the
+# model knobs -- before `train` asks for NUM_NODES x GPUS_PER_NODE accelerators and
+# dies building its dataloader. `train` binds it for ORDERING ONLY: no artifact
+# flows between them.
+#
+# The rungs (EXPORT_RUNGS, EVAL_RUNGS) are what make this more than a train-only
+# recipe. Each rung N is a checkpoint the trainer emits MID-RUN: the rank-0 watcher
+# prints GB_ARTIFACT_ID:checkpoint_<N> once checkpoint <N> is completely written, so
+# gbserver can dispatch work on it while training continues. `train` therefore
+# declares one checkpoint_<N> output per rung in EXPORT_RUNGS union EVAL_RUNGS, and
+# turns the watcher on exactly when that union is non-empty. With no rungs there is
+# only the final `checkpoint`, and no watcher runs.
+#
+# Two templating layers meet in this file. The CLI resolves the dollar-dollar-brace
+# values and the less-than-percent blocks before submission; gbserver resolves the
+# double-brace templates (bindings, run_metadata) per step. The CLI renders the file
+# IN FULL, comments included, so comments here name parameters bare.
+#
+# Every directory a target writes hangs off RUN_DIR = WORKDIR_ROOT/EXP/RUN_NAME, and
+# RUN_NAME is set per run. That is a correctness setting, not tidiness: gbserver
+# refuses to register an artifact URI another build already registered, the target
+# still reports SUCCESS with an EMPTY output list, and every consumer of it then
+# waits forever while the build reports SUCCESS having skipped them. train_dir is
+# deliberately OUTSIDE the per-target workdir, which target teardown deletes, so a
+# retry resumes from the checkpoints the previous attempt wrote.
+######
+<%- set RUN_DIR = (WORKDIR_ROOT | string).rstrip("/") ~ "/" ~ EXP ~ "/" ~ RUN_NAME %>
+# ── The rungs, checked once ────────────────────────────────────────────────
+# A rung the trainer never writes is not a late error but a target that never
+# dispatches, so each one must sit on the save grid and inside the run. The two
+# lists are merged, de-duplicated and sorted: a rung named by both EXPORT_RUNGS and
+# EVAL_RUNGS is still one checkpoint and one output.
+<%- set EXPORTS = [] %>
+<%- for n in (EXPORT_RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = EXPORTS.append(n | int) %>
+<%- endfor %>
+<%- set EVALS = [] %>
+<%- for n in (EVAL_RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = EVALS.append(n | int) %>
+<%- endfor %>
+<%- set FULL = [] %>
+<%- for n in (FULL_EVAL_RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = FULL.append(n | int) %>
+<%- endfor %>
+<%- set RUNGS = (EXPORTS + EVALS) | unique | sort | list %>
+<%- set END = NUM_TRAINING_STEPS | int %>
+<%- set GRID = SAVE_INTERVAL | int %>
+<%- if END <= 0 %>
+$${ NUM_TRAINING_STEPS_must_be_positive }
+<%- endif %>
+<%- if GRID <= 0 %>
+$${ SAVE_INTERVAL_must_be_positive }
+<%- endif %>
+<%- for n in RUNGS %>
+<%- if n <= 0 %>
+$${ EXPORT_RUNGS_and_EVAL_RUNGS_must_be_positive_optimizer_steps }
+<%- endif %>
+<%- if n % GRID != 0 %>
+$${ EXPORT_RUNGS_and_EVAL_RUNGS_must_be_multiples_of_SAVE_INTERVAL }
+<%- endif %>
+<%- if n > END %>
+$${ EXPORT_RUNGS_and_EVAL_RUNGS_must_not_be_past_NUM_TRAINING_STEPS }
+<%- endif %>
+<%- endfor %>
+# FULL_EVAL_RUNGS picks, among the rungs that ARE evaluated, the ones that get the
+# whole battery instead of the screening subset. A name outside EVAL_RUNGS would
+# quietly run nothing at all.
+<%- for n in FULL %>
+<%- if n not in EVALS %>
+$${ FULL_EVAL_RUNGS_must_be_a_subset_of_EVAL_RUNGS }
+<%- endif %>
+<%- endfor %>
+# ── The lm-engine knobs, in one place ──────────────────────────────────────
+# Every key of render_config.DEFAULT_KNOBS in the lm-engine-pretrain step, which is
+# the authority on what lm-engine accepts; the step's src/render_config.py turns this
+# mapping into lm-engine's config.yml. Both targets emit the SAME block, because
+# data-check validates the corpus against the knobs train will use -- a check against
+# a different mapping checks nothing. A knob added upstream and not here silently
+# falls back to lm-engine's own default, so a unit test holds the two key sets equal.
+<%- macro lme_knobs() %>
+            lme:
+              # ── the run ──
+              experiment: "$${EXP}"
+              # ── the corpus; dataset_path and tokenizer_name are the site's ──
+              dataset_path: "$${DATASET_PATH}"
+              sub_datasets: "$${SUB_DATASETS}"
+              weights: "$${WEIGHTS}"
+              col_name: "$${COL_NAME}"
+              file_type: "$${FILE_TYPE}"
+              vocab_size: $${VOCAB_SIZE}
+              bos_token: "$${BOS_TOKEN}"
+              eos_token: $${EOS_TOKEN}
+              drop_tokens: "$${DROP_TOKENS}"
+              logical_shards: $${LOGICAL_SHARDS}
+              num_workers: $${NUM_WORKERS}
+              seed: $${SEED}
+              sequence_length: $${SEQ_LEN}
+              enable_data_checkpoint: $${ ENABLE_DATA_CHECKPOINT | string | lower }
+              # ── COS streaming ──
+              cos_stream: $${ COS_STREAM | string | lower }
+              cos_bucket: "$${COS_BUCKET}"
+              cos_root: "$${COS_ROOT}"
+              cos_cache_dir: "$${COS_CACHE_DIR}"
+              cos_keep: $${COS_KEEP}
+              # ── the tokenizer ──
+              tokenizer_name: "$${TOKENIZER_NAME}"
+              # ── kernels ──
+              kernels: $${ KERNELS | tojson }
+              # ── architecture ──
+              hidden_size: $${HIDDEN_SIZE}
+              num_layers: $${NUM_LAYERS}
+              num_heads: $${NUM_HEADS}
+              num_kv_heads: $${NUM_KV_HEADS}
+              intermediate_size: $${INTERMEDIATE_SIZE}
+              normalization_function: "$${NORMALIZATION_FUNCTION}"
+              activation_function: "$${ACTIVATION_FUNCTION}"
+              position_embedding_type: "$${POSITION_EMBEDDING_TYPE}"
+              rope_theta: $${ROPE_THETA}
+              tie_word_embeddings: $${ TIE_WORD_EMBEDDINGS | string | lower }
+              initializer_range: "$${INITIALIZER_RANGE}"
+              bos_token_id: $${BOS_TOKEN_ID}
+              eos_token_id: $${EOS_TOKEN_ID}
+              pad_token_id: $${PAD_TOKEN_ID}
+              # ── muP: all four or none, and param_groups must agree ──
+              m_width: $${M_WIDTH}
+              m_emb: $${M_EMB}
+              m_residual: $${M_RESIDUAL}
+              attention_multiplier: $${ATTENTION_MULTIPLIER}
+              attention_multiplier_method: "$${ATTENTION_MULTIPLIER_METHOD}"
+              # ── MoE ──
+              mlp_type: "$${MLP_TYPE}"
+              moe_num_experts: "$${MOE_NUM_EXPERTS}"
+              moe_num_experts_per_tok: "$${MOE_NUM_EXPERTS_PER_TOK}"
+              moe_shared_intermediate_size: "$${MOE_SHARED_INTERMEDIATE_SIZE}"
+              moe_router_aux_loss_coef: "$${MOE_ROUTER_AUX_LOSS_COEF}"
+              moe_z_loss_coef: "$${MOE_Z_LOSS_COEF}"
+              moe_normalized_topk: $${ MOE_NORMALIZED_TOPK | string | lower }
+              # ── sliding-window attention ──
+              sliding_window: "$${SLIDING_WINDOW}"
+              full_attention_layers: $${ FULL_ATTENTION_LAYERS | tojson }
+              # ── hybrid Mamba2 ──
+              mamba_hybrid: $${ MAMBA_HYBRID | string | lower }
+              attention_layers: $${ ATTENTION_LAYERS | tojson }
+              mamba_state_size: $${MAMBA_STATE_SIZE}
+              mamba_intermediate_size: $${MAMBA_INTERMEDIATE_SIZE}
+              mamba_num_heads: $${MAMBA_NUM_HEADS}
+              mamba_conv_kernel_size: $${MAMBA_CONV_KERNEL_SIZE}
+              mamba_num_groups: $${MAMBA_NUM_GROUPS}
+              mamba_chunk_size: $${MAMBA_CHUNK_SIZE}
+              mamba_add_bias: $${ MAMBA_ADD_BIAS | string | lower }
+              mamba_use_conv_bias: $${ MAMBA_USE_CONV_BIAS | string | lower }
+              mamba_activation_function: "$${MAMBA_ACTIVATION_FUNCTION}"
+              mamba_normalization_function: "$${MAMBA_NORMALIZATION_FUNCTION}"
+              # ── training ──
+              num_training_steps: $${NUM_TRAINING_STEPS}
+              micro_batch_size: $${MICRO_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRAD_ACCUM}
+              lr: "$${LR}"
+              weight_decay: "$${WEIGHT_DECAY}"
+              adam_beta1: "$${ADAM_BETA1}"
+              adam_beta2: "$${ADAM_BETA2}"
+              adam_eps: "$${ADAM_EPS}"
+              param_groups: "$${PARAM_GROUPS}"
+              lr_decay_style: "$${LR_DECAY_STYLE}"
+              warmup_steps: $${WARMUP_STEPS}
+              dtype: "$${DTYPE}"
+              save_interval: $${SAVE_INTERVAL}
+              # ── distributed ──
+              distributed_stage: $${DISTRIBUTED_STAGE}
+              fsdp_algorithm: $${FSDP_ALGORITHM}
+              gradient_checkpointing: $${ GRADIENT_CHECKPOINTING | string | lower }
+              gradient_checkpointing_method: "$${GRADIENT_CHECKPOINTING_METHOD}"
+              gradient_checkpointing_num_blocks: "$${GRADIENT_CHECKPOINTING_NUM_BLOCKS}"
+              # ── logging and W&B ──
+              log_interval: $${LOG_INTERVAL}
+              track_model_statistics: $${ TRACK_MODEL_STATISTICS | string | lower }
+              wandb_project: "$${WANDB_PROJECT}"
+              wandb_name: "$${WANDB_NAME}"
+              wandb_entity: "$${WANDB_ENTITY}"
+              wandb_group: "$${WANDB_GROUP}"
+              wandb_notes: "$${WANDB_NOTES}"
+              wandb_tags: $${ WANDB_TAGS | tojson }
+<%- endmacro %>
+# lm-engine's own tracking is configured through the knobs above; this block is what
+# the step exports into the job's environment, so the two must name one project.
+<%- macro wandb_block() %>
+            wandb:
+              project: "$${WANDB_PROJECT}"
+              mode: "$${WANDB_MODE}"
+              name: "$${WANDB_NAME}"
+              entity: "$${WANDB_ENTITY}"
+<%- endmacro %>
+granite.build:
+  name: pretrain
+  # target_reuse_enabled: a retry re-runs only the FAILED targets and reuses what
+  # succeeded, so a fault downstream does not re-train. train resumes from its own
+  # train_dir on a retry, and the step refuses an attempt that makes no optimizer
+  # progress, so a deterministic failure does not spend every retry holding the
+  # allocation.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+    # ─── data-check ─────────────────────────────────────────────────────────
+    # The same step, phase: data-check, on one CPU pod: dataset_path is a non-empty
+    # directory of sub-dataset subfolders, every named sub-dataset exists and holds a
+    # shard carrying col_name, the weights match the sub-datasets, and the
+    # tokenizer's bos/eos/pad ids and size agree with the model knobs. Seconds, no
+    # accelerator, every failure printed rather than just the first.
+    data-check:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      outputs:
+        # The ordering primitive for train. Nothing reads its contents; what matters
+        # is that it does not exist until the corpus has been accepted.
+        data_check:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/train/lm-engine/pretrain
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            image: "$${LME_IMAGE}"
+            phase: "data-check"
+            # Required by the step, and kept out of RUN_DIR/train so a check never
+            # leaves anything in the directory a resume reads.
+            train_dir: "$${RUN_DIR}/data-check"
+            # No optimizer runs, so there is no progress to require and no watcher
+            # to run.
+            require_progress: false
+            emit_checkpoint_artifacts: false
+$${ lme_knobs() }
+$${ wandb_block() }
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${DATA_CHECK_CPUS}
+            launcher_config:
+              resources:
+                cpus: $${DATA_CHECK_CPUS}
+                memory: $${DATA_CHECK_MEMORY}
+
+    # ─── train ──────────────────────────────────────────────────────────────
+    # Pretraining from scratch: NUM_TRAINING_STEPS optimizer steps over
+    # NUM_NODES x GPUS_PER_NODE ranks, saving every SAVE_INTERVAL.
+    train:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # ORDERING ONLY. No data flows along this edge -- the corpus and the
+        # tokenizer arrive through config.lme as paths on the shared filesystem --
+        # but a binding is the only thing that orders two targets, and the whole
+        # point of data-check is that it runs before the allocation is requested.
+        data_check:
+          binding: data-check.data_check
+      outputs:
+        # train_dir itself: the step's final artifact is the directory holding the
+        # run's checkpoints, so it always describes the run that wrote it.
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+        # One output per rung, emitted MID-RUN by the step's rank-0 watcher as
+        # checkpoint_<N> once checkpoint <N> is completely written. binding.path is
+        # that checkpoint's directory, so each rung has a distinct URI.
+<%- for N in RUNGS %>
+        checkpoint_$${N}:
+          uri: "env://{{ binding.path }}"
+          type: model
+<%- endfor %>
+      steps:
+        - step_uri: space://steps/train/lm-engine/pretrain
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            # Half of a rung's detection latency (the watch interval is the other):
+            # the watcher's line reaches the build only when the logs are next
+            # pulled, which is why this step's monitor retrieves them periodically
+            # instead of once at terminal status.
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            image: "$${LME_IMAGE}"
+            phase: "train"
+            # Stable for the whole build and OUTSIDE the per-target workdir, which
+            # target teardown deletes and post-build cleanup reaps. A retry
+            # therefore resumes from its own highest checkpoint and re-emits the
+            # rungs it already wrote, so their consumers re-dispatch. A new build
+            # (a new RUN_NAME) gets a new directory.
+            train_dir: "$${RUN_DIR}/train"
+            # Refuse an attempt that gets no further than the last one did: a
+            # deterministic failure would otherwise spend every retry at the same
+            # step, holding NUM_NODES nodes each time.
+            require_progress: true
+            # A stopped run's train directory, to continue it in a new build;
+            # ignored once train_dir holds a checkpoint. See parameters.yaml.
+            resume_from_checkpoint_dir: "$${RESUME_FROM_CHECKPOINT_DIR}"
+            # What makes the rungs mid-run. Off (no rungs), the run emits only the
+            # final `checkpoint`; on with no rungs, a watcher would run with nothing
+            # to watch.
+            emit_checkpoint_artifacts: $${ "true" if RUNGS else "false" }
+            ckpt_rungs: "$${ RUNGS | join(',') }"
+            checkpoint_watch_interval_seconds: $${CKPT_WATCH_INTERVAL_SECONDS}
+            nccl_debug: "$${NCCL_DEBUG}"
+            # The cluster's own NCCL/UCX facts, verbatim, keys as the site file
+            # spells them. The step applies them only when num_nodes > 1.
+            nccl_env: $${ NCCL_ENV | tojson }
+$${ lme_knobs() }
+$${ wandb_block() }
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${GPUS_PER_NODE}
+            launcher_config:
+              resources:
+                # accelerators is PER NODE. cpus and memory are per node too, and
+                # both must be STATED: where the compute_config floor is skipped, a
+                # host-memory kill presents as a cross-node NCCL hang.
+                accelerators: "$${GPU_ACCELERATOR}:$${GPUS_PER_NODE}"
+                cpus: $${TRAIN_CPUS}
+                memory: $${TRAIN_MEMORY}
+
+    # ─── exports ────────────────────────────────────────────────────────────
+    # One export-<N> per rung in EXPORT_RUNGS union EVAL_RUNGS, binding
+    # train.checkpoint_<N>, lands here.
+
+    # ─── evals (shared with pretrain-eval) ───
+    # ─── end evals ───
