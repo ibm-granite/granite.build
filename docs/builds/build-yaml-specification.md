@@ -214,9 +214,8 @@ declared in its `environment.yaml`.
 
 A `build.yaml` is the **only file a user must write** to run work on Granite.Build. It names the
 targets, the environment each runs in, the artifacts each consumes and produces, and the steps,
-with their configuration. The file is purely declarative: it
-contains no orchestration logic, and everything it references by `space://` URI is resolved
-relative to the active space at run time.
+with their configuration. The file is purely declarative: it contains no orchestration logic, and
+everything it references by `space://` URI is resolved relative to the active space at run time.
 
 The `gb` CLI uses the file in three ways:
 
@@ -237,6 +236,7 @@ SkyPilot-specific configuration is collected in [section D](#d-skypilot-environm
 <img src="../images/build-yaml-containment.svg" width="600"
   alt="Containment of the parts of a build.yaml: the build holds build settings and a stack of targets; each target holds its environment, inputs, a stack of steps, and outputs; each step holds step-specific and step-independent configuration">
 
+Stacked boxes stand for repeated elements, each with the same structure as the one drawn on top.
 A build has one or more targets, and a target has one or more steps and zero or more inputs and
 outputs. Each target names its own environment through `environment_uri`, so a single build can
 use several.
@@ -330,8 +330,8 @@ definitions. `environment_uri` is usually `space://environments/<path>`. It is r
 to the space's `space.yaml` location or its `base_uris` to a directory that contains an
 `environment.yaml`. On a standalone server, a `file:` path is also accepted, including `file:.`
 for an `environment.yaml` placed next to the `build.yaml`. The value can use a build parameter
-(`space://environments/$${ENVIRONMENT}`) or a space variable (`space://environments/{{
-space.variables.DEFAULT_ENVIRONMENT }}`).
+(`space://environments/$${ENVIRONMENT}`) or a space variable
+(`space://environments/{{ space.variables.DEFAULT_ENVIRONMENT }}`).
 
 **Supported environment types**
 
@@ -383,8 +383,7 @@ available by its input name through the `bindings` template variable:
 - `{{ bindings.<input-name>.binding.path }}` for filesystem artifacts;
 - `{{ bindings.<input-name>.binding.state }}` for `mem://` values.
 
-A **build.yaml** can use these expressions in a step `config` or the step's implementation in its
-`step.yaml`:
+A `build.yaml` can use these expressions in a step's `config` values:
 
 ```yaml
 steps:
@@ -415,7 +414,7 @@ outputs:
     uri: hf://huggingface.co/my-org/my-model
     public: true                      # hf:// only: publish the repo (default private)
   server_url:
-    uri: mem://server_url             # opaque value; no type or store_push
+    uri: mem://server_url             # opaque value; type and store_push are ignored
   results:
     uri: env:///proj/shared/evals/run1  # already on the shared filesystem; nothing is pushed
 ```
@@ -486,7 +485,7 @@ pull and push and declare the store in its `assetstores`.
   `{{ bindings.<name>.binding.state }}`. The value passes through **verbatim**, with no path
   normalization, so a URL such as `http://host:8000` survives intact.
 - **Uses:** handing service URLs, cluster names and similar values between targets.
-- **Restrictions:** takes no `type` and no `store_push`.
+- **Restrictions:** `type` and `store_push` have no effect on a `mem://` output and are ignored.
 
 ##### Other schemes
 
@@ -521,12 +520,10 @@ steps:
 | `config` | Configuration merged over the step's defaults (see below and [C.5](#c5-overrides)). |
 | `retry_enabled`, `retry_transparently` | Step-level retry behavior. |
 
-**Using the target's inputs.** A step accesses the target's inputs in one of two ways
-depending on the step implementation.
-It can pass them in through its `config` by
-templating the bound paths or values into its own fields.
-Alternatively, the step may expect inputs of a specific name and reference the bindings
-inside the step implementation.
+**Using the target's inputs.** A step accesses the target's inputs in one of two ways, depending
+on the step implementation. It can take them through its `config`, with the bound paths or values
+templated into its own fields. Alternatively, the step may expect inputs of a specific name and
+reference the bindings inside the step implementation.
 
 **Step-specific and step-independent configuration.** A step's `config` mixes two kinds of block:
 
@@ -591,9 +588,9 @@ See [Environments — Secrets as environment
 variables](https://github.com/ibm-granite/granite.build/blob/main/docs/environments/README.md#secrets-as-environment-variables)
 for how each environment delivers the value.
 
-**Non-secret environment variables.** Non-secret environment
-variables such as tuning knobs, log levels and feature
-flags can be set in the step's `config`, through a key specific to the target's environment type:
+**Non-secret environment variables.** Non-secret environment variables such as tuning knobs, log
+levels and feature flags can be set in the step's `config`, through a key specific to the target's
+environment type:
 
 | Environment | build.yaml key | Notes |
 |-------------|----------------|-------|
@@ -628,9 +625,9 @@ config:
 
 On Bash and SkyPilot, values set by the build override the step's own defaults. On Docker, the
 step's launcher `env` wins. The variables gbserver injects, such as the `GB_*` run identifiers,
-always win. Quote numbers so that every value reaches the workload as
-a string. Don't put credentials here: use the secrets block above, so the value comes from the
-secret manager and is never written into the build.
+always win. Quote numbers so that every value reaches the workload as a string. Don't put
+credentials here: use the secrets block above, so the value comes from the secret manager and is
+never written into the build.
 
 ### C.5 Overrides
 
@@ -702,6 +699,9 @@ filters and `{% if %}` blocks all work. Each field is rendered at the moment gbs
 value, and what an expression can see depends on that moment. A variable that doesn't exist yet
 at that point can't be used.
 
+Unlike `$${…}`, Jinja is not applied to the whole file. gbserver renders `{{ … }}` only in the
+four places below.
+
 **Where templates can appear, and what each place can see:**
 
 | Field in `build.yaml` | Rendered | Variables available | Unknown variable |
@@ -711,8 +711,13 @@ at that point can't be used.
 | output `uri` | when the output is pushed | `space.*`, `run_metadata.*`, `unique_hash`, `binding.*` | error |
 | step `config` values | when the step is prepared, before it launches | `space.*`, `run_metadata.*`, `bindings.*`, `step.name` | left as written |
 
-Keys, `name`, `version`, `retries` and the target names are not templated; use a `$${…}`
-parameter if one of them must vary.
+In step `config`, every string value is rendered, however deeply it is nested in maps or lists.
+Keys are not rendered, and a value that isn't a string, such as a number, is left as it is.
+
+Everything else in the file is read as plain YAML. That covers `name`, `version`, `retries`,
+`wait_for_push`, target and input names, and every key. A `{{ … }}` in any of them is kept as
+literal text, with no error. To vary one of those parts, use a `$${…}` parameter: the CLI
+substitutes parameters everywhere in the file before gbserver reads it.
 
 **Variables:**
 
@@ -734,7 +739,9 @@ left in the value as the literal text `{{ name }}`, and the step receives that t
 input name is not reported.
 
 **Filters:** `short_hash` (a short alphanumeric hash, handy for unique names), `path_basename`,
-`to_yaml`, `json_dumps` and `indent(N)`, plus Jinja's built-in filters such as `default`.
+`to_yaml`, `json_dumps` and `indent(N)`, plus Jinja's built-in filters such as `default`. URIs,
+which are rendered strictly, can also use `get_file_extension` and `b64encode`; step `config`
+values cannot.
 
 **Examples:**
 
@@ -747,7 +754,7 @@ targets:
       base_model:
         uri: hf:///{{ space.variables.BASE_MODEL_ORG }}/granite-4.0-350m
     outputs:
-      # run_metadata and unique_hash: a fresh repository for each run
+      # run_metadata: a fresh repository for each target run
       checkpoint:
         uri: hf:///my-org/ckpt-{{ run_metadata.targetrun_id | short_hash }}
       # binding.path: register the output where the step wrote it
@@ -1263,8 +1270,7 @@ Hello, Granite.Build!
 GB_ARTIFACT_ID:greeting GB_ARTIFACT_STATE:Hello-Granite.Build
 ```
 
-The log shows the step's own output and the marker the monitor turned into the `greeting`
-artifact. A downstream target could now bind to `hello.greeting` and read
+A downstream target could now bind to `hello.greeting` and read
 `{{ bindings.<name>.binding.state }}`.
 
 ---
