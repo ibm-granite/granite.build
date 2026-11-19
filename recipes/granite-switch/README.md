@@ -7,11 +7,10 @@ model. It brings the rigor and modularity of software engineering to LLMs.
 
 Recipes are grouped by the SkyPilot cluster they run on, as
 `skypilot/<cluster>/<recipe>`; the cluster names match the step framework's
-(`steps/*/skypilot/test/<cluster>/`): `aws`, `lsf-bluevela`, `slurm-bluevela`.
+(`steps/*/skypilot/test/<cluster>/`): `aws`, `slurm-bluevela`.
 
 | Recipe | What it builds |
 |---|---|
-| [`skypilot/lsf-bluevela/answerability-sr`](skypilot/lsf-bluevela/answerability-sr/README.md) | A Shadow Residual answerability adapter on `granite-4.2-8b`, trained and then scored against the answerability eval set (SkyPilot/LSF). |
 | [`skypilot/slurm-bluevela/answerability-lora`](skypilot/slurm-bluevela/answerability-lora/README.md) | An answerability LoRA or aLoRA adapter on `granite-4.2-8b`, trained with the `hf-peft-sft` step (SkyPilot/SLURM). |
 | [`skypilot/aws/answerability-lora`](skypilot/aws/answerability-lora/README.md) | A template for LoRA and/or aLoRA adapters on `granite-4.2-8b`, trained on AWS EC2 GPUs with a shared EFS filesystem. Bring your own data. |
 | [`skypilot/aws/answerability-sr`](skypilot/aws/answerability-sr/README.md) | A template for a Shadow Residual adapter on `granite-4.2-8b`, trained and scored on AWS EC2 GPUs with a shared EFS filesystem. Bring your own data. |

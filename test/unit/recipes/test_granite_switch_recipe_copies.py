@@ -2,15 +2,14 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""The granite-switch recipes carry two blocks of inline code in two copies
-each: the answerability-lora prepare script (slurm-bluevela and aws) and the
-answerability-sr training-config generator (lsf-bluevela and aws).
+"""The granite-switch recipes carry one block of inline code in two copies:
+the answerability-lora prepare script (slurm-bluevela and aws).
 
 `gb build start` uploads only build.yaml, so a recipe cannot ship a shared
 script beside it yet (ibm-granite/granite.build#628); until it can
-(ibm-granite/granite.build#650), these tests keep each pair identical, so
-the same parameters prepare the same dataset and write the same SR config on
-every cluster. Change both copies together.
+(ibm-granite/granite.build#650), these tests keep the two copies identical,
+so the same parameters prepare the same dataset on every cluster. Change both
+copies together.
 """
 
 import difflib
@@ -57,13 +56,6 @@ def _assert_same(a, b, start, end):
             "aws/answerability-lora/build.yaml",
             "<<'PY'",
             "PY",
-        ),
-        (
-            "SR config generator",
-            "lsf-bluevela/answerability-sr/build.yaml",
-            "aws/answerability-sr/build.yaml",
-            "printf '%s\\n'",
-            '> "$CFG";',
         ),
     ],
 )

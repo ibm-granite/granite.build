@@ -358,6 +358,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sft_config.model_path` is **not** deprecated: it is the Hugging Face id the trainer
   downloads when `model` is not bound, so it stays as a real default with no warning.
 
+### Removed
+
+- **The granite-switch `skypilot/lsf-bluevela/answerability-sr` recipe (#725).** LSF is no
+  longer supported. `skypilot/aws/answerability-sr` builds the same Shadow Residual adapter.
+  The last version is at commit `ebabfa44`; read it with
+  `git show ebabfa44:recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr/build.yaml`,
+  or restore it with `git checkout ebabfa44 -- recipes/granite-switch/skypilot/lsf-bluevela`.
+
 ### Fixed
 
 - **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
