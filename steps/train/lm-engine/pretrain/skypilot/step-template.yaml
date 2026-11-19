@@ -1,0 +1,99 @@
+name: lm-engine-pretrain
+version: 0.1.0
+# Pretrain an lm-engine model from scratch on the SkyPilot environment
+# (kubernetes subtype: Vela).
+#
+# Source: steps/train/lm-engine/pretrain/skypilot/ — published by `make publish-step`;
+# do not edit the copy under configurations/assets. See USAGE.md.
+#
+# THE IMAGE IS NOT BUILT HERE. lm-engine and its dependencies live in the family
+# image built by steps/train/lm-engine/Makefile and shared with the sibling
+# `lm-engine-export` step. A run picks it at launch from config.image; nothing is
+# cloned at launch. The step's own Python/bash helpers live in src/ and are
+# file-mounted into the run (.gbignore keeps them out of the Jinja pass).
+#
+# SCAFFOLD. The launcher's `run:` block is deliberately a stub: the render script
+# (src/render_config.py), the checkpoint watcher (src/ckpt_watch.py), resume
+# (src/resume.py), the data check (src/data_check.py), the entry point
+# (src/run_pretrain.sh) and the monitor wiring are added by a later change. Only
+# the config schema below is final.
+#
+type: training
+config:
+  # The lm-engine image, pinned by tag (`make image` in steps/train/lm-engine).
+  # Recipes set it once, as the LME_IMAGE parameter. Required.
+  image: ""
+  # What the job does: "train" runs pretraining; "data-check" only validates and
+  # summarises the tokenized corpus and exits (no optimizer, no checkpoints).
+  phase: "train"
+  # The run's stable training directory, identical across every attempt of a build
+  # (the recipe sets it to $RUN_DIR/train on the shared filesystem) so a relaunch
+  # resumes from the checkpoints the previous attempt wrote. A per-run workdir path
+  # would be deleted at target teardown. Required.
+  train_dir: ""
+  # Every lm-engine knob, as the nested mapping lm-engine's config.yml expects.
+  # src/render_config.py (a later change) renders it; its KNOBS table is the
+  # authority on which keys are accepted. {} = lm-engine's own defaults.
+  lme: {}
+  # Comma-separated optimizer step counts at which the run emits a checkpoint
+  # artifact mid-run, e.g. "2000,4000". Each rung N needs a matching
+  # checkpoint_<N> output declared by the recipe. Empty = only the final checkpoint.
+  ckpt_rungs: ""
+  # Emit the mid-run checkpoint artifacts at all. False (the default) runs the
+  # training without the rank-0 watcher, so a plain run declares no rungs.
+  emit_checkpoint_artifacts: false
+  # How often the rank-0 watcher looks for a newly completed rung.
+  checkpoint_watch_interval_seconds: 60
+  # Fail the step when the job produced no optimizer progress, instead of
+  # reporting success for a job that started and wrote nothing.
+  require_progress: true
+  # Resume from this checkpoint directory instead of the latest one under
+  # train_dir. Empty = auto-detect (fresh start when train_dir holds no checkpoint).
+  resume_from_checkpoint_dir: ""
+  # Cluster facts from the site file (interface names, HCA lists, timeouts),
+  # exported verbatim into the job's environment. Keys are used as given, so this
+  # is where a cluster's NCCL_* and UCX_* settings belong — not in the template.
+  nccl_env: {}
+  nccl_debug: "WARN"
+  wandb:
+    project: ""
+    # "offline" keeps the run from needing a WANDB_API_KEY; "online" needs one,
+    # "disabled" turns tracking off entirely.
+    mode: "offline"
+    name: ""
+    entity: ""
+outputs:
+  optional:
+    # The final checkpoint of a `train` run. Optional: a `data-check` run emits
+    # nothing, and a recipe may only want the rungs.
+    checkpoint:
+      type: model
+    # checkpoint_<N>, one per entry in ckpt_rungs, are declared by the recipe —
+    # the step cannot name them, since the rungs are a build-time choice.
+
+# No named inputs: the corpus and the tokenizer arrive through config.lme, as
+# paths inside the image or on the cluster's shared filesystem, not as bindings.
+# Recipes bind ordering-only inputs (a corpus-prep target's output, say), whose
+# names vary by recipe, so allow_unknown keeps every such binding valid.
+inputs:
+  allow_unknown: true
+
+environment_configs:
+  Skypilot:
+    default_launcher: lm-engine-pretrain
+    launchers:
+      lm-engine-pretrain:
+        type: skypilot
+        config:
+          image_id: '{{ ("docker:" ~ config.image) if config.image else "" }}'
+          resources: {}
+          # src/ holds the step's Python helpers and entry point; SkyPilot copies
+          # the tree into the run's working directory (fm-tune does the same).
+          file_mounts:
+            src: src
+          # SCAFFOLD: replaced by the real run block (env exports, torchrun launch,
+          # checkpoint watcher, artifact markers) in a later change. It fails loudly
+          # rather than reporting success for a job that trained nothing.
+          run: |
+            echo "lm-engine-pretrain: the run block is not implemented yet." >&2
+            exit 1
