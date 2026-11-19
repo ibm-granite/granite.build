@@ -66,6 +66,9 @@ EXPECTED = {
     # lm-engine pretraining: the corpus and the tokenizer are paths in config.lme,
     # and recipes bind only ordering-only inputs (names vary by recipe).
     f"{_SKY}/train/lm-engine/pretrain": (set(), set()),
+    # lm-engine export: the checkpoint rung is a path in config.train_dir, and
+    # recipes bind only ordering-only inputs (names vary by recipe).
+    f"{_SKY}/train/lm-engine/export": (set(), set()),
     # Granite-evals benchmark families: model_path is a config string and recipes
     # bind only ordering-only inputs (names vary by recipe), so no named inputs.
     f"{_SKY}/eval/bfcl": (set(), set()),

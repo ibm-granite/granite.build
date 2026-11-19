@@ -12,11 +12,13 @@ version: 0.1.0
 # cloned at launch. The step's own Python helpers live in src/ and are file-mounted
 # into the run (.gbignore keeps them out of the Jinja pass).
 #
-# SCAFFOLD. The launcher's `run:` block is deliberately a stub: wiring the config
-# below to src/export.py lands in a later change. src/ itself is complete --
-# export.py drives the two-stage export (`lm_engine.training.unshard`, then
-# tools.model_conversion.export_to_huggingface), the tokenizer copy, the checks and
-# the logit parity comparison; export_checks.py is the post-export verification.
+# The launcher exports this config as environment variables and hands the job to
+# src/run_export.sh, which assembles one `python src/export.py` invocation and
+# propagates its exit code. export.py drives the two-stage export
+# (`lm_engine.training.unshard`, then tools.model_conversion.export_to_huggingface),
+# the tokenizer copy, the checks and the logit parity comparison; export_checks.py is
+# the post-export verification. There is no torchrun: upstream's unshard is
+# single-process, so this is one CPU pod running one `python`.
 #
 type: training
 config:
@@ -53,9 +55,6 @@ config:
   # lm-engine model and the exported Hugging Face model. Config scalars are compared
   # exactly; this is only for the numeric parity check.
   parity_tolerance: 0.05
-  # Also load the exported directory in vLLM and compare a greedy sample. Off by
-  # default: it needs a GPU and several minutes.
-  vllm_check: false
 outputs:
   required:
     # The exported Hugging Face model directory: config.json, the safetensors shards,
@@ -77,6 +76,8 @@ environment_configs:
     launchers:
       lm-engine-export:
         type: skypilot
+        monitors:
+          - skypilot_monitor
         config:
           image_id: '{{ ("docker:" ~ config.image) if config.image else "" }}'
           resources: {}
@@ -84,9 +85,51 @@ environment_configs:
           # the tree into the run's working directory (fm-tune does the same).
           file_mounts:
             src: src
-          # SCAFFOLD: replaced by the real run block (unshard, export, tokenizer copy,
-          # checks, artifact marker) in a later change. It fails loudly rather than
-          # reporting success for a target that exported nothing.
+          # Nothing is computed here that the job could compute itself: this block
+          # turns `config` into the environment src/run_export.sh documents, and the
+          # script owns every decision. The render-time checks below are the
+          # exception -- a config gbserver can reject when it creates the step costs
+          # no allocation at all.
           run: |
-            echo "lm-engine-export: the run block is not implemented yet." >&2
-            exit 1
+            {#- q: shell-quote one value; a YAML null renders as empty, like an unset key. -#}
+            {%- macro q(v) -%}'{{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}'{%- endmacro -%}
+            {%- if not config.train_dir %}{{ raise_error("lm-engine-export: config.train_dir is required; set it to the training directory the pretrain target wrote, holding the sharded global_step<N>/ checkpoints.") }}{% endif %}
+            {%- if not config.output_dir %}{{ raise_error("lm-engine-export: config.output_dir is required; set it to the directory the Hugging Face model is written to, matching the target's hf_model output.") }}{% endif %}
+            {%- if not config.tokenizer_path %}{{ raise_error("lm-engine-export: config.tokenizer_path is required; set it to the directory holding the trained tokenizer files.") }}{% endif %}
+            {%- if config.model_type not in ["granite", "granitemoehybrid", "llama"] %}{{ raise_error("lm-engine-export: config.model_type must be one of granite, granitemoehybrid, llama; got '" ~ config.model_type ~ "'.") }}{% endif -%}
+            # -- what to export --
+            export LME_TRAIN_DIR={{ q(config.train_dir) }}
+            export LME_OUTPUT_DIR={{ q(config.output_dir) }}
+            export LME_TOKENIZER_PATH={{ q(config.tokenizer_path) }}
+            export LME_MODEL_TYPE={{ q(config.model_type) }}
+            export LME_ITERATION={{ q(config.iteration) }}
+            export LME_PARITY_TOLERANCE={{ q(config.parity_tolerance) }}
+            export LME_IMAGE={{ q(config.image) }}
+            # config.expected has no inline CLI form: run_export.sh writes this JSON
+            # to a file and passes --expected <path>, so a missing file is a hard
+            # error instead of a silently empty expectation.
+            export LME_EXPECTED_JSON={{ q(config.expected | json_dumps) }}
+            # -- code facts: this step's defaults, the same on every cluster --
+            # A CPU pod's HOME may be read-only or root-owned, and transformers wants
+            # a cache; the tokenizer is only ever copied, never tokenized with.
+            export HOME=/tmp
+            export TOKENIZERS_PARALLELISM=false
+            bash ./src/run_export.sh
+    monitors:
+      skypilot_monitor:
+        # Artifact/binding convention from the shipped library. The default
+        # on_completion log retrieval is enough here, unlike the pretrain step: this
+        # job emits its one GB_ARTIFACT_ID line at the very end, so there is nothing
+        # a mid-run scrape could dispatch earlier.
+        ref: space://monitors/skypilot
+        config:
+          extra_event_configs:
+            # Progress, so a multi-minute export is visibly alive: the banner
+            # run_export.sh prints and export.py's own `export: stage N/5` lines.
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "(lm-engine-export: |export: stage )"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: ".+"

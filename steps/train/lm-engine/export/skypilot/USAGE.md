@@ -6,10 +6,6 @@ One target is one rung: it unshards the checkpoint, converts it to a Hugging Fac
 architecture, copies the trained tokenizer in byte for byte, and verifies the result
 against the values the model was trained with.
 
-> **Status: scaffold.** The configuration schema below and the export driver
-> (`src/export.py`) are final, but the launcher's `run:` block is still a stub that exits
-> non-zero. Until it lands, this step cannot run a build.
-
 Reference it from a `build.yaml` as:
 
 ```yaml
@@ -27,8 +23,7 @@ step_uri: space://steps/train/lm-engine/export
 | `model_type` | `granite` | The Hugging Face architecture to export as: `granite`, `llama` or `granitemoehybrid`. See *Choosing `model_type`*. |
 | `tokenizer_path` | `""` | The directory holding the trained tokenizer files. They are copied byte for byte into `output_dir`. Required. |
 | `expected` | `{}` | The training-side values the exported config must still carry. `{}` skips the config check — don't. See *What `expected` holds*. |
-| `parity_tolerance` | `0.05` | Relative tolerance for the logit/loss parity check between the unsharded lm-engine model and the exported one. Config scalars are compared exactly; this is only the numeric parity check. |
-| `vllm_check` | `false` | Also load the exported directory in vLLM and compare a greedy sample. Needs a GPU and several minutes. |
+| `parity_tolerance` | `0.05` | Relative tolerance for the logit/loss parity check between the unsharded lm-engine model and the exported one. Config scalars are compared exactly; this is only the numeric parity check. Loose by four orders of magnitude on purpose — see *Compute and disk*. |
 
 ### Choosing `model_type`
 
@@ -105,6 +100,25 @@ A re-run whose `export.json` records the same iteration, lm-engine sha and `mode
 Anything else — a mismatch on any of the three, a recorded parity failure, a manifest that
 will not parse — exports again. Re-exporting costs minutes on a CPU pod; trusting a stale
 manifest costs a whole eval sweep.
+
+## Compute and disk
+
+One target is one CPU pod: `lm_engine.training.unshard` is single-process by design, so
+there is no `torchrun`, no GPU and no multi-node rendezvous. The recipe asks for the pod's
+shape in the target's `launcher_config.resources`; the step requests nothing itself.
+
+Scratch space is `<output_dir>.export-work/` — a sibling directory holding the generated
+`unshard.yml` and the unsharded checkpoint. **The filesystem holding `output_dir`
+therefore needs room for the Hugging Face model *and* a full unsharded copy of it at the
+same time**, roughly twice the model's size plus the shards already under `train_dir`. It
+is deleted once everything has passed and **kept on any failure**, so a bad conversion can
+be inspected.
+
+Measured on the family image, a tiny 2-layer model round-tripped through the real export
+agrees with the unsharded original to `7.2e-07` (`llama`) and `1.8e-07` (`granite`) max
+|Δ logits| — the same neighbourhood as upstream's own `atol=3e-7`. That is the evidence
+for the `0.05` default: it is there to catch a *wrong* model, not to police float
+arithmetic.
 
 ## Inputs
 

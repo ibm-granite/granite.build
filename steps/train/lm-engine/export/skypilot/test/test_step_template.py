@@ -2,10 +2,11 @@
 
 """Contract tests for the lm-engine-export step-template.yaml.
 
-The step is a scaffold: the launcher's ``run:`` block is still a stub, so these tests
-cover what is final — that the template loads, that every documented ``config`` key is
-there with its documented default, and that the SkyPilot environment config is the shape
-gbserver validates. Mode 1 only (no build).
+These cover the schema the step promises its recipes — that the template loads, that
+every documented ``config`` key is there with its documented default, and that the
+SkyPilot environment config is the shape gbserver validates. What the ``run:`` block
+renders is ``test_skypilot_render.py``, and what the entry point then does with it is
+``test_run_export.py``. Mode 1 only (no build).
 """
 
 import pathlib
@@ -28,7 +29,6 @@ _CONFIG_DEFAULTS = {
     "tokenizer_path": "",
     "expected": {},
     "parity_tolerance": 0.05,
-    "vllm_check": False,
 }
 
 
@@ -116,13 +116,6 @@ def test_src_is_file_mounted_and_shipped_verbatim():
     gbignore = (_STEP_DIR / ".gbignore").read_text().splitlines()
     assert "src/**" in gbignore
     assert "**/*.md" in gbignore
-
-
-def test_the_run_block_is_still_a_stub():
-    """Delete this test with the change that implements run:."""
-    run = _launcher()["run"]
-    assert "not implemented yet" in run
-    assert "exit 1" in run
 
 
 def test_the_hf_model_directory_is_the_only_declared_output():

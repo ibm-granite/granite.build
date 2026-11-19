@@ -8,20 +8,34 @@ The SkyPilot env (kubernetes subtype: Vela) of `space://steps/train/lm-engine/ex
 one lm-engine checkpoint rung converted to a Hugging Face model directory. The framework
 is described in [steps/README.md](../../../../README.md).
 
-**This directory is a scaffold.** The config schema in `step-template.yaml` is final, and
-`src/export_checks.py` is real; the launcher's `run:` block is a stub that exits
-non-zero, and the export driver itself does not exist yet. Do not publish the step until
-both are real.
-
 ## Layout
 
 ```
 step-template.yaml   the step: the config schema and the SkyPilot launcher
 .gbignore            files gbserver ships without Jinja-rendering (docs, src/)
+src/run_export.sh    the entry point: config as environment -> one export.py invocation
+src/export.py        the export driver: the five stages, the manifest, the artifact line
 src/export_checks.py the post-export verification: config and tokenizer checks
-test/                Mode-1 tests of the template's contract, and the checks' own tests
+test/                Mode-1 tests of the template, the entry point and the driver
 USAGE.md             user docs; published as the released step's README.md
 ```
+
+The launcher holds no logic beyond turning `config` into the environment
+`src/run_export.sh` documents and two render-time refusals a recipe can only get wrong
+once (a missing required path, an unsupported `model_type`). The script assembles the
+`export.py` argv, extends `PYTHONPATH` with its own directory so the mounted
+`export.py`/`export_checks.py` and the image's `tools.model_conversion` at `/app/src` are
+both importable, and hands back the driver's exit code unchanged. It runs no pipeline
+around the driver: `export.py` prints the one `GB_ARTIFACT_ID:hf_model` line itself, and a
+`tee` could duplicate it while a `pipefail` slip could swallow the non-zero that keeps an
+unfaithful export unpublished.
+
+**An optional vLLM serve-and-score check is deferred.** The design has it as off-by-default
+future work — load the exported directory in vLLM and compare a greedy sample — and an
+earlier draft of the schema declared a `vllm_check` key for it. Nothing read that key, so
+it was removed rather than left as a flag a recipe could set and believe: a green target
+would then claim a vLLM load that never happened. Reintroduce the key with the stage, not
+before.
 
 ## What the export does
 
