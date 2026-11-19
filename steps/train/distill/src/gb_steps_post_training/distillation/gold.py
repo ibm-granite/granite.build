@@ -167,11 +167,22 @@ try:
         # The current `kernels` package writes the standard HF hub layout
         # (`models--<repo>/...`) via `snapshot_download`, not the legacy
         # `kernels--<repo>/...` prefix. See kernels/utils.py:194-203.
+        #
+        # The ref is the PINNED revision (hub_kernel_pins.py), not "main":
+        # reading "main" here would install the main build directly into
+        # _KERNEL_MODULE_MAPPING, bypassing the pin the rest of this
+        # collection goes through. On a cache warmed by the preflight or
+        # the prefetch (which both download at the pinned revision) the
+        # ref file exists; on a cold cache it does not, the FileNotFoundError
+        # is caught below, and the online lazy-load path -- which does
+        # respect the pin -- takes over.
+        from gb_steps_post_training.distillation.hub_kernel_pins import pinned_revision
+
         _ref_path = (
             _Path(_HF_HUB_CACHE)
             / f"models--{_repo_id.replace('/', '--')}"
             / "refs"
-            / "main"
+            / pinned_revision(_repo_id)
         )
         return _ref_path.read_text().strip()
 
