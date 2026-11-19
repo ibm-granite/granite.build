@@ -153,14 +153,17 @@ done
 # no record to match or write, so nothing is hashed.
 done_record="$(dirname "$output")/.$(basename "$output").mergekit-done"
 fingerprint=""
+record_head=""
 if [ -n "$retry_key" ]; then
   fingerprint="$("$py" -c 'import hashlib, json, sys; print(hashlib.sha256(json.dumps(sys.argv[1:]).encode()).hexdigest())' \
     "$mergekit_impl" "$merge_config_json" "$args_json" "$copy_tokenizer" "$lazy_unpickle" \
     "$allow_crimes" "$trust_remote_code" "$output" "${prepare_inputs[@]}")" \
     || fail "could not hash the merge's inputs."
+  # The record's first two lines: what a retry must match, and what is written.
+  record_head="$(printf 'run %s\nconfig %s' "$retry_key" "$fingerprint")"
 fi
 if [ -n "$retry_key" ] && [ -f "$output/config.json" ] && [ -f "$done_record" ] \
-   && [ "$(head -n 2 "$done_record")" = "$(printf 'run %s\nconfig %s' "$retry_key" "$fingerprint")" ]; then
+   && [ "$(head -n 2 "$done_record")" = "$record_head" ]; then
   echo "mergekit: '$output' was written by an earlier attempt of this step; registering it."
   echo "GB_STEP_METADATA_KEY:reused_earlier_attempt GB_STEP_METADATA_VALUE:true"
   tail -n +3 "$done_record"
@@ -319,7 +322,7 @@ if [ -d "$output" ]; then rmdir "$output" 2>/dev/null || fail "could not replace
 # The record for a retry (above), just before the move: if the job dies between the two,
 # the retry finds no output and merges again.
 if [ -n "$retry_key" ]; then
-  printf 'run %s\nconfig %s\n%s\n' "$retry_key" "$fingerprint" "$markers" > "$done_record" \
+  printf '%s\n%s\n' "$record_head" "$markers" > "$done_record" \
     || fail "could not write '$done_record'."
 fi
 mv "$stage" "$output"

@@ -2,7 +2,9 @@
 
 """Tests for run.sh: retries of a finished run, the shared Hub cache, and slow-tokenizer files."""
 
+import shlex
 import shutil
+import sys
 
 import pytest
 from mergekit_test_helpers import (  # pylint: disable=unused-import
@@ -161,16 +163,24 @@ def test_a_record_from_the_previous_format_is_not_matched(env):
     assert not env["argv_file"].exists()  # refused before merging, not after
 
 
-def test_no_retry_key_hashes_nothing(env, tmp_path):
-    """Without a key nothing is hashed, so a hashing failure can't fail a direct run."""
-    broken = tmp_path / "broken"
-    broken.mkdir()
-    (broken / "hashlib.py").write_text("raise ImportError('no hashlib here')\n")
-    pythonpath = {"PYTHONPATH": str(broken)}
-    assert _run(env, extra_env=pythonpath).returncode == 0
-    # Control: with a key the same environment fails at the hash, as it should.
+def test_no_retry_key_hashes_nothing(env):
+    """Without a key nothing is hashed, so a hashing failure can't fail a direct run.
+
+    A ``python3`` first on PATH runs the real interpreter, except that it fails the
+    call that hashes the inputs, so the test needn't depend on what Python imports
+    (shadowing ``hashlib`` would also break anything else that imports it).
+    """
+    wrapper = env["tmp"] / "bin" / "python3"
+    wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in *hashlib.sha256*) exit 1 ;; esac\n'
+        f'exec {shlex.quote(sys.executable)} "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    assert _run(env).returncode == 0
+    # Control: with a key the run hashes, so it fails, and says why.
     shutil.rmtree(env["work"] / "out")
     _refused(
-        _run(env, extra_env=pythonpath, **{"retry-key": "b-1/merge/0"}),
+        _run(env, **{"retry-key": "b-1/merge/0"}),
         "could not hash the merge's inputs",
     )

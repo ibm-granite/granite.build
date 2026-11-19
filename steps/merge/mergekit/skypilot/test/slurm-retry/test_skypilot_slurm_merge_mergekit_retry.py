@@ -16,9 +16,7 @@ test-setup`); extended suite only. Fixtures live in the test-data/ dir mirroring
 file (get_test_data_dir_for).
 """
 
-import os
-import time
-from typing import Any, Self
+from typing import Self
 
 import pytest
 import yaml
@@ -29,8 +27,10 @@ from libgbtest.buildrunner.buildtest import (
     BuildTestSpecification,
     get_test_data_dir_for,
 )
+from libgbtest.buildrunner.retry_wait import wait_for_last_attempt
 from libgbtest.buildrunner.utils import ExceptionRaisingThread
 from libgbtest.constants import GBTEST_USER_NAME, extended_testing_only
+from libgbtest.shared_paths import step_output_dir
 
 from gbserver.buildrunner.buildrunner import BuildRunner
 from gbserver.storage.stored_build import StoredBuild
@@ -40,8 +40,8 @@ from gbserver.types.status import Status
 pytestmark = pytest.mark.skypilot_integration
 
 
-#: How often the wait re-reads the build.
-_POLL_S = 10
+#: This test's fixture (also read for the output path to clear).
+_BUILD_YAML = get_test_data_dir_for(__file__) / "build.yaml"
 
 
 @extended_testing_only
@@ -59,26 +59,14 @@ class TestSkypilotSlurmMergekitRetry(AbstractBuildTest):
 
     @pytest.fixture(autouse=True)
     def _fresh_output(self):
-        """Remove what an earlier run left, so a re-run doesn't find it and refuse.
+        """Clear this test's ``/shared/mergekit-test/<test>`` dir before it runs.
 
-        Removes the output's parent, this test's own ``/shared/mergekit-test/<test>``
-        directory, which holds the model, its retry record and the attempt markers.
-        The path comes from build.yaml, so the two can't drift.
+        It holds the model, its retry record and the byoc attempt markers; a re-run
+        would otherwise be refused. The path comes from build.yaml.
         """
-        output = self._merge_step(self._build_yaml())["config"]["mergekit_config"][
-            "output_path"
-        ]
-        remove_from_shared(os.path.dirname(output))
-
-    @staticmethod
-    def _build_yaml() -> dict:
-        return yaml.safe_load(
-            (get_test_data_dir_for(__file__) / "build.yaml").read_text()
+        remove_from_shared(
+            step_output_dir(_BUILD_YAML, "merge", 0, "mergekit_config", "output_path")
         )
-
-    @staticmethod
-    def _merge_step(build: dict) -> dict:
-        return build["granite.build"]["targets"]["merge"]["steps"][0]
 
     def _store_build(self: Self, spec: BuildTestSpecification) -> StoredBuild:
         """Create the stored build the runner drives, in this test's space."""
@@ -94,34 +82,47 @@ class TestSkypilotSlurmMergekitRetry(AbstractBuildTest):
         self.storage.build_storage.add(stored_build)
         return stored_build
 
-    def _wait_for_the_last_attempt(
-        self: Self, build_id: str, runner_thread: Any, timeout_s: float
+    def _run_to_the_last_attempt(
+        self: Self, stored_build: StoredBuild, spec: BuildTestSpecification
     ) -> StoredBuild:
-        """Wait until the build succeeds or its last attempt has ended.
+        """Run the build in-process until it succeeds or its last attempt ends.
 
-        FAILED is passed through only while a retry is still due: the buildrunner
-        bumps ``retry_count`` and moves the build to RUNNING in one guarded update,
-        so FAILED with ``retry_count`` at ``max_retries`` is final. A runner that
-        has stopped ends the wait too. Either way the caller reports the real
-        status instead of a timeout.
+        Waits with ``wait_for_last_attempt``, so a failure is reported with its real
+        status, not as a timeout.
         """
-        max_retries = self._build_yaml()["granite.build"]["retries"]["max_retries"]
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            build = self.storage.build_storage.get_by_uuid(build_id)
-            assert isinstance(build, StoredBuild)
-            if build.status == Status.SUCCESS:
-                return build
-            if build.status in (Status.CANCELLED, Status.INVALID) or (
-                build.status == Status.FAILED and build.retry_count >= max_retries
-            ):
-                return build
-            if not runner_thread.is_alive():
-                return build
-            time.sleep(_POLL_S)
-        pytest.fail(
-            self._failed_build_msg(build_id, f"build not done after {timeout_s:.0f}s")
+        build_id = stored_build.uuid
+        runner = BuildRunner(stored_build, space_uri=spec.space_uri, create_pr=False)
+        runner_thread = ExceptionRaisingThread(
+            name="mergekit in-place retry build",
+            target=runner.start_and_wait,
+            args=(),
         )
+        runner_thread.start()
+        build_yaml = yaml.safe_load(_BUILD_YAML.read_text(encoding="utf-8"))
+        build = None
+        try:
+            build = wait_for_last_attempt(
+                lambda: self.storage.build_storage.get_by_uuid(build_id),
+                runner_thread.is_alive,
+                build_yaml["granite.build"]["retries"]["max_retries"],
+                spec.timeout_minutes * 60,
+            )
+        finally:
+            if build is None:
+                # Timed out (or the wait raised): stop the build, so it doesn't go on
+                # writing to /shared while a re-run's setup clears it. Not after a
+                # result: the runner may still be finishing, and a stop then could
+                # mark a finished build CANCELLED.
+                runner.stop()
+            runner_thread.join(timeout=120)
+        if build is None:
+            pytest.fail(
+                self._failed_build_msg(
+                    build_id, f"build not done after {spec.timeout_minutes} minutes"
+                )
+            )
+        assert isinstance(build, StoredBuild)
+        return build
 
     def _check_target_runs(self: Self, build_id: str) -> dict:
         """One FAILED and one SUCCESS target run; returns them by status."""
@@ -147,19 +148,7 @@ class TestSkypilotSlurmMergekitRetry(AbstractBuildTest):
         stored_build = self._store_build(spec)
         build_id = stored_build.uuid
 
-        runner = BuildRunner(stored_build, space_uri=spec.space_uri, create_pr=False)
-        runner_thread = ExceptionRaisingThread(
-            name="mergekit in-place retry build",
-            target=runner.start_and_wait,
-            args=(),
-        )
-        runner_thread.start()
-        try:
-            build = self._wait_for_the_last_attempt(
-                build_id, runner_thread, spec.timeout_minutes * 60
-            )
-        finally:
-            runner_thread.join(timeout=60)
+        build = self._run_to_the_last_attempt(stored_build, spec)
 
         assert build.status == Status.SUCCESS, self._failed_build_msg(
             build_id, f"build should end SUCCESS after the retry, got {build.status}"

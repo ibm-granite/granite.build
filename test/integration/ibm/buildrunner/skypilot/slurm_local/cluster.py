@@ -7,6 +7,8 @@ import os
 import shlex
 import subprocess
 
+from libgbtest.shared_paths import require_below_shared
+
 
 def on_cluster(script: str, stdin: str | None = None) -> str:
     """Run a shell script on the Docker SLURM login node; return its stdout.
@@ -69,7 +71,4 @@ def remove_from_shared(path: str) -> None:
     :param path: Absolute path below ``/shared/``; ``/shared`` itself is refused.
     :raises ValueError: If ``path`` is not strictly below ``/shared/``.
     """
-    norm = os.path.normpath(path)
-    if not norm.startswith("/shared/") or norm != path.rstrip("/"):
-        raise ValueError(f"not a path strictly below /shared/: {path!r}")
-    on_cluster(f"rm -rf -- {shlex.quote(norm)}")
+    on_cluster(f"rm -rf -- {shlex.quote(require_below_shared(path))}")
