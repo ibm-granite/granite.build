@@ -536,7 +536,13 @@ class TestAuthLoginCommand:
 
         assert result.exit_code == 0, result.output
         mock_login.assert_called_once()
-        assert "oidc/authorize?x=1" in result.output
+        # The URL sits on its own line, with blank lines around it.
+        assert (
+            "\n\nhttps://gbserver.example.com/api/v1/auth/oidc/authorize?x=1\n\n"
+            in result.output
+        )
+        # The pasted code is read hidden, never echoed.
+        assert "pasted-code" not in result.output
         assert "IBMid authentication is successful" in result.output
 
     def test_sso_redirect_port_passed_through(self):

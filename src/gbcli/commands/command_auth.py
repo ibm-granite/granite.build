@@ -145,11 +145,15 @@ def login(ctx, token, gbserver, sso, remote, redirect_port):
             if remote:
 
                 def _show_url(url):
-                    click.echo(f"Open this link in a browser on any device: {url}")
+                    click.echo("Open this link in a browser on any device:")
+                    click.echo(f"\n{url}\n")
 
                 def _read_code():
+                    # Hidden like `gb secret` values: the code signs you in.
                     return click.prompt(
-                        "Paste the verification code shown after sign-in"
+                        "Paste the verification code shown after sign-in",
+                        type=str,
+                        hide_input=True,
                     )
 
                 user_login = auth_client.login_ibmid(
