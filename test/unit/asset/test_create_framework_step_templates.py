@@ -150,10 +150,17 @@ def _patterns(text: str) -> list[str]:
     ]
 
 
+# What makes a directory a step source is that its Makefile *includes* common.mk -- that
+# include is what brings in the publish/test machinery which needs the .gbignore. Match
+# the directive, not the string: a family-level image Makefile (steps/eval/Makefile,
+# steps/train/lm-engine/Makefile) sits above its steps, is not a step, and may well
+# mention common.mk in a comment or reuse a script from beside it.
+_INCLUDES_COMMON_MK = re.compile(r"^\s*include\s+\S*common\.mk\b", re.M)
+
 STEP_SOURCES = sorted(
     mk.parent
     for mk in (REPO_ROOT / "steps").glob("**/Makefile")
-    if "space" not in mk.parts and "common.mk" in mk.read_text()
+    if "space" not in mk.parts and _INCLUDES_COMMON_MK.search(mk.read_text())
 )
 
 
