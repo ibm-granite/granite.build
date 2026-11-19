@@ -39,7 +39,7 @@ _PARAMS = _RECIPE / "parameters.yaml"
 _STEPS = _REPO / "steps"
 _RENDER_CONFIG = _STEPS / "train/lm-engine/pretrain/skypilot/src/render_config.py"
 
-# step_uri -> the file whose `config` is that step's schema. All three are in use;
+# step_uri -> the file whose `config` is that step's schema. All four are in use;
 # test_every_step_uri_is_expected holds the set to exactly these.
 _STEP_SCHEMAS = {
     "space://steps/train/lm-engine/pretrain": _STEPS
@@ -47,6 +47,8 @@ _STEP_SCHEMAS = {
     "space://steps/train/lm-engine/export": _STEPS
     / "train/lm-engine/export/skypilot/step-template.yaml",
     "space://steps/eval/lmeval": _STEPS / "eval/lmeval/skypilot/step-template.yaml",
+    # The roll-up runs the built-in command step, whose schema is gbserver's own.
+    "space://steps/command": _REPO / "src/gbserver/builtins/steps/skypilot/command/step.yaml",
 }
 
 # Top-level step config keys every SkyPilot step reads through the shared monitor or
@@ -725,10 +727,13 @@ _LMEVAL = "space://steps/eval/lmeval"
 
 
 def _evals(rendered):
+    """The per-rung eval targets only: eval-combined is the roll-up OVER them, and
+    counting it as one would make every target-set assertion below read as if a
+    catalog entry had appeared."""
     return {
         name: target
         for name, target in _targets(rendered).items()
-        if name.startswith("eval-")
+        if name.startswith("eval-") and name != "eval-combined"
     }
 
 
@@ -771,6 +776,8 @@ def test_screen_evals_run_every_rung_and_the_catalog_only_the_full_ones(tmp_path
         # The rest of the catalog, on the full rung ONLY.
         "eval-mmlu-ck30000",
         "eval-mmlu-prox-lite-ck30000",
+        # One roll-up over all of them.
+        "eval-combined",
     }
 
 
@@ -914,6 +921,77 @@ def test_the_eval_block_is_self_contained_between_its_markers(tmp_path):
     assert "RUN_DIR" not in block
     assert "EVAL_ROOT" in block
 
+
+
+# ─── The roll-up (eval-combined) ──────────────────────────────────────────────
+
+
+def _combined(rendered):
+    return _targets(rendered)["eval-combined"]
+
+
+def test_no_roll_up_without_evals(tmp_path):
+    """A roll-up with no inputs would dispatch at once and write an empty table."""
+    rendered = _render(tmp_path, EXPORT_RUNGS="10000")
+    assert "eval-combined" not in _targets(rendered)
+
+
+def test_the_roll_up_waits_for_every_eval(tmp_path):
+    """Equality, not containment: a missing binding makes the roll-up race the eval
+    it did not wait for and silently leave that rung's column empty."""
+    rendered = _render(tmp_path, EVAL_RUNGS="10000,20000", FULL_EVAL_RUNGS="20000")
+    bound = {
+        spec["binding"] for spec in _combined(rendered)["inputs"].values()
+    }
+    assert bound == {f"{name}.granite_results" for name in _evals(rendered)}
+
+
+def test_the_roll_up_writes_under_the_runs_own_eval_root(tmp_path):
+    """The tables land beside the results they summarise, and the URI carries
+    RUN_NAME (EVAL_DIR does), so two runs cannot claim one URI -- a claimed URI is
+    registered once and the second target reports SUCCESS with nothing on disk."""
+    rendered = _render(tmp_path, EVAL_RUNGS="10000", RUN_NAME="r1")
+    out = _combined(rendered)["outputs"]["report"]
+    assert out["type"] == "dataset"
+    assert out["uri"].startswith("env://")
+    assert out["uri"].endswith("/r1/report")
+    eval_dir = _config(rendered, "eval-base-core-ck10000")["output_dir"]
+    assert out["uri"] == f"env://{eval_dir.rsplit('/ckpt_', 1)[0]}/report"
+
+
+def test_the_roll_up_runs_the_command_step_on_a_pinned_cpu_image(tmp_path):
+    rendered = _render(tmp_path, EVAL_RUNGS="10000")
+    step = _step(rendered, "eval-combined")
+    assert step["step_uri"] == "space://steps/command"
+    config = step["config"]
+    # A digest, not a tag: the roll-up is the recipe's only unpinned-by-default
+    # image risk, and a floating python:3.12-slim changes the interpreter under a
+    # script shipped inline.
+    assert "@sha256:" in config["command_config"]["image"]
+    assert config["compute_config"] == {
+        "num_nodes": 1,
+        "num_cpus_per_node": _yaml(_PARAMS)["REPORT_CPUS"],
+    }
+    assert "accelerators" not in config["launcher_config"]["resources"]
+
+
+def test_the_inlined_report_script_is_the_file(tmp_path):
+    """recipes/pretrain/report.py is the single source: the heredoc body must be it
+    verbatim, or the build runs a stale copy of a script that is unit-tested here."""
+    rendered = _render(tmp_path, EVAL_RUNGS="10000")
+    command = _config(rendered, "eval-combined")["command_config"]["command"]
+    body = command.split("<<'GB_REPORT_PY'\n", 1)[1].split("\nGB_REPORT_PY\n", 1)[0]
+    assert body + "\n" == (_PRETRAIN / "report.py").read_text(encoding="utf-8")
+
+
+def test_the_roll_up_is_inside_the_shared_eval_block(tmp_path):
+    """Task 20's pretrain-eval reuses the block between the markers; the roll-up
+    belongs to it, so an existing-exports run gets the same tables."""
+    raw = _BUILD.read_text(encoding="utf-8")
+    block = raw.split("─── evals (shared with pretrain-eval) ───", 1)[1].split(
+        "─── end evals ───", 1
+    )[0]
+    assert "eval-combined:" in block
 
 # ─── The catalog's own checks ─────────────────────────────────────────────────
 

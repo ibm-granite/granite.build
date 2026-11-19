@@ -263,6 +263,16 @@ EVAL_LIMIT: ""
 # model itself is the site's (EVAL_ACCELERATORS). vLLM's weight load plus the
 # harness's request fan-out, not the model, is what this has to hold.
 EVAL_MEMORY: 256
+# The roll-up target (eval-combined) joins every eval's results.json into
+# summary.csv, per_task.csv and summary.md. It is present whenever any eval target
+# is, waits for all of them, and runs the recipe's report.py in a bare CPU
+# container -- the script is standard library only and is shipped inline, so no
+# image has to carry it. Pinned by digest, like every other image here; a site
+# behind a mirror overrides it.
+REPORT_IMAGE: "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
+# One CPU and a modest heap: the join reads a few hundred small JSON files.
+REPORT_CPUS: 1
+REPORT_MEMORY: 8
 
 # ─── Resuming ─────────────────────────────────────────────────────────
 # Empty: a fresh run, and a retry resumes from whatever RUN_DIR/train already holds.
