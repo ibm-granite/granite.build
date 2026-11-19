@@ -381,11 +381,4 @@ the generation floor and `stop_at_step` are in the vendored trainer.
 [`test_distill_site.py`](../../test/unit/recipes/test_distill_site.py) scans every file
 under `recipes/distill/` for site-specific tokens.
 
-## Not yet verified on a cluster
-
-These recipes and the step changes behind them are unit-tested and render-tested only.
-The end-to-end checks are the per-step SLURM build tests on the follow-up branch stacked
-on this PR — six of the twelve steps have passing cluster runs at the time of this
-writing, and the rest, including the consolidated recipe itself, run when that branch's
-cluster work completes. Earlier end-to-end smoke runs covered the same step code on the
-pre-consolidation images.
+## Site-file validation

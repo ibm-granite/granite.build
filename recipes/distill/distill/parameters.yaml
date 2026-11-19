@@ -14,7 +14,7 @@
 # ─── Run identification ───────────────────────────────────────────────
 # REQUIRED, set per run with a timestamp: every output path hangs off it, and the
 # rollout server's mem:// URIs are suffixed with it -- two builds may not register
-# one URI, so an empty or reused name fails the render rather than colliding.
+# one URI, so an empty name fails the render rather than colliding silently.
 RUN_NAME: ""
 SEED: 42
 

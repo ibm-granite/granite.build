@@ -3,7 +3,7 @@
 # PORTED, not authored here. Upstream source of truth:
 #   repo   github.com/laminair/gb-steps-distillation
 #   path   steps/distill-corpus-prep/src/prep_corpus.py
-#   commit see code_config.expect_ref in step-template.yaml (not repeated here, because
+#   commit see steps/train/distill/src/VENDORED.md (not repeated here, because
 #          two places to write a ref is one place for it to be stale)
 #
 # Verbatim apart from `black`/`isort` reflow, which CI requires repo-wide. Keep it that
@@ -16,7 +16,7 @@
 # vendored into gb-steps-distillation; there is no later re-sync to track for them, and no
 # earlier upstream commit in THIS repo's history to name. (They trace back further, to the
 # private source checkout's own commit 8a9ae32 -- "Build the unified 100-step round, and give
-# ULD a teacher that renders every turn" -- but that checkout is not what code_config clones
+# ULD a teacher that renders every turn" -- but that checkout is not what the image bakes
 # from, so its history is not this file's provenance chain.) Every one of the three flags is
 # default-OFF: `train.jsonl` and the row sidecar come out byte-identical to a run with none of
 # them set, and the manifest gains five keys that read `false`/`null`/`0`.
@@ -30,8 +30,8 @@
 # an existing corpus, or rebuild it.
 #
 # It imports gb_steps_post_training.distillation at module scope, which is delivered at
-# RUN time from the checkout named by code_config (see step-template.yaml). That is why
-# the tests for this file are gated on GB_DISTILL_CODE_DIR — see test/conftest.py.
+# RUN time from the image (the trainer package is baked in; see
+# steps/train/distill/images/ for the build).
 #
 """Build a GOLD training corpus: filter, normalise and split a conversation dataset.
 
@@ -662,7 +662,7 @@ def prompt_token_count(record: dict, tok) -> int:
          corpus rows. Not a copy of the logic on either side -- the actual two call sites,
          so drift fails a check instead of shipping. KNOWN GAP: that check lives only in the
          private checkout these files were first ported from. It is NOT in
-         gb-steps-distillation at `code_config.expect_ref`, and nothing in this repository
+         gb-steps-distillation (see VENDORED.md), and nothing in this repository
          runs it, so from here the parity rests on this file and the delivered trainer
          being the same pinned revision -- which they are -- not on a check that fails.
       2. Every kwarg here is the trainer's, including per-row `render_thinking` (the trainer's

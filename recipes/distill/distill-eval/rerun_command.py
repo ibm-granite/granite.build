@@ -287,10 +287,6 @@ def render_check(site_path, params):
     for layer in (_PARAMS, site_path):
         merged.update(get_params_from_file(str(layer)))
     merged.update(params)
-    # The distill recipe refuses an empty RUN_NAME; a re-run command always
-    # carries one (it prints --param RUN_NAME=...), but the render check may be
-    # asked to render the defaults alone.
-    merged.setdefault("RUN_NAME", "render-check")
     with tempfile.TemporaryDirectory() as tmp:
         text = apply_parameters(_RECIPE.read_text(encoding="utf-8"), [], merged, tmp)
     return list(yaml.safe_load(text)["granite.build"]["targets"])

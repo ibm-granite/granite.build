@@ -617,3 +617,12 @@ so an external server means a NCCL process group spanning two allocations. This 
 tensors synced across the two allocations) and has **not yet run on SLURM**. The renderer refuses the `vllm` input with `vllm_num_servers: 0` (the run
 would train off-policy while a server sat idle) or with `lmbda: 0` (the student would never
 generate).
+
+## Running as root
+
+The shared images default to `DISTILL_UID=0` (root). On SLURM/enroot this preserves
+the validated cluster behaviour: the containers run against group-shared filesystems
+and a shared HF cache whose group membership a fixed uid cannot assume. On Kubernetes
+or plain docker, where running as root is the actual exposure, pass
+`--build-arg DISTILL_UID=1000` at image build time, or set `securityContext.runAsUser`
+in the pod spec. See each image's Dockerfile for the argument.

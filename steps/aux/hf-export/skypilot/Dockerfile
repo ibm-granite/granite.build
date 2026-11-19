@@ -17,7 +17,7 @@
 #
 #   make image publish-image IMAGE_VERSION=<version>
 FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \

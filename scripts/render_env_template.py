@@ -9,7 +9,7 @@
 The template uses the gb CLI's build.yaml parameter syntax: $${KEY} for values
 and <% %> for blocks, rendered by gbcli's apply_parameters under StrictUndefined.
 gbserver's own {{ ... }} and {% %} templates pass through untouched. SITE is a
-flat YAML mapping, loaded as `gb build start --parameters-path` loads it.
+flat YAML mapping, loaded as `gb build start --param-file` loads it.
 
 OUT is written only when the result renders and parses as YAML: atomically, from
 a temporary file in OUT's directory, with mode 600.
