@@ -68,7 +68,7 @@ Unauthenticated endpoints in `src/gbserver/api/auth_routes.py` implement this: a
 
 `redirect_uri` is the CLI's loopback listener (`http://127.0.0.1:<port>/callback`), or omitted for `--remote`, meaning gbserver's remote-callback URL. Anything else is rejected, and the provider's client registration must list the exact URIs used.
 
-Nothing is stored server-side, so any worker or replica can serve each request. The authorization code reaches only the CLI (or the user pasting it) and is useless without the CLI's PKCE verifier.
+Nothing is stored server-side, so any worker or replica can serve each request. A code can be redeemed only with the PKCE verifier of the CLI that started the login.
 
 **Legacy polling flow** (CLIs before the stateless flow):
 
@@ -202,7 +202,7 @@ Provider name mapping (synonyms resolve to the same internal value):
 
 With `--remote`, the CLI prints the URL instead of listening, and the provider redirects to `/api/v1/auth/oidc/remote-callback`. That page has a **Copy verification code** button (the code itself is under a collapsed **Show code**); the user pastes the code into the CLI, which checks its `state` and continues at step 6.
 
-`client_secret` never leaves the server, and gbserver keeps no login state. A leaked code, e.g. a phished `--remote` verification code, can't be redeemed without the `code_verifier`, which only the CLI's memory holds.
+`client_secret` never leaves the server, and gbserver keeps no login state. A code intercepted in transit can't be redeemed without the `code_verifier`, which only the CLI's memory holds. PKCE doesn't help if someone else starts the login: an attacker who runs `--sso --remote` and gets a victim to sign in through the printed URL and send back the verification code can redeem it as the victim. The remote-callback page warns against sharing the code; the default loopback flow isn't exposed this way, since the code goes straight to the CLI that started the login.
 
 ### Credential Storage
 
@@ -276,17 +276,17 @@ To add a new OAuth provider:
 
 ```bash
 # Server-side auth proxy tests (authorize, callback, status endpoints)
-make py-test ARGS=test/gbserver_test/api/test_auth_routes.py
+make py-test ARGS=test/unit/api/test_auth_routes.py
 
 # Server-side stateless flow tests
 make py-test ARGS=test/unit/api/test_auth_routes_oidc.py
 
 # Server-side auth provider tests (token detection, validation, middleware)
-make py-test ARGS=test/gbserver_test/api/test_auth_providers.py
+make py-test ARGS=test/unit/api/test_auth_providers.py
 
 # CLI SSO auth tests (PKCE, loopback and --remote flows, credentials, CLI options)
-make py-test ARGS=test/gbserver_test/commands/test_ibmid_auth.py
+make py-test ARGS=test/unit/gbcli/utils/test_ibmid_auth.py
 
 # Existing auth middleware tests (backward compatibility)
-make py-test ARGS=test/gbserver_test/api/test_auth.py
+make py-test ARGS=test/unit/api/test_auth.py
 ```

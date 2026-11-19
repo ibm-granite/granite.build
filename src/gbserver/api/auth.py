@@ -59,8 +59,8 @@ _PUBLIC_EXACT_PATHS = frozenset(
 # /api/autotunex is intentionally not public: the AutoTuneX upstream does no auth of its own.
 _PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/dashboard", "/_next")
 
-# The only POSTs that skip auth (exact paths). The code redemption is a POST
-# to keep the code and verifier out of URLs and access logs.
+# The only POSTs that skip auth (exact paths). Code redemption is a POST to
+# keep the PKCE verifier out of URLs and access logs.
 _PUBLIC_POST_PATHS = frozenset({"/api/v1/auth/oidc/token"})
 
 # Every mounted sub-app owns its own Swagger/OpenAPI doc pages directly under

@@ -7,7 +7,6 @@ from requests.exceptions import ConnectionError
 
 from gbcli.utils.gbconstants import (
     GBSERVER_SECRETS_API,
-    IBMID_REDIRECT_PORT,
     RITS_LIST_URL,
     VPN_TUNNELALL_CONNECTION_ERROR_MESSAGE,
 )
@@ -120,9 +119,7 @@ def ibmid_login(
     if remote:
         result = client.login_remote(show_url=open_browser, read_code=read_code)
     else:
-        result = client.login_loopback(
-            open_browser=open_browser, port=redirect_port or IBMID_REDIRECT_PORT
-        )
+        result = client.login_loopback(open_browser=open_browser, port=redirect_port)
 
     credentials = GBCredentials()
     credentials.set("access_token", result.access_token, section="user.ibmid")

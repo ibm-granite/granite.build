@@ -19,6 +19,7 @@ import logging
 import secrets
 import time
 import urllib.parse
+import webbrowser
 from typing import Callable, Optional
 
 import requests
@@ -77,8 +78,8 @@ def _generate_code_challenge(verifier: str) -> str:
 
 _LOOPBACK_DONE_HTML = (
     "<html><body>"
-    "<h2>IBMid login successful.</h2>"
-    "<p>You may close this tab and return to the terminal.</p>"
+    "<h2>IBMid sign-in received.</h2>"
+    "<p>You may close this tab; the terminal shows whether login completed.</p>"
     "</body></html>"
 )
 
@@ -91,6 +92,11 @@ _LOOPBACK_ERROR_HTML_TEMPLATE = (
 )
 
 
+def _same_state(a: str, b: str) -> bool:
+    # Bytes: compare_digest raises TypeError on non-ASCII str.
+    return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
 def decode_remote_code(pasted: str, state: str) -> str:
     """The IBMid code in a pasted verification code; ValueError if malformed
     or from another login."""
@@ -101,7 +107,7 @@ def decode_remote_code(pasted: str, state: str) -> str:
         pasted_state, code = data["s"], data["c"]
     except Exception as exc:
         raise ValueError("The verification code is not valid. Copy it again.") from exc
-    if not secrets.compare_digest(str(pasted_state), state):
+    if not _same_state(str(pasted_state), state):
         raise ValueError(
             "The verification code is from a different login. "
             "Use the code shown after opening the URL printed above."
@@ -126,10 +132,11 @@ class _LoopbackHandler(http.server.BaseHTTPRequestHandler):
         code = params.get("code", [""])[0]
         error = params.get("error", [""])[0]
         error_description = params.get("error_description", [""])[0]
-        if not secrets.compare_digest(state, self.server.expected_state):
-            self._respond(_LOOPBACK_ERROR_HTML_TEMPLATE, "Unexpected login response.")
-            self.server.error = (
-                "IBMid redirect did not match this login (state mismatch)."
+        if not _same_state(state, self.server.expected_state):
+            # A stale tab or another page: reject it, keep waiting for ours.
+            self._respond(
+                _LOOPBACK_ERROR_HTML_TEMPLATE,
+                "This sign-in is from a different login attempt.",
             )
         elif error or not code:
             detail = (
@@ -171,12 +178,14 @@ class IBMidOIDCClient:
 
     def login_loopback(
         self,
-        open_browser: Callable[[str], None],
-        port: int = IBMID_REDIRECT_PORT,
+        open_browser: Optional[Callable[[str], None]] = None,
+        port: Optional[int] = None,
         timeout: int = 300,
     ) -> AuthFlowResult:
-        """Log in via IBMid's redirect to a local port; *open_browser* gets the
-        URL once the listener is up."""
+        """Log in via IBMid's redirect to a local port; *open_browser* (default
+        ``webbrowser.open``) gets the URL once the listener is up."""
+        open_browser = open_browser or webbrowser.open
+        port = port or IBMID_REDIRECT_PORT
         verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
         redirect_uri = f"http://127.0.0.1:{port}/callback"
         try:
@@ -193,9 +202,9 @@ class IBMidOIDCClient:
             while server.code is None and server.error is None:
                 if time.time() >= deadline:
                     raise Exception(
-                        "Timed out waiting for the IBMid browser redirect. If the "
-                        "browser cannot reach this machine, use "
-                        "'gb auth login --sso --remote'."
+                        "Timed out waiting for the IBMid browser redirect. If "
+                        "sign-in failed in the browser, try again; if the browser "
+                        "can't reach this machine, use 'gb auth login --sso --remote'."
                     )
                 server.handle_request()
         if server.error is not None:
@@ -204,14 +213,25 @@ class IBMidOIDCClient:
 
     def login_remote(
         self,
-        show_url: Callable[[str], None],
-        read_code: Callable[[], str],
+        show_url: Optional[Callable[[str], None]] = None,
+        read_code: Optional[Callable[[], str]] = None,
+        on_bad_code: Callable[[str], None] = print,
+        attempts: int = 3,
     ) -> AuthFlowResult:
-        """Log in via a pasted verification code; *show_url* gets the URL and
-        *read_code* returns the paste."""
+        """Log in via a pasted verification code; *show_url* gets the URL,
+        *read_code* returns the paste, and a bad paste is re-prompted."""
+        show_url = show_url or print
+        read_code = read_code or (lambda: input("Paste the verification code: "))
         verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
         show_url(self._authorize_url(verifier, state, None))
-        code = decode_remote_code(read_code(), state)
+        for attempt in range(attempts):
+            try:
+                code = decode_remote_code(read_code(), state)
+                break
+            except ValueError as e:
+                if attempt == attempts - 1:
+                    raise
+                on_bad_code(str(e))
         return self._redeem(code, verifier, None)
 
     def _authorize_url(

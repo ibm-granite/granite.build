@@ -88,9 +88,9 @@ Upload, download, register, and tag artifacts produced or consumed by builds.
 `--remote` and `--redirect-port` require `--sso` and can't be combined. If
 `--sso` times out or can't listen on the port, use `--sso --remote`.
 
-Paste a verification code only into a `gb` you started yourself; never share
-it. It's useless without a secret the waiting CLI holds, and expires soon
-after sign-in.
+Paste a verification code only into a `gb` you started yourself, and never
+send it to anyone: whoever started the login can use it to sign in as you. Only
+sign in through a URL that your own `gb` printed.
 
 ### `space` — work with spaces
 

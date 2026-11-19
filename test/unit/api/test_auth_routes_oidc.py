@@ -117,10 +117,11 @@ class TestOIDCAuthorize:
         qs = parse_qs(urlparse(resp.headers["location"]).query)
         assert qs["redirect_uri"] == ["https://other.example.com/rc"]
 
-    def test_remote_without_any_callback_config_is_rejected(self):
+    def test_remote_without_any_callback_config_is_a_config_error(self):
         with patch.dict(os.environ, {"GBSERVER_IBMID_CALLBACK_URL": ""}):
             resp = _authorize(redirect_uri=None)
-        assert resp.status_code == 400
+        assert resp.status_code == 500
+        assert "not configured" in resp.json()["detail"]
 
     @pytest.mark.parametrize(
         "redirect_uri",
@@ -305,6 +306,35 @@ class TestOIDCToken:
 
         assert resp.status_code == 200
         assert resp.json()["user_info"] == {}
+
+    @pytest.mark.parametrize(
+        "unset", ["GBSERVER_IBMID_CLIENT_ID", "GBSERVER_IBMID_CLIENT_SECRET"]
+    )
+    def test_missing_client_credentials_is_a_config_error(self, unset):
+        with (
+            patch.dict(os.environ, {unset: ""}),
+            patch("gbserver.api.auth_routes.requests.post") as post,
+        ):
+            resp = self._post(redirect_uri=LOOPBACK)
+        assert resp.status_code == 500
+        post.assert_not_called()
+
+    def test_remote_without_callback_config_is_a_config_error(self):
+        with (
+            patch.dict(os.environ, {"GBSERVER_IBMID_CALLBACK_URL": ""}),
+            patch("gbserver.api.auth_routes.requests.post") as post,
+        ):
+            resp = self._post()
+        assert resp.status_code == 500
+        post.assert_not_called()
+
+    def test_token_response_without_access_token_is_an_error(self):
+        empty = MagicMock()
+        empty.status_code = 200
+        empty.json.return_value = {"id_token": "idt"}
+        with patch("gbserver.api.auth_routes.requests.post", return_value=empty):
+            resp = self._post(redirect_uri=LOOPBACK)
+        assert resp.status_code == 502
 
     def test_requires_verifier(self):
         resp = _client().post(

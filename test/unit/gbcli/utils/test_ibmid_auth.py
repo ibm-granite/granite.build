@@ -95,7 +95,8 @@ def _token_ok():
 
 def _browser_hitting(query_for):
     """An open_browser stand-in that follows the authorize URL like IBMid would:
-    calls the loopback redirect_uri with ``query_for(params)`` on a thread."""
+    calls the loopback redirect_uri with ``query_for(params)`` (one query or a
+    list, hit in order) on a thread."""
     import threading
     import urllib.parse
     import urllib.request
@@ -108,10 +109,16 @@ def _browser_hitting(query_for):
             for k, v in urllib.parse.parse_qs(urllib.parse.urlparse(url).query).items()
         }
         calls["params"] = params
-        target = f"{params['redirect_uri']}?{urllib.parse.urlencode(query_for(params))}"
+        queries = query_for(params)
+        if isinstance(queries, dict):
+            queries = [queries]
 
         def hit():
-            calls["page"] = urllib.request.urlopen(target, timeout=5).read().decode()
+            pages = calls.setdefault("pages", [])
+            for q in queries:
+                target = f"{params['redirect_uri']}?{urllib.parse.urlencode(q)}"
+                pages.append(urllib.request.urlopen(target, timeout=5).read().decode())
+            calls["page"] = pages[-1]
 
         t = threading.Thread(target=hit, daemon=True)
         t.start()
@@ -145,7 +152,7 @@ class TestIBMidOIDCClient:
         params = calls["params"]
         assert params["redirect_uri"] == f"http://127.0.0.1:{port}/callback"
         assert params["code_challenge_method"] == "S256"
-        assert "login successful" in calls["page"]
+        assert "sign-in received" in calls["page"]
 
         assert post.call_args.args[0] == f"{AUTH_BASE}/oidc/token"
         sent = post.call_args.kwargs["json"]
@@ -159,18 +166,30 @@ class TestIBMidOIDCClient:
         assert result.access_token == "at_test"
         assert result.user_info.email == "test@ibm.com"
 
-    def test_loopback_rejects_state_mismatch(self):
+    def test_loopback_ignores_other_state_and_keeps_waiting(self):
+        """A stale tab (or another page) must not abort or complete the login."""
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
         open_browser, calls = _browser_hitting(
-            lambda p: {"state": "someone-elses-state", "code": "auth-code-1"}
+            lambda p: [
+                {"state": "stale-state", "code": "stale-code"},
+                {"state": "ünïcode", "code": "x"},
+                {"state": p["state"], "code": "auth-code-1"},
+            ]
         )
-        with patch("gbcli.utils.ibmid_auth.requests.post") as post:
-            with pytest.raises(Exception, match="state mismatch"):
-                IBMidOIDCClient(AUTH_BASE).login_loopback(
-                    open_browser=open_browser, port=_free_port(), timeout=10
-                )
-        post.assert_not_called()
+        with patch(
+            "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+        ) as post:
+            result = IBMidOIDCClient(AUTH_BASE).login_loopback(
+                open_browser=open_browser, port=_free_port(), timeout=10
+            )
+        calls["thread"].join(5)
+
+        assert "different login attempt" in calls["pages"][0]
+        assert "different login attempt" in calls["pages"][1]
+        post.assert_called_once()
+        assert post.call_args.kwargs["json"]["code"] == "auth-code-1"
+        assert result.access_token == "at_test"
 
     def test_loopback_reports_ibmid_error(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
@@ -260,15 +279,53 @@ class TestIBMidOIDCClient:
                 IBMidOIDCClient(AUTH_BASE).login_remote(
                     show_url=lambda url: None,
                     read_code=lambda: encode_remote_code("other-state", "code"),
+                    on_bad_code=lambda msg: None,
                 )
         post.assert_not_called()
+
+    def test_remote_reprompts_after_bad_paste(self):
+        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbserver.api.auth_routes import encode_remote_code
+
+        seen, bad = {}, []
+        pastes = iter(["garbled!!", None])
+
+        def show_url(url):
+            import urllib.parse
+
+            seen["state"] = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)[
+                "state"
+            ][0]
+
+        def read_code():
+            p = next(pastes)
+            return p if p is not None else encode_remote_code(seen["state"], "c2")
+
+        with patch(
+            "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+        ) as post:
+            IBMidOIDCClient(AUTH_BASE).login_remote(
+                show_url=show_url, read_code=read_code, on_bad_code=bad.append
+            )
+
+        assert len(bad) == 1 and "not valid" in bad[0]
+        assert post.call_args.kwargs["json"]["code"] == "c2"
+
+    def test_remote_non_ascii_state_is_a_clean_error(self):
+        from gbcli.utils.ibmid_auth import decode_remote_code
+        from gbserver.api.auth_routes import encode_remote_code
+
+        with pytest.raises(ValueError, match="different login"):
+            decode_remote_code(encode_remote_code("ünïcode", "c"), "state-1")
 
     def test_remote_rejects_garbled_code(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
         with pytest.raises(ValueError, match="not valid"):
             IBMidOIDCClient(AUTH_BASE).login_remote(
-                show_url=lambda url: None, read_code=lambda: "not-a-code!!"
+                show_url=lambda url: None,
+                read_code=lambda: "not-a-code!!",
+                on_bad_code=lambda msg: None,
             )
 
     def test_redeem_surfaces_server_error(self):

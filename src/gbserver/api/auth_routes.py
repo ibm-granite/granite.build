@@ -422,6 +422,20 @@ def _resolve_redirect_uri(redirect_uri: Optional[str]) -> Optional[str]:
     return None
 
 
+def _bad_redirect_uri(redirect_uri: Optional[str]) -> JSONResponse:
+    if redirect_uri is None:  # --remote, but no URL to derive it from
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "GBSERVER_IBMID_REMOTE_CALLBACK_URL (or _CALLBACK_URL) "
+                "is not configured."
+            },
+        )
+    return JSONResponse(
+        status_code=400, content={"detail": "redirect_uri is not allowed."}
+    )
+
+
 def encode_remote_code(state: str, code: str) -> str:
     """The string the user pastes: ``state`` plus ``code``, so the CLI can
     reject a code from another login."""
@@ -444,9 +458,7 @@ def oidc_authorize(
         )
     resolved = _resolve_redirect_uri(redirect_uri)
     if resolved is None:
-        return JSONResponse(
-            status_code=400, content={"detail": "redirect_uri is not allowed."}
-        )
+        return _bad_redirect_uri(redirect_uri)
     client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
     if not client_id:
         return JSONResponse(
@@ -509,8 +521,15 @@ def oidc_token(body: OIDCTokenRequest):
     """Redeem the code with the client secret; IBMid checks the verifier."""
     redirect_uri = _resolve_redirect_uri(body.redirect_uri)
     if redirect_uri is None:
+        return _bad_redirect_uri(body.redirect_uri)
+    client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
+    client_secret = os.getenv("GBSERVER_IBMID_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
         return JSONResponse(
-            status_code=400, content={"detail": "redirect_uri is not allowed."}
+            status_code=500,
+            content={
+                "detail": "GBSERVER_IBMID_CLIENT_ID / _CLIENT_SECRET is not configured."
+            },
         )
     token_url = os.getenv(
         "GBSERVER_IBMID_TOKEN_URL",
@@ -528,8 +547,8 @@ def oidc_token(body: OIDCTokenRequest):
                 "code": body.code,
                 "redirect_uri": redirect_uri,
                 "code_verifier": body.code_verifier,
-                "client_id": os.getenv("GBSERVER_IBMID_CLIENT_ID", ""),
-                "client_secret": os.getenv("GBSERVER_IBMID_CLIENT_SECRET", ""),
+                "client_id": client_id,
+                "client_secret": client_secret,
             },
             timeout=30,
         )
@@ -559,6 +578,11 @@ def oidc_token(body: OIDCTokenRequest):
 
     tokens = token_resp.json()
     access_token = tokens.get("access_token", "")
+    if not access_token:
+        logger.error("IBMid token response had no access_token")
+        return JSONResponse(
+            status_code=502, content={"detail": "IBMid returned no access token."}
+        )
     user_info: dict = {}
     try:
         ui_resp = requests.get(
