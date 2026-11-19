@@ -2,7 +2,7 @@
 
 """Pin hub-resolved kernels to revisions compatible with this image's transformers.
 
-WHY THIS EXISTS (measured 2026-11-13, BlueVela, image ec82c1d9). transformers 5.8.0's
+WHY THIS EXISTS (measured 2026-11-13, BlueVela, image 1e17b9dd). transformers 5.8.0's
 ``_HUB_KERNEL_MAPPING`` resolves ``mamba-ssm`` with ``version=1``, which is the
 kernels-community repo's ``v1`` branch (768416ab, 2026-05-05). That build's
 ``utils/generation.py`` hard-imports ``GreedySearchDecoderOnlyOutput`` from
