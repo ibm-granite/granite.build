@@ -1,0 +1,16 @@
+{
+  "release_version": "release_v6",
+  "start_date": "2099-01-01",
+  "end_date": "2099-01-01",
+  "model": "fixture (hand-written samples)",
+  "n": 2,
+  "question_ids_sha256": "0b618e6175ec73976298f920aa31a4c892329d64167de93623a26eb0fab93698",
+  "expected": {
+    "pass@1": 0.5,
+    "by_difficulty": {
+      "easy": 0.75,
+      "medium": 0.25
+    },
+    "problems": 4
+  }
+}
