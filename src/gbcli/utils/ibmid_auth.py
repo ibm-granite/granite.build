@@ -178,13 +178,13 @@ class IBMidOIDCClient:
 
     def login_loopback(
         self,
-        open_browser: Optional[Callable[[str], None]] = None,
+        open_browser: Optional[Callable[[str], object]] = None,
         port: Optional[int] = None,
         timeout: int = 300,
     ) -> AuthFlowResult:
         """Log in via IBMid's redirect to a local port; *open_browser* (default
         ``webbrowser.open``) gets the URL once the listener is up."""
-        open_browser = open_browser or webbrowser.open
+        opener: Callable[[str], object] = open_browser or webbrowser.open
         port = port or IBMID_REDIRECT_PORT
         verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
         redirect_uri = f"http://127.0.0.1:{port}/callback"
@@ -197,7 +197,7 @@ class IBMidOIDCClient:
             ) from e
         with server:
             server.timeout = 1
-            open_browser(self._authorize_url(verifier, state, redirect_uri))
+            opener(self._authorize_url(verifier, state, redirect_uri))
             deadline = time.time() + timeout
             while server.code is None and server.error is None:
                 if time.time() >= deadline:
