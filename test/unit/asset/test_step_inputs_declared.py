@@ -63,6 +63,9 @@ EXPECTED = {
     # fms-hf-tuning: new, so base_model is required outright; dataset is optional
     # (omit it to train on fms_hf_tuning_config.dataset_name or data_config instead).
     f"{_SKY}/train/fms-hf-tuning": ({"base_model"}, {"dataset"}),
+    # lm-engine pretraining: the corpus and the tokenizer are paths in config.lme,
+    # and recipes bind only ordering-only inputs (names vary by recipe).
+    f"{_SKY}/train/lm-engine/pretrain": (set(), set()),
     # Granite-evals benchmark families: model_path is a config string and recipes
     # bind only ordering-only inputs (names vary by recipe), so no named inputs.
     f"{_SKY}/eval/bfcl": (set(), set()),
