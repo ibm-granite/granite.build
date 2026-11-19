@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# A 165M standard-parametrization (SP) model: 768 hidden x 17 layers.
+#
+#   gb build start -f recipes/pretrain/pretrain/build.yaml \
+#     --param-file ~/.granite.build/local-env/pretrain-vela.yaml \
+#     --param-file recipes/pretrain/pretrain/models/165m-sp-768x17.yaml \
+#     --param RUN_NAME=sp165m-$(date +%Y%m%d-%H%M)
+#
+# WHY THIS EXISTS. The recipe's defaults are the 350M muP model, where the four
+# multipliers and `mup.yml` param groups carry the learning-rate transfer. This
+# layer is the other parametrization, for a smaller model: every muP knob is unset
+# and the param groups are `normal.yml`, so the learning rate is the one written
+# here and nothing scales it. The renderer refuses the two halves mixed (muP knobs
+# with normal.yml, or none with mup.yml), which is what makes this a layer rather
+# than three parameters to remember.
+#
+# It is also what EXPORT_MODEL_TYPE: auto resolves differently: with no muP knob
+# set and no MoE, the Hugging Face architecture is `llama` rather than `granite` --
+# llama's config has nowhere to put a multiplier, and the export step ASSERTS they
+# are all null rather than writing a plausible 1.
+#
+# Combine it with smoke.yaml (that file last, so its short schedule wins) for a
+# 4-step run of this architecture.
+
+# ─── Architecture ─────────────────────────────────────────────────────
+HIDDEN_SIZE: 768
+NUM_LAYERS: 17
+# 768 / 12 = 64 per head, and 12 / 4 = 3 query heads per KV head (GQA).
+NUM_HEADS: 12
+NUM_KV_HEADS: 4
+INTERMEDIATE_SIZE: 1536
+ROPE_THETA: 10000000
+
+# ─── Standard parametrization ─────────────────────────────────────────
+# All four unset together: this is what makes the model SP, and the renderer
+# checks the pairing against PARAM_GROUPS below.
+M_WIDTH: ""
+M_EMB: ""
+M_RESIDUAL: ""
+ATTENTION_MULTIPLIER: ""
+PARAM_GROUPS: "configs/param-groups/normal.yml"
+
+# ─── Optimizer ────────────────────────────────────────────────────────
+# An absolute learning rate, not a muP base rate: nothing divides it by m_width,
+# so 0.01 (the recipe's muP default) would be two orders of magnitude too large.
+LR: "3e-4"
+ADAM_EPS: "1e-8"

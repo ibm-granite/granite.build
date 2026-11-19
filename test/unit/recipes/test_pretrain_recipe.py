@@ -355,6 +355,103 @@ def test_render_config_validate_passes_on_the_defaults(tmp_path):
     assert errors == []
 
 
+
+# ─── The shipped layers (smoke, 165M SP) ──────────────────────────────────────
+
+_SMOKE = _RECIPE / "smoke.yaml"
+_MODEL_165M = _RECIPE / "models" / "165m-sp-768x17.yaml"
+
+
+def _validate(tmp_path, *layers, target="train"):
+    """What the step itself would check, before any allocation is requested."""
+    module = _render_config()
+    params = _layered(tmp_path, *layers)
+    lme = _config(_render(tmp_path, *layers), target)["lme"]
+    return module.validate(
+        lme,
+        num_nodes=int(params["NUM_NODES"]),
+        gpus_per_node=int(params["GPUS_PER_NODE"]),
+    )
+
+
+def test_the_smoke_layer_renders_and_validates(tmp_path):
+    """The layer exists to be run on a new cluster: a rung off the save grid or a
+    shard count the dataloader cannot deal would fail the render, not the run."""
+    rendered = _render(tmp_path, _SMOKE, RUN_NAME="s1")
+    assert _validate(tmp_path, _SMOKE) == []
+    assert set(_targets(rendered)) == {
+        "data-check",
+        "train",
+        "export-2",
+        "export-4",
+    }
+
+
+def test_the_smoke_layer_stops_at_export(tmp_path):
+    """No eval target, and so no roll-up: no published lmeval image carries the
+    generic lm-eval bridge yet, and a 4-step base model scored in chat mode would
+    be plumbing dressed as a number."""
+    rendered = _render(tmp_path, _SMOKE, RUN_NAME="s1")
+    assert _evals(rendered) == {}
+    assert "eval-combined" not in _targets(rendered)
+
+
+def test_the_smoke_layer_keeps_both_rungs_on_the_grid(tmp_path):
+    """Rung 4 is the last step of the run: the final checkpoint is a rung like any
+    other, and the watcher has to emit it before the job exits."""
+    rendered = _render(tmp_path, _SMOKE, RUN_NAME="s1")
+    lme = _config(rendered, "train")["lme"]
+    assert lme["num_training_steps"] == 4
+    assert lme["save_interval"] == 2
+    assert set(_targets(rendered)["train"]["outputs"]) >= {
+        "checkpoint_2",
+        "checkpoint_4",
+    }
+
+
+def test_the_165m_layer_renders_and_validates(tmp_path):
+    rendered = _render(tmp_path, _MODEL_165M, RUN_NAME="m1", EXPORT_RUNGS="10000")
+    assert _validate(tmp_path, _MODEL_165M) == []
+    lme = _config(rendered, "train")["lme"]
+    assert (lme["hidden_size"], lme["num_layers"]) == (768, 17)
+    assert (lme["num_heads"], lme["num_kv_heads"]) == (12, 4)
+
+
+def test_the_165m_layer_is_standard_parametrization(tmp_path):
+    """The muP knobs and the param groups are two halves of one decision; the
+    renderer refuses either half alone, so this layer must carry both."""
+    rendered = _render(tmp_path, _MODEL_165M, RUN_NAME="m1")
+    lme = _config(rendered, "train")["lme"]
+    assert lme["param_groups"].endswith("normal.yml")
+    for key in ("m_width", "m_emb", "m_residual", "attention_multiplier"):
+        assert _norm(lme[key]) == "", key
+
+
+def test_the_165m_layer_exports_as_llama(tmp_path):
+    """EXPORT_MODEL_TYPE auto resolves on the knobs the run trains with: no muP
+    multiplier and no MoE is a llama, and the export step refuses a muP model under
+    that architecture rather than writing a plausible 1."""
+    rendered = _render(tmp_path, _MODEL_165M, RUN_NAME="m1", EXPORT_RUNGS="10000")
+    assert _config(rendered, "export-10000")["model_type"] == "llama"
+
+
+def test_the_two_layers_compose(tmp_path):
+    """The documented combination: the 165M architecture on the smoke schedule.
+    smoke.yaml comes last, so its schedule wins over anything the model layer says.
+    """
+    rendered = _render(tmp_path, _MODEL_165M, _SMOKE, RUN_NAME="s1")
+    assert _validate(tmp_path, _MODEL_165M, _SMOKE) == []
+    lme = _config(rendered, "train")["lme"]
+    assert (lme["hidden_size"], lme["num_training_steps"]) == (768, 4)
+    assert _config(rendered, "export-4")["model_type"] == "llama"
+
+
+def test_the_smoke_layer_names_no_run(tmp_path):
+    """Two builds sharing one RUN_NAME collide on every artifact URI: the second
+    target reports SUCCESS with an empty output list and its consumers never
+    dispatch. The layer must therefore not pin RUN_NAME."""
+    assert "RUN_NAME" not in yaml.safe_load(_SMOKE.read_text(encoding="utf-8"))
+
 # ─── Step schemas ─────────────────────────────────────────────────────────────
 
 
