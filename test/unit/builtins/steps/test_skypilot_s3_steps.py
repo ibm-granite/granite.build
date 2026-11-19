@@ -544,7 +544,10 @@ class TestS3PullEviction:
         assert result.returncode == 0, result.stderr
         assert not aged.is_symlink()
 
-    @pytest.mark.parametrize("epoch,downloads", [(OLD, 1), (FRESH, 0)])
+    # Stable ids: the epochs come from import time, and xdist workers must agree.
+    @pytest.mark.parametrize(
+        "epoch,downloads", [(OLD, 1), (FRESH, 0)], ids=["old", "fresh"]
+    )
     def test_unchanged_object_is_reused_only_while_young(
         self, tmp_path, epoch, downloads
     ):
