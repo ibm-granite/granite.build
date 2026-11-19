@@ -62,11 +62,14 @@ Python under `GB_SHARED_WORKDIR`. Setting `mk_image` skips the install.
   step passes `--retry-key` `<build id>/<target>/<step index>`, the same on both, rather
   than a run id. Before the move, `run.sh` writes `.<output name>.mergekit-done` beside
   the output (not in it, so a push of the model doesn't carry it) with that key, a hash
-  of the merge's inputs (recipe, `args`, flags, input and output paths, not the inputs'
-  contents) and the markers. A retry with the same key and hash re-emits the markers,
+  of the merge's inputs (which MergeKit, from `--mergekit`: `mk_image` or
+  `mergekit_version`; the recipe, `args`, flags, input and output paths; not the inputs'
+  contents) and the markers. Without a key (no build id or target name, or no step index of 0
+  or more) nothing is hashed or recorded. A retry with the same key and hash re-emits the markers,
   plus `reused_earlier_attempt: true`; anything else (another build or step, or a
-  changed recipe) still gets the "already exists" refusal. `test/slurm-retry` runs an
-  in-place build retry end to end.
+  changed recipe or MergeKit) still gets the "already exists" refusal. `test/slurm-retry`
+  runs an in-place build retry end to end. The build tests write to fixed `/shared`
+  paths, so each clears its own directory there first and can be re-run.
 - **Caches:** the uv cache, the managed Python and MergeKit's Hub download cache
   (`.mergekit-hf-cache`) are under `${GB_SHARED_WORKDIR:-$PWD}`, so a shared workdir
   downloads each once per cluster. They are created at the first user's umask and never
@@ -183,8 +186,10 @@ chat-template options × inputs with and without a template. For each, it checks
 MergeKit's output independently, and asserts the step registers exactly the good merges.
 
 **Re-running a build test:** the fixtures write to a fixed path, and `run.sh` refuses to
-overwrite a non-empty output, so one build can't overwrite another's model. Clear the
-previous output first:
+overwrite a non-empty output, so one build can't overwrite another's model. Each build
+test therefore clears its own `/shared/mergekit-test/<test>/` directory before it runs
+(`remove_from_shared`, for SLURM and kind), so it can simply be run again. To clear them
+by hand (after an interrupted run, say):
 
 ```bash
 docker exec slurm-c2 rm -rf /shared/mergekit-test                                 # local SLURM

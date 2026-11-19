@@ -4,6 +4,7 @@
 left on its shared filesystem or act on its SLURM jobs."""
 
 import os
+import shlex
 import subprocess
 
 
@@ -57,3 +58,18 @@ def files_containing(secret: str, *paths: str) -> list[str]:
         stdin=secret + "\n",
     )
     return [line for line in out.splitlines() if line]
+
+
+def remove_from_shared(path: str) -> None:
+    """Remove ``path`` (under ``/shared/``) from the cluster's shared filesystem.
+
+    For build tests whose outputs live at fixed ``/shared`` paths: a later run would
+    otherwise find the earlier run's output there.
+
+    :param path: Absolute path below ``/shared/``; ``/shared`` itself is refused.
+    :raises ValueError: If ``path`` is not strictly below ``/shared/``.
+    """
+    norm = os.path.normpath(path)
+    if not norm.startswith("/shared/") or norm != path.rstrip("/"):
+        raise ValueError(f"not a path strictly below /shared/: {path!r}")
+    on_cluster(f"rm -rf -- {shlex.quote(norm)}")

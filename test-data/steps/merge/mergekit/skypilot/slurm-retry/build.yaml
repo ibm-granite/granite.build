@@ -13,7 +13,7 @@ granite.build:
   # Without the retry key the second merge would fail with "output path already exists".
   #
   # Same models and recipe as ../slurm (see there for sizes and the memory note), with
-  # its own output path. Re-running: clear /shared/mergekit-test/slurm-retry first.
+  # its own output path, which the test clears before each run.
   retries:
     max_retries: 1
   targets:
@@ -54,7 +54,7 @@ granite.build:
         # Fails once: the marker on the shared volume, named for this build's id (the
         # same on both attempts, unique per build), is absent on the first attempt and
         # present on the retry, which may run on another node.
-        - step_uri: space://steps/misc/byoc
+        - step_uri: space://steps/aux/byoc
           config:
             poll_interval_seconds: 5
             byoc_config:

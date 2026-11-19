@@ -17,9 +17,12 @@ claim exists, so a missing ``kube-setup`` skips cleanly instead of leaving pods
 """
 
 import functools
+import json
 import os
+import shlex
 import shutil
 import subprocess
+import uuid
 
 from libgbtest.xdist_groups import SKYPILOT_XDIST_GROUP
 
@@ -107,3 +110,68 @@ def kind_skip_reason() -> str:
         f"kind cluster context '{expected_kind_context()}' not reachable, or its "
         f"'{SHARED_CLAIM}' volume claim is missing (run: make kube-setup)"
     )
+
+
+#: Small image for one-off shell pods on the kind node; ECR's mirror avoids Docker
+#: Hub pull-rate limits (see docs/environments/skypilot-kubernetes.md).
+_SHELL_IMAGE = "public.ecr.aws/docker/library/busybox:1.36"
+
+
+def remove_from_shared(path: str, timeout_s: int = 180) -> None:
+    """Remove ``path`` (under ``/shared/``) from the kind cluster's shared volume.
+
+    For build tests whose outputs live at fixed ``/shared`` paths: a later run would
+    otherwise find the earlier run's output there. Runs a short-lived pod that
+    mounts :data:`SHARED_CLAIM` at ``/shared``; ``kubectl run --rm`` deletes it.
+
+    :param path: Absolute path below ``/shared/``; ``/shared`` itself is refused.
+    :param timeout_s: How long to wait for the pod.
+    :raises ValueError: If ``path`` is not strictly below ``/shared/``.
+    :raises RuntimeError: If the pod or the removal fails (with kubectl's stderr).
+    """
+    norm = os.path.normpath(path)
+    if not norm.startswith("/shared/") or norm != path.rstrip("/"):
+        raise ValueError(f"not a path strictly below /shared/: {path!r}")
+    overrides = {
+        "spec": {
+            "volumes": [
+                {"name": "shared", "persistentVolumeClaim": {"claimName": SHARED_CLAIM}}
+            ],
+            "containers": [
+                {
+                    "name": "rm",
+                    "image": _SHELL_IMAGE,
+                    "imagePullPolicy": "IfNotPresent",
+                    "command": ["sh", "-c", f"rm -rf -- {shlex.quote(norm)}"],
+                    "volumeMounts": [{"name": "shared", "mountPath": "/shared"}],
+                }
+            ],
+        }
+    }
+    proc = subprocess.run(
+        [
+            shutil.which("kubectl") or "kubectl",
+            "--context",
+            expected_kind_context(),
+            "--namespace",
+            "default",  # where SHARED_CLAIM lives
+            "run",
+            f"gbtest-rm-{uuid.uuid4().hex[:8]}",
+            "--rm",
+            "-i",
+            "--quiet",
+            "--restart=Never",
+            f"--image={_SHELL_IMAGE}",
+            f"--pod-running-timeout={timeout_s}s",
+            f"--overrides={json.dumps(overrides)}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout_s + 60,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"could not remove {norm} from the {SHARED_CLAIM} volume: "
+            f"{proc.stderr.strip() or proc.stdout.strip()}"
+        )

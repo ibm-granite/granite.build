@@ -221,9 +221,13 @@ Two measurements with mergekit 0.1.5 on a CPU: a peak of 1.25 GB for the example
   into place but the target then failed (a later step failed, or the job was lost), a
   retry of the build (`retries.max_retries`, or `gb build restart`) or of the step
   registers that output instead of failing on it. A `.<output name>.mergekit-done` record
-  beside the output names the build, target and step, and a hash of the recipe, flags and
-  input paths. Any other build, or a changed recipe, still refuses an existing output:
-  give it a new `output_path`, or remove the old output first. The hash covers input
+  beside the output names the build, target and step, and a hash of which MergeKit runs
+  (`mk_image`, or `mergekit_version`), the recipe, `args`, the flags, and the input and
+  output paths. Any other build, or a change to any of those (a re-run, not a retry),
+  still refuses an existing output: give it a new `output_path`, or remove the old
+  output first. `mk_image` is hashed by its name as written, not its digest: a moving tag
+  such as `:latest` that now names another image is not noticed, nor is a changed
+  `pip_index_url`; pin an image digest to be sure. The hash covers input
   *paths*, not their contents: with `retries.target_reuse_enabled: false`, an upstream
   target that re-runs and rewrites an input in place, or an `hf://` input at a moving
   revision such as `main`, is not noticed, and the earlier merge is registered.

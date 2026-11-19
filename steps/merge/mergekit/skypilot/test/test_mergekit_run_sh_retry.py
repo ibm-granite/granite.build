@@ -119,12 +119,14 @@ def test_a_failed_move_removes_the_record(env):
         {"recipe": {**_RECIPE, "merge_method": "task_arithmetic"}},
         {"args": {"out-shard-size": "1B"}},
         {"copy-tokenizer": "false"},
+        {"mergekit": "image:ghcr.io/x/mergekit:2"},
     ],
-    ids=["recipe", "args", "flag"],
+    ids=["recipe", "args", "flag", "mergekit"],
 )
 def test_same_key_but_a_changed_merge_is_refused(env, change):
     """The record matches only the merge it was written for: the same key with a changed
-    recipe, args or flag (a re-run, not a retry) is refused, not re-registered."""
+    recipe, args, flag or MergeKit (a re-run, not a retry) is refused, not
+    re-registered."""
     assert _run(env, **{"retry-key": "b-1/merge/0"}).returncode == 0
     env["argv_file"].unlink()
     _refused(
@@ -135,12 +137,15 @@ def test_same_key_but_a_changed_merge_is_refused(env, change):
 
 
 def test_same_key_but_another_input_is_refused(env, tmp_path):
+    """Another input under the same key is a re-run: refused, and nothing merges."""
     assert _run(env, **{"retry-key": "b-1/merge/0"}).returncode == 0
     other = _model(tmp_path / "staged" / "other")
+    env["argv_file"].unlink()
     _refused(
         _run(env, **{"retry-key": "b-1/merge/0", "input-model_1": other}),
         "output path already exists",
     )
+    assert not env["argv_file"].exists()
 
 
 def test_a_record_from_the_previous_format_is_not_matched(env):
@@ -151,4 +156,21 @@ def test_a_record_from_the_previous_format_is_not_matched(env):
     (out.parent / ".model.mergekit-done").write_text(
         "run b-1/merge/0\nGB_ARTIFACT_ID:model GB_ARTIFACT_PATH:/elsewhere\n"
     )
+    env["argv_file"].unlink()
     _refused(_run(env, **{"retry-key": "b-1/merge/0"}), "output path already exists")
+    assert not env["argv_file"].exists()  # refused before merging, not after
+
+
+def test_no_retry_key_hashes_nothing(env, tmp_path):
+    """Without a key nothing is hashed, so a hashing failure can't fail a direct run."""
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "hashlib.py").write_text("raise ImportError('no hashlib here')\n")
+    pythonpath = {"PYTHONPATH": str(broken)}
+    assert _run(env, extra_env=pythonpath).returncode == 0
+    # Control: with a key the same environment fails at the hash, as it should.
+    shutil.rmtree(env["work"] / "out")
+    _refused(
+        _run(env, extra_env=pythonpath, **{"retry-key": "b-1/merge/0"}),
+        "could not hash the merge's inputs",
+    )

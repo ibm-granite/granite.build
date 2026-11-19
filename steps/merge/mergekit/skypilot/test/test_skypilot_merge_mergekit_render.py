@@ -180,7 +180,14 @@ def test_run_passes_config_as_json_and_flags(tmp_path):
 
 
 def _meta(**over):
-    """run_metadata as gbserver renders it (dataclasses.asdict(EntityRunMetadata))."""
+    """run_metadata as gbserver renders it (``dataclasses.asdict(EntityRunMetadata)``).
+
+    Args:
+        **over: fields to replace (or add), e.g. ``build_id="b-2"``.
+
+    Returns:
+        The run_metadata dict for :func:`_render`.
+    """
     return {
         "build_id": "b-1",
         "target_name": "merge",
@@ -204,6 +211,7 @@ def test_run_passes_a_retry_key_that_survives_a_build_retry(tmp_path):
     "over", [{"build_id": "b-2"}, {"target_name": "other"}, {"target_step_index": 1}]
 )
 def test_the_retry_key_differs_for_another_build_target_or_step(tmp_path, over):
+    """Any other build, target or step position gets another key, so never this record."""
     key = _value(_argv("run", tmp_path, run_metadata=_meta(**over)), "--retry-key")
     assert key != "b-1/merge/0"
 
@@ -213,6 +221,36 @@ def test_no_retry_key_without_a_build_id(tmp_path, meta):
     """A render without run metadata (or a direct run) gets no key: no record."""
     argv = _argv("run", tmp_path, run_metadata=meta)
     assert _value(argv, "--retry-key") == ""
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"target_step_index": None},
+        {"target_step_index": True},
+        {"target_step_index": -1},
+        {"target_name": ""},
+    ],
+    ids=["no-index", "bool-index", "unset-index", "no-target"],
+)
+def test_no_retry_key_without_a_step_position(tmp_path, over):
+    """Without a step index (``TargetStep`` defaults it to -1) or a target, every step
+    of the target would get the same key and could take another's record: no key."""
+    argv = _argv("run", tmp_path, run_metadata=_meta(**over))
+    assert _value(argv, "--retry-key") == ""
+
+
+@pytest.mark.parametrize(
+    "over,expected",
+    [
+        ({"mk_image": "", "mergekit_version": "0.1.5"}, "mergekit==0.1.5"),
+        ({"mk_image": "ghcr.io/x/mergekit:1"}, "image:ghcr.io/x/mergekit:1"),
+    ],
+)
+def test_run_names_the_mergekit_it_uses(tmp_path, over, expected):
+    """run.sh hashes which MergeKit ran, so a retry after it changed doesn't reuse."""
+    argv = _argv("run", tmp_path, over=over, run_metadata=_meta())
+    assert _value(argv, "--mergekit") == expected
 
 
 def test_run_output_path_defaults_to_model(tmp_path):

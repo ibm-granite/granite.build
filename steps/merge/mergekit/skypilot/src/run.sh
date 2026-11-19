@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 # SPDX-License-Identifier: Apache-2.0
-
-# SPDX-License-Identifier: Apache-2.0
 #
 # Run one mergekit-yaml merge and register the merged model. Invoked from the
 # generated step.yaml's `run:` block and shipped to the node by
@@ -20,7 +18,7 @@
 #          --merge-config-json <json> --args-json <json> \
 #          --copy-tokenizer true|false --lazy-unpickle true|false \
 #          --allow-crimes true|false --trust-remote-code true|false \
-#          --output-model <path> [--retry-key <key>]
+#          --output-model <path> [--retry-key <key>] [--mergekit <id>]
 #
 #   --venv       ./venv from setup.sh, or "" when mk_image provides mergekit-yaml.
 #   --input-*    staged path of a bound input, "" when that input is not bound.
@@ -30,6 +28,11 @@
 #                creates new step runs, so a step run id would not do). Lets a retry
 #                register an output an earlier attempt already moved into place,
 #                instead of refusing it as existing.
+#   --mergekit   which MergeKit runs the merge: "image:<mk_image>" or
+#                "mergekit==<mergekit_version>" (optional). Part of the retry hash, so a
+#                retry after mk_image or mergekit_version changed is refused (the
+#                output is there already) instead of reusing the other MergeKit's
+#                output.
 #   Every other option is required; the step-template passes all of them.
 set -euo pipefail
 
@@ -51,6 +54,7 @@ allow_crimes=""
 trust_remote_code=""
 output=""
 retry_key=""
+mergekit_impl=""
 inputs=()   # pairs: name path
 
 while [ "$#" -gt 0 ]; do
@@ -65,6 +69,7 @@ while [ "$#" -gt 0 ]; do
     --trust-remote-code)  trust_remote_code="$2";  shift 2 ;;
     --output-model)       output="$2";             shift 2 ;;
     --retry-key)          retry_key="$2";          shift 2 ;;
+    --mergekit)           mergekit_impl="$2";      shift 2 ;;
     *) fail "unknown argument '$1'." ;;
   esac
 done
@@ -143,13 +148,17 @@ done
 # The record is written beside the output, not in it (a push of the model dir must not
 # carry it), before the output is moved into place. It holds the retry key and a hash
 # of everything this merge was given, so it matches only a retry of this step in this
-# build with the same recipe, flags and inputs; anything else still gets the "already
-# exists" refusal.
+# build with the same MergeKit, recipe, args, flags, inputs and output; anything else
+# still gets the "already exists" refusal. Only with a retry key: without one there is
+# no record to match or write, so nothing is hashed.
 done_record="$(dirname "$output")/.$(basename "$output").mergekit-done"
-fingerprint="$("$py" -c 'import hashlib, json, sys; print(hashlib.sha256(json.dumps(sys.argv[1:]).encode()).hexdigest())' \
-  "$merge_config_json" "$args_json" "$copy_tokenizer" "$lazy_unpickle" "$allow_crimes" \
-  "$trust_remote_code" "$output" "${prepare_inputs[@]}")" \
-  || fail "could not hash the merge's inputs."
+fingerprint=""
+if [ -n "$retry_key" ]; then
+  fingerprint="$("$py" -c 'import hashlib, json, sys; print(hashlib.sha256(json.dumps(sys.argv[1:]).encode()).hexdigest())' \
+    "$mergekit_impl" "$merge_config_json" "$args_json" "$copy_tokenizer" "$lazy_unpickle" \
+    "$allow_crimes" "$trust_remote_code" "$output" "${prepare_inputs[@]}")" \
+    || fail "could not hash the merge's inputs."
+fi
 if [ -n "$retry_key" ] && [ -f "$output/config.json" ] && [ -f "$done_record" ] \
    && [ "$(head -n 2 "$done_record")" = "$(printf 'run %s\nconfig %s' "$retry_key" "$fingerprint")" ]; then
   echo "mergekit: '$output' was written by an earlier attempt of this step; registering it."
