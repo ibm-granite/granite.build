@@ -19,3 +19,11 @@ CVE-2026-35030
 CVE-2026-37004
 CVE-2026-49468
 CVE-2026-59873
+# tau's litellm is pinned by the harness itself: tau2-bench v1.0.1
+# (sierra-research/tau2-bench @ fc0055dc) resolves litellm==1.82.6 in the tau
+# fork, and no release of the pin allows 1.83.7+ (the fixing version). Lifting
+# it means a validated tau2-bench uplift, not a one-sided lock bump -- an
+# upgrade attempt moves the unrelated forks (harbor/mini-swe-agent/nemo-skills
+# resolve their own litellm) without moving this one. Tracked for the tau2
+# refresh, beside mcpmark's vendored-harness litellm above.
+CVE-2026-42208
