@@ -360,15 +360,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
-  longer share a pull dir (#715).** Before, `<cache>/<owner>/<repo>/<revision>` ignored all three,
-  so a model and a same-named dataset overwrote each other's files, two paths of one bucket synced
-  into one dir, and on Docker both were mounted at one container path. A dataset or space is now
-  pulled under `datasets/` or `spaces/`, a path in a bucket under `buckets/<owner>/<bucket>/<path>`,
-  and content on another host under `@<host>/`; models on huggingface.co keep their dirs, so their
-  caches stay valid. Docker refuses an input whose content another `cache_path` already mounted,
-  instead of failing every later container on a duplicate mount point. **Behavior change:** cached
-  datasets and spaces are downloaded once more into their new dirs. K8s and LSF are unchanged.
+- **`hf://` inputs that differ only in type, host or bucket path no longer share files (#715).**
+  On Bash, Docker and SkyPilot, `<cache>/<owner>/<repo>/<revision>` ignored all three, so a model
+  and a same-named dataset overwrote each other's files, and on Docker both were mounted at one
+  container path. A dataset or space is now pulled under `datasets/` or `spaces/`, a bucket under
+  `buckets/<owner>/<bucket>`, and content on another host under `@<host>/`; models on
+  huggingface.co keep their dirs, so their caches stay valid. A bucket pull (Bash, Docker, K8s) now
+  keeps the bucket layout, as a repo pull does: a path is synced to `<dir>/<path>` and bound there,
+  so two paths of one bucket no longer sync into one dir, and a path that matches nothing fails the
+  pull. Docker refuses an input whose content another `cache_path` already mounted, instead of
+  failing every later container on a duplicate mount point, and passes mounts as structured bind
+  mounts, so a `:` in a path in a repo or bucket no longer breaks the volume spec. **Behavior
+  change:** cached datasets, spaces and buckets are downloaded once more into their new dirs.
 - **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
   memory (#657).** Before, it was always dropped on SLURM, so jobs got SkyPilot's 1 GB per CPU.
   The built-in `hfpull`/`hfpush` (10Gi) were OOM-killed on BlueVela. gbserver now reads the

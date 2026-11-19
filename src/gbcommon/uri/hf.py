@@ -1011,18 +1011,15 @@ class HfURI(URI):
     def local_path(self, dest: Path) -> Path:
         """Where this URI's content is once :meth:`pull` has downloaded to *dest*.
 
-        A pull keeps the repo layout under *dest*, so a path in the repo is
-        bound at ``dest/<path_in_repo>``; without one it is *dest* itself.
-        Buckets sync the path's contents into *dest*, so for them it is always
-        *dest*.
+        A pull keeps the repo (or bucket) layout under *dest*, so a path in the
+        repo is bound at ``dest/<path_in_repo>``; without one it is *dest*
+        itself.
 
         :param dest: The pull destination (the hfpull ``--local-dir``).
         :returns: The path to bind.
         """
         path = self.get_path_in_repo().strip("/")
-        if not path or self.get_hf_type() == HfType.BUCKET:
-            return Path(dest)
-        return Path(dest) / path
+        return Path(dest) / path if path else Path(dest)
 
     def _verify_path_in_repo_pulled(self, dest: Path) -> bool:
         """Whether a pull into *dest* found this URI's path in the repo.
@@ -1198,7 +1195,8 @@ class HfURI(URI):
 
         For repos, uses ``huggingface_hub.snapshot_download`` with ``local_dir``
         so all repo files land directly in *dest*.  For buckets, uses
-        ``HfApi.sync_bucket`` to download bucket contents to *dest*.
+        ``HfApi.sync_bucket`` to download the bucket's files to *dest*, with
+        the bucket layout kept.
 
         Pulls into the same *dest* are serialized behind a cross-process
         ``mkdir`` lock (issue #320): a waiter blocks while the holder keeps
@@ -1213,10 +1211,11 @@ class HfURI(URI):
         with ``force_download`` and, if needed, clearing the scratch download
         dir.
 
-        A repo URI with a path in the repo (``.../<revision>/<path_in_repo>``)
-        downloads only that file or directory, to ``dest/<path_in_repo>`` (see
-        :meth:`local_path`); a path that matches nothing in the repo fails the
-        pull rather than binding an empty directory.
+        A URI with a path in the repo (``.../<revision>/<path_in_repo>``, or
+        ``.../<bucket>/<path>`` for a bucket) downloads only that file or
+        directory, to ``dest/<path_in_repo>`` (see :meth:`local_path`); a path
+        that matches nothing fails the pull rather than binding an empty
+        directory.
 
         Returns ``True`` immediately without network calls when HF mocking is
         enabled via ``GBTEST_MOCK_HF``. A path in the repo is then created as
@@ -1288,12 +1287,18 @@ class HfURI(URI):
                 try:
                     with _hfpull_download_lock(dest, progress_path) as lock:
                         if p.hf_type == HfType.BUCKET:
-                            bucket_hf_path = f"hf://buckets/{repo_id}"
-                            if p.path_in_repo:
-                                bucket_hf_path += f"/{p.path_in_repo}"
                             logger.info("Downloading HF bucket %s to %s", repo_id, dest)
                             api = HfApi(endpoint=endpoint, token=token)
-                            api.sync_bucket(source=bucket_hf_path, dest=str(dest))
+                            # Sync from the bucket root, filtered to the path,
+                            # so the bucket layout is kept, as for a repo: the
+                            # path lands at dest/<path> and every path of the
+                            # bucket shares dest and its lock. (A prefix source
+                            # would put a single file at dest/<basename>.)
+                            api.sync_bucket(
+                                source=f"hf://buckets/{repo_id}",
+                                dest=str(dest),
+                                include=hf_path_patterns(p.path_in_repo),
+                            )
                             logger.debug(
                                 "Completed HF pull of bucket %s to %s", repo_id, dest
                             )

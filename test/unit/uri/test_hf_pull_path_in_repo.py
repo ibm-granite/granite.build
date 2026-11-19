@@ -70,10 +70,11 @@ def test_local_path():
     dest = Path("/cache/org/repo/main")
     assert HfURI.parse(_URI).local_path(dest) == dest / _SUB
     assert HfURI.parse("hf:///datasets/org/repo").local_path(dest) == dest
-    # A bucket syncs the path's contents into dest itself.
+    # A bucket pull keeps the bucket layout too, so a path lands under dest.
     bucket = HfURI.parse("hf:///buckets/org/b/some/dir")
     assert bucket.get_hf_type() == HfType.BUCKET
-    assert bucket.local_path(dest) == dest
+    assert bucket.local_path(dest) == dest / "some" / "dir"
+    assert HfURI.parse("hf:///buckets/org/b").local_path(dest) == dest
 
 
 @pytest.mark.parametrize(
@@ -493,13 +494,18 @@ def test_pull_evicted_before_the_path_lands_rewaits(tmp_path):
     assert len(calls) == 2
 
 
-def test_mocked_pull_creates_the_bound_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize("uri_str", [_URI, "hf:///buckets/org/b/some/dir"])
+def test_mocked_pull_creates_the_bound_path(tmp_path, monkeypatch, uri_str):
     """A mocked pull downloads nothing, but the input is still bound at the path."""
     monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
-    uri = HfURI.parse(_URI)
-    with patch("gbcommon.uri.hf.snapshot_download") as mock_dl:
+    uri = HfURI.parse(uri_str)
+    with (
+        patch("gbcommon.uri.hf.snapshot_download") as mock_dl,
+        patch("gbcommon.uri.hf.HfApi") as mock_api,
+    ):
         assert uri.pull(tmp_path / "d") is True
     mock_dl.assert_not_called()
+    mock_api.assert_not_called()
     assert uri.local_path(tmp_path / "d").is_dir()
 
 
@@ -539,9 +545,7 @@ def test_mocked_pull_returns_false_when_the_path_cannot_be_made(tmp_path, monkey
     assert uri.pull(tmp_path) is False
 
 
-@pytest.mark.parametrize(
-    "uri", ["hf:///datasets/org/repo", "hf:///buckets/org/b/some/dir"]
-)
+@pytest.mark.parametrize("uri", ["hf:///datasets/org/repo", "hf:///buckets/org/b"])
 def test_mocked_pull_without_a_path_creates_nothing(tmp_path, monkeypatch, uri):
     """Without a path in the repo the binding is dest, which the caller owns."""
     monkeypatch.setenv(ENV_VAR_GBTEST_MOCK_HF, "true")
@@ -561,7 +565,7 @@ def test_hfpull_step_config_carries_the_path():
 
 
 def test_hfpull_step_config_has_no_path_for_a_bucket():
-    """A bucket is bound at dest (local_path), so the shell steps get no filter."""
+    """The shell steps' ``hf download`` can't pull a bucket, so it gets no filter."""
     uri = HfURI.parse("hf:///buckets/org/b/some/dir")
     cfg = Hfstore.build_hfpull_step_config(uri, "/cache/x")
     assert cfg["path_in_repo"] == ""

@@ -8,7 +8,7 @@ so that any local environment can reuse them without duplicating logic.
 
 import os
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from gbserver.spaces.hf_push_config import (
     HfPushConfigError,
@@ -17,6 +17,9 @@ from gbserver.spaces.hf_push_config import (
     resolve_space_resource_group_id,
 )
 from gbserver.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from gbcommon.uri.hf import HfURI
 
 logger = get_logger(__name__)
 
@@ -95,20 +98,24 @@ def _resolve_cache_dir(
     return os.path.join(os.path.expanduser("~"), ".cache", "gbserver", home_leaf)
 
 
-def hf_pull_dest(cache_dir: Union[str, Path], hfuri) -> Path:
+def hf_pull_dest(cache_dir: Union[str, Path], hfuri: "HfURI") -> Path:
     """Return the directory under *cache_dir* that *hfuri* is pulled into.
 
-    Bash, Docker and Skypilot all pull here. Two inputs share a directory only
-    when they name the same content:
+    Bash, Docker and Skypilot all pull here. A model, dataset, space or bucket
+    of the same name, or on another host, never shares a directory:
 
     - a model: ``<owner>/<repo>/<revision>``, the layout these caches have
       always had, so existing model caches stay valid;
     - a dataset or space: the same, under ``datasets/`` or ``spaces/``;
-    - a bucket: ``buckets/<owner>/<bucket>/<path in the bucket>``, since a
-      bucket pull syncs that path's contents into the directory;
+    - a bucket: ``buckets/<owner>/<bucket>``;
     - any of these on a host other than huggingface.co: under ``@<host>``, with
-      a port's ``:`` as ``_`` (a ``:`` would end the path in a Docker volume
-      spec, and a host has no ``_`` of its own).
+      a port's ``:`` as ``_``, keeping ``:`` out of the cache's directory names
+      (``docker run -v`` and similar ``src:dst`` specs read it as a separator;
+      a host has no ``_`` of its own, so this stays unambiguous).
+
+    A path in a repo or bucket is not part of the directory: every path of one
+    repo revision or bucket pulls into its directory, behind its one download
+    lock, and lands at its own path there (``HfURI.local_path``).
 
     No owner directory can collide with these: ``datasets``, ``spaces`` and
     ``buckets`` are Hub URL routes (``huggingface.co/datasets``), and
@@ -116,7 +123,7 @@ def hf_pull_dest(cache_dir: Union[str, Path], hfuri) -> Path:
 
     Args:
         cache_dir: The HF cache directory (:func:`get_hf_cache_dir`).
-        hfuri: The ``HfURI`` to pull.
+        hfuri: The URI to pull.
 
     Returns:
         The pull destination.
@@ -131,11 +138,7 @@ def hf_pull_dest(cache_dir: Union[str, Path], hfuri) -> Path:
     if hf_type not in (None, HfType.MODEL):
         parts.append(HF_TYPE_TO_SEGMENT[hf_type])
     parts += [hfuri.get_owner(), hfuri.get_repo()]
-    if hf_type == HfType.BUCKET:
-        path = hfuri.get_path_in_repo().strip("/")
-        if path:
-            parts.append(path)
-    else:
+    if hf_type != HfType.BUCKET:
         parts.append(hfuri.get_revision())
     return Path(cache_dir).joinpath(*parts)
 

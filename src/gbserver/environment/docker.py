@@ -466,21 +466,26 @@ class Docker(Environment):
 
         Only what the input names is mounted, read-only: its pull dir
         (``hf_pull_dest``, e.g. ``<cache_dir>/<owner>/<repo>/<revision>`` for a
-        model, or ``<cache_dir>/buckets/<owner>/<bucket>/<path>`` for a path in
-        a bucket), or the directory or file a URI's path in the repo names
-        inside it (``HfURI.local_path``). It is mounted at the same path under
+        model or ``<cache_dir>/buckets/<owner>/<bucket>`` for a bucket), or
+        the directory or file a URI's path in the repo or bucket names inside
+        it (``HfURI.local_path``). It is mounted at the same path under
         ``/gb-hf-models``, so inputs naming different content get their own
         container paths. The pull writes real files (``local_dir``), so the
         mount needs no HF cache ``blobs/`` directory.
 
         The same content pulled through a second ``cache_path`` would need a
         second mount at a container path already in use, which Docker rejects
-        for every later container, so that input is refused before it is pulled.
+        for every later container, so that input is refused before it is
+        pulled. Two ``cache_path`` values naming one directory (e.g. through a
+        symlink) share its mount instead.
         """
         from gbcommon.uri.hf import HfURI
 
         self._warn_non_default_mode(storeload_config, uri)
+        assert uri is not None, "uri is required for hfstore loading"
         assert assetstore is not None, "assetstore is required for hfstore loading"
+        # Normalized here, not only in pull_asset_hfstore: the mount is checked
+        # before the pull, so a refused input downloads nothing.
         hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
         assert isinstance(hfuri, HfURI), f"expected HfURI, got: {type(hfuri)}"
         cache_dir = Path(get_hf_cache_dir(storeload_config))
@@ -489,8 +494,12 @@ class Docker(Environment):
         container_path = (
             f"{_HF_MODELS_MOUNT}/{local_path.relative_to(cache_dir).as_posix()}"
         )
+        mounted = False
         for host_path, volume in self._extra_volumes.items():
-            if volume["bind"] == container_path and host_path != str(local_path):
+            if volume["bind"] != container_path:
+                continue
+            # Resolved, as in _shared_volume_for: keys are the paths as pulled.
+            if Path(host_path).resolve() != local_path.resolve():
                 raise ValueError(
                     f"hf assetstore pull of '{hfuri}': {local_path} would be "
                     f"mounted at {container_path}, where {host_path} already is. "
@@ -498,8 +507,13 @@ class Docker(Environment):
                     "the same hf:// content through one cache_path in this "
                     "environment."
                 )
+            mounted = True
         pull_asset_hfstore(hfuri, assetstore, storeload_config, dest=dest)
-        self._extra_volumes[str(local_path)] = {"bind": container_path, "mode": "ro"}
+        if not mounted:
+            self._extra_volumes[str(local_path)] = {
+                "bind": container_path,
+                "mode": "ro",
+            }
 
         from gbserver.environment.environment import BINDING_KEY
 
@@ -906,6 +920,18 @@ class Docker(Environment):
                     "bind": _WORKSPACE_MOUNT,
                     "mode": "rw",
                 }
+            # Passed as structured bind mounts, not docker-py's "host:bind:mode"
+            # volume strings: a path in a repo or bucket may hold ':', which
+            # would split such a string and fail every container that has it.
+            mounts = [
+                docker.types.Mount(
+                    target=volume["bind"],
+                    source=os.path.abspath(host),
+                    type="bind",
+                    read_only=volume["mode"] == "ro",
+                )
+                for host, volume in volumes.items()
+            ]
 
             # Build resource kwargs
             resource_kwargs: Dict = {}
@@ -946,7 +972,7 @@ class Docker(Environment):
                     command=command,
                     name=container_name,
                     detach=True,
-                    volumes=volumes,
+                    mounts=mounts,
                     environment=env_vars,
                     **resource_kwargs,
                 ),

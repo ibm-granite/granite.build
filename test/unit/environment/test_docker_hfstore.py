@@ -159,19 +159,54 @@ async def test_pullasset_hfstore_mounts_only_the_path_in_the_repo(
 async def test_pullasset_hfstore_mounts_only_the_path_in_a_bucket(
     docker_env, hf_storeload_config, tmp_path
 ):
-    """Each path in a bucket is synced into a pull dir of its own, so only that
-    path is mounted, not the whole bucket or a same-named model."""
-    with patch.object(HfURI, "pull", return_value=True):
+    """A bucket is pulled into its own dir with the bucket layout kept, so only
+    the input's path is mounted, not the whole bucket or a same-named model."""
+    with patch.object(HfURI, "pull", return_value=True) as mock_pull:
         binding_config, _ = await docker_env.pullasset_hfstore(
             uri=HfURI.parse("hf:///buckets/org/b/sub"),
             assetstore=_store(),
             storeload_config=hf_storeload_config,
         )
 
+    bucket_dir = tmp_path / "hf-cache" / "buckets" / "org" / "b"
+    assert mock_pull.call_args[0][0] == bucket_dir
     bound = "/gb-hf-models/buckets/org/b/sub"
     assert binding_config[BINDING_KEY]["path"] == bound
-    host = str(tmp_path / "hf-cache" / "buckets" / "org" / "b" / "sub")
+    host = str(bucket_dir / "sub")
     assert docker_env._extra_volumes == {host: {"bind": bound, "mode": "ro"}}
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_requires_a_uri(docker_env, hf_storeload_config):
+    """A missing uri fails on the helper's own assert, not inside URI parsing."""
+    with pytest.raises(AssertionError, match="uri is required"):
+        await docker_env.pullasset_hfstore(
+            uri=None, assetstore=_store(), storeload_config=hf_storeload_config
+        )
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_symlinked_cache_shares_the_mount(docker_env, tmp_path):
+    """Two cache_path values naming one dir (one a symlink) mount it once,
+    rather than refusing the second input or mounting it twice."""
+    real = tmp_path / "cache"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    bindings = []
+    with patch.object(HfURI, "pull", return_value=True):
+        for cache in (real, tmp_path / "link"):
+            config = MagicMock()
+            config.mode = "default"
+            config.config = {"cache_path": str(cache)}
+            binding_config, _ = await docker_env.pullasset_hfstore(
+                uri=HfURI.parse("hf:///org/repo/main"),
+                assetstore=_store(),
+                storeload_config=config,
+            )
+            bindings.append(binding_config[BINDING_KEY]["path"])
+
+    assert bindings == ["/gb-hf-models/org/repo/main"] * 2
+    assert list(docker_env._extra_volumes) == [str(real / "org" / "repo" / "main")]
 
 
 @pytest.mark.asyncio
