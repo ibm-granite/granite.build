@@ -92,3 +92,24 @@ prefetch:
 
 check-pins:
 	$(PYTHON) scripts/prefetch_datasets.py --check
+
+# Pre-build dependency gate: trivy over the resolved dependency sets -- the
+# shared uv.lock (every family's forks resolve in it) and every family's nested
+# requirement files (e.g. nemoskills' comet-requirements.txt). Catches the
+# lock-level CVE class (a pinned dependency with a fix available) in seconds,
+# before any image build; the image-level scan (the fleet's gate) stays the
+# backstop for what the lock cannot see: apt packages, vendored harnesses, and
+# bits vendored inside tools (pip's own certifi). Same rule as the image gate:
+# zero fixable CRITICALs; scan-ignore is the documented exception list.
+scan-deps:
+	@command -v trivy >/dev/null 2>&1 || { echo "trivy is not on PATH; install it first" >&2; exit 1; }
+	@rc=0; \
+	for f in src/core/uv.lock $$(ls */*requirements*.txt 2>/dev/null); do \
+	  echo "== $$f"; \
+	  trivy fs --scanners vuln --severity CRITICAL --ignore-unfixed \
+	    --ignorefile scan-ignore --format json --output /tmp/scan-deps.json "$$f" 2>/dev/null; \
+	  n=$$(jq "[.Results[]?.Vulnerabilities[]?] | length" /tmp/scan-deps.json 2>/dev/null || echo "?"); \
+	  if [ "$$n" = "0" ]; then echo "OK: no fixable CRITICALs"; \
+	  else echo "SCAN-DEPS FAILED $$f: $$n fixable CRITICALs (trivy fs --severity CRITICAL --ignore-unfixed --ignorefile scan-ignore $$f)"; rc=1; fi; \
+	done; \
+	[ $$rc -eq 0 ] && echo "OK: dependencies clean" || exit 1
