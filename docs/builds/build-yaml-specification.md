@@ -112,7 +112,7 @@ time. Four backends are available:
 
 On most environments, steps receive only the secrets they explicitly declare (least privilege),
 as environment variables. The exceptions are Bash, which loads every space secret into the step's
-environment, and RunPod, which has no support for declared secrets (see C.4).
+environment, and RunPod, which has no support for declared secrets (see [C.4](#c4-steps)).
 
 **Environments.** An environment is a compute backend definition, defined by an `environment.yaml`
 that gives the environment `type` (the Python class that drives it). It can also carry an optional
@@ -133,11 +133,13 @@ and `mem://` (a value passed between targets through the build's shared memory).
 step consumes. A target declares each input either by URI, for an artifact outside the build such as
 `hf:///ibm-granite/granite-4.0-350m`, or by binding to an upstream target's output.
 The URI's scheme identifies the asset store, so the target's environment must
-be able to reach that store. Steps then refer to each input by name.
+be able to reach that store. Steps then refer to each input by name (see
+[Referencing inputs within the target](#referencing-inputs-within-the-target)).
 
 **Output artifacts.** An output artifact is a named result that a target step produces. Its URI
 identifies the asset store to receive the output content, for example a HuggingFace repository.
-Steps are responsible for setting the output value.
+Steps are responsible for setting the output value (see
+[Outputs and how steps produce them](#outputs-and-how-steps-produce-them)).
 
 **Steps.** A step is a reusable unit of computation, defined by a `step.yaml`. A step declares
 its default configuration, the inputs it accepts, and, per environment class, the **launcher**
@@ -246,19 +248,22 @@ The parts in brief:
 
 - **Targets** are the named stages of the build, for example `download`, `train`, `evaluate` and
   `publish`. Each has one environment, its inputs and outputs, and an ordered list of steps
-  (usually just one).
+  (usually just one). See [C.1 Targets](#c1-targets).
 - **Environments** are referenced, not defined, in the build:
   `environment_uri: space://environments/bash`, `…/docker`, `…/skypilot/kubernetes`,
-  `…/skypilot/slurm/bluevela` or `…/skypilot/aws`. The definitions live in the space.
+  `…/skypilot/slurm/bluevela` or `…/skypilot/aws`. The definitions live in the space. See
+  [C.2 Environments](#c2-environments).
 - **Input and output artifacts** are named, URI-addressed data, for example an input
   `base_model: {uri: hf:///ibm-granite/granite-4.0-350m}`, an input
   `checkpoint: {binding: train.checkpoint}` or an output
-  `results: {uri: s3://my-bucket/evals/run1}`.
+  `results: {uri: s3://my-bucket/evals/run1}`. See
+  [C.3 Input and output artifacts](#c3-input-and-output-artifacts).
 - **Steps** are the reusable computations a target runs, for example `space://steps/command`,
   `space://steps/train/hf-peft-sft` or `space://steps/eval/lmeval`. They are configured through
-  their `config` block.
+  their `config` block. See [C.4 Steps](#c4-steps).
 - **Overrides** let a build change a step's or environment's defaults without editing either one,
-  for example `config.launcher_config.resources.accelerators: "H100:8"`.
+  for example `config.launcher_config.resources.accelerators: "H100:8"`. See
+  [C.5 Overrides](#c5-overrides).
 
 ### C.0 Top-level fields
 
@@ -314,9 +319,9 @@ targets:
 | Field | Type | Required | Meaning |
 |-------|------|----------|---------|
 | `environment_uri` | string (templated, `space.*` only) | **yes** | The compute environment the target runs in. |
-| `inputs` | map name → input | no | Artifacts the target consumes (C.3). |
-| `outputs` | map name → output | no | Artifacts the target produces (C.3). |
-| `steps` | list of step | **yes** | Steps run in order (C.4). An empty list only produces a validation warning. |
+| `inputs` | map name → input | no | Artifacts the target consumes ([C.3](#c3-input-and-output-artifacts)). |
+| `outputs` | map name → output | no | Artifacts the target produces ([C.3](#c3-input-and-output-artifacts)). |
+| `steps` | list of step | **yes** | Steps run in order ([C.4](#c4-steps)). An empty list only produces a validation warning. |
 
 ### C.2 Environments
 
@@ -513,7 +518,7 @@ steps:
 | Field | Meaning |
 |-------|---------|
 | `step_uri` | Which step to run. If omitted, the built-in base step `gbstep` is used. |
-| `config` | Configuration merged over the step's defaults (see below and C.5). |
+| `config` | Configuration merged over the step's defaults (see below and [C.5](#c5-overrides)). |
 | `retry_enabled`, `retry_transparently` | Step-level retry behavior. |
 
 **Using the target's inputs.** A step accesses the target's inputs in one of two ways
@@ -530,7 +535,7 @@ inside the step implementation.
   lmeval's top-level `benchmark` and `model_path`.
 - **Step-independent** blocks are understood by gbserver or the environment for any step:
   - `compute_config`;
-  - `launcher_config`, which overrides the launcher (C.5);
+  - `launcher_config`, which overrides the launcher ([C.5](#c5-overrides));
   - monitor settings such as `poll_interval_seconds`;
   - secret declarations (`config.<env>.secrets`).
 
@@ -926,7 +931,8 @@ directory, which is the per-run workdir when `shared_workdir` is set. `image_id`
   - each run reads a pinned version through its own `.gb_inputs/<hash>` link;
   - leases protect versions still in use, and stale entries are evicted after
     `cache_max_age_days`.
-- **`env://` and `mem://`.** These work as described in C.3. The SkyPilot monitor recognizes
+- **`env://` and `mem://`.** These work as described in [`env://`](#env-worker-local-filesystem) and
+  [`mem://`](#mem-in-memory-value). The SkyPilot monitor recognizes
   both `GB_ARTIFACT_PATH` and `GB_ARTIFACT_STATE`.
 - **On SLURM, write outputs to relative paths.** Each step may run on a different node, so a
   relative path places the output in the shared per-run workdir, where the separate push step can
@@ -994,7 +1000,7 @@ A build can override these SkyPilot launcher settings under the step's `config.l
   - `poll_interval_seconds` and `log_retrieval_mode` are set at the step's `config` level, not
     under `launcher_config`. The default poll interval is 300 seconds; lower it for quick steps.
   - `zone` and `cluster` can be steered per step type from the environment's `config.steps`
-    (C.5).
+    ([C.5](#c5-overrides)).
 
 A build **cannot** override the following launcher settings:
 
