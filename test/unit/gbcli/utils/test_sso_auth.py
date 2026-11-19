@@ -523,15 +523,18 @@ class TestAuthLoginCommand:
         assert result.exit_code == 0, result.output
 
     def test_abort_at_paste_prompt_is_not_a_login_failure(self):
+        import click
         from click.testing import CliRunner
 
         from gbcli.commands.command_auth import login
 
-        def fake_login(open_browser, remote, read_code, **_):
-            return read_code()  # no input: click aborts
-
-        with patch("gbcli.client.GBClient.Auth.login_sso", side_effect=fake_login):
-            result = CliRunner().invoke(login, ["--sso", "--remote"], input="")
+        # What click raises on Ctrl-C/EOF at a prompt. Not driven through
+        # CliRunner input: on click < 8.2 its hidden prompt re-prompts forever
+        # at EOF instead of aborting.
+        with patch(
+            "gbcli.client.GBClient.Auth.login_sso", side_effect=click.exceptions.Abort()
+        ):
+            result = CliRunner().invoke(login, ["--sso", "--remote"])
 
         assert result.exit_code == 1
         assert "Aborted" in result.output
