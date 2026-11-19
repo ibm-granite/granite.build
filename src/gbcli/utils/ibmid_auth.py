@@ -17,6 +17,9 @@ import http.server
 import json
 import logging
 import secrets
+import socket
+import socketserver
+import sys
 import time
 import urllib.parse
 import webbrowser
@@ -119,8 +122,7 @@ class _LoopbackHandler(http.server.BaseHTTPRequestHandler):
     """Serves the one redirect to ``/callback``; anything else is 404."""
 
     server: "_LoopbackServer"
-    # An idle browser preconnect would otherwise block this listener.
-    timeout = 5
+    timeout = 5  # bounds an idle connection's thread
 
     def do_GET(self):  # noqa: N802 - http.server naming
         parsed = urllib.parse.urlparse(self.path)
@@ -162,12 +164,28 @@ class _LoopbackHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-class _LoopbackServer(http.server.HTTPServer):
+class _LoopbackServer(http.server.ThreadingHTTPServer):
+    # Threaded, so an idle browser preconnect can't delay the real redirect.
+    daemon_threads = True
+    # POSIX: SO_REUSEADDR allows rebinding through TIME_WAIT (quick retries)
+    # but never two live listeners. On Windows it would allow that, so use
+    # SO_EXCLUSIVEADDRUSE instead.
+    allow_reuse_address = sys.platform != "win32"
+
     def __init__(self, port: int, expected_state: str):
         super().__init__(("127.0.0.1", port), _LoopbackHandler)
         self.expected_state = expected_state
         self.code: Optional[str] = None
         self.error: Optional[str] = None
+
+    def server_bind(self):
+        if sys.platform == "win32":
+            self.socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1  # type: ignore[attr-defined]
+            )
+        # Skip HTTPServer's getfqdn() lookup, which can stall on some networks.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class IBMidOIDCClient:
@@ -215,16 +233,17 @@ class IBMidOIDCClient:
         self,
         show_url: Optional[Callable[[str], None]] = None,
         read_code: Optional[Callable[[], str]] = None,
-        on_bad_code: Callable[[str], None] = print,
+        on_bad_code: Optional[Callable[[str], None]] = None,
         attempts: int = 3,
     ) -> AuthFlowResult:
         """Log in via a pasted verification code; *show_url* gets the URL,
         *read_code* returns the paste, and a bad paste is re-prompted."""
         show_url = show_url or print
+        on_bad_code = on_bad_code or (lambda msg: print(msg, file=sys.stderr))
         read_code = read_code or (lambda: input("Paste the verification code: "))
         verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
         show_url(self._authorize_url(verifier, state, None))
-        for attempt in range(attempts):
+        for attempt in range(max(attempts, 1)):
             try:
                 code = decode_remote_code(read_code(), state)
                 break

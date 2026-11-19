@@ -216,6 +216,23 @@ class TestIBMidOIDCClient:
                 open_browser=lambda url: None, port=_free_port(), timeout=1
             )
 
+    def test_loopback_port_reusable_right_after_a_login(self):
+        """A quick retry must not hit TIME_WAIT 'Address already in use'."""
+        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+
+        port = _free_port()
+        for _ in range(2):
+            open_browser, calls = _browser_hitting(
+                lambda p: {"state": p["state"], "code": "c"}
+            )
+            with patch(
+                "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+            ):
+                IBMidOIDCClient(AUTH_BASE).login_loopback(
+                    open_browser=open_browser, port=port, timeout=10
+                )
+            calls["thread"].join(5)
+
     def test_loopback_port_in_use_suggests_remote(self):
         import socket
 
@@ -462,6 +479,65 @@ class TestCredentialStorage:
 
 
 class TestAuthLoginCommand:
+    @pytest.fixture(autouse=True)
+    def _local_browser(self):
+        """Pretend a local browser can take the redirect (CI has no display)."""
+        with patch(
+            "gbcli.commands.command_auth.local_browser_unavailable_reason",
+            return_value=None,
+        ):
+            yield
+
+    def test_sso_without_local_browser_fails_fast(self):
+        from click.testing import CliRunner
+
+        from gbcli.commands.command_auth import login
+
+        with (
+            patch(
+                "gbcli.commands.command_auth.local_browser_unavailable_reason",
+                return_value="this is an SSH session",
+            ),
+            patch("gbcli.client.GBClient.Auth.login_ibmid") as mock_login,
+        ):
+            result = CliRunner().invoke(login, ["--sso"])
+
+        assert result.exit_code == 1
+        assert "SSH session" in result.output and "--remote" in result.output
+        mock_login.assert_not_called()
+
+    def test_sso_remote_skips_the_local_browser_check(self):
+        from click.testing import CliRunner
+
+        from gbcli.commands.command_auth import login
+
+        with (
+            patch(
+                "gbcli.commands.command_auth.local_browser_unavailable_reason",
+                return_value="this is an SSH session",
+            ),
+            patch(
+                "gbcli.client.GBClient.Auth.login_ibmid", return_value="user@ibm.com"
+            ),
+        ):
+            result = CliRunner().invoke(login, ["--sso", "--remote"])
+        assert result.exit_code == 0, result.output
+
+    def test_abort_at_paste_prompt_is_not_a_login_failure(self):
+        from click.testing import CliRunner
+
+        from gbcli.commands.command_auth import login
+
+        def fake_login(open_browser, remote, read_code, **_):
+            return read_code()  # no input: click aborts
+
+        with patch("gbcli.client.GBClient.Auth.login_ibmid", side_effect=fake_login):
+            result = CliRunner().invoke(login, ["--sso", "--remote"], input="")
+
+        assert result.exit_code == 1
+        assert "Aborted" in result.output
+        assert "authentication failed" not in result.output
+
     def test_sso_and_token_mutually_exclusive(self):
         """--sso and --token should not be used together."""
         from click.testing import CliRunner
@@ -736,3 +812,50 @@ class TestAuthProviderCommand:
         assert "No IBMid credentials" in result.output or "No IBMid credentials" in (
             result.output + (result.stderr if hasattr(result, "stderr") else "")
         )
+
+
+# ---------------------------------------------------------------------------
+# Local browser detection
+# ---------------------------------------------------------------------------
+
+
+class TestLocalBrowserUnavailableReason:
+    @pytest.fixture
+    def env(self, monkeypatch):
+        for var in (
+            "SSH_CONNECTION",
+            "SSH_TTY",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "BROWSER",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("gbcli.utils.utils.check_runnable_browser", lambda: True)
+        return monkeypatch
+
+    def test_ssh_session(self, env):
+        from gbcli.utils.utils import local_browser_unavailable_reason
+
+        env.setenv("SSH_CONNECTION", "10.0.0.1 50000 10.0.0.2 22")
+        assert "SSH" in local_browser_unavailable_reason()
+
+    def test_linux_without_display(self, env):
+        from gbcli.utils.utils import local_browser_unavailable_reason
+
+        env.setattr("gbcli.utils.utils.sys.platform", "linux")
+        assert local_browser_unavailable_reason() == "no graphical display"
+        env.setenv("BROWSER", "wslview")
+        assert local_browser_unavailable_reason() is None
+
+    def test_no_browser_found(self, env):
+        from gbcli.utils.utils import local_browser_unavailable_reason
+
+        env.setattr("gbcli.utils.utils.sys.platform", "darwin")
+        env.setattr("gbcli.utils.utils.check_runnable_browser", lambda: False)
+        assert local_browser_unavailable_reason() == "no web browser found"
+
+    def test_desktop(self, env):
+        from gbcli.utils.utils import local_browser_unavailable_reason
+
+        env.setattr("gbcli.utils.utils.sys.platform", "darwin")
+        assert local_browser_unavailable_reason() is None

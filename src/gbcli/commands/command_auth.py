@@ -13,7 +13,7 @@ from gbcli.utils.click_utils import FileOrStringParamType
 from gbcli.utils.gbconstants import IBMID_REDIRECT_PORT, PROJECT_NAME
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver_errors import GBServerHTTPError
-from gbcli.utils.utils import check_runnable_browser
+from gbcli.utils.utils import check_runnable_browser, local_browser_unavailable_reason
 from gbcommon.types.constants import get_gh_credentials_section
 from gbcommon.types.gbenvconfig import is_standalone
 
@@ -160,6 +160,15 @@ def login(ctx, token, gbserver, sso, remote, redirect_port):
                     open_browser=_show_url, remote=True, read_code=_read_code
                 )
             else:
+                reason = local_browser_unavailable_reason()
+                if reason:
+                    click.echo(
+                        f"Error: can't receive the login redirect here ({reason}). "
+                        "Use 'gb auth login --sso --remote'.",
+                        err=True,
+                    )
+                    ctx.exit(1)
+                    return
                 runnable_browser = check_runnable_browser()
 
                 def _open_browser(url):
@@ -179,6 +188,8 @@ def login(ctx, token, gbserver, sso, remote, redirect_port):
                 )
             click.echo(f"Logged in as " + click.style(user_login, bold=True))
             click.echo("✅ IBMid authentication is successful!")
+        except click.exceptions.Abort:
+            raise  # Ctrl-C/EOF at a prompt: click prints "Aborted!"
         except Exception as e:
             click.echo(f"\n{str_exc_chain(e)}", err=True)
             click.echo("❌ IBMid authentication failed!", err=True)

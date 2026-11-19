@@ -43,8 +43,9 @@ from typing import Optional
 import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from gbserver.types.constants_base import ENV_VAR_IBMID_REMOTE_CALLBACK_URL
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -209,7 +210,9 @@ def callback(
         session.error_detail = error_description or error
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(
-                detail=f"IBMid returned an error: {error_description or error}"
+                detail=html.escape(
+                    f"IBMid returned an error: {error_description or error}"
+                )
             ),
             status_code=200,
         )
@@ -363,7 +366,7 @@ def status(
 # ---------------------------------------------------------------------------
 
 # The CLI's loopback listener (RFC 8252). IBMid's registration pins the port.
-_LOOPBACK_REDIRECT_RE = re.compile(r"^http://127\.0\.0\.1:\d{1,5}/callback$")
+_LOOPBACK_REDIRECT_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}/callback")
 
 _REMOTE_CALLBACK_PATH = "/oidc/remote-callback"
 
@@ -402,7 +405,7 @@ _REMOTE_CODE_HTML_TEMPLATE = (
 def _remote_callback_url() -> str:
     """The ``--remote`` redirect URI: the env override, else derived from the
     legacy callback URL so deployments need no new setting."""
-    url = os.getenv("GBSERVER_IBMID_REMOTE_CALLBACK_URL", "")
+    url = os.getenv(ENV_VAR_IBMID_REMOTE_CALLBACK_URL, "")
     if url:
         return url
     legacy = os.getenv("GBSERVER_IBMID_CALLBACK_URL", "")
@@ -417,7 +420,9 @@ def _resolve_redirect_uri(redirect_uri: Optional[str]) -> Optional[str]:
     remote = _remote_callback_url()
     if redirect_uri is None:
         return remote or None
-    if _LOOPBACK_REDIRECT_RE.match(redirect_uri) or (remote and redirect_uri == remote):
+    if _LOOPBACK_REDIRECT_RE.fullmatch(redirect_uri) or (
+        remote and redirect_uri == remote
+    ):
         return redirect_uri
     return None
 
@@ -485,13 +490,13 @@ def oidc_authorize(
 
 @auth_api.get(_REMOTE_CALLBACK_PATH)
 def oidc_remote_callback(
-    state: str = Query(...),
+    state: Optional[str] = Query(None),
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     error_description: Optional[str] = Query(None),
 ):
     """``--remote`` landing page: show the code for the user to paste."""
-    if error or not code:
+    if error or not code or not state:
         detail = (
             f"IBMid returned an error: {error_description or error}"
             if error
@@ -506,12 +511,23 @@ def oidc_remote_callback(
             code=html.escape(encode_remote_code(state, code))
         ),
         status_code=200,
+        headers={"Cache-Control": "no-store"},
     )
 
 
+def _json_object(resp) -> dict:
+    """``resp``'s JSON object body, or {} if it isn't one (e.g. an HTML page)."""
+    try:
+        body = resp.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 class OIDCTokenRequest(BaseModel):
-    code: str
-    code_verifier: str
+    code: str = Field(min_length=1, max_length=2048)
+    # RFC 7636 section 4.1.
+    code_verifier: str = Field(min_length=43, max_length=128)
     # Omitted for --remote.
     redirect_uri: Optional[str] = None
 
@@ -558,11 +574,7 @@ def oidc_token(body: OIDCTokenRequest):
             status_code=502, content={"detail": "Token exchange with IBMid failed."}
         )
     if token_resp.status_code != 200:
-        body_json: dict = {}
-        try:
-            body_json = token_resp.json()
-        except Exception:
-            pass
+        body_json = _json_object(token_resp)
         desc = body_json.get("error_description", body_json.get("error", ""))
         logger.error(
             "IBMid token exchange failed (%s): %s", token_resp.status_code, desc
@@ -576,7 +588,7 @@ def oidc_token(body: OIDCTokenRequest):
             },
         )
 
-    tokens = token_resp.json()
+    tokens = _json_object(token_resp)
     access_token = tokens.get("access_token", "")
     if not access_token:
         logger.error("IBMid token response had no access_token")

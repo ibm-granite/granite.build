@@ -28,6 +28,7 @@ ENV = {
 }
 REMOTE_CALLBACK = "https://gbserver.example.com/api/v1/auth/oidc/remote-callback"
 LOOPBACK = "http://127.0.0.1:48731/callback"
+VERIFIER = "v" * 43  # RFC 7636 minimum length
 
 
 @pytest.fixture(autouse=True)
@@ -132,6 +133,7 @@ class TestOIDCAuthorize:
             "http://127.0.0.1:48731/callback?x=1",
             "https://127.0.0.1:48731/callback",
             "http://localhost:48731/callback",
+            "http://127.0.0.1:48731/callback\n",
             # The legacy callback: its handler expects an in-memory session.
             "https://gbserver.example.com/api/v1/auth/callback",
         ],
@@ -191,6 +193,20 @@ class TestOIDCRemoteCallback:
         resp = _client().get("/oidc/remote-callback", params={"state": "state-1"})
         assert "No authorization code" in resp.text
 
+    def test_missing_state_shows_error_page(self):
+        resp = _client().get(
+            "/oidc/remote-callback",
+            params={"error": "access_denied", "error_description": "denied"},
+        )
+        assert resp.status_code == 200
+        assert "denied" in resp.text
+
+    def test_code_page_is_not_cached(self):
+        resp = _client().get(
+            "/oidc/remote-callback", params={"state": "s", "code": "c"}
+        )
+        assert resp.headers["cache-control"] == "no-store"
+
     def test_never_calls_ibmid(self):
         with patch("gbserver.api.auth_routes.requests.post") as post:
             _client().get("/oidc/remote-callback", params={"state": "s", "code": "c"})
@@ -204,7 +220,7 @@ class TestOIDCRemoteCallback:
 
 class TestOIDCToken:
     def _post(self, **body):
-        payload = {"code": "auth-code", "code_verifier": "verifier-xyz"}
+        payload = {"code": "auth-code", "code_verifier": VERIFIER}
         payload.update(body)
         payload = {k: v for k, v in payload.items() if v is not None}
         return _client().post("/oidc/token", json=payload)
@@ -235,7 +251,7 @@ class TestOIDCToken:
             "grant_type": "authorization_code",
             "code": "auth-code",
             "redirect_uri": LOOPBACK,
-            "code_verifier": "verifier-xyz",
+            "code_verifier": VERIFIER,
             "client_id": "test-client-id",
             "client_secret": "test-client-secret",
         }
@@ -336,6 +352,30 @@ class TestOIDCToken:
             resp = self._post(redirect_uri=LOOPBACK)
         assert resp.status_code == 502
 
+    @pytest.mark.parametrize("verifier", ["x" * 42, "x" * 129])
+    def test_rejects_verifier_outside_rfc7636_length(self, verifier):
+        with patch("gbserver.api.auth_routes.requests.post") as post:
+            resp = self._post(redirect_uri=LOOPBACK, code_verifier=verifier)
+        assert resp.status_code == 422
+        post.assert_not_called()
+
+    def test_rejects_oversized_code(self):
+        resp = self._post(redirect_uri=LOOPBACK, code="c" * 2049)
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize("status", [200, 400])
+    @pytest.mark.parametrize("body", [ValueError("not json"), ["a", "list"]])
+    def test_non_object_ibmid_body_is_a_clean_error(self, status, body):
+        resp_obj = MagicMock()
+        resp_obj.status_code = status
+        if isinstance(body, Exception):
+            resp_obj.json.side_effect = body
+        else:
+            resp_obj.json.return_value = body
+        with patch("gbserver.api.auth_routes.requests.post", return_value=resp_obj):
+            resp = self._post(redirect_uri=LOOPBACK)
+        assert resp.status_code == (502 if status == 200 else 400)
+
     def test_requires_verifier(self):
         resp = _client().post(
             "/oidc/token", json={"code": "c", "redirect_uri": LOOPBACK}
@@ -351,7 +391,7 @@ class TestOIDCToken:
 
         for text in (resp.text, caplog.text):
             assert "test-client-secret" not in text
-            assert "verifier-xyz" not in text
+            assert VERIFIER not in text
             assert "auth-code" not in text
 
 
@@ -387,7 +427,7 @@ def test_steps_on_separate_app_instances():
     ):
         resp = TestClient(worker_b).post(
             "/auth/oidc/token",
-            json={"code": "x", "code_verifier": "v", "redirect_uri": LOOPBACK},
+            json={"code": "x", "code_verifier": VERIFIER, "redirect_uri": LOOPBACK},
         )
     assert resp.status_code == 200
 
@@ -425,7 +465,7 @@ class TestMiddlewareExemption:
         ):
             resp = client.post(
                 "/api/v1/auth/oidc/token",
-                json={"code": "x", "code_verifier": "v", "redirect_uri": LOOPBACK},
+                json={"code": "x", "code_verifier": VERIFIER, "redirect_uri": LOOPBACK},
             )
         assert resp.status_code == 200
 
@@ -443,3 +483,24 @@ class TestMiddlewareExemption:
         with patch.dict(os.environ, {"GBSERVER_AUTH_MODE": "ibmid"}):
             resp = client.post(path, json={})
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Legacy /callback
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_callback_escapes_error_description():
+    """The legacy page renders IBMid's error text; it must not be markup."""
+    auth_routes._sessions["xss-state"] = auth_routes._AuthSession(code_challenge="c")
+    resp = _client().get(
+        "/callback",
+        params={
+            "state": "xss-state",
+            "error": "x",
+            "error_description": "<script>alert(1)</script>",
+        },
+    )
+    auth_routes._sessions.clear()
+    assert "<script>" not in resp.text
+    assert "&lt;script&gt;" in resp.text
