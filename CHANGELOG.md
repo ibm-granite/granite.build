@@ -361,8 +361,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **The granite-switch `skypilot/lsf-bluevela/answerability-sr` recipe (#725).** LSF is no
-  longer supported. `skypilot/aws/answerability-sr` builds the same Shadow Residual adapter.
-  The last version is at commit `ebabfa44`; read it with
+  longer supported. `skypilot/aws/answerability-sr` builds the same kind of Shadow Residual
+  adapter, with the same training config, from data you bring. The last version is at commit
+  `ebabfa44`; read it with
   `git show ebabfa44:recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr/build.yaml`,
   or restore it with `git checkout ebabfa44 -- recipes/granite-switch/skypilot/lsf-bluevela`.
 
