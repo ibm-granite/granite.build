@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {"id": 100256, "content": "<|pad|>", "special": true},
+    {"id": 100257, "content": "<|end_of_text|>", "special": true}
+  ],
+  "pre_tokenizer": {
+    "type": "Sequence",
+    "pretokenizers": [
+      {"type": "Split", "pattern": {"Regex": "\\p{N}{1,3}"}, "behavior": "Isolated"}
+    ]
+  },
+  "model": {"type": "BPE", "vocab": {"a": 0, "b": 1, "ab": 2}, "merges": ["a b"]}
+}
