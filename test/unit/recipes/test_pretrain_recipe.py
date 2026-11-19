@@ -48,7 +48,8 @@ _STEP_SCHEMAS = {
     / "train/lm-engine/export/skypilot/step-template.yaml",
     "space://steps/eval/lmeval": _STEPS / "eval/lmeval/skypilot/step-template.yaml",
     # The roll-up runs the built-in command step, whose schema is gbserver's own.
-    "space://steps/command": _REPO / "src/gbserver/builtins/steps/skypilot/command/step.yaml",
+    "space://steps/command": _REPO
+    / "src/gbserver/builtins/steps/skypilot/command/step.yaml",
 }
 
 # Top-level step config keys every SkyPilot step reads through the shared monitor or
@@ -355,7 +356,6 @@ def test_render_config_validate_passes_on_the_defaults(tmp_path):
     assert errors == []
 
 
-
 # ─── The shipped layers (smoke, 165M SP) ──────────────────────────────────────
 
 _SMOKE = _RECIPE / "smoke.yaml"
@@ -451,6 +451,7 @@ def test_the_smoke_layer_names_no_run(tmp_path):
     target reports SUCCESS with an empty output list and its consumers never
     dispatch. The layer must therefore not pin RUN_NAME."""
     assert "RUN_NAME" not in yaml.safe_load(_SMOKE.read_text(encoding="utf-8"))
+
 
 # ─── Step schemas ─────────────────────────────────────────────────────────────
 
@@ -1019,7 +1020,6 @@ def test_the_eval_block_is_self_contained_between_its_markers(tmp_path):
     assert "EVAL_ROOT" in block
 
 
-
 # ─── The roll-up (eval-combined) ──────────────────────────────────────────────
 
 
@@ -1037,9 +1037,7 @@ def test_the_roll_up_waits_for_every_eval(tmp_path):
     """Equality, not containment: a missing binding makes the roll-up race the eval
     it did not wait for and silently leave that rung's column empty."""
     rendered = _render(tmp_path, EVAL_RUNGS="10000,20000", FULL_EVAL_RUNGS="20000")
-    bound = {
-        spec["binding"] for spec in _combined(rendered)["inputs"].values()
-    }
+    bound = {spec["binding"] for spec in _combined(rendered)["inputs"].values()}
     assert bound == {f"{name}.granite_results" for name in _evals(rendered)}
 
 
@@ -1089,6 +1087,7 @@ def test_the_roll_up_is_inside_the_shared_eval_block(tmp_path):
         "─── end evals ───", 1
     )[0]
     assert "eval-combined:" in block
+
 
 # ─── The catalog's own checks ─────────────────────────────────────────────────
 

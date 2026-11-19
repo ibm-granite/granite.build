@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Turn a $${KEY}-templated SkyPilot environment and a private site file into a
 # usable environment in a gbserver space.
 #

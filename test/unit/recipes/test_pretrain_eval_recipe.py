@@ -191,7 +191,8 @@ def test_each_eval_reads_its_rung_through_the_binding(tmp_path):
 def test_the_roll_up_waits_for_every_eval(tmp_path):
     rendered = _render(tmp_path)
     bound = {
-        spec["binding"] for spec in _targets(rendered)["eval-combined"]["inputs"].values()
+        spec["binding"]
+        for spec in _targets(rendered)["eval-combined"]["inputs"].values()
     }
     assert bound == {
         "eval-base-core-ck10000.granite_results",
