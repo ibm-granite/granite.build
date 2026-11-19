@@ -89,6 +89,7 @@ $${ FULL_EVAL_RUNGS_must_be_a_subset_of_EVAL_RUNGS }
 <%- endif %>
 <%- endfor %>
 <%- set EVALS = EVALS | unique | sort | list %>
+# ─── catalog (shared with pretrain-eval) ───
 # ── The eval catalog, checked once ─────────────────────────────────────────
 # EVAL_CATALOG is a list of {name, benchmark, options}. Each entry becomes one eval
 # target per rung it runs on, so a name is half a target name and half a directory
@@ -156,6 +157,7 @@ $${ SCREEN_EVALS_must_name_entries_of_EVAL_CATALOG }
 <%- for e in CATALOG if ((e.get("name") or "") | string | trim) in SCREEN %>
 <%- set _ = SCREENED.append(e) %>
 <%- endfor %>
+# ─── end catalog ───
 # ── The export architecture, resolved once ─────────────────────────────────
 # EXPORT_MODEL_TYPE `auto` reads the knobs the run actually trains with, because the
 # Hugging Face architecture is not a free choice: _export_llama_config ASSERTS the
