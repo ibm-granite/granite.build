@@ -6116,7 +6116,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         """
         from gbcommon.uri.hf import HfType, HfURI
         from gbserver.asset.hfstore import Hfstore
-        from gbserver.environment.local_assets import get_hf_cache_dir
+        from gbserver.environment.local_assets import get_hf_cache_dir, hf_pull_dest
 
         assert isinstance(
             assetstore, Hfstore
@@ -6139,9 +6139,8 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         cache_dir = Path(
             self._worker_cache_dir(storeload_config, get_hf_cache_dir, "hf", uri)
         )
-        binding_path = (
-            cache_dir / hfuri.get_owner() / hfuri.get_repo() / hfuri.get_revision()
-        )
+        # The same pull dir as bash and docker, apart per type and host.
+        binding_path = hf_pull_dest(cache_dir, hfuri)
 
         hf_token = assetstore.resolve_token(hfuri) or ""
         # The pull keeps the repo layout under binding_path; a path in the repo

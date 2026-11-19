@@ -84,7 +84,7 @@ def test_local_path():
         "hf:///datasets/o/r/main/.",
         "hf:///datasets/o/r/main/a/../../b",
         "hf:///datasets/o/r/main/./x",
-        # owner/repo/revision are cache path segments too (Hfstore.get_relpath)
+        # owner/repo/revision are cache path segments too (hf_pull_dest)
         "hf:///datasets/../../main",
         "hf:///o/r/..",
         "hf:///buckets/o/b/../x",
@@ -598,7 +598,7 @@ async def test_skypilot_binds_the_path_under_the_download_dir(skypilot_env):
     binding, step = await skypilot_env.pullasset_hfstore(
         uri=HfURI.parse(_URI), assetstore=_hfstore(), storeload_config=_storeload()
     )
-    dest = "/data/cache/org/repo/main"
+    dest = "/data/cache/datasets/org/repo/main"
     assert binding["binding"]["path"] == f"{dest}/{_SUB}"
     hfp = step.config["hfpull_config"]
     assert hfp["path"] == dest

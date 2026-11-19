@@ -189,6 +189,30 @@ class TestPullassetHfstore:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("inline", [False, True])
+    async def test_pulls_a_dataset_apart_from_a_same_named_model(
+        self, skypilot_env, inline
+    ):
+        """A dataset is pulled under ``datasets/``, so it can't share a pull dir
+        with a model of the same owner/repo, by the hfpull step and inline."""
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {"cache_path": "/data/cache", "inline": inline}
+
+        binding_config, step_config = await skypilot_env.pullasset_hfstore(
+            uri=HfURI.parse("hf:///datasets/myorg/myrepo/main/data"),
+            assetstore=_hfstore_mock(),
+            storeload_config=storeload_config,
+        )
+
+        dest = "/data/cache/datasets/myorg/myrepo/main"
+        assert binding_config["binding"]["path"] == f"{dest}/data"
+        if inline:
+            assert binding_config["_hfpull"]["path"] == dest
+        else:
+            assert step_config.config["hfpull_config"]["path"] == dest
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inline", [False, True])
     async def test_refuses_a_bucket_input(self, skypilot_env, inline):
         """`hf download` has no bucket repo type, so a bucket input is refused
         before anything is launched, by the hfpull step and inline alike."""

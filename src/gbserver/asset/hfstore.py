@@ -5,7 +5,6 @@
 """Access assets in HuffingFace Hub."""
 
 import os
-from pathlib import Path
 from typing import Dict, List, Optional, Self, Union
 
 from huggingface_hub import create_repo, upload_file, upload_folder
@@ -37,17 +36,6 @@ class Hfstore(Assetstore):
     @classmethod
     def get_supported_uri_classes(self):
         return [HfURI]
-
-    def get_relpath(self, uri: URI) -> str:
-        """
-        Return a relative path for container volume binding.
-        Uses owner/repo/revision; buckets have empty revision so the
-        trailing segment is naturally omitted.
-        """
-        hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
-        p = hf_uri._parts()
-        rel_path = Path(p.owner) / p.repo / p.revision
-        return str(rel_path)
 
     def get_metadata(self, uri: URI) -> Dict:
         """

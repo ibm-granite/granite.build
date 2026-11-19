@@ -129,12 +129,15 @@ and translates it to Docker container limits:
 - **Inputs.** Unlike [bash](bash.md), the Docker environment does **not** auto-export input paths as
   env vars. Wire a resolved binding into the container explicitly, e.g. via `launcher_config.env` using
   `{{ bindings.<name>.binding.path }}`. For HuggingFace inputs loaded via the `hf` asset store, what
-  the input names is bind-mounted read-only, and the binding is the in-container path: the pull dir
-  at `/gb-hf-models/<owner>/<repo>/<revision>`, or the file or directory a URI's path in the repo
-  names, at `/gb-hf-models/<owner>/<repo>/<revision>/<path>`. Buckets are the exception: a bucket
-  input mounts the bucket's whole pull dir at `/gb-hf-models/<owner>/<bucket>`, with or without a
-  path in the bucket, so it also sees what other paths of that bucket synced
-  ([#715](https://github.com/ibm-granite/granite.build/issues/715)). `env://` inputs (a
+  the input names is bind-mounted read-only, and the binding is the in-container path: the pull dir,
+  or the file or directory a URI's path in the repo names inside it, at the same path under
+  `/gb-hf-models` as under the cache dir. A model's pull dir is `<owner>/<repo>/<revision>`
+  (e.g. `/gb-hf-models/<owner>/<repo>/<revision>/<path>`); a dataset's or space's is the same under
+  `datasets/` or `spaces/`; a path in a bucket has its own, `buckets/<owner>/<bucket>/<path>`; and
+  content on a host other than huggingface.co sits under `@<host>/` (a port's `:` becomes `_`).
+  Inputs naming different content therefore never share a mount. The same content pulled through
+  two `cache_path` values would need two mounts at one container path, so the second input is
+  refused before it is pulled. `env://` inputs (a
   path another target left on this host) are bind-mounted read-only under `/gb-env-inputs/<n>` (a
   file's parent directory, or the directory itself), and the binding is the in-container path. The
   mount goes only into the containers of the target that takes the input. The mount source is
