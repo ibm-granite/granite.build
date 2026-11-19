@@ -2,7 +2,7 @@
 
 > **Audience:** anyone authoring a `build.yaml`. If you've never run a build, start with the
 > [getting-started guide](../getting-started.md); for the complete field-by-field schema see the
-> [`build.yaml` reference](build-yaml-reference.md).
+> [`build.yaml` specification](build-yaml-specification.md).
 
 A **build** is one execution of a `build.yaml`. The file declares a set of **targets** wired together
 into a dependency graph; running it produces **artifacts** (models, datasets, filesets). This page
@@ -86,7 +86,7 @@ Common schemes: `hf://` (HuggingFace), `file://`, `git://`, `cos://` / `s3://` (
   remote store after the step writes it (e.g. HuggingFace — see [hf-push](hf-push.md)).
 
 The full input/output schema — `wait_for_push`, `event`, `event_selectors`, `store_push`, artifact
-`type` — is in the [`build.yaml` reference](build-yaml-reference.md#inputs).
+`type` — is in the [`build.yaml` specification](build-yaml-specification.md#inputs-direct-or-bound).
 
 ## Bindings: chaining targets
 
@@ -107,7 +107,7 @@ targets:
 dispatched with its `model` input resolved to that artifact. In step config and templates the resolved
 value is available as `{{ bindings.<name>.binding.path }}` for a filesystem-backed output, or
 `{{ bindings.<name>.binding.state }}` for a `mem://` output (an opaque value — e.g. a service URL —
-passed through verbatim). See the [`build.yaml` reference](build-yaml-reference.md#mem-outputs--passing-a-value-not-a-file).
+passed through verbatim). See the [`build.yaml` specification](build-yaml-specification.md#mem-in-memory-value).
 For the full picture, covering both build.yaml and step.yaml, see
 [Inputs, outputs, and bindings](bindings.md).
 
@@ -171,6 +171,6 @@ end, try the [demos](../demos/README.md).
 
 ## See also
 
-- [`build.yaml` reference](build-yaml-reference.md) — the complete, canonical schema.
+- [`build.yaml` specification](build-yaml-specification.md) — the complete, canonical schema.
 - [Getting started](../getting-started.md) · [CLI reference](../cli/gb-cli-reference.md) · [Templates](../templates/README.md)
 - [Glossary](../glossary.md)

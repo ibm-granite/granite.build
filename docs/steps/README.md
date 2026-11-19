@@ -202,7 +202,7 @@ steps:
         learning_rate: 2e-5
 ```
 
-See the [`build.yaml` reference](../builds/build-yaml-reference.md#steps)
+See the [`build.yaml` specification](../builds/build-yaml-specification.md#c4-steps)
 for the full set of fields.
 
 ## Extending with custom steps
@@ -244,5 +244,5 @@ for the full cross-environment reference.
 - [Monitoring and artifact events](monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [bash environment](../environments/bash.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns
-- [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema
+- [`build.yaml` specification](../builds/build-yaml-specification.md) — full schema
 - [`environment.yaml` reference](../environments/README.md) — environment definitions

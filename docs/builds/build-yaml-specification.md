@@ -1,9 +1,9 @@
 # The Granite.Build `build.yaml` Specification
 
 > **Audience:** engineers and researchers who write, review, or maintain `build.yaml` files, and
-> anyone who needs a conceptual map of how Granite.Build runs them. The field-level reference
-> remains [build-yaml-reference.md](build-yaml-reference.md); this document explains the model
-> behind it and specifies each part of the file with examples.
+> anyone who needs a conceptual map of how Granite.Build runs them. This is the reference for
+> the `build.yaml` format: it explains the model behind the file and specifies each part of it,
+> field by field, with examples.
 
 **Contents**
 
@@ -328,8 +328,17 @@ targets:
 A build does not define environments. It **references** them, and the space supplies the
 definitions. `environment_uri` is usually `space://environments/<path>`. It is resolved relative
 to the space's `space.yaml` location or its `base_uris` to a directory that contains an
-`environment.yaml`. On a standalone server, a `file:` path is also accepted, including `file:.`
-for an `environment.yaml` placed next to the `build.yaml`. The value can use a build parameter
+`environment.yaml`. On a standalone server, a `file:` path is also accepted:
+
+- A relative path such as `file:environments/my-env` is looked up from the current directory
+  first, then from the build's own directory, so a build can ship its own environment (or step,
+  for `step_uri`) next to its `build.yaml`. Found in neither, it fails validation.
+- `file:.` means the build's own directory, for an `environment.yaml` placed next to the
+  `build.yaml`.
+- Write a relative path as `file:<path>`, not `file://<path>`: with two slashes the first
+  segment is read as a host name.
+
+The value can use a build parameter
 (`space://environments/$${ENVIRONMENT}`) or a space variable
 (`space://environments/{{ space.variables.DEFAULT_ENVIRONMENT }}`).
 
@@ -374,6 +383,13 @@ inputs:
   artifact. With `wait_for_push: true` it starts only after the artifact has also been pushed to
   its store (default is `false`). The consumer's environment then pulls the upstream output's URI,
   just as it pulls a direct input.
+
+| Field | Type | Required | Default | Meaning |
+|-------|------|----------|---------|---------|
+| `uri` | string | one of `uri`/`binding` | — | A direct artifact URI (see [Supported URIs](#supported-uris)). |
+| `binding` | string | one of `uri`/`binding` | — | `<target-name>.<output-name>`: an upstream target's output. |
+| `wait_for_push` | bool | no | `false` | Start only after the upstream output's push has completed. |
+| `metadata` | object | no | — | Filled in at run time; usually omitted. |
 
 #### Referencing inputs within the target
 
@@ -421,8 +437,28 @@ outputs:
 
 A step reports each output it produces by name. How it does so is described in
 [Steps — Producing outputs](https://github.com/ibm-granite/granite.build/blob/main/docs/steps/README.md#producing-outputs).
-The output's `uri` then decides where the environment pushes the artifact. `store_push.config`
-on the output passes store-specific options, such as HuggingFace resource groups.
+The output's `uri` then decides where the environment pushes the artifact.
+
+| Field | Type | Required | Default | Meaning |
+|-------|------|----------|---------|---------|
+| `uri` | string | no | — | Where the output is pushed. Templated at push time (see [C.6](#c6-parameters-and-jinja-templating)). |
+| `type` | string | no | — | The artifact type: `model`, `dataset`, `fileset` and so on. |
+| `public` | bool | no | `false` | `hf://` only: publish the pushed repository. Repositories are private by default. |
+| `store_push` | object | no | — | Push options for the output's store (see below). |
+
+**`store_push`** holds push options for a single output. In practice only the HuggingFace store
+reads it, and you rarely need it: an `hf://` URI alone pushes to the right repository.
+
+- `store_push.config.hf` sets HuggingFace push options: `resource_group_id` or
+  `resource_group_name` (for Enterprise organizations), `use_resource_group: false` to push
+  without a resource group, and `public`. The same `hf` keys can be set for every push in the
+  environment's `environment.yaml`, under `assetstores[].push[].config`. A value set on the output
+  wins.
+- `store_push.mode` is rarely needed, because the store is inferred from the URI's scheme. Only
+  K8s honors it; elsewhere it is ignored with a deprecation warning.
+
+See [HuggingFace push](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/hf-push.md)
+for resource-group resolution and Enterprise organizations.
 
 #### Supported URIs
 
@@ -539,12 +575,16 @@ reference the bindings inside the step implementation.
 **Compute resources.** A step sizes its compute through `config.compute_config`, the
 environment-neutral resource request. Each environment reads the fields that make sense for it.
 
-| Field | Meaning |
-|-------|---------|
-| `num_nodes` | Number of nodes. |
-| `num_gpus_per_node` | GPUs per node (K8s, LSF, RunPod; LSF defaults to 1 when unset). |
-| `num_cpus_per_node` | CPU cores per node. |
-| `total_memory_per_node` | Memory per node, e.g. `"32Gi"`. |
+| Field | Read by | Meaning |
+|-------|---------|---------|
+| `num_nodes` | K8s, LSF, RunPod, SkyPilot | Number of nodes. |
+| `num_gpus_per_node` | K8s, LSF, RunPod | GPUs per node. |
+| `num_cpus_per_node` | Docker, K8s, SkyPilot | CPU cores per node. |
+| `total_memory_per_node` | Docker, K8s, SkyPilot | Memory per node, e.g. `"32Gi"`. |
+
+On LSF, an unset `num_gpus_per_node` means **1** GPU, whereas K8s defaults to 0. A step that needs
+no GPU, such as a pull or push step, must set `num_gpus_per_node: 0` on LSF. Otherwise its job
+waits for a GPU instead of being scheduled on the normal queue.
 
 Environments with richer resource models, such as SkyPilot, accept additional backend-specific
 settings through the step's `launcher_config` (see
@@ -692,6 +732,12 @@ Only top-level keys merge, and a later file replaces a list or map whole. `gb bu
 `gb build validate` write the final values to `parameters-applied.yaml`. To see the rendered build
 without submitting it, use `gb build start --dry-run` or `gb build describe --raw --param-file …`.
 
+- The recipe's own `parameters.yaml` is always loaded when it exists, so a malformed one fails
+  the build even when you pass other files with `--param-file`.
+- Passing that same `parameters.yaml` as a `--param-file` applies it at that position in the
+  layering, not also as the base layer.
+- Run with `--loglevel DEBUG` to see which file set each key.
+
 #### Jinja templates (`{{ … }}`)
 
 gbserver evaluates `{{ … }}` with [Jinja](https://jinja.palletsprojects.com/). Expressions,
@@ -729,7 +775,7 @@ substitutes parameters everywhere in the file before gbserver reads it.
 | `bindings.<input>.binding.path` | The local path of the target's input named `<input>`. |
 | `bindings.<input>.binding.state` | The value of a `mem://` input named `<input>`. |
 | `binding.path` | In an output `uri` only: the path the step reported for this output. |
-| `unique_hash` | In an output `uri` only: a hash that changes with each push of the output. |
+| `unique_hash` | In an output `uri` only: a hash of the artifact event that triggers the push. It changes with each push, including a workload step's retry. A push step's retry keeps it, and a build retry that reuses the target keeps the old URI. It may start with a digit, so keep a prefix, as in `eval_{{ unique_hash }}`. |
 | `step.name` | The name of the step being configured. |
 
 **Unknown variables.** URIs are rendered strictly, so a misspelled or unavailable variable fails
@@ -794,6 +840,13 @@ whole is controlled server-side by `GBSERVER_ENABLE_STEP_RETRY` (default `true`)
   is not registered twice;
 - `false` passes every event from every attempt through.
 
+For the full mechanism, see
+[Retry overview](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/retry.md),
+[Build retry](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/build-retry.md),
+[Target reuse](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/target-reuse.md)
+and
+[Step retry configuration](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/step-retry-configuration.md).
+
 ### C.8 Validation
 
 `gb build validate -f build.yaml` (with the same `--param`/`--param-file` options as `start`)
@@ -803,9 +856,15 @@ reports errors before anything runs. `gb build start` validates as well, unless 
 - an input with neither `uri` nor `binding`, or with both;
 - a `binding` that names a target or output that doesn't exist;
 - a step or environment URI that cannot be resolved in the space (`Unresolvable space uri`);
-- a `file:` URI on a non-standalone server;
-- a `..` segment in a `step_uri` or `environment_uri`;
+- a `file:` URI on a non-standalone server, in a target's `environment_uri`, a step's
+  `step_uri`, or an input or output `uri`. A `step_uri` or `environment_uri` with no scheme
+  counts as `file:`. On a shared server, use `space://`, a git URI or `env://` instead;
+- a `..` path segment in a `step_uri` or `environment_uri`, on any server, checked after the
+  space's templates are filled. This covers `space://steps/../x`, `file:../x` and a git
+  `#subdirectory=../x`. Dots inside a name, as in `a..b`, are fine;
 - an unquoted number in a K8s `env` block.
+
+Run `gb build validate` and read the error; it names the field at fault.
 
 ---
 
@@ -1290,11 +1349,20 @@ A downstream target could now bind to `hello.greeting` and read
 | **Launcher / monitor** | The parts of a step that start it and that watch its logs for status and artifacts. |
 | **Artifact marker** | A log line (`GB_ARTIFACT_ID:… GB_ARTIFACT_PATH:…` or `…STATE:…`) that reports an output. |
 
+**Example builds in the repository**
+
+- [`samples/standalone/standalone-quickstart`](https://github.com/ibm-granite/granite.build/tree/main/samples/standalone/standalone-quickstart):
+  a single target with several environment options and a basic `compute_config`.
+- [`samples/templates/local_multi_stage`](https://github.com/ibm-granite/granite.build/tree/main/samples/templates/local_multi_stage):
+  four targets chained by bindings. Its `event:` input is not supported by the runner (see
+  [Inputs: direct or bound](#inputs-direct-or-bound)).
+- [`test-data/integration/standalone/buildrunner/bash/retry`](https://github.com/ibm-granite/granite.build/tree/main/test-data/integration/standalone/buildrunner/bash/retry):
+  a top-level `retries` block with `max_retries`.
+
 **Reference documentation**
 
-- [build.yaml field reference](build-yaml-reference.md), [bindings](bindings.md),
-  [HuggingFace push](hf-push.md), [retry](retry.md), [target reuse](target-reuse.md),
-  [lineage](lineage.md)
+- [bindings](bindings.md), [HuggingFace push](hf-push.md), [retry](retry.md),
+  [target reuse](target-reuse.md), [lineage](lineage.md)
 - [Spaces](../spaces/README.md), [Secrets](../secrets/README.md),
   [Asset stores](../asset-stores/README.md)
 - [Environments overview](../environments/README.md), [step

@@ -203,4 +203,4 @@ does exactly this: its `inference` target binds its `adapter` input to the `fine
 - [Steps overview](../steps/README.md) and per-step docs:
   [inference](../../configurations/assets/environments/bash/steps/inference/README.md),
   [lora-finetune](../../configurations/assets/environments/bash/steps/lora-finetune/README.md)
-- [build.yaml reference](../builds/build-yaml-reference.md)
+- [build.yaml reference](../builds/build-yaml-specification.md)

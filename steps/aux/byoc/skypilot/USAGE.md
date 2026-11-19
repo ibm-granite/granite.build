@@ -111,7 +111,7 @@ GB_ARTIFACT_ID:<output-id> GB_ARTIFACT_PATH:<abs-path>
 - For `mem://` outputs, use `GB_ARTIFACT_STATE:<value>` instead of `GB_ARTIFACT_PATH`.
 
 For the full target I/O schema and the `bindings.*` Jinja variables, see
-`docs/builds/build-yaml-reference.md`; for the marker convention (PATH vs STATE,
+`docs/builds/build-yaml-specification.md`; for the marker convention (PATH vs STATE,
 anchoring, the shipped monitors), see `docs/steps/monitoring-and-artifact-events.md` in
 the granite.build repository.
 
