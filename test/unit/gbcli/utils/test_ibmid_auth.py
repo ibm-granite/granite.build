@@ -58,149 +58,228 @@ class TestPKCEHelpers:
 
 
 # ---------------------------------------------------------------------------
-# IBMidOIDCClient tests (proxy-based)
+# IBMidOIDCClient tests (loopback and --remote flows)
 # ---------------------------------------------------------------------------
+
+
+AUTH_BASE = "https://gbserver.example.com/api/v1/auth"
+
+TOKEN_RESPONSE = {
+    "access_token": "at_test",
+    "id_token": "idt_test",
+    "refresh_token": "rt_test",
+    "expires_in": 3600,
+    "user_info": {
+        "sub": "IBMid-123",
+        "name": "Test User",
+        "email": "test@ibm.com",
+        "preferred_username": "testuser",
+    },
+}
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _token_ok():
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = TOKEN_RESPONSE
+    return resp
+
+
+def _browser_hitting(query_for):
+    """An open_browser stand-in that follows the authorize URL like IBMid would:
+    calls the loopback redirect_uri with ``query_for(params)`` on a thread."""
+    import threading
+    import urllib.parse
+    import urllib.request
+
+    calls = {}
+
+    def open_browser(url):
+        params = {
+            k: v[0]
+            for k, v in urllib.parse.parse_qs(urllib.parse.urlparse(url).query).items()
+        }
+        calls["params"] = params
+        target = f"{params['redirect_uri']}?{urllib.parse.urlencode(query_for(params))}"
+
+        def hit():
+            calls["page"] = urllib.request.urlopen(target, timeout=5).read().decode()
+
+        t = threading.Thread(target=hit, daemon=True)
+        t.start()
+        calls["thread"] = t
+
+    return open_browser, calls
 
 
 class TestIBMidOIDCClient:
     def test_client_uses_gbserver_auth_base(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
+        client = IBMidOIDCClient(gbserver_auth_base=AUTH_BASE)
+        assert client.gbserver_auth_base == AUTH_BASE
+
+    def test_loopback_receives_redirect_and_redeems(self):
+        from gbcli.utils.ibmid_auth import IBMidOIDCClient, _generate_code_challenge
+
+        port = _free_port()
+        open_browser, calls = _browser_hitting(
+            lambda p: {"state": p["state"], "code": "auth-code-1"}
         )
-        assert client.gbserver_auth_base == "https://gbserver.example.com/api/v1/auth"
+        with patch(
+            "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+        ) as post:
+            result = IBMidOIDCClient(AUTH_BASE).login_loopback(
+                open_browser=open_browser, port=port, timeout=10
+            )
+        calls["thread"].join(5)
 
-    def test_start_auth_code_flow_polls_and_returns_result(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        params = calls["params"]
+        assert params["redirect_uri"] == f"http://127.0.0.1:{port}/callback"
+        assert params["code_challenge_method"] == "S256"
+        assert "login successful" in calls["page"]
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
+        assert post.call_args.args[0] == f"{AUTH_BASE}/oidc/token"
+        sent = post.call_args.kwargs["json"]
+        assert sent["code"] == "auth-code-1"
+        assert sent["redirect_uri"] == params["redirect_uri"]
+        # The verifier sent to /oidc/token matches the challenge sent to IBMid.
+        assert (
+            _generate_code_challenge(sent["code_verifier"]) == params["code_challenge"]
         )
-
-        # First poll: pending, second poll: complete
-        pending_resp = MagicMock()
-        pending_resp.status_code = 200
-        pending_resp.json.return_value = {"status": "pending"}
-        pending_resp.raise_for_status = MagicMock()
-
-        complete_resp = MagicMock()
-        complete_resp.status_code = 200
-        complete_resp.json.return_value = {
-            "status": "complete",
-            "access_token": "at_test",
-            "id_token": "idt_test",
-            "refresh_token": "rt_test",
-            "expires_in": 3600,
-            "user_info": {
-                "sub": "IBMid-12345",
-                "name": "Test User",
-                "email": "test@ibm.com",
-                "preferred_username": "testuser",
-            },
-        }
-        complete_resp.raise_for_status = MagicMock()
-
-        with patch("gbcli.utils.ibmid_auth.webbrowser.open"):
-            with patch(
-                "gbcli.utils.ibmid_auth.requests.get",
-                side_effect=[pending_resp, complete_resp],
-            ):
-                with patch("gbcli.utils.ibmid_auth.time.sleep"):
-                    result = client.start_auth_code_flow(timeout=10, poll_interval=0)
 
         assert result.access_token == "at_test"
         assert result.user_info.email == "test@ibm.com"
-        assert result.user_info.preferred_username == "testuser"
 
-    def test_start_auth_code_flow_timeout(self):
+    def test_loopback_rejects_state_mismatch(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
+        open_browser, calls = _browser_hitting(
+            lambda p: {"state": "someone-elses-state", "code": "auth-code-1"}
         )
+        with patch("gbcli.utils.ibmid_auth.requests.post") as post:
+            with pytest.raises(Exception, match="state mismatch"):
+                IBMidOIDCClient(AUTH_BASE).login_loopback(
+                    open_browser=open_browser, port=_free_port(), timeout=10
+                )
+        post.assert_not_called()
 
-        pending_resp = MagicMock()
-        pending_resp.status_code = 200
-        pending_resp.json.return_value = {"status": "pending"}
-        pending_resp.raise_for_status = MagicMock()
-
-        with patch("gbcli.utils.ibmid_auth.webbrowser.open"):
-            with patch(
-                "gbcli.utils.ibmid_auth.requests.get", return_value=pending_resp
-            ):
-                with patch("gbcli.utils.ibmid_auth.time.sleep"):
-                    with patch(
-                        "gbcli.utils.ibmid_auth.time.time", side_effect=[0, 0, 200]
-                    ):
-                        with pytest.raises(Exception, match="timed out"):
-                            client.start_auth_code_flow(timeout=10, poll_interval=0)
-
-    def test_start_auth_code_flow_error_status(self):
+    def test_loopback_reports_ibmid_error(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
+        open_browser, _ = _browser_hitting(
+            lambda p: {
+                "state": p["state"],
+                "error": "access_denied",
+                "error_description": "User denied access",
+            }
         )
+        with patch("gbcli.utils.ibmid_auth.requests.post") as post:
+            with pytest.raises(Exception, match="User denied access"):
+                IBMidOIDCClient(AUTH_BASE).login_loopback(
+                    open_browser=open_browser, port=_free_port(), timeout=10
+                )
+        post.assert_not_called()
 
-        error_resp = MagicMock()
-        error_resp.status_code = 200
-        error_resp.json.return_value = {
-            "status": "error",
-            "error": "access_denied",
-        }
-        error_resp.raise_for_status = MagicMock()
-
-        with patch("gbcli.utils.ibmid_auth.webbrowser.open"):
-            with patch("gbcli.utils.ibmid_auth.requests.get", return_value=error_resp):
-                with patch("gbcli.utils.ibmid_auth.time.sleep"):
-                    with pytest.raises(Exception, match="access_denied"):
-                        client.start_auth_code_flow(timeout=10, poll_interval=0)
-
-    def test_start_auth_code_flow_404_keeps_polling(self):
-        """404 means the session doesn't exist yet (browser hasn't hit
-        /authorize); the client should keep polling until timeout."""
+    def test_loopback_timeout_suggests_remote(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
-        )
+        with pytest.raises(Exception, match="--remote"):
+            IBMidOIDCClient(AUTH_BASE).login_loopback(
+                open_browser=lambda url: None, port=_free_port(), timeout=1
+            )
 
-        not_found_resp = MagicMock()
-        not_found_resp.status_code = 404
-        not_found_resp.json.return_value = {
-            "detail": "Auth session not found or expired."
-        }
+    def test_loopback_port_in_use_suggests_remote(self):
+        import socket
 
-        with patch("gbcli.utils.ibmid_auth.webbrowser.open"):
-            with patch(
-                "gbcli.utils.ibmid_auth.requests.get", return_value=not_found_resp
-            ):
-                with patch("gbcli.utils.ibmid_auth.time.sleep"):
-                    with patch(
-                        "gbcli.utils.ibmid_auth.time.time", side_effect=[0, 0, 200]
-                    ):
-                        with pytest.raises(Exception, match="timed out"):
-                            client.start_auth_code_flow(timeout=10, poll_interval=0)
-
-    def test_start_auth_code_flow_pkce_failure(self):
         from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
-        client = IBMidOIDCClient(
-            gbserver_auth_base="https://gbserver.example.com/api/v1/auth"
+        with socket.socket() as busy:
+            busy.bind(("127.0.0.1", 0))
+            busy.listen()
+            port = busy.getsockname()[1]
+            with pytest.raises(Exception, match="--remote"):
+                IBMidOIDCClient(AUTH_BASE).login_loopback(
+                    open_browser=lambda url: None, port=port, timeout=1
+                )
+
+    def test_remote_decodes_pasted_code_and_redeems(self):
+        from gbcli.utils.ibmid_auth import IBMidOIDCClient, _generate_code_challenge
+        from gbserver.api.auth_routes import encode_remote_code
+
+        seen = {}
+
+        def show_url(url):
+            import urllib.parse
+
+            seen["params"] = {
+                k: v[0]
+                for k, v in urllib.parse.parse_qs(
+                    urllib.parse.urlparse(url).query
+                ).items()
+            }
+
+        def read_code():
+            # As printed by gbserver's remote-callback page, with stray whitespace.
+            return (
+                "  " + encode_remote_code(seen["params"]["state"], "auth-code-r") + "\n"
+            )
+
+        with patch(
+            "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+        ) as post:
+            result = IBMidOIDCClient(AUTH_BASE).login_remote(
+                show_url=show_url, read_code=read_code
+            )
+
+        # No redirect_uri: gbserver uses its own remote-callback URL.
+        assert "redirect_uri" not in seen["params"]
+        sent = post.call_args.kwargs["json"]
+        assert "redirect_uri" not in sent
+        assert sent["code"] == "auth-code-r"
+        assert (
+            _generate_code_challenge(sent["code_verifier"])
+            == seen["params"]["code_challenge"]
         )
+        assert result.id_token == "idt_test"
 
-        pkce_fail_resp = MagicMock()
-        pkce_fail_resp.status_code = 401
-        pkce_fail_resp.json.return_value = {"detail": "PKCE verification failed."}
+    def test_remote_rejects_code_from_another_login(self):
+        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbserver.api.auth_routes import encode_remote_code
 
-        with patch("gbcli.utils.ibmid_auth.webbrowser.open"):
-            with patch(
-                "gbcli.utils.ibmid_auth.requests.get", return_value=pkce_fail_resp
-            ):
-                with patch("gbcli.utils.ibmid_auth.time.sleep"):
-                    with pytest.raises(Exception, match="PKCE"):
-                        client.start_auth_code_flow(timeout=10, poll_interval=0)
+        with patch("gbcli.utils.ibmid_auth.requests.post") as post:
+            with pytest.raises(ValueError, match="different login"):
+                IBMidOIDCClient(AUTH_BASE).login_remote(
+                    show_url=lambda url: None,
+                    read_code=lambda: encode_remote_code("other-state", "code"),
+                )
+        post.assert_not_called()
+
+    def test_remote_rejects_garbled_code(self):
+        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+
+        with pytest.raises(ValueError, match="not valid"):
+            IBMidOIDCClient(AUTH_BASE).login_remote(
+                show_url=lambda url: None, read_code=lambda: "not-a-code!!"
+            )
+
+    def test_redeem_surfaces_server_error(self):
+        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.json.return_value = {"detail": "Token exchange failed: invalid_grant"}
+        with patch("gbcli.utils.ibmid_auth.requests.post", return_value=resp):
+            with pytest.raises(Exception, match="invalid_grant"):
+                IBMidOIDCClient(AUTH_BASE)._redeem("c", "v", None)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +458,66 @@ class TestAuthLoginCommand:
         mock_login.assert_called_once()
         assert mock_login.call_args.kwargs.get("open_browser") is not None
         assert "IBMid authentication is successful" in result.output
+
+    def test_sso_remote_prompts_for_code(self):
+        """--sso --remote prints the URL and passes the pasted code through."""
+        from click.testing import CliRunner
+
+        from gbcli.commands.command_auth import login
+
+        def fake_login(open_browser, remote, read_code, **_):
+            assert remote is True
+            open_browser("https://gbserver.example.com/api/v1/auth/oidc/authorize?x=1")
+            assert read_code() == "pasted-code"
+            return "user@ibm.com"
+
+        runner = CliRunner()
+        with patch(
+            "gbcli.client.GBClient.Auth.login_ibmid", side_effect=fake_login
+        ) as mock_login:
+            result = runner.invoke(login, ["--sso", "--remote"], input="pasted-code\n")
+
+        assert result.exit_code == 0, result.output
+        mock_login.assert_called_once()
+        assert "oidc/authorize?x=1" in result.output
+        assert "IBMid authentication is successful" in result.output
+
+    def test_sso_redirect_port_passed_through(self):
+        from click.testing import CliRunner
+
+        from gbcli.commands.command_auth import login
+
+        runner = CliRunner()
+        with patch(
+            "gbcli.client.GBClient.Auth.login_ibmid", return_value="user@ibm.com"
+        ) as mock_login:
+            result = runner.invoke(
+                login, ["--sso", "--redirect-port", "50123"], input="y\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_login.call_args.kwargs["redirect_port"] == 50123
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--remote"],
+            ["--redirect-port", "50123"],
+            ["--gbserver", "--remote"],
+            ["--sso", "--remote", "--redirect-port", "50123"],
+        ],
+    )
+    def test_remote_and_port_need_sso_loopback(self, args):
+        from click.testing import CliRunner
+
+        from gbcli.commands.command_auth import login
+
+        runner = CliRunner()
+        with patch("gbcli.client.GBClient.Auth.login_ibmid") as mock_login:
+            result = runner.invoke(login, args)
+
+        assert result.exit_code == 1
+        mock_login.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -74,8 +74,23 @@ Upload, download, register, and tag artifacts produced or consumed by builds.
 
 | Subcommand | Purpose |
 |------------|---------|
-| `gb auth login [--token \| --sso \| --gbserver]` | Authenticate. Default is GitHub; `--sso` uses IBMid; `--gbserver` uses an API-key gbserver. |
+| `gb auth login [--token \| --sso \| --gbserver]` | Authenticate. Default is GitHub; `--sso` uses single sign-on (see below); `--gbserver` uses an API-key gbserver. |
 | `gb auth provider [--set <provider>]` | Show or change the default auth provider. |
+
+#### SSO login (`--sso`)
+
+| Command | Use when |
+|---------|----------|
+| `gb auth login --sso` | The browser runs on the same machine as `gb`. The CLI opens the sign-in page and receives the browser's redirect on `http://127.0.0.1:48731/callback`. |
+| `gb auth login --sso --redirect-port N` | Port 48731 is taken. `N` must match a redirect URI registered with the SSO provider; ask your gbserver admin. |
+| `gb auth login --sso --remote` | `gb` can't receive the redirect (e.g. over SSH). Open the printed URL in a browser on any device, sign in, click **Copy verification code**, and paste it at the CLI's prompt. |
+
+`--remote` and `--redirect-port` require `--sso` and can't be combined. If
+`--sso` times out or can't listen on the port, use `--sso --remote`.
+
+Paste a verification code only into a `gb` you started yourself; never share
+it. It's useless without a secret the waiting CLI holds, and expires soon
+after sign-in.
 
 ### `space` — work with spaces
 

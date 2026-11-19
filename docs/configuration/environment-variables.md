@@ -38,6 +38,7 @@ Needed when `GBSERVER_AUTH_MODE` is `ibmid` or `multi` (see [authentication](../
 |----------|---------|---------|
 | `GBSERVER_IBMID_CLIENT_ID` / `GBSERVER_IBMID_CLIENT_SECRET` | `` | OIDC client credentials (server is the confidential client). |
 | `GBSERVER_IBMID_CALLBACK_URL` | `` | Redirect URI registered with IBMid. |
+| `GBSERVER_IBMID_REMOTE_CALLBACK_URL` | derived from `_CALLBACK_URL` | Redirect URI for `gb auth login --sso --remote` (`…/auth/oidc/remote-callback`). |
 | `GBSERVER_IBMID_ISSUER` / `GBSERVER_IBMID_JWKS_URI` | `login.ibm.com/…` | Issuer + JWKS for token validation. |
 | `GBSERVER_IBMID_AUTHORIZE_URL` / `_TOKEN_URL` / `_USERINFO_URL` | `login.ibm.com/…` | OIDC endpoints. |
 

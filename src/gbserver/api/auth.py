@@ -59,6 +59,10 @@ _PUBLIC_EXACT_PATHS = frozenset(
 # /api/autotunex is intentionally not public: the AutoTuneX upstream does no auth of its own.
 _PUBLIC_PATH_PREFIXES = ("/api/v1/auth", "/dashboard", "/_next")
 
+# The only POSTs that skip auth (exact paths). The code redemption is a POST
+# to keep the code and verifier out of URLs and access logs.
+_PUBLIC_POST_PATHS = frozenset({"/api/v1/auth/oidc/token"})
+
 # Every mounted sub-app owns its own Swagger/OpenAPI doc pages directly under
 # its mount point (e.g. /api/v1/builds/docs, /api/v1/builds/openapi.json) — see
 # openapi_security.enable_api. Match those exactly: a versioned mount root
@@ -195,10 +199,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # allow-listed path is GET-only by nature (docs, config bootstrap,
         # OIDC redirects, static/SPA serving), so this also catches a future
         # mutating endpoint accidentally registered under an otherwise-public
-        # prefix (e.g. POST /dashboard/something).
+        # prefix (e.g. POST /dashboard/something). Exception: _PUBLIC_POST_PATHS.
         if request.method in ("GET", "HEAD") and _is_public_path(request.url.path):
             response = await call_next(request)
             return response
+        if request.method == "POST" and request.url.path in _PUBLIC_POST_PATHS:
+            return await call_next(request)
 
         # Read auth mode at request time (not import time) so that env vars
         # set after import (e.g. by the standalone command) are picked up.

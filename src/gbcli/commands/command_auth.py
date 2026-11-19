@@ -10,7 +10,7 @@ from requests.exceptions import ConnectionError
 
 from gbcli.client import GBClient
 from gbcli.utils.click_utils import FileOrStringParamType
-from gbcli.utils.gbconstants import PROJECT_NAME
+from gbcli.utils.gbconstants import IBMID_REDIRECT_PORT, PROJECT_NAME
 from gbcli.utils.gbcredentials import GBCredentials
 from gbcli.utils.gbserver_errors import GBServerHTTPError
 from gbcli.utils.utils import check_runnable_browser
@@ -101,8 +101,22 @@ def cli(ctx):
     default=None,
     help="Login via SSO provider (default: ibm). Use 'ibm' for IBMid OIDC authentication.",
 )
+@click.option(
+    "--remote",
+    is_flag=True,
+    default=False,
+    help="With --sso, when the CLI can't receive the browser redirect (e.g. over SSH): "
+    "sign in on any device and paste the verification code.",
+)
+@click.option(
+    "--redirect-port",
+    type=click.IntRange(1, 65535),
+    default=None,
+    help=f"With --sso: local port for the browser redirect (default: {IBMID_REDIRECT_PORT}); "
+    "must match the SSO provider's registration.",
+)
 @click.pass_context
-def login(ctx, token, gbserver, sso):
+def login(ctx, token, gbserver, sso, remote, redirect_port):
     """Login"""
     # Validate mutually exclusive options
     selected = sum([bool(token), gbserver, bool(sso)])
@@ -113,6 +127,14 @@ def login(ctx, token, gbserver, sso):
         )
         ctx.exit(1)
         return
+    if (remote or redirect_port is not None) and not sso:
+        click.echo("Error: --remote and --redirect-port require --sso.", err=True)
+        ctx.exit(1)
+        return
+    if remote and redirect_port is not None:
+        click.echo("Error: --redirect-port does not apply with --remote.", err=True)
+        ctx.exit(1)
+        return
 
     auth_client = GBClient.Auth()
 
@@ -120,18 +142,37 @@ def login(ctx, token, gbserver, sso):
     if sso == "ibm":
         click.echo(f"🔒 {PROJECT_NAME} IBMid SSO login")
         try:
-            runnable_browser = check_runnable_browser()
+            if remote:
 
-            def _open_browser(url):
-                if runnable_browser and click.confirm(
-                    "Open the browser?", default=True
-                ):
-                    webbrowser.open(url)
-                else:
-                    click.echo(f"Open this link in the browser: {url}")
-                click.echo("Waiting for IBMid authentication...")
+                def _show_url(url):
+                    click.echo(f"Open this link in a browser on any device: {url}")
 
-            user_login = auth_client.login_ibmid(open_browser=_open_browser)
+                def _read_code():
+                    return click.prompt(
+                        "Paste the verification code shown after sign-in"
+                    )
+
+                user_login = auth_client.login_ibmid(
+                    open_browser=_show_url, remote=True, read_code=_read_code
+                )
+            else:
+                runnable_browser = check_runnable_browser()
+
+                def _open_browser(url):
+                    if runnable_browser and click.confirm(
+                        "Open the browser?", default=True
+                    ):
+                        webbrowser.open(url)
+                    else:
+                        click.echo(f"Open this link in the browser: {url}")
+                    click.echo(
+                        "Waiting for IBMid authentication... "
+                        "(if the browser runs on another machine, use --remote)"
+                    )
+
+                user_login = auth_client.login_ibmid(
+                    open_browser=_open_browser, redirect_port=redirect_port
+                )
             click.echo(f"Logged in as " + click.style(user_login, bold=True))
             click.echo("✅ IBMid authentication is successful!")
         except Exception as e:

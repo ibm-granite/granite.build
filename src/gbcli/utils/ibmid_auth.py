@@ -2,34 +2,29 @@
 
 """IBMid OIDC authentication for the CLI via gbserver proxy.
 
-The CLI is a public client and never holds the IBMid client_secret.
-Instead, it delegates the token exchange to gbserver, which acts as
-the confidential client.
+The CLI is a public client: gbserver adds the client secret when redeeming
+the code, and the CLI's PKCE verifier proves it started the login.
 
-Flow:
-1. CLI generates a PKCE code_verifier/code_challenge and a random state.
-2. CLI opens the browser to gbserver's ``/api/v1/auth/authorize``
-   endpoint, passing the code_challenge and state.
-3. gbserver redirects the browser to IBMid.  After the user
-   authenticates, IBMid calls back to gbserver which performs the
-   token exchange server-side.
-4. CLI polls gbserver's ``/api/v1/auth/status`` with the state and
-   code_verifier.  Once the PKCE proof is verified, gbserver returns
-   the tokens (one-time).
+The code reaches the CLI on a loopback listener (default) or, with
+``--remote``, as a verification code the user pastes from gbserver's page.
+The CLI then redeems it via gbserver's ``/oidc/token``.
 """
 
 import base64
 import hashlib
+import html
+import http.server
+import json
 import logging
 import secrets
 import time
 import urllib.parse
-import webbrowser
+from typing import Callable, Optional
 
 import requests
 from pydantic import BaseModel
 
-from gbcli.utils.gbconstants import GBSERVER_INSTANCE
+from gbcli.utils.gbconstants import GBSERVER_INSTANCE, IBMID_REDIRECT_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +75,93 @@ def _generate_code_challenge(verifier: str) -> str:
 # IBMid OIDC client (proxy-based)
 # ---------------------------------------------------------------------------
 
+_LOOPBACK_DONE_HTML = (
+    "<html><body>"
+    "<h2>IBMid login successful.</h2>"
+    "<p>You may close this tab and return to the terminal.</p>"
+    "</body></html>"
+)
+
+_LOOPBACK_ERROR_HTML_TEMPLATE = (
+    "<html><body>"
+    "<h2>Authentication failed</h2>"
+    "<p>{detail}</p>"
+    "<p>Please close this tab and check the terminal.</p>"
+    "</body></html>"
+)
+
+
+def decode_remote_code(pasted: str, state: str) -> str:
+    """The IBMid code in a pasted verification code; ValueError if malformed
+    or from another login."""
+    text = "".join(pasted.split())
+    try:
+        raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+        data = json.loads(raw.decode("utf-8"))
+        pasted_state, code = data["s"], data["c"]
+    except Exception as exc:
+        raise ValueError("The verification code is not valid. Copy it again.") from exc
+    if not secrets.compare_digest(str(pasted_state), state):
+        raise ValueError(
+            "The verification code is from a different login. "
+            "Use the code shown after opening the URL printed above."
+        )
+    return str(code)
+
+
+class _LoopbackHandler(http.server.BaseHTTPRequestHandler):
+    """Serves the one redirect to ``/callback``; anything else is 404."""
+
+    server: "_LoopbackServer"
+    # An idle browser preconnect would otherwise block this listener.
+    timeout = 5
+
+    def do_GET(self):  # noqa: N802 - http.server naming
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/callback":
+            self.send_error(404)
+            return
+        params = urllib.parse.parse_qs(parsed.query)
+        state = params.get("state", [""])[0]
+        code = params.get("code", [""])[0]
+        error = params.get("error", [""])[0]
+        error_description = params.get("error_description", [""])[0]
+        if not secrets.compare_digest(state, self.server.expected_state):
+            self._respond(_LOOPBACK_ERROR_HTML_TEMPLATE, "Unexpected login response.")
+            self.server.error = (
+                "IBMid redirect did not match this login (state mismatch)."
+            )
+        elif error or not code:
+            detail = (
+                f"IBMid returned an error: {error_description or error}"
+                if error
+                else "No authorization code received from IBMid."
+            )
+            self._respond(_LOOPBACK_ERROR_HTML_TEMPLATE, detail)
+            self.server.error = detail
+        else:
+            self._respond(_LOOPBACK_DONE_HTML, "")
+            self.server.code = code
+
+    def _respond(self, template: str, detail: str) -> None:
+        body = template.format(detail=html.escape(detail)).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):  # keep the code out of the terminal
+        pass
+
+
+class _LoopbackServer(http.server.HTTPServer):
+    def __init__(self, port: int, expected_state: str):
+        super().__init__(("127.0.0.1", port), _LoopbackHandler)
+        self.expected_state = expected_state
+        self.code: Optional[str] = None
+        self.error: Optional[str] = None
+
 
 class IBMidOIDCClient:
     """Drives IBMid OIDC authentication via gbserver proxy."""
@@ -87,84 +169,87 @@ class IBMidOIDCClient:
     def __init__(self, gbserver_auth_base: str = ""):
         self.gbserver_auth_base = gbserver_auth_base or GBSERVER_AUTH_BASE
 
-    def start_auth_code_flow(
+    def login_loopback(
         self,
-        timeout: int = 120,
-        poll_interval: int = 3,
-        open_browser=None,
+        open_browser: Callable[[str], None],
+        port: int = IBMID_REDIRECT_PORT,
+        timeout: int = 300,
     ) -> AuthFlowResult:
-        """Run the proxy-based auth code + PKCE flow.
+        """Log in via IBMid's redirect to a local port; *open_browser* gets the
+        URL once the listener is up."""
+        verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
+        redirect_uri = f"http://127.0.0.1:{port}/callback"
+        try:
+            server = _LoopbackServer(port, state)
+        except OSError as e:
+            raise Exception(
+                f"Cannot listen on 127.0.0.1:{port} for the IBMid redirect ({e}). "
+                "Free the port, or use 'gb auth login --sso --remote'."
+            ) from e
+        with server:
+            server.timeout = 1
+            open_browser(self._authorize_url(verifier, state, redirect_uri))
+            deadline = time.time() + timeout
+            while server.code is None and server.error is None:
+                if time.time() >= deadline:
+                    raise Exception(
+                        "Timed out waiting for the IBMid browser redirect. If the "
+                        "browser cannot reach this machine, use "
+                        "'gb auth login --sso --remote'."
+                    )
+                server.handle_request()
+        if server.error is not None:
+            raise Exception(server.error)
+        return self._redeem(server.code, verifier, redirect_uri)  # type: ignore[arg-type]
 
-        Opens the browser pointing at gbserver's ``/authorize`` endpoint,
-        then polls ``/status`` until tokens arrive or the flow times out.
+    def login_remote(
+        self,
+        show_url: Callable[[str], None],
+        read_code: Callable[[], str],
+    ) -> AuthFlowResult:
+        """Log in via a pasted verification code; *show_url* gets the URL and
+        *read_code* returns the paste."""
+        verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
+        show_url(self._authorize_url(verifier, state, None))
+        code = decode_remote_code(read_code(), state)
+        return self._redeem(code, verifier, None)
 
-        *open_browser* is a callback ``(url) -> None`` invoked with the
-        authorize URL.  Defaults to ``webbrowser.open``.
-        """
-        if open_browser is None:
-            open_browser = webbrowser.open
-
-        code_verifier = _generate_code_verifier()
-        code_challenge = _generate_code_challenge(code_verifier)
-        state = secrets.token_urlsafe(32)
-
-        # Build the gbserver authorize URL and open the browser.
+    def _authorize_url(
+        self, verifier: str, state: str, redirect_uri: Optional[str]
+    ) -> str:
         params = {
-            "code_challenge": code_challenge,
+            "code_challenge": _generate_code_challenge(verifier),
             "code_challenge_method": "S256",
             "state": state,
         }
-        authorize_url = (
-            f"{self.gbserver_auth_base}/authorize?{urllib.parse.urlencode(params)}"
+        if redirect_uri is not None:
+            params["redirect_uri"] = redirect_uri
+        return (
+            f"{self.gbserver_auth_base}/oidc/authorize?"
+            f"{urllib.parse.urlencode(params)}"
         )
 
-        open_browser(authorize_url)
-
-        # Poll for completion.
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            time.sleep(poll_interval)
+    def _redeem(
+        self, code: str, verifier: str, redirect_uri: Optional[str]
+    ) -> AuthFlowResult:
+        """Redeem the code via gbserver (no redirect_uri: --remote)."""
+        payload = {"code": code, "code_verifier": verifier}
+        if redirect_uri is not None:
+            payload["redirect_uri"] = redirect_uri
+        resp = requests.post(
+            f"{self.gbserver_auth_base}/oidc/token", json=payload, timeout=60
+        )
+        if resp.status_code != 200:
             try:
-                resp = requests.get(
-                    f"{self.gbserver_auth_base}/status",
-                    params={"state": state, "code_verifier": code_verifier},
-                    timeout=10,
-                )
-            except requests.ConnectionError:
-                # Server might not be reachable yet; keep trying.
-                continue
-
-            if resp.status_code == 404:
-                # Session may not exist yet (browser hasn't reached
-                # /authorize) or it may have expired.  Either way, keep
-                # polling until the timeout — the user may still be
-                # navigating to the URL.
-                continue
-            if resp.status_code == 401:
-                raise Exception("PKCE verification failed.")
-            if resp.status_code == 400:
-                raise Exception(resp.json().get("detail", "Bad request"))
-            resp.raise_for_status()
-
-            data = resp.json()
-
-            if data["status"] == "pending":
-                continue
-            elif data["status"] == "error":
-                raise Exception(
-                    f"IBMid authentication error: {data.get('error', 'unknown')}"
-                )
-            elif data["status"] == "complete":
-                user_info = IBMidUserInfo.model_validate(data.get("user_info", {}))
-                return AuthFlowResult(
-                    access_token=data["access_token"],
-                    id_token=data.get("id_token", ""),
-                    refresh_token=data.get("refresh_token", ""),
-                    expires_in=data.get("expires_in", 0),
-                    user_info=user_info,
-                )
-
-        raise Exception(
-            "IBMid authentication timed out. "
-            "Please try again with 'auth login --sso ibm'."
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = resp.text
+            raise Exception(f"IBMid authentication error: {detail}")
+        data = resp.json()
+        return AuthFlowResult(
+            access_token=data["access_token"],
+            id_token=data.get("id_token", ""),
+            refresh_token=data.get("refresh_token", ""),
+            expires_in=data.get("expires_in", 0),
+            user_info=IBMidUserInfo.model_validate(data.get("user_info") or {}),
         )

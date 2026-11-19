@@ -9,7 +9,15 @@ let gbserver act as the confidential client that holds the
 ``GBSERVER_IBMID_CLIENT_SECRET`` and performs the token exchange on
 behalf of the CLI.
 
-Flow:
+Stateless flow (``/oidc/*``), used by the CLI:
+1. ``/oidc/authorize`` redirects to IBMid, passing the PKCE challenge through.
+2. IBMid redirects with the code to the CLI's loopback listener or, for
+   ``--remote``, to ``/oidc/remote-callback``, which shows it for pasting.
+3. ``/oidc/token`` redeems the code with the client secret; IBMid checks the
+   CLI's verifier.
+Nothing is stored, so any worker or pod can serve any step.
+
+Legacy polling flow, kept for older CLIs:
 1. CLI opens browser to ``/authorize`` with a PKCE code_challenge and
    a random ``state``.
 2. This endpoint redirects the browser to IBMid's authorize URL.
@@ -19,13 +27,15 @@ Flow:
 5. The CLI polls ``/status`` with the ``state`` and ``code_verifier``.
    Once the PKCE proof is verified, the tokens are returned (one-time).
 
-Note: The in-memory session store assumes a single-worker process.  If
-multi-worker mode is enabled, sessions need to move to a shared store.
+The legacy flow's in-memory sessions assume a single worker process.
 """
 
 import base64
 import hashlib
+import html
+import json
 import os
+import re
 import time
 import urllib.parse
 from typing import Optional
@@ -33,6 +43,7 @@ from typing import Optional
 import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
 
 from gbserver.utils.logger import get_logger
 
@@ -345,3 +356,224 @@ def status(
     del _sessions[state]
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Stateless flow: /oidc/authorize, /oidc/remote-callback, /oidc/token
+# ---------------------------------------------------------------------------
+
+# The CLI's loopback listener (RFC 8252). IBMid's registration pins the port.
+_LOOPBACK_REDIRECT_RE = re.compile(r"^http://127\.0\.0\.1:\d{1,5}/callback$")
+
+_REMOTE_CALLBACK_PATH = "/oidc/remote-callback"
+
+# Code collapsed so it stays off screen; Copy works regardless and expands it
+# if the clipboard is unavailable. Braces doubled for str.format.
+_REMOTE_CODE_HTML_TEMPLATE = (
+    "<html><body>"
+    "<h2>IBMid sign-in complete</h2>"
+    "<p>Copy the verification code and paste it into the gb CLI that is "
+    "waiting for it.</p>"
+    '<p><button id="copy" type="button">Copy verification code</button> '
+    '<span id="status"></span></p>'
+    "<details><summary>Show code</summary>"
+    '<pre id="code" style="white-space:pre-wrap;word-break:break-all;'
+    'padding:8px;border:1px solid #888">{code}</pre></details>'
+    "<p><b>Only paste it into a gb CLI you started yourself. Never share it "
+    "with anyone.</b></p>"
+    "<script>"
+    "document.getElementById('copy').onclick = function () {{"
+    "  var status = document.getElementById('status');"
+    "  function manual() {{"
+    "    document.querySelector('details').open = true;"
+    "    status.textContent = 'Copy failed: copy the code below by hand.';"
+    "  }}"
+    "  try {{"
+    "    navigator.clipboard"
+    "      .writeText(document.getElementById('code').textContent)"
+    "      .then(function () {{ status.textContent = 'Copied.'; }}, manual);"
+    "  }} catch (e) {{ manual(); }}"
+    "}};"
+    "</script>"
+    "</body></html>"
+)
+
+
+def _remote_callback_url() -> str:
+    """The ``--remote`` redirect URI: the env override, else derived from the
+    legacy callback URL so deployments need no new setting."""
+    url = os.getenv("GBSERVER_IBMID_REMOTE_CALLBACK_URL", "")
+    if url:
+        return url
+    legacy = os.getenv("GBSERVER_IBMID_CALLBACK_URL", "")
+    if legacy.endswith("/callback"):
+        return legacy[: -len("/callback")] + _REMOTE_CALLBACK_PATH
+    return ""
+
+
+def _resolve_redirect_uri(redirect_uri: Optional[str]) -> Optional[str]:
+    """The redirect URI to use, or None if not allowed. Omitted means
+    ``--remote``, so the CLI needn't know the registered URL."""
+    remote = _remote_callback_url()
+    if redirect_uri is None:
+        return remote or None
+    if _LOOPBACK_REDIRECT_RE.match(redirect_uri) or (remote and redirect_uri == remote):
+        return redirect_uri
+    return None
+
+
+def encode_remote_code(state: str, code: str) -> str:
+    """The string the user pastes: ``state`` plus ``code``, so the CLI can
+    reject a code from another login."""
+    raw = json.dumps({"s": state, "c": code}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).rstrip(b"=").decode("ascii")
+
+
+@auth_api.get("/oidc/authorize")
+def oidc_authorize(
+    code_challenge: str = Query(...),
+    code_challenge_method: str = Query(...),
+    state: str = Query(...),
+    redirect_uri: Optional[str] = Query(None),
+):
+    """Redirect the browser to IBMid, passing the PKCE challenge through."""
+    if code_challenge_method != "S256":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Only S256 code_challenge_method is supported."},
+        )
+    resolved = _resolve_redirect_uri(redirect_uri)
+    if resolved is None:
+        return JSONResponse(
+            status_code=400, content={"detail": "redirect_uri is not allowed."}
+        )
+    client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
+    if not client_id:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "GBSERVER_IBMID_CLIENT_ID is not configured."},
+        )
+    authorize_url = os.getenv(
+        "GBSERVER_IBMID_AUTHORIZE_URL",
+        "https://login.ibm.com/v1.0/endpoint/default/authorize",
+    )
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": resolved,
+        "scope": "openid profile email",
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return RedirectResponse(
+        url=f"{authorize_url}?{urllib.parse.urlencode(params)}", status_code=302
+    )
+
+
+@auth_api.get(_REMOTE_CALLBACK_PATH)
+def oidc_remote_callback(
+    state: str = Query(...),
+    code: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
+):
+    """``--remote`` landing page: show the code for the user to paste."""
+    if error or not code:
+        detail = (
+            f"IBMid returned an error: {error_description or error}"
+            if error
+            else "No authorization code received from IBMid."
+        )
+        return HTMLResponse(
+            content=_AUTH_ERROR_HTML_TEMPLATE.format(detail=html.escape(detail)),
+            status_code=200,
+        )
+    return HTMLResponse(
+        content=_REMOTE_CODE_HTML_TEMPLATE.format(
+            code=html.escape(encode_remote_code(state, code))
+        ),
+        status_code=200,
+    )
+
+
+class OIDCTokenRequest(BaseModel):
+    code: str
+    code_verifier: str
+    # Omitted for --remote.
+    redirect_uri: Optional[str] = None
+
+
+@auth_api.post("/oidc/token")
+def oidc_token(body: OIDCTokenRequest):
+    """Redeem the code with the client secret; IBMid checks the verifier."""
+    redirect_uri = _resolve_redirect_uri(body.redirect_uri)
+    if redirect_uri is None:
+        return JSONResponse(
+            status_code=400, content={"detail": "redirect_uri is not allowed."}
+        )
+    token_url = os.getenv(
+        "GBSERVER_IBMID_TOKEN_URL",
+        "https://login.ibm.com/v1.0/endpoint/default/token",
+    )
+    userinfo_url = os.getenv(
+        "GBSERVER_IBMID_USERINFO_URL",
+        "https://login.ibm.com/v1.0/endpoint/default/userinfo",
+    )
+    try:
+        token_resp = requests.post(
+            token_url,
+            data={
+                "grant_type": "authorization_code",
+                "code": body.code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": body.code_verifier,
+                "client_id": os.getenv("GBSERVER_IBMID_CLIENT_ID", ""),
+                "client_secret": os.getenv("GBSERVER_IBMID_CLIENT_SECRET", ""),
+            },
+            timeout=30,
+        )
+    except Exception:
+        logger.exception("IBMid token exchange error")
+        return JSONResponse(
+            status_code=502, content={"detail": "Token exchange with IBMid failed."}
+        )
+    if token_resp.status_code != 200:
+        body_json: dict = {}
+        try:
+            body_json = token_resp.json()
+        except Exception:
+            pass
+        desc = body_json.get("error_description", body_json.get("error", ""))
+        logger.error(
+            "IBMid token exchange failed (%s): %s", token_resp.status_code, desc
+        )
+        # 4xx: IBMid rejected the code or verifier.
+        status_code = 400 if 400 <= token_resp.status_code < 500 else 502
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "detail": f"Token exchange failed: {desc or token_resp.status_code}"
+            },
+        )
+
+    tokens = token_resp.json()
+    access_token = tokens.get("access_token", "")
+    user_info: dict = {}
+    try:
+        ui_resp = requests.get(
+            userinfo_url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        ui_resp.raise_for_status()
+        user_info = ui_resp.json()
+    except Exception as e:
+        logger.warning("Failed to fetch IBMid userinfo: %s", e)
+    return {
+        "access_token": access_token,
+        "id_token": tokens.get("id_token", ""),
+        "refresh_token": tokens.get("refresh_token", ""),
+        "expires_in": tokens.get("expires_in", 0),
+        "user_info": user_info,
+    }

@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+from typing import Optional
 
 from requests.exceptions import ConnectionError
 
 from gbcli.utils.gbconstants import (
     GBSERVER_SECRETS_API,
+    IBMID_REDIRECT_PORT,
     RITS_LIST_URL,
     VPN_TUNNELALL_CONNECTION_ERROR_MESSAGE,
 )
@@ -104,12 +106,23 @@ def gbserver_login(api_user: str, api_key: str) -> str:
     return api_user
 
 
-def ibmid_login(open_browser=None) -> str:
-    """Authenticate via IBMid OIDC through gbserver proxy and store credentials."""
+def ibmid_login(
+    open_browser=None,
+    remote: bool = False,
+    read_code=None,
+    redirect_port: Optional[int] = None,
+) -> str:
+    """Log in via IBMid through gbserver and store credentials. With *remote*,
+    *open_browser* only shows the URL and *read_code* returns the paste."""
     from gbcli.utils.ibmid_auth import IBMidOIDCClient
 
     client = IBMidOIDCClient()
-    result = client.start_auth_code_flow(open_browser=open_browser)
+    if remote:
+        result = client.login_remote(show_url=open_browser, read_code=read_code)
+    else:
+        result = client.login_loopback(
+            open_browser=open_browser, port=redirect_port or IBMID_REDIRECT_PORT
+        )
 
     credentials = GBCredentials()
     credentials.set("access_token", result.access_token, section="user.ibmid")
