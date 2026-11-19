@@ -1,0 +1,92 @@
+name: lm-engine-export
+version: 0.1.0
+# Convert one lm-engine checkpoint rung into a Hugging Face model directory, so it
+# can be served by vLLM and scored by the eval bridge.
+#
+# Source: steps/train/lm-engine/export/skypilot/ — published by `make publish-step`;
+# do not edit the copy under configurations/assets. See USAGE.md.
+#
+# THE IMAGE IS NOT BUILT HERE. lm-engine and its dependencies live in the family
+# image built by steps/train/lm-engine/Makefile and shared with the sibling
+# `lm-engine-pretrain` step. A run picks it at launch from config.image; nothing is
+# cloned at launch. The step's own Python helpers live in src/ and are file-mounted
+# into the run (.gbignore keeps them out of the Jinja pass).
+#
+# SCAFFOLD. The launcher's `run:` block is deliberately a stub: the two-stage export
+# (`lm_engine.training.unshard`, then tools.model_conversion.export_to_huggingface),
+# the tokenizer copy and the parity check land in a later change. Of src/, only
+# export_checks.py — the post-export verification — exists. Only the config schema
+# below is final.
+#
+type: training
+config:
+  # The lm-engine image, pinned by tag (`make image` in steps/train/lm-engine).
+  # Recipes set it once, as the LME_IMAGE parameter. Required.
+  image: ""
+  # The training directory the pretrain target wrote, holding the sharded
+  # checkpoints (`global_step<N>/`). Required.
+  train_dir: ""
+  # Which optimizer step to export, as it appears under train_dir. Empty exports the
+  # latest rung present.
+  iteration: ""
+  # Where to write the Hugging Face model directory. Must match the path in the
+  # target's `hf_model` output when that output is an `env://` URI. Required.
+  output_dir: ""
+  # The Hugging Face architecture to export as. The recipe resolves it from the model
+  # knobs: muP -> `granite`, standard parametrization -> `llama` (a Granite config
+  # with attention_multiplier null is refused upstream), MoE/hybrid ->
+  # `granitemoehybrid`. Sliding-window models have no faithful target and are refused.
+  model_type: "granite"
+  # The directory holding the trained tokenizer files. They are copied byte for byte
+  # into output_dir; they are never re-saved through `save_pretrained`, which leaks
+  # the trainer's runtime truncation settings and drops trained pre-tokenizers.
+  # Required.
+  tokenizer_path: ""
+  # The training-side values the exported config must still carry, keyed by the
+  # pretrain step's knob names (rope_theta, vocab_size, tie_word_embeddings,
+  # bos_token_id, eos_token_id, pad_token_id, sequence_length, and for `granite`
+  # m_emb, m_residual, m_width, attention_multiplier). The recipe builds it from the
+  # same knobs it trained with; src/export_checks.py compares it against the written
+  # config.json and fails the target on any divergence. {} skips the config check.
+  expected: {}
+  # Relative tolerance for the logit/loss parity check between the unsharded
+  # lm-engine model and the exported Hugging Face model. Config scalars are compared
+  # exactly; this is only for the numeric parity check.
+  parity_tolerance: 0.05
+  # Also load the exported directory in vLLM and compare a greedy sample. Off by
+  # default: it needs a GPU and several minutes.
+  vllm_check: false
+outputs:
+  required:
+    # The exported Hugging Face model directory: config.json, the safetensors shards,
+    # the generation config and the byte-identical tokenizer files.
+    hf_model:
+      type: model
+
+# No named inputs: the checkpoint arrives through config.train_dir and config.iteration
+# as a path on the cluster's shared filesystem, not as a binding, because the export
+# reads the sharded tree in place. Recipes bind the pretrain target's checkpoint output
+# for ordering only, under names that vary by recipe, so allow_unknown keeps every such
+# binding valid.
+inputs:
+  allow_unknown: true
+
+environment_configs:
+  Skypilot:
+    default_launcher: lm-engine-export
+    launchers:
+      lm-engine-export:
+        type: skypilot
+        config:
+          image_id: '{{ ("docker:" ~ config.image) if config.image else "" }}'
+          resources: {}
+          # src/ holds the step's Python helpers and entry point; SkyPilot copies
+          # the tree into the run's working directory (fm-tune does the same).
+          file_mounts:
+            src: src
+          # SCAFFOLD: replaced by the real run block (unshard, export, tokenizer copy,
+          # checks, artifact marker) in a later change. It fails loudly rather than
+          # reporting success for a target that exported nothing.
+          run: |
+            echo "lm-engine-export: the run block is not implemented yet." >&2
+            exit 1
