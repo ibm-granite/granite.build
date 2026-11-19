@@ -5,6 +5,7 @@ import os
 import random
 import re
 import string
+import sys
 import time
 import unicodedata
 import webbrowser
@@ -786,6 +787,24 @@ def check_runnable_browser():
         runnable_browser = False
 
     return runnable_browser
+
+
+def local_browser_unavailable_reason() -> Optional[str]:
+    """Why a browser on this machine probably can't take a login redirect, or
+    None. Over SSH, webbrowser.get() can still find the remote host's browser.
+    A set $BROWSER is an explicit choice (e.g. VS Code Remote-SSH, or SSH port
+    forwarding) and skips these checks."""
+    if os.environ.get("BROWSER"):
+        return None
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return "this is an SSH session"
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return "no graphical display"
+    if not check_runnable_browser():
+        return "no web browser found"
+    return None
 
 
 def validate_tags(
