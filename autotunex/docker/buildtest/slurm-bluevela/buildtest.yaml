@@ -11,7 +11,7 @@ target_expectations:
     input_artifact_count: 0
     output_artifact_count: 0
     expected_steps:
-      - step_uri: space://steps/misc/byoc
+      - step_uri: space://steps/aux/byoc
         metadata_matches:
           # byoc records the commit it cloned (build.yaml pins it).
           commit_hash: "^[0-9a-f]{40}$"

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for LogService, isolated from the database and gb."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared test fixtures.
 
 Tests run against a real in-memory SQLite database rather than a mocked

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# SPDX-License-Identifier: Apache-2.0
+
 MY_LINE_BREAK="---------------------------"
 
 echo 'format start'

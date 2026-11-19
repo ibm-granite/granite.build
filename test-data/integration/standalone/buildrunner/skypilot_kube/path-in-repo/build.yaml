@@ -1,0 +1,39 @@
+granite.build:
+  name: skypilot-kube-path-in-repo-test
+  # Two hf:// inputs naming different files of one repo and revision, on
+  # SkyPilot/kubernetes. Each is pulled by its own hfpull step (a separate pod)
+  # into the same dir on the shared volume, downloading only its file, and the
+  # command step (another pod) must see each input bound at its own file.
+  #
+  # This is an extended/nightly test (see the @extended_testing_only marker on
+  # the test class): it performs a REAL HuggingFace pull of two small files of a
+  # public model.
+  targets:
+    pod-run:
+      environment_uri: space://environments/skypilot/kubernetes/local
+      inputs:
+        hf_config:
+          uri: hf:///ibm-granite/granite-4.0-350m/main/config.json
+        hf_generation_config:
+          uri: hf:///ibm-granite/granite-4.0-350m/main/generation_config.json
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: 5
+            command_config:
+              # Each binding must be a non-empty regular file with its own name,
+              # at a path of its own, visible in THIS pod. Under `set -e` any
+              # failed test fails the build.
+              # NOTE: this is a folded (>-) scalar, so an inline `#` here would
+              # fold into the single command line and comment out the rest.
+              command: >-
+                set -e;
+                a="{{ bindings.hf_config.binding.path }}";
+                b="{{ bindings.hf_generation_config.binding.path }}";
+                echo "hf input paths: $a $b";
+                test -f "$a"; test -s "$a"; test "$(basename "$a")" = config.json;
+                test -f "$b"; test -s "$b"; test "$(basename "$b")" = generation_config.json;
+                test "$a" != "$b"
+            compute_config:
+              num_gpus_per_node: 0
+              total_memory_per_node: 1Gi

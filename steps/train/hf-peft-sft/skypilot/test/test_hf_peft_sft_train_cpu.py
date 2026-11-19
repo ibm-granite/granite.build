@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """CPU smoke test: the real training script on a tiny model, 2 steps.
 
@@ -140,15 +128,15 @@ def test_trains_on_a_save_to_disk_dataset_with_a_sliced_split(
 
 
 def test_template_full_flags_match_the_parser():
-    """The template's full_flags list is exactly the non-owned trainer flags that
-    are a proper prefix of an owned one; the abbreviation check exempts them."""
+    """validate's full_flags list is exactly the non-owned trainer flags that are a
+    proper prefix of an owned one; the abbreviation check exempts them."""
     import re
 
     import hf_peft_sft_train as train
     from transformers import HfArgumentParser
     from trl import SFTConfig
 
-    text = (_TRAIN.parents[1] / "step-template.yaml").read_text()
+    text = (_TRAIN.parents[1] / "macros" / "validate.j2").read_text()
 
     def names(var):
         found = re.findall(r"set " + var + r" = \[(.*?)\]", text)[0]

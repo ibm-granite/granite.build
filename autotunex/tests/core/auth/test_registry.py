@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The authenticator registry: one seam, built once from settings."""
 
 from __future__ import annotations

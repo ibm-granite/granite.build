@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Framework-agnostic interface for chat agent backends.
 
 api/chat.py and the frontend only ever see NormalizedEvent dicts — never a

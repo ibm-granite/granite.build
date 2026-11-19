@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """MCP tools to manage the local gbserver backend that the build tools call.
 
 gbmcp runs as its own stdio process, so its tools are available even when

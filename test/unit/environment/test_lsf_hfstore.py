@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for Lsf.pullasset_hfstore and Lsf.pushasset_hfstore."""
 
 import asyncio

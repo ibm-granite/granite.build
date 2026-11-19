@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for the environment-files REST API (``/api/v1/files``).
 
@@ -847,3 +835,24 @@ class TestEnvironmentUriResolution:
         # Not cached: a later request retries rather than serving a stuck failure.
         assert c.get_supported_env_for_files_uri() == ""
         assert calls["n"] == 2
+
+
+def test_resolve_environment_runs_off_the_event_loop():
+    """It may read the public space row and unpack its snapshot, so it must not
+    block the loop that serves every other request."""
+    import asyncio
+    import threading
+
+    seen = {}
+
+    def fake_resolve(environment):
+        seen["thread"] = threading.current_thread()
+        return TEST_ENV_CONFIG
+
+    async def call():
+        seen["loop_thread"] = threading.current_thread()
+        return await environment_files_mod._resolve_environment("bluevela")
+
+    with patch.object(environment_files_mod, "resolve_environment", fake_resolve):
+        assert asyncio.run(call()) is TEST_ENV_CONFIG
+    assert seen["thread"] is not seen["loop_thread"]

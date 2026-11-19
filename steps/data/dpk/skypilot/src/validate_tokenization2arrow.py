@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+
+# SPDX-License-Identifier: Apache-2.0
+
 # SPDX-License-Identifier: Apache-2.0
 """Validate the output of the DPK ``tokenization2arrow`` transform.
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // The axes and polylines behind the trials parallel-coordinates plot: one vertical
 // axis per searched hyperparameter, then the two outcome axes, and one polyline per
 // trial crossing all of them.

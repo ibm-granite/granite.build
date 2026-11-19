@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for K8s.pullasset_hfstore and the shared step-chart permission settings.
 
 Two things are covered here:
@@ -152,6 +154,42 @@ class TestPullassetHfstore:
             )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "uristr,path_in_repo",
+        [
+            ("hf:///datasets/org/repo/main/data/train", "data/train"),
+            ("hf:///org/repo/main/config.json", "config.json"),
+            ("hf:///org/repo/main", ""),
+        ],
+        ids=["directory", "file", "whole-repo"],
+    )
+    async def test_binds_the_path_in_the_repo_under_the_download_dir(
+        self, k8s_env, uristr, path_in_repo
+    ):
+        """The step downloads into binding_path, keeping the repo layout, and the
+        input is bound at its path in the repo there. The step gets the full URI,
+        which the pod re-parses to the same path."""
+        from gbserver.asset.hfstore import Hfstore
+
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {"cache_path": "/gb-read-write/hfcache"}
+        uri = HfURI.parse(uristr)
+
+        binding_config, step_config = await k8s_env.pullasset_hfstore(
+            uri=uri,
+            assetstore=MagicMock(spec=Hfstore),
+            storeload_config=storeload_config,
+        )
+
+        dest = Path("/gb-read-write/hfcache/org/repo") / uri.hash()
+        assert binding_config[BINDING_KEY]["path"] == str(dest / path_in_repo)
+        hfpull_config = step_config.config["hfpull_config"]
+        assert hfpull_config["path"] == str(dest)
+        assert hfpull_config["path_in_repo"] == path_in_repo
+        assert HfURI.parse(hfpull_config["uri"]).get_path_in_repo() == path_in_repo
+
+    @pytest.mark.asyncio
     async def test_rejects_wrong_assetstore_type(self, k8s_env, mock_hfuri):
         """A non-Hfstore assetstore is rejected."""
         storeload_config = MagicMock()
@@ -164,6 +202,22 @@ class TestPullassetHfstore:
                 assetstore=MagicMock(),
                 storeload_config=storeload_config,
             )
+
+
+def test_hfpull_step_declares_a_path_in_repo_default():
+    """Like the skypilot and LSF hfpull steps, so the config is self-documenting.
+
+    The k8s chart needs only ``uri`` and ``path``: the pod's
+    ``HfURI.hfpull_step`` re-parses the path in the repo from the URI.
+    """
+    import yaml
+
+    step_yaml = (
+        Path(__file__).resolve().parents[3]
+        / "src/gbserver/builtins/steps/k8s/hfpull/step.yaml"
+    )
+    step = yaml.safe_load(step_yaml.read_text())
+    assert step["config"]["hfpull_config"]["path_in_repo"] == ""
 
 
 class TestPriorityClassName:

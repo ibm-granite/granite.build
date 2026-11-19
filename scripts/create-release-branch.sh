@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # This script is provided by Taiga to create the release branch which we then create a PR
 # back into the main branch to trigger deployment from main
 # Usage: create-release-branch.sh

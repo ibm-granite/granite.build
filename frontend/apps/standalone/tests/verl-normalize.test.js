@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The Reward Function step pre-fills test cases from verl rows, reading
  * `Array.isArray(row.prompt)` and `row.reward_model.ground_truth`. Datasets

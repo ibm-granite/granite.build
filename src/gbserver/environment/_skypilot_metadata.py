@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Build-tracking metadata for SkyPilot tasks (unmanaged and managed).
 
 Renders a small set of identifying fields from a step's ``run_metadata`` into

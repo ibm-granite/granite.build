@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The trial id and its foreign key are ``VARCHAR(16)`` wide."""
 
 from __future__ import annotations

@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Checks against the image's own Open-Instruct source and transformers.
 
@@ -80,8 +68,8 @@ def _options() -> set[str]:
 
 
 def _owned() -> set[str]:
-    """Return the step-owned flags from step-template.yaml's ``owned`` list."""
-    text = (_STEP_DIR / "step-template.yaml").read_text()
+    """Return the step-owned flags from macros/validate.j2's ``owned`` list."""
+    text = (_STEP_DIR / "macros" / "validate.j2").read_text()
     return set(
         re.findall(r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", text)[0])
     )

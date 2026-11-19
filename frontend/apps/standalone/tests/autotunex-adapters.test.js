@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure-logic coverage for the AutoTuneX v0.3.5 pagination + adapter helpers.
  * These live in `api/autotunexAdapters.ts` (re-exported from `api/autotunex.ts`)

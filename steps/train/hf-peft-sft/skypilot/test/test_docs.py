@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """USAGE.md stays in step with the template: every config field and every
 step-owned flag is documented, the exemplar is pasted verbatim, and no link
@@ -25,8 +13,11 @@ _STEP = pathlib.Path(__file__).resolve().parents[1]
 _USAGE = (_STEP / "USAGE.md").read_text()
 _README = (_STEP / "README.md").read_text()
 _TEXT = (_STEP / "step-template.yaml").read_text()
+_VALIDATE = (_STEP / "macros" / "validate.j2").read_text()
 _DEFAULTS = yaml.safe_load(_TEXT)["config"]["hf_peft_sft_config"]
-_OWNED = re.findall(r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _TEXT)[0])
+_OWNED = re.findall(
+    r'"([a-z_0-9]+)"', re.findall(r"set owned = \[(.*?)\]", _VALIDATE)[0]
+)
 
 
 def test_every_config_field_documented():

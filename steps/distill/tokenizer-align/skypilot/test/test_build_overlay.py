@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 PORTED, not authored here. Upstream source of truth:
   repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training

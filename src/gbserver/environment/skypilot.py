@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """SkyPilot environment backend (unmanaged mode).
 
 Manages build step execution on SkyPilot-provisioned pods/VMs using
@@ -9,6 +11,7 @@ require it unless a Skypilot environment is actually configured.
 
 import asyncio
 import concurrent.futures
+import contextvars
 import functools
 import glob
 import importlib.util
@@ -22,6 +25,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -38,6 +42,7 @@ from typing import (
     Union,
 )
 
+import pydantic
 from tenacity import (
     AsyncRetrying,
     retry,
@@ -81,6 +86,7 @@ from gbserver.utils.unwrap_errors import (
 if TYPE_CHECKING:
     from gbserver.monitoring.logfile_monitor import LogFileMonitor
     from gbserver.resilience.retry_handler import RetryStrategy
+    from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 
 logger = get_logger(__name__)
 
@@ -90,7 +96,12 @@ if HAS_SKYPILOT:
     import sky
     import sky.exceptions
 
+    from gbserver.environment import skypilot_kube
     from gbserver.utils import sky_patches
+
+    # Requests built while an environment instance's kube_configs scope is
+    # active carry its own KUBECONFIG; a no-op everywhere else.
+    skypilot_kube.install()
 else:
     sky = None  # type: ignore[assignment]
     sky_patches = None  # type: ignore[assignment]
@@ -618,9 +629,88 @@ async def _sky_submit_to_thread(
     :returns: the call's result once the worker thread completes.
     """
     loop = asyncio.get_running_loop()
+    # run_in_executor (unlike asyncio.to_thread) drops contextvars, which carry
+    # the environment instance's request KUBECONFIG (skypilot_kube).
+    context = contextvars.copy_context()
     return await loop.run_in_executor(
-        _get_sky_executor(), functools.partial(func, *args, **kwargs)
+        _get_sky_executor(), context.run, functools.partial(func, *args, **kwargs)
     )
+
+
+def _env_allowed_contexts(cloud_config: Dict) -> Any:
+    """The Kubernetes ``allowed_contexts`` an env's own ``cloud_config`` sets, or None.
+
+    SkyPilot's precedence (``sky.clouds.Kubernetes.existing_allowed_contexts``):
+    the active workspace's value when it sets one, else the top-level one. The
+    active workspace is the env's ``active_workspace``, else ``default``.
+
+    :param cloud_config: The environment's ``cloud_config`` block.
+    :returns: A list of names, ``'all'``, or ``None`` when unset.
+    """
+    workspace = cloud_config.get("active_workspace") or "default"
+    workspaces = cloud_config.get("workspaces")
+    ws = workspaces.get(workspace) if isinstance(workspaces, dict) else None
+    ws_k8s = ws.get("kubernetes") if isinstance(ws, dict) else None
+    if isinstance(ws_k8s, dict) and ws_k8s.get("allowed_contexts") is not None:
+        return ws_k8s["allowed_contexts"]
+    k8s = cloud_config.get("kubernetes")
+    return k8s.get("allowed_contexts") if isinstance(k8s, dict) else None
+
+
+def _env_remote_identities(cloud_config: Dict) -> List[str]:
+    """``kubernetes.remote_identity`` values an env's ``cloud_config`` sets.
+
+    Covers the top-level ``kubernetes`` block and every workspace's. A value may
+    be one string or a list of ``{cluster-pattern: value}`` maps.
+
+    :param cloud_config: The environment's ``cloud_config`` block.
+    :returns: Every value set, in no particular order (empty when unset).
+    """
+    from gbserver.environment.skypilot_kube import remote_identity_values
+
+    blocks = [cloud_config.get("kubernetes")]
+    workspaces = cloud_config.get("workspaces")
+    if isinstance(workspaces, dict):
+        blocks += [
+            ws.get("kubernetes") for ws in workspaces.values() if isinstance(ws, dict)
+        ]
+    return [
+        v
+        for b in blocks
+        if isinstance(b, dict)
+        for v in remote_identity_values(b.get("remote_identity"))
+    ]
+
+
+def _kube_scoped(strict: bool) -> Callable:
+    """Decorate a ``Skypilot`` coroutine so its SkyPilot requests carry its kubeconfig.
+
+    Every request built while the coroutine runs, including in tasks it starts
+    and in ``asyncio.to_thread`` / ``_sky_submit_to_thread`` workers, carries
+    ``KUBECONFIG`` = the user's files + this instance's own file
+    (``skypilot_kube``). Without ``kube_configs`` it does nothing.
+
+    :param strict: Passed to :meth:`Skypilot._kube_request_kubeconfig`: True
+        for setup and launch, False for polls, cleanup and teardown.
+    """
+
+    def decorate(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        async def wrapper(self: "Skypilot", *args: Any, **kwargs: Any) -> Any:
+            cfg = self.config.config if self.config else {}
+            if not cfg.get("kube_configs") or not HAS_SKYPILOT:
+                return await fn(self, *args, **kwargs)
+            value = await asyncio.to_thread(self._kube_request_kubeconfig, strict)
+            token = skypilot_kube.set_request_kubeconfig(value)
+            try:
+                return await fn(self, *args, **kwargs)
+            finally:
+                skypilot_kube.reset_request_kubeconfig(token)
+
+        wrapper.__kube_scoped__ = strict  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorate
 
 
 def _require_skypilot():
@@ -1277,6 +1367,10 @@ _NON_TRANSIENT_PROVISION_SUBSTRINGS = (
     "no such identity",
     "invalid privatekey",
     "unprotected private key file",
+    # The kube_configs credential-upload refusal (sky_patches
+    # KUBE_CREDENTIAL_UPLOAD_REFUSED, lowercase like the rest): SkyPilot reports
+    # it as ResourcesUnavailableError, but it's a configuration error.
+    "kube_configs credentials are never uploaded",
 )
 
 
@@ -1554,6 +1648,13 @@ def _is_interactive_auth_stdin_failure(exc: BaseException) -> bool:
     return False
 
 
+from gbserver.environment._skypilot_cos import (
+    DEFAULT_S3PULL_STEP_URI,
+    DEFAULT_S3PUSH_STEP_URI,
+    build_s3_step_config,
+    resolve_step_uri,
+    store_nonneg_int,
+)
 from gbserver.environment._skypilot_metadata import (
     apply_slurm_comment_override,
     normalize_run_metadata,
@@ -1567,6 +1668,23 @@ from gbserver.environment._skypilot_ssh import (
 from gbserver.environment._skypilot_ssh import (
     extract_host_ssh_info as _extract_host_ssh_info,
 )
+
+
+def _s3_run_link(setup_config: Optional[Dict], uri_hash: str) -> str:
+    """The per-run path an s3:// input is bound to, or '' without a run workdir.
+
+    ``<run workdir>/.gb_inputs/<uri hash>``, where the run workdir is the target
+    run's ``$GB_BUILD_WORKDIR`` that ``setup_skypilot`` publishes as
+    ``setup_config.skypilot.build_workdir``. s3pull points it at the version the
+    run leased; it lives in the run dir, so it goes away with the lease.
+
+    :param setup_config: the consuming target's setup config (may be None).
+    :param uri_hash: the input URI's hash (its cache entry name).
+    :returns: the link path, or '' when there is no per-run workdir.
+    """
+    sky = (setup_config or {}).get("skypilot") or {}
+    workdir = sky.get("build_workdir") if isinstance(sky, dict) else None
+    return os.path.join(workdir, ".gb_inputs", uri_hash) if workdir else ""
 
 
 def _escapes_parent(rel_path: str) -> bool:
@@ -2125,7 +2243,7 @@ def _build_skypilot_mounts(
 
 
 def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
-    """The ``hf download`` line an inline hfpull adds to a step's setup script.
+    """The ``hf download`` lines an inline hfpull adds to a step's setup script.
 
     Every value is ``shlex.quote``d, so a ``"``, ``$`` or backtick in one can
     neither break the setup line nor be expanded by the shell. The repo and
@@ -2134,23 +2252,45 @@ def _inline_hf_download_cmd(pull_info: Dict[str, Any]) -> str:
     ``pullasset_hfstore`` refuses one containing ``$``.
 
     :param pull_info: A binding's ``_hfpull`` dict (``repo``, ``path``, and the
-        optional ``revision``, ``type`` and ``path_in_repo``; with a path in the
-        repo only it is downloaded, as ``HfURI.pull`` does).
-    :returns: The shell command line.
+        optional ``revision``, ``type`` and ``path_in_repo``). With a path in the
+        repo, only it is downloaded, and a second line exits the setup when it
+        matched nothing, as ``HfURI.pull`` does.
+    :returns: The shell command line(s).
     """
+    from gbcommon.uri.hf import hf_path_patterns
+
+    dest = str(pull_info["path"])
     cmd = (
         f"hf download {shlex.quote(str(pull_info['repo']))} "
-        f"--local-dir {shlex.quote(str(pull_info['path']))}"
+        f"--local-dir {shlex.quote(dest)}"
     )
     if pull_info.get("revision"):
         cmd += f" --revision {shlex.quote(str(pull_info['revision']))}"
     if pull_info.get("type"):
         cmd += f" --repo-type {shlex.quote(str(pull_info['type']))}"
     path_in_repo = str(pull_info.get("path_in_repo") or "").strip("/")
-    if path_in_repo:
-        for pattern in (path_in_repo, f"{path_in_repo}/*"):
-            cmd += f" --include {shlex.quote(pattern)}"
-    return cmd
+    if not path_in_repo:
+        return cmd
+    # huggingface_hub < 1.0 parses --include as nargs="*" without append, so a
+    # repeated --include keeps only the LAST one and a file-scoped path matched
+    # nothing; 1.x appends repeats and takes one value per flag. The step's image
+    # decides which CLI runs, so pick the form at run time.
+    file_pat, dir_pat = (shlex.quote(p) for p in hf_path_patterns(path_in_repo))
+    download = (
+        "if hf version 2>/dev/null | grep -q '^huggingface_hub version: 0\\.'; then "
+        f"{cmd} --include {file_pat} {dir_pat}; "
+        f"else {cmd} --include {file_pat} --include {dir_pat}; fi"
+    )
+    # A failed test left of `||` does not trip the setup's `set -e`, and a bare
+    # `[ -e ]` would fail with no message: report it and exit.
+    missing = (
+        f"hfpull: '{path_in_repo}' matched nothing in {pull_info['repo']} "
+        f"(type={pull_info.get('type')}, rev={pull_info.get('revision')})"
+    )
+    return (
+        f"{download}\n[ -e {shlex.quote(f'{dest}/{path_in_repo}')} ] || "
+        f"{{ echo {shlex.quote(missing)} >&2; exit 1; }}"
+    )
 
 
 def aws_credentials_present() -> bool:
@@ -2171,62 +2311,89 @@ def aws_credentials_present() -> bool:
     return has_key_pair or bool(os.environ.get("AWS_PROFILE"))
 
 
-def _num_nodes_from_configs(
-    compute_config: Dict,
-    launcher_config: Dict,
-    config: Dict,
-    cloud: str = "",
-) -> int:
-    """Resolve the node count for a ``sky.Task``.
+def _parse_num_nodes(value: Any, key: str) -> int:
+    """Parse one layer's ``num_nodes`` as the launch uses it.
 
-    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it
-    is resolved separately from the resource layers and is NOT read from
-    ``resources``. Precedence mirrors the cpus/memory layering (last wins):
+    Fail fast rather than fall back to one node: a bad value (an unsubstituted
+    parameter, say) would otherwise run single-node and report success, the
+    outcome the resolver exists to prevent.
 
-    1. ``config.compute_config.num_nodes`` — the portable surface. This key
-       already exists for k8s/lsf/runpod, so one build.yaml expresses a
-       multi-node request across environments.
-    2. ``launcher_config.num_nodes``
-    3. ``config.launcher_config.num_nodes`` (from build.yaml)
-
-    A ``num_nodes`` placed under ``resources`` is dropped by
-    ``sky.Resources``, silently, so it is warned about here rather than left
-    to fail as a single-node run that looks successful.
-
-    :param compute_config: The step's raw ``compute_config`` dict.
-    :param launcher_config: The resolved launcher config.
-    :param config: The step config (its ``launcher_config`` wins).
-    :param cloud: Normalized target cloud, used only for the preflight check.
-    :returns: Node count, at least 1.
-    :raises ValueError: If a ``num_nodes`` is not an integer >= 1.
+    :param value: The layer's ``num_nodes`` value (not ``None``).
+    :param key: The layer's key path, named in the error.
+    :returns: The node count, at least 1.
+    :raises ValueError: If ``value`` is not a whole number >= 1.
     """
-    num_nodes = 1
-    for source in (
-        compute_config,
-        launcher_config,
-        config.get("launcher_config", {}) or {},
-    ):
-        value = (source or {}).get("num_nodes")
-        if value is None:
-            continue
-        # Fail fast rather than fall back to one node: a bad value (an
-        # unsubstituted parameter, say) would otherwise run single-node and
-        # report success, the outcome this resolver exists to prevent.
+    try:
+        # bool subclasses int, so int(True) == 1 would let a YAML `true` (or a
+        # bad substitution) through as one node.
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = int(value)
         # int() truncates a float, so 2.5 would quietly become 2: accept a
         # float only when it is already whole (YAML's `2.0`).
-        try:
-            parsed = int(value)
-            if isinstance(value, float) and parsed != value:
-                raise ValueError
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"num_nodes={value!r} is not an integer; set compute_config."
-                "num_nodes to a whole number of nodes >= 1."
-            ) from None
-        if parsed < 1:
-            raise ValueError(f"num_nodes={parsed} is invalid; it must be >= 1.")
-        num_nodes = parsed
+        if isinstance(value, float) and parsed != value:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{key}={value!r} is not an integer; set {key} to a whole number of "
+            "nodes >= 1."
+        ) from None
+    if parsed < 1:
+        raise ValueError(f"{key}={parsed} is invalid; it must be >= 1.")
+    return parsed
 
+
+def _resolve_num_nodes(
+    compute_config: Any, launcher_config: Any, config: Dict
+) -> Tuple[int, str]:
+    """Resolve ``num_nodes`` across its layers, the last one set winning.
+
+    Precedence mirrors the cpus/memory layering:
+
+    1. ``config.compute_config.num_nodes``: the portable surface. This key
+       already exists for k8s/lsf/runpod, so one build.yaml expresses a
+       multi-node request across environments.
+    2. ``launcher_config.num_nodes``: the step's launcher block.
+    3. ``config.launcher_config.num_nodes`` (from build.yaml).
+
+    :param compute_config: The step's raw ``compute_config``.
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config (its ``launcher_config`` wins).
+    :returns: The node count (1 when no layer sets it) and the key path it came
+        from (``""`` when none did).
+    :raises ValueError: If a layer is not a mapping, or a count is not a whole
+        number >= 1.
+    """
+    num_nodes, resolved_from = 1, ""
+    for name, layer in (
+        ("compute_config", compute_config),
+        ("launchers.<name>.config", launcher_config),
+        ("launcher_config", config.get("launcher_config")),
+    ):
+        if layer is None:
+            continue
+        if not isinstance(layer, dict):
+            raise ValueError(f"{name} must be a mapping, got {type(layer).__name__}.")
+        value = layer.get("num_nodes")
+        if value is None:
+            continue
+        key = f"{name}.num_nodes"
+        num_nodes, resolved_from = _parse_num_nodes(value, key), key
+    return num_nodes, resolved_from
+
+
+def _warn_misplaced_num_nodes(
+    launcher_config: Dict, config: Dict, num_nodes: int
+) -> None:
+    """Warn about a ``num_nodes`` placed under ``resources``.
+
+    ``sky.Resources`` drops it silently, so without the warning it would fail
+    as a single-node run that looks successful.
+
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config.
+    :param num_nodes: The resolved count, named in the warning.
+    """
     # `or {}` on every layer: a present-but-null `resources:` key returns None
     # from .get(), not the default.
     misplaced = (launcher_config.get("resources") or {}).get("num_nodes") or (
@@ -2242,9 +2409,101 @@ def _num_nodes_from_configs(
             num_nodes,
         )
 
+
+def _num_nodes_from_configs(
+    compute_config: Dict,
+    launcher_config: Dict,
+    config: Dict,
+    cloud: str = "",
+) -> int:
+    """Resolve the node count for a ``sky.Task``, at launch.
+
+    ``num_nodes`` is a ``sky.Task`` field, not a ``sky.Resources`` one, so it
+    is resolved separately from the resource layers (see
+    :func:`_resolve_num_nodes`) and is NOT read from ``resources``.
+
+    :param compute_config: The step's raw ``compute_config`` dict.
+    :param launcher_config: The resolved launcher config.
+    :param config: The step config (its ``launcher_config`` wins).
+    :param cloud: Normalized target cloud, used only for the preflight check.
+    :returns: Node count, at least 1.
+    :raises ValueError: As :func:`_resolve_num_nodes`.
+    """
+    num_nodes, _ = _resolve_num_nodes(compute_config, launcher_config, config)
+    _warn_misplaced_num_nodes(launcher_config, config, num_nodes)
     if num_nodes > 1:
         _check_multinode_supported(cloud, num_nodes)
     return num_nodes
+
+
+def validate_launch_num_nodes(
+    step_env_config: Optional["StepEnvironmentTypeConfig"],
+    launcher_config: Optional[Dict],
+    config: Any,
+    env_type: str = "Skypilot",
+) -> int:
+    """Resolve ``num_nodes`` from a step's filled configs, as its launch will.
+
+    The step-creation check behind :class:`SkypilotLaunchConfigCheck`: a
+    malformed count, or more than one node for a step that sets
+    ``single_node``, fails the step before anything is launched or
+    provisioned. The launch resolves the count again and leaves the
+    misplaced-``resources`` warning and the LSF multi-node preflight (which
+    needs the target cloud) to that pass.
+
+    :param step_env_config: The step's environment config (``None``: no flag).
+    :param launcher_config: The filled launcher block ``config``.
+    :param config: The filled step config; ``compute_config`` and the build's
+        ``launcher_config`` live here.
+    :param env_type: The step's ``environment_configs`` key, named in the
+        ``single_node`` error.
+    :returns: The resolved node count.
+    :raises ValueError: If the step config is not a mapping, as
+        :func:`_resolve_num_nodes`, or if ``single_node`` is set and the count
+        resolves to more than 1.
+    """
+    config = {} if config is None else config
+    # TargetStepRun only warns when the filled step config is not a dict, and
+    # this runs for every SkyPilot step.
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"The step config must be a mapping, got {type(config).__name__}."
+        )
+    num_nodes, resolved_from = _resolve_num_nodes(
+        config.get("compute_config"), launcher_config, config
+    )
+    if getattr(step_env_config, "single_node", False) and num_nodes != 1:
+        raise ValueError(
+            f"num_nodes resolved to {num_nodes} (from {resolved_from}), but this "
+            f"step is single-node (environment_configs.{env_type}.single_node); "
+            "set num_nodes to 1 or remove it."
+        )
+    return num_nodes
+
+
+class SkypilotLaunchConfigCheck:  # pylint: disable=too-few-public-methods
+    """``validate_launch_config`` shared by ``Skypilot`` and ``Skypilot_managed``.
+
+    Listed before ``Environment`` in both classes' bases so it overrides the
+    base method, which refuses ``single_node``.
+    """
+
+    type: str
+
+    def validate_launch_config(
+        self: Self,
+        step_env_config: "StepEnvironmentTypeConfig",
+        launcher_config: Dict,
+        config: Dict,
+    ) -> None:
+        """Resolve ``num_nodes`` as the launch will and enforce ``single_node``.
+
+        See :meth:`Environment.validate_launch_config` and
+        :func:`validate_launch_num_nodes`.
+        """
+        validate_launch_num_nodes(
+            step_env_config, launcher_config, config, env_type=self.type
+        )
 
 
 def _resolve_infra_and_zone(
@@ -2437,7 +2696,7 @@ def _merge_sbatch_export_items(
 _PROVIDER_UNSET = object()
 
 
-class Skypilot(Environment):
+class Skypilot(SkypilotLaunchConfigCheck, Environment):
     """SkyPilot environment — provisions pods/VMs for step execution (unmanaged)."""
 
     # Class-level semaphore so the cap applies across all Skypilot
@@ -2489,6 +2748,11 @@ class Skypilot(Environment):
         **kwargs,
     ) -> None:
         self._cluster_names: Dict[str, str] = {}  # launch_id -> cluster_name
+        # kube_configs: this instance's own kubeconfig file, written on first
+        # use (see _kube_request_kubeconfig), and the lock serializing that.
+        self._kube_file: Optional[Path] = None
+        self._kube_lock = threading.Lock()
+        self._kube_warned = False
         self._job_ids: Dict[str, int] = {}  # launch_id -> sky job_id
         # launch_id -> LSF cluster name (the ~/.lsf/config host), for lsf launches
         # only: what the poll loop asks `bjobs` before tearing a cluster down.
@@ -2598,6 +2862,164 @@ class Skypilot(Environment):
         """This environment's ``cloud_config`` block, or ``None``."""
         cfg = self.config.config if self.config else {}
         return cfg.get("cloud_config") or None
+
+    def _kube_config_entries(self: Self) -> List[Any]:
+        """This environment's ``kube_configs`` entries, validated.
+
+        :returns: The ``KubeConfigEntry`` list (empty when unset).
+        :raises ValueError: If ``kube_configs`` is malformed or unpinned, or the
+            env's config asks for something ``kube_configs`` can't be used with.
+        """
+        raw = (self.config.config if self.config else {}).get("kube_configs")
+        if not raw:
+            return []
+        entries = self._parse_kube_config_entries(raw)
+        self._check_kube_contexts_allowed(entries)
+        self._check_kube_identity_settings()
+        return entries
+
+    def _parse_kube_config_entries(self: Self, raw: Any) -> List[Any]:
+        """``kube_configs`` as ``KubeConfigEntry`` objects.
+
+        :param raw: The ``kube_configs`` value from the environment config.
+        :returns: The parsed entries.
+        :raises ValueError: If it isn't a list of well-formed entries. The
+            message names fields only: pydantic's echoes the input, which may be
+            a pasted kubeconfig.
+        """
+        from gbserver.types.environmentconfig import KubeConfigEntry
+
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs must be a list"
+            )
+        try:
+            return [KubeConfigEntry.model_validate(e) for e in raw]
+        except pydantic.ValidationError as e:
+            fields = sorted({".".join(map(str, err["loc"])) for err in e.errors()})
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs entries are "
+                f"malformed (fields {fields}); each needs a context and the name "
+                "of a kubeconfig secret"
+            ) from None
+
+    def _check_kube_contexts_allowed(self: Self, entries: List[Any]) -> None:
+        """Each ``kube_configs`` context must be in the env's ``allowed_contexts``.
+
+        Pinned at the top level or in the active workspace, or
+        ``allowed_contexts: all``: otherwise SkyPilot wouldn't use the context,
+        and a typo would only surface at launch.
+
+        :param entries: The parsed ``kube_configs`` entries.
+        :raises ValueError: If a context isn't allowed.
+        """
+        allowed = _env_allowed_contexts(self._cloud_config() or {})
+        if allowed == "all":
+            return
+        pinned = allowed if isinstance(allowed, list) else []
+        missing = [e.context for e in entries if e.context not in pinned]
+        if missing:
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs contexts "
+                f"{missing} must also be listed in "
+                "cloud_config.kubernetes.allowed_contexts (or the active "
+                "workspace's)"
+            )
+
+    def _check_kube_identity_settings(self: Self) -> None:
+        """Refuse settings of this env's that ``kube_configs`` can't be used with.
+
+        Reads only the env's own ``cloud_config``, never the host-shared
+        ``~/.sky/config.yaml``, which other environments rewrite: a value there
+        can change after this check, and an unrelated env's value must not
+        refuse this one. A ``LOCAL_CREDENTIALS`` that reaches SkyPilot another
+        way is refused where the credentials would leave, by the server plugin
+        (``sky_patches._refuse_instance_credential_upload``); this check only
+        reports the env's own setting early.
+
+        :raises ValueError: If the env sets ``remote_identity:
+            LOCAL_CREDENTIALS``, or ``SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS``
+            is set.
+        """
+        if os.environ.get("SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS"):
+            # SkyPilot's refresh rebuilds a cached client from os.environ at
+            # refresh time, which can be the server's own on a thread without a
+            # request context.
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs can't be used "
+                "with SKYPILOT_KUBECONFIG_REFRESH_INTERVAL_SECONDS set"
+            )
+        if "LOCAL_CREDENTIALS" in _env_remote_identities(self._cloud_config() or {}):
+            raise ValueError(
+                f"environment '{self._env_name()}': kube_configs can't be used "
+                "with kubernetes.remote_identity: LOCAL_CREDENTIALS (SkyPilot "
+                "would leave the credentials in a temporary file); use the "
+                "default SERVICE_ACCOUNT"
+            )
+
+    def _kube_request_kubeconfig(self: Self, strict: bool) -> Optional[str]:
+        """The ``KUBECONFIG`` this instance's requests carry, or ``None``.
+
+        ``None`` without ``kube_configs``: requests then behave exactly as
+        before. Otherwise writes this instance's file on first use (or if it
+        has gone missing) and returns the user's kubeconfig files plus that
+        file. An instance's secrets are fixed for its life, so a rotated secret
+        takes effect with the next build's instance. Blocking (file I/O, and on
+        strict calls an API server check), so callers run it off the event
+        loop.
+
+        :param strict: Setup and launch: validate ``kube_configs`` and the
+            server, and raise on a problem. Polls, cleanup and teardown pass
+            False: once the instance's file exists they reuse it without
+            validating again, so a later change elsewhere (another env's
+            ``cloud_config``, say) can't cut a running cluster off from its own
+            ``sky.down``. If they have to build it and can't, the error is
+            logged once and their requests carry a ``KUBECONFIG`` that resolves
+            nothing, so they fail rather than reach a same-named context in the
+            user's or the server's kubeconfig.
+        :raises ValueError: If ``strict`` and ``kube_configs`` is invalid or
+            the API server would drop the per-request ``KUBECONFIG``.
+        :raises SkypilotConfigCollisionError: If ``strict`` and a context clashes
+            with the user's own kubeconfig.
+        """
+        try:
+            if not strict:
+                with self._kube_lock:
+                    existing = self._kube_file
+                if existing is not None and existing.exists():
+                    self._kube_warned = False
+                    return skypilot_kube.request_kubeconfig(existing)
+            entries = self._kube_config_entries()
+            if not entries:
+                return None
+            if strict:
+                _ensure_skypilot_api_running()
+                skypilot_kube.check_server_forwards_kubeconfig(self._env_name())
+            with self._kube_lock:
+                if self._kube_file is None:
+                    self._kube_file = skypilot_kube.instance_kubeconfig_path(
+                        uuid.uuid4().hex[:12]
+                    )
+                    skypilot_kube.remove_when_collected(self, self._kube_file)
+                if not self._kube_file.exists():
+                    doc = skypilot_kube.build_instance_kubeconfig(
+                        entries, self.secrets or {}, self._env_name()
+                    )
+                    skypilot_kube.write_instance_kubeconfig(doc, self._kube_file)
+                path = self._kube_file
+            self._kube_warned = False
+            return skypilot_kube.request_kubeconfig(path)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            if strict:
+                raise
+            if not self._kube_warned:
+                logger.warning(
+                    "environment '%s': kube_configs not applied: %s",
+                    self._env_name(),
+                    e,
+                )
+                self._kube_warned = True
+            return skypilot_kube.unresolvable_kubeconfig()
 
     async def _materialize_ssh_for_launch(
         self: Self, cloud: str, target_alias: Optional[str]
@@ -3007,6 +3429,7 @@ class Skypilot(Environment):
         base = "-".join(parts).rstrip("-_.")
         return f"{base}{retry}"
 
+    @_kube_scoped(strict=True)
     async def setup_skypilot(
         self: Self,
         setup_id: str,
@@ -3138,6 +3561,7 @@ class Skypilot(Environment):
             "skypilot": {"build_workdir": workdir, "shared_fs_mounts": shared_fs_mounts}
         }
 
+    @_kube_scoped(strict=False)
     async def teardown_skypilot(self: Self, setup_id: str, **kwargs) -> None:
         """Remove the per-run workdir provisioned by ``setup_skypilot``.
 
@@ -3706,6 +4130,7 @@ class Skypilot(Environment):
             env["GB_JOB_LOG_DIR"] = job_log_dir
         return env
 
+    @_kube_scoped(strict=True)
     async def launch_skypilot(
         self: Self,
         launch_id: str,
@@ -4615,6 +5040,7 @@ class Skypilot(Environment):
             on_abort=_teardown_cluster,
         )
 
+    @_kube_scoped(strict=False)
     async def monitor_skypilot_monitor(
         self: Self,
         launch_id: str,
@@ -5393,6 +5819,7 @@ class Skypilot(Environment):
                 return
             logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
 
+    @_kube_scoped(strict=False)
     async def cleanup_skypilot(
         self: Self,
         launch_id: Optional[str] = None,
@@ -5431,6 +5858,7 @@ class Skypilot(Environment):
             self._log_lines_parsed.pop(launch_id, None)
             self._job_log_dirs.pop(launch_id, None)
 
+    @_kube_scoped(strict=False)
     async def launch_skypilot_teardown(
         self: Self,
         launch_id: Optional[str] = None,
@@ -5627,6 +6055,42 @@ class Skypilot(Environment):
         """
         return "nccl_error"
 
+    def _worker_cache_dir(
+        self: Self,
+        storeload_config: Any,
+        resolve: Callable[..., str],
+        store_kind: str,
+        uri: Any,
+    ) -> str:
+        """Return a pull cache directory that is valid on the remote workers.
+
+        The storeload ``cache_path`` if set, else ``{shared_workdir}/<x>_cache``
+        via ``resolve`` (``get_hf_cache_dir`` / ``get_cos_cache_dir``). Their
+        last-resort ``~/.cache/gbserver/...`` default is expanded on the
+        gbserver host -- right for Bash/Docker, which run there, but a path on
+        the wrong machine for a SkyPilot worker (a macOS server would send a
+        Linux node to /Users/...). Without a shared filesystem a separate pull
+        step can't hand data to its consumer anyway, so this refuses instead.
+
+        :param storeload_config: the store's pull config (may be None).
+        :param resolve: the store's cache-dir resolver.
+        :param store_kind: store name for the error message (e.g. "s3/cos").
+        :param uri: the URI being pulled, for the error message.
+        :returns: the cache directory to use on the workers.
+        :raises ValueError: when neither ``cache_path`` nor ``shared_workdir``
+            is set.
+        """
+        shared_workdir = resolve_shared_workdir(self.config)
+        config = getattr(storeload_config, "config", None)
+        has_cache_path = isinstance(config, dict) and bool(config.get("cache_path"))
+        if not has_cache_path and not shared_workdir:
+            raise ValueError(
+                f"cannot pull {uri}: a {store_kind} pull on Skypilot "
+                "needs a cache directory on the workers; set the environment's "
+                "shared_workdir or the store's pull config cache_path"
+            )
+        return resolve(storeload_config, default_workdir=shared_workdir)
+
     async def pullasset_hfstore(
         self: Self,
         uri: Optional[URI] = None,
@@ -5646,8 +6110,11 @@ class Skypilot(Environment):
         When ``inline: true`` is set in the storeload config, the download is
         deferred to the main step's setup phase (no separate cluster launched).
         This is required for environments without shared filesystems (e.g. AWS).
+
+        A bucket input is refused: both download paths use ``hf download``,
+        which has no bucket repo type.
         """
-        from gbcommon.uri.hf import HfURI
+        from gbcommon.uri.hf import HfType, HfURI
         from gbserver.asset.hfstore import Hfstore
         from gbserver.environment.local_assets import get_hf_cache_dir
 
@@ -5658,9 +6125,19 @@ class Skypilot(Environment):
         self._warn_non_default_mode(storeload_config, uri)
 
         hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        if hfuri.get_hf_type() == HfType.BUCKET:
+            # Refuse here, before a cluster is launched for this input, rather
+            # than fail later on the CLI's argument parsing.
+            raise ValueError(
+                f"hf assetstore pull of '{hfuri}': hf:// bucket inputs aren't "
+                "supported on the skypilot environment, because its hfpull step "
+                "and inline download use `hf download`, which has no bucket "
+                "type. Pull the bucket in a target on a K8s, Bash or Docker "
+                "environment instead."
+            )
         shared_workdir = resolve_shared_workdir(self.config)
         cache_dir = Path(
-            get_hf_cache_dir(storeload_config, default_workdir=shared_workdir)
+            self._worker_cache_dir(storeload_config, get_hf_cache_dir, "hf", uri)
         )
         binding_path = (
             cache_dir / hfuri.get_owner() / hfuri.get_repo() / hfuri.get_revision()
@@ -5824,6 +6301,106 @@ class Skypilot(Environment):
             },
         )
 
+    def _caches_pulled_binding(self: Self, uristr: str) -> bool:
+        """Never reuse a pulled s3:// / cos:// binding across consumers.
+
+        Each consuming target run queues its own s3pull, which takes that run's
+        reader lease on the cache entry (so pruning and eviction can't delete
+        what it reads). The repeat pull is cheap: an unchanged object is kept and
+        unchanged prefix files are hard-linked. Other URIs keep the base caching.
+
+        :param uristr: the URI being pulled.
+        :returns: False for S3/COS URIs, else the base behaviour.
+        """
+        if uristr.startswith(("s3://", "cos://")):
+            return False
+        return super()._caches_pulled_binding(uristr)
+
+    async def pullasset_cosstore(
+        self: Self,
+        uri: Optional[URI] = None,
+        binding: Optional[Any] = None,
+        storeload_config=None,
+        assetstore=None,
+        secrets: Optional[dict] = None,
+        **kwargs,
+    ) -> tuple:
+        """Pull an S3/COS object or prefix onto the cluster via the s3pull step.
+
+        Settings (endpoint, region, credential secret names) come from the
+        dispatched ``assetstore``, so an environment with several Cosstores
+        (one per endpoint) pulls each URI from its own store. With a per-run
+        workdir (``shared_workdir``), the binding is
+        ``<run workdir>/.gb_inputs/<uri hash>``, a link s3pull points at the
+        version this run leased, so every step of the run reads that one version
+        even when other builds re-pull the URI. The shared cache entry is
+        ``<cache>/<uri hash>`` (a directory, as on K8s/LSF; a single object lands
+        inside it under its basename), where ``<cache>`` is the storeload
+        ``cache_path``, else ``{shared_workdir}/cos_cache``. The cache is shared
+        across builds: the s3pull step serializes pulls of a URI with a lock and
+        points the binding (a symlink) at a fresh, complete version, so objects
+        deleted upstream disappear and concurrent pulls never see each other's
+        partial writes. Entries downloaded more than ``cache_max_age_days`` ago
+        (storeload config; default 30, 0 disables) are evicted by later pulls
+        under their own lock, unless a target run that may still read them holds
+        a reader lease (see builtins/steps/skypilot/s3pull/step.yaml).
+
+        :param uri: the ``s3://`` / ``cos://`` URI to pull.
+        :param binding: unused (the binding is derived from the cache path).
+        :param storeload_config: the store's pull config (``cache_path``,
+            ``cache_max_age_days``, ``lease_max_age_days``, ``step_uri`` override).
+        :param assetstore: the dispatched Cosstore.
+        :param secrets: unused; credentials are resolved by the store
+            (``Cosstore.resolve_credentials``, as hf's ``resolve_token``).
+        :returns: ``(binding_config, BuildTargetStepConfig)`` for the s3pull step.
+        :raises AssertionError: if ``assetstore``/``uri`` are not Cosstore/CosURI.
+        :raises ValueError: for an empty uri, a bad endpoint, missing credential
+            secrets, no worker cache directory, or an
+            invalid ``cache_max_age_days`` / ``lease_max_age_days``.
+        """
+        from gbcommon.uri.cos import CosURI
+        from gbserver.asset.cosstore import Cosstore
+        from gbserver.environment.local_assets import get_cos_cache_dir
+
+        if uri is None or uri == "":
+            raise ValueError("Empty uri received for pullasset_cosstore")
+        assert isinstance(
+            assetstore, Cosstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Cosstore')"
+        self._warn_non_default_mode(storeload_config, uri)
+        cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
+        assert isinstance(cosuri, CosURI), f"expected CosURI, got {type(cosuri)}"
+
+        cache_dir = self._worker_cache_dir(
+            storeload_config, get_cos_cache_dir, "s3/cos", uri
+        )
+        cache_entry = str(Path(cache_dir) / cosuri.hash())
+        # Bind consumers to a per-run link that s3pull points at the version it
+        # leased, not at the shared cache entry: another build's pull re-points
+        # the shared entry, and a running job must not switch versions mid-run.
+        run_link = _s3_run_link(kwargs.get("setup_config"), cosuri.hash())
+        binding_path = run_link or cache_entry
+        step_uri = resolve_step_uri(storeload_config, DEFAULT_S3PULL_STEP_URI)
+        step_config = build_s3_step_config(
+            "s3pull",
+            cosuri,
+            assetstore,
+            cache_entry,
+            run_link=run_link,
+            cache_max_age_days=store_nonneg_int(storeload_config, "cache_max_age_days"),
+            lease_max_age_days=store_nonneg_int(storeload_config, "lease_max_age_days"),
+        )
+        logger.info(
+            "pullasset_cosstore: queuing s3pull step_uri=%s s3=%s dest=%s endpoint=%s",
+            step_uri,
+            step_config["s3pull_config"]["s3_uri"],
+            binding_path,
+            step_config["s3pull_config"]["endpoint_url"],
+        )
+        return {"binding": {"path": binding_path}}, BuildTargetStepConfig(
+            step_uri=step_uri, config=step_config
+        )
+
     async def pushasset_cosstore(
         self: Self,
         binding: Any,
@@ -5833,77 +6410,46 @@ class Skypilot(Environment):
         assetstore=None,
         **kwargs,
     ) -> BuildTargetStepConfig:
-        """Push artifact to S3/COS by queuing the builtin s3push step."""
+        """Push a cluster file or directory to S3/COS via the s3push step.
+
+        Settings come from the dispatched ``assetstore`` (see
+        :meth:`pullasset_cosstore`). A file is copied to the exact object key; a
+        directory is synced under the URI as a prefix.
+
+        :param binding: the output binding; ``binding["path"]`` is the source.
+        :param binding_id: the output's binding id, echoed back by the step so
+            its monitor can mark the artifact pushed.
+        :param storepush_config: the store's push config (``step_uri`` override).
+        :param uri: the ``s3://`` / ``cos://`` destination URI.
+        :param assetstore: the dispatched Cosstore.
+        :returns: the BuildTargetStepConfig for the s3push step.
+        :raises AssertionError: for a bad binding or a non-Cosstore/CosURI.
+        :raises ValueError: for an empty uri, a bad endpoint or missing secrets.
+        """
         from gbcommon.uri.cos import CosURI
-        from gbserver.asset.asset import Asset
+        from gbserver.asset.cosstore import Cosstore
 
         self._warn_non_default_mode(storepush_config, uri)
         if uri is None or uri == "":
             raise ValueError(f"Empty uri received for pushasset: {binding}")
-
         cosuri = uri if isinstance(uri, URI) else URI.get_uri(uri)
         assert isinstance(cosuri, CosURI), f"expected CosURI, got {type(cosuri)}"
-
+        assert isinstance(
+            assetstore, Cosstore
+        ), f"invalid assetstore: {type(assetstore).__name__} (expected 'Cosstore')"
         assert (
             isinstance(binding, dict) and "path" in binding
         ), f"expected binding dict with 'path', got {binding}"
-        local_path = binding["path"]
 
-        metadata = cosuri.get_metadata()
-        bucket_path = metadata["bucket_path"]
-        s3_uri = f"s3://{bucket_path}"
-
-        cos_md = Asset(cosuri).get_metadata() if assetstore else {}
-        cos_config = cos_md.get("config", cos_md) if cos_md else {}
-        endpoint_url = cos_config.get("cos_endpoint", "") if cos_config else ""
-
-        # Resolve AWS credentials from assetstore secrets, environment, or kwargs
-        secrets = kwargs.get("secrets", {}) or {}
-        aws_key_id = (
-            secrets.get("AWS_ACCESS_KEY_ID")
-            or secrets.get("COS_ACCESS_KEY_ID")
-            or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        step_uri = resolve_step_uri(storepush_config, DEFAULT_S3PUSH_STEP_URI)
+        step_config = build_s3_step_config(
+            "s3push", cosuri, assetstore, binding["path"], binding_id or ""
         )
-        aws_secret = (
-            secrets.get("AWS_SECRET_ACCESS_KEY")
-            or secrets.get("COS_SECRET_ACCESS_KEY")
-            or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-        )
-
-        s3push_config: Dict[str, Any] = {
-            "s3push_config": {
-                "local_path": local_path,
-                "s3_uri": s3_uri,
-                "endpoint_url": endpoint_url,
-            },
-            "launcher_config": {
-                "envs": {
-                    "AWS_ACCESS_KEY_ID": aws_key_id,
-                    "AWS_SECRET_ACCESS_KEY": aws_secret,
-                },
-            },
-        }
-
-        s3push_stepuri = "file://" + str(
-            Path(__file__).parent.parent / "builtins" / "steps" / "s3push"
-        )
-        if (
-            storepush_config is not None
-            and hasattr(storepush_config, "config")
-            and storepush_config.config is not None
-            and "step_uri" in storepush_config.config
-        ):
-            s3push_stepuri = storepush_config.config["step_uri"]
-
         logger.info(
             "pushasset_cosstore: queuing s3push step_uri=%s local=%s s3=%s endpoint=%s",
-            s3push_stepuri,
-            local_path,
-            s3_uri,
-            endpoint_url,
+            step_uri,
+            binding["path"],
+            step_config["s3push_config"]["s3_uri"],
+            step_config["s3push_config"]["endpoint_url"],
         )
-
-        return BuildTargetStepConfig(
-            step_uri=s3push_stepuri,
-            config=s3push_config,
-        )
+        return BuildTargetStepConfig(step_uri=step_uri, config=step_config)

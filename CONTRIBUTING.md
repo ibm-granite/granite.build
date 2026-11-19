@@ -78,7 +78,45 @@ Format or check the entire codebase:
 
 ```bash
 make format       # isort + black on all files
-make lint         # isort --check + black --check + pylint + mypy
+make lint         # isort --check + black --check + license headers + pylint + mypy
+```
+
+### License headers
+
+Every source file — Python, shell, JavaScript/TypeScript and Svelte — at the repo
+root or under `src/`, `test/`, `steps/`, `configurations/`, `scripts/`, `frontend/`,
+`autotunex/` and `.claude/` starts with a one-line SPDX header, after any shebang or
+Python encoding line. Makefiles and Dockerfiles are build configuration and carry no
+header:
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+```
+
+Use the file type's comment syntax (`//` for JavaScript/TypeScript, `<!-- -->` for
+Svelte). The header carries no copyright line: Apache-2.0 does not require one per
+file, and the project's copyright statement lives in [NOTICE](NOTICE). The long
+Apache boilerplate used before this change is replaced by the one-liner. Another
+party's copyright line is never touched. Empty files (such as an empty `__init__.py`) need no
+header. Other file types are exempt: Makefiles, Dockerfiles, CSS/SCSS, SQL, YAML and
+documentation.
+
+Ported code — a file copied from another repository — carries a
+`PORTED, not authored here` provenance note naming the upstream repo, path and
+commit, and the check skips it. Whether it also gets our header depends on who
+owns the upstream code: ports from IBM's internal GitHub (`github.ibm.com`) carry
+the one-line header above the note; code from a third party keeps that party's
+notices instead of ours. Third-party code vendored as whole directories is listed in
+`EXCLUDE_RES` in `scripts/check_license_headers.py` (the granite-evals runtime
+under `steps/eval/` is one; see [steps/eval/VENDORED.md](steps/eval/VENDORED.md)).
+
+`scripts/check_license_headers.py` checks this. The pre-commit hook runs it with
+`--fix`, which inserts a missing header and fails the commit so you can review and
+stage the change. CI runs it in check-only mode. To fix files by hand:
+
+```bash
+python scripts/check_license_headers.py --fix            # every tracked file
+python scripts/check_license_headers.py --fix FILE...    # just these files
 ```
 
 ## Pull Request Process

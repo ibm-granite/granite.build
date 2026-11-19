@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """
 The environment type.
@@ -114,6 +102,26 @@ class AwsCredentialProfile(Config):
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
     aws_session_token: Optional[str] = None
+
+
+class KubeConfigEntry(Config):
+    """One Kubernetes context whose credentials a Skypilot environment supplies.
+
+    gbserver writes the context (with its cluster and user) from the named
+    kubeconfig secret into a kubeconfig file of the environment instance's own,
+    which only that instance's SkyPilot requests carry (see
+    ``gbserver.environment.skypilot_kube``). The context must also be pinned in
+    the environment's ``cloud_config`` ``allowed_contexts`` (or set to ``all``).
+
+    Attributes:
+        context: The context name, as it appears in the kubeconfig secret.
+        kubeconfig: Name of the space secret holding a kubeconfig (YAML) that
+            defines ``context``. Only the secret *name* appears in
+            environment.yaml.
+    """
+
+    context: str
+    kubeconfig: str
 
 
 class StoreLoad(Config):

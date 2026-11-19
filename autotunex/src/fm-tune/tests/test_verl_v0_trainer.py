@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """fm-tune drives verl's v0 RayPPOTrainer on purpose; fail loudly if a verl bump removes it.
 
 verl 0.9 defaults to the V1 trainer (``trainer.use_v1``), which routes rollouts

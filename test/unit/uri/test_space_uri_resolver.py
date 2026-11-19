@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for the ``space://`` URI resolver in ``gbcommon.uri.space``.
 
@@ -35,6 +23,7 @@ which registers the ``space``/``file`` URI handlers used here.
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable, Optional
 from unittest import mock
 
@@ -1986,10 +1975,15 @@ class TestThreadLocalScoping:
 # --------------------------------------------------------------------------- #
 
 
+def _space(uri: str) -> SimpleNamespace:
+    """What _resolve_base_uris reads from a Space."""
+    return SimpleNamespace(uristr=uri, db_space_name=None, db_row=None, unpack_dir=None)
+
+
 class TestResolveBaseUris:
     def test_relative_bare_path_against_file_space(self, tmp_path):
         space_uri = f"file://{tmp_path}"
-        result = _resolve_base_uris(["../assets"], space_uri)
+        result = _resolve_base_uris(["../assets"], _space(space_uri))
         expected = (Path(str(tmp_path)) / "../assets").resolve()
         assert result == [f"file://{expected}"]
 
@@ -2018,7 +2012,7 @@ class TestResolveBaseUris:
         when the space URI is not a local file:// URI."""
         space_uri = "git://github.ibm.com/org/repo"
         with pytest.raises(ValueError, match="Cannot resolve relative base_uri"):
-            _resolve_base_uris(["../assets"], space_uri)
+            _resolve_base_uris(["../assets"], _space(space_uri))
 
     def test_relative_file_uri_with_nonlocal_space_raises(self):
         space_uri = "git://github.ibm.com/org/repo"

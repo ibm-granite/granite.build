@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Scheduler-agnostic Ray temp-dir resolution.
 
 The failure being prevented, observed on an LSF node::

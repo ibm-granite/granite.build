@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for the granite-switch answerability-lora recipe.
 
 The recipe is rendered with its parameters and then through hf-peft-sft's own
-step-template blocks with the strict renderer, so a config error that would fail
-the build at step creation fails here instead. The prepare target's command is
+expanded step-template blocks with the strict renderer, so a config error that
+would fail the build at step creation fails here instead. The prepare target's command is
 rendered the way the command step renders it and run on a small parquet with
 the schema of the HF source (pre-tokenized columns next to prompt/completion).
 """
@@ -30,6 +18,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import yaml
+from libgbtest.step_templates import expanded_step_template
 
 from gbcli.services.service_build import get_params_from_file
 from gbcli.utils.buildutil import apply_parameters
@@ -45,7 +34,8 @@ _RECIPE = (
     / "answerability-lora"
 )
 _STEP = _REPO / "steps" / "train" / "hf-peft-sft" / "skypilot"
-_TEMPLATE = yaml.safe_load((_STEP / "step-template.yaml").read_text())
+# As `make space` renders it: gb-include lines expanded.
+_TEMPLATE = expanded_step_template(_STEP / "step-template.yaml")
 _LAUNCHER = _TEMPLATE["environment_configs"]["Skypilot"]["launchers"]["hf_peft_sft"][
     "config"
 ]

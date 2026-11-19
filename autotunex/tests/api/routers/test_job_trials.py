@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``GET /jobs/{id}/trials`` — the job's trials, paged.
 
 Trials used to be nested on the job detail response, which made every read of a

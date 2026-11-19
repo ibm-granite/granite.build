@@ -1,0 +1,10 @@
+# DDP on more than one GPU. The step always passes a config file so accelerate
+# never reads a user's ~/.cache/huggingface/accelerate/default_config.yaml.
+# num_processes and num_machines come from the accelerate command line.
+# mixed_precision is not set: precision comes from fms-hf-tuning's training args.
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+machine_rank: 0
+main_training_function: main
+num_machines: 1
+use_cpu: false

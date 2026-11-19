@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure pagination + adapter helpers for the AutoTuneX v0.3.5 client
  * (`@/api/autotunex`, which re-exports every name here). Split out so this

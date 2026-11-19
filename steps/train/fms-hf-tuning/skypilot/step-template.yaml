@@ -1,0 +1,153 @@
+name: fms-hf-tuning
+version: 1.0.0
+type: exec
+config:
+  fms_hf_tuning_config:
+    # none (full fine-tune) | lora | alora (activated LoRA). LoRA/aLoRA settings
+    # (r, lora_alpha, target_modules, alora_invocation_string, ...) go in args
+    # under fms-hf-tuning's own names.
+    peft_method: "none"
+    # ddp (one model copy per GPU) | fsdp (fms-hf-tuning's FSDP1 defaults; needs
+    # at least 2 GPUs).
+    distributed: "ddp"
+    # Name of the declared target output (type model) to register: the artifact
+    # marker's ID.
+    output: "model"
+    # Where the model is written and registered from. Empty = ./model_output in
+    # the per-target workdir, which teardown removes: when a downstream target
+    # reads the model, set shared storage here and use the same path in the
+    # output's env:/// uri.
+    output_path: ""
+    # HF Hub dataset id (fms-hf-tuning's training_data_path). Exactly one of
+    # this, a bound `dataset` input, or data_config.
+    dataset_name: ""
+    # fms-hf-tuning's data config (datasets, data_handlers, sampling, splits) as
+    # a mapping; written to a file and passed as data_config_path. Its
+    # data_paths may use {{ bindings.<input>.binding.path }}. {} = unset.
+    data_config: {}
+    # Adapters only: portable base id written into adapter_config.json's
+    # base_model_name_or_path (otherwise it records the node-local staging dir).
+    base_model_id: ""
+    # Any other fms-hf-tuning argument (its JSON config keys), checked against
+    # fms-hf-tuning's own parser before training. Keys the step sets are refused.
+    args: {}
+    # The step's image, filled in by `make space` / `make publish-step`. Override
+    # it with another image or, on SLURM, a .sqsh path; `docker:` is added when
+    # missing.
+    image_id: "docker:${IMAGE_REF}"
+    # ClearML tracking: auto (on iff CLEARML_API_HOST, CLEARML_API_ACCESS_KEY and
+    # CLEARML_API_SECRET_KEY are all set in the step env), true (on, 1), or
+    # false (off, 0).
+    clearml_enabled: "auto"
+    clearml_project: ""
+    clearml_task_name: ""
+  compute_config:
+    # Single node only: environment_configs.Skypilot.single_node makes gbserver
+    # refuse any other num_nodes at step creation. GPUs come from the build's
+    # launcher_config.resources.accelerators; the step reads the count from
+    # $SKYPILOT_NUM_GPUS_PER_NODE.
+    num_nodes: 1
+
+# I/O schema, validated against the build.yaml target at build time.
+# allow_unknown stays true so a recipe can bind extra inputs (e.g. for
+# data_config's data_paths) or order targets.
+inputs:
+  allow_unknown: true
+  required:
+    # The model to tune: an HF model dir, staged on the node.
+    base_model:
+      type: model
+      accept: [uri, binding]
+  optional:
+    # Training data as a staged dataset dir or file (e.g. an hf:/// dataset).
+    # Omit it to train on dataset_name or data_config instead.
+    dataset:
+      type: dataset
+      accept: [uri, binding]
+outputs:
+  allow_unknown: true
+  optional:
+    # The tuned model (peft_method: none) or adapter (lora/alora), registered
+    # under fms_hf_tuning_config.output.
+    model:
+      type: model
+
+environment_configs:
+  Skypilot:
+    # gbserver refuses, at step creation, a build whose resolved num_nodes is not 1
+    # (compute_config, this launcher's config, or the build's launcher_config).
+    single_node: true
+    default_launcher: fms_hf_tuning
+    launchers:
+      fms_hf_tuning:
+        type: skypilot
+        monitors:
+          - skypilot_monitor
+        config:
+          # Not shell-escaped: SkyPilot gets it as a python value.
+          image_id: '{{ config.fms_hf_tuning_config.image_id if (config.fms_hf_tuning_config.image_id | string).startswith("docker:") else "docker:" ~ config.fms_hf_tuning_config.image_id }}'
+          # GPUs come from the build's launcher_config.resources.accelerators.
+          resources: {}
+          # The launcher PREPENDS the inline `hf download` of hf:// inputs (aws) to
+          # this block, so config-only checks are the `validate` macro's
+          # raise_error()s, which fail the strict launcher fill at step creation,
+          # before provisioning. The guard script checks only the staged paths.
+          setup: |
+            set -euo pipefail
+            {#- gb-include ../../shared/q.j2 -#}
+            {#- gb-include macros/validate.j2 -#}
+            {%- set c = config.fms_hf_tuning_config %}
+            {%- set b = bindings if bindings is defined else {} %}
+            {{- validate(c, "dataset" in b, config.get("launcher_config") or {}) }}
+            bash /opt/fms-hf-tuning/fms_hf_tuning_guard.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
+            bash /opt/fms-hf-tuning/fms_hf_tuning_setup.sh
+          # Each block is filled on its own (no shared Jinja scope across YAML
+          # keys), so both pull in the macros; make space / make publish-step
+          # expand the include lines. run validates too, since a warm-cluster
+          # re-run renders it without setup.
+          run: |
+            set -euo pipefail
+            {#- gb-include ../../shared/q.j2 -#}
+            {#- gb-include macros/validate.j2 -#}
+            {%- set c = config.fms_hf_tuning_config %}
+            {%- set b = bindings if bindings is defined else {} %}
+            {{- validate(c, "dataset" in b, config.get("launcher_config") or {}) }}
+            {%- set ce = c.clearml_enabled | string | lower %}
+            {%- set clearml_mode = "on" if ce in ["true", "on", "1"] else ("off" if ce in ["false", "off", "0"] else "auto") %}
+            bash /opt/fms-hf-tuning/fms_hf_tuning_guard.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --dataset '{{ q(b.dataset.binding.path if "dataset" in b else "") }}'
+            bash /opt/fms-hf-tuning/fms_hf_tuning_run.sh \
+              --base-model '{{ q(b.base_model.binding.path if "base_model" in b else "") }}' \
+              --output-id '{{ q(c.output) }}' \
+              --output-path '{{ q(c.output_path if c.output_path else "./model_output") }}' \
+              --peft-method '{{ q(c.peft_method) }}' \
+              --distributed '{{ q(c.distributed) }}' \
+              --data-path '{{ q("" if c.data_config else (b.dataset.binding.path if "dataset" in b else c.dataset_name)) }}' \
+              --data-config-b64 '{{ c.data_config | json_dumps | b64encode }}' \
+              --args-b64 '{{ c.args | json_dumps | b64encode }}' \
+              --base-model-id '{{ q(c.base_model_id) }}' \
+              --clearml-mode '{{ clearml_mode }}' \
+              --clearml-project '{{ q(c.clearml_project) }}' \
+              --clearml-task '{{ q(c.clearml_task_name) }}'
+    monitors:
+      skypilot_monitor:
+        # Artifact + metadata markers come from the shared library. Training logs
+        # are retrieved periodically so the Step: status line shows mid-run.
+        ref: space://monitors/skypilot
+        config:
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(300) }}"
+          # extra_event_configs, not event_configs: an overlay that sets
+          # event_configs on a ref would drop the library's artifact rules.
+          extra_event_configs:
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "Step:\\s\\d+.*"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: "Step:.+"

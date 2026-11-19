@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """``get_successful_finished_since`` on a real SQLite table.
 
 The ``finished_at`` column holds two spellings, one of them local wall-clock with

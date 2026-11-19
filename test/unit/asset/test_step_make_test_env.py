@@ -1,16 +1,4 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """`make test` in a step directory runs its build tests in a usable environment.
 
@@ -45,6 +33,7 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 COMMON_MK = REPO_ROOT / "steps" / "common.mk"
+RENDER_SCRIPT = REPO_ROOT / "steps" / "scripts" / "render_step_template.py"
 SHARED_SPACE_NAME = yaml.safe_load(
     (REPO_ROOT / "configurations" / "spaces" / "local" / "space.yaml").read_text()
 )["name"]
@@ -75,6 +64,8 @@ def _make_step(root: pathlib.Path) -> pathlib.Path:
     """
     (root / "steps").mkdir()
     shutil.copy(COMMON_MK, root / "steps" / "common.mk")
+    (root / "steps" / "scripts").mkdir()
+    shutil.copy(RENDER_SCRIPT, root / "steps" / "scripts" / RENDER_SCRIPT.name)
     step = root / "steps" / "fake" / "skypilot"
     (step / "test").mkdir(parents=True)
     (step / "Makefile").write_text("STEP_NAME := fake\ninclude ../../common.mk\n")

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 trap 'EC=$?; echo "${LLMB_LSF_JOB_NAME:-hfpull}: hfpull failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
 
@@ -29,7 +31,9 @@ hf_mocked() {
 }
 if hf_mocked; then
     echo "[GBTEST_MOCK_HF] mocking hfpull — skipping real download"
-    mkdir -p "${HF_DEST}"
+    # The input is bound at the path in the repo, so it must exist
+    # (a live run may already have left the real file there).
+    [[ -e "${HF_DEST}/${HF_PATH_IN_REPO}" ]] || mkdir -p "${HF_DEST}/${HF_PATH_IN_REPO}"
     echo mock > "${HF_DEST}/.gbtest_mock_hfpull"
     echo "Pulled HF URI: ${HF_URI} to path ${HF_DEST}"
     echo 'hfpull end'
@@ -401,7 +405,15 @@ if [[ -n "${HF_REVISION}" ]]; then HF_ARGS+=(--revision "${HF_REVISION}"); fi
 if [[ -n "${HF_TYPE}" ]]; then HF_ARGS+=(--repo-type "${HF_TYPE}"); fi
 HF_PATH_IN_REPO="${HF_PATH_IN_REPO#/}"; HF_PATH_IN_REPO="${HF_PATH_IN_REPO%/}"
 if [[ -n "${HF_PATH_IN_REPO}" ]]; then
-    HF_ARGS+=(--include "${HF_PATH_IN_REPO}" --include "${HF_PATH_IN_REPO}/*")
+    # huggingface_hub < 1.0 parses --include as nargs="*" without append,
+    # so a repeated --include keeps only the LAST one and a file-scoped
+    # path_in_repo matched nothing; 1.x appends repeats and takes one value
+    # per flag. Shape the patterns for whichever CLI is installed.
+    if hf version 2>/dev/null | grep -q '^huggingface_hub version: 0\.'; then
+        HF_ARGS+=(--include "${HF_PATH_IN_REPO}" "${HF_PATH_IN_REPO}/*")
+    else
+        HF_ARGS+=(--include "${HF_PATH_IN_REPO}" --include "${HF_PATH_IN_REPO}/*")
+    fi
 fi
 
 # Acquire, download, and fence: if the lock was reclaimed while we downloaded

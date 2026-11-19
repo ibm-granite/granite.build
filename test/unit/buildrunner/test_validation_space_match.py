@@ -1,23 +1,11 @@
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for validation's scheme-aware space-repo comparison.
 
 Guards the regression where ``validate_stored_build`` re-derived the space config
 URI with a GitHub token that was frozen empty at import time (git.py imported
 before the token env var is set), dropping the ``@<config-branch>`` suffix and
-mismatching the runner's ``space.uristr``. ``_same_space_repo`` compares identity
+mismatching the runner's ``space.uristr``. ``same_repo`` compares identity
 per scheme: ``(host, owner, repo)`` for remote git (ignoring scheme, userinfo,
 port, ``.git``, ``@<ref>``, ``#subdirectory``, case) and the normalized path for
 local ``file://`` spaces.
@@ -25,11 +13,11 @@ local ``file://`` spaces.
 
 import pytest
 
-from gbserver.buildrunner.validation import _same_space_repo
+from gbserver.spaces.repo_identity import same_repo
 
 
 class TestSameSpaceRepo:
-    """`_same_space_repo` matches repo identity per scheme, crash-free."""
+    """`same_repo` matches repo identity per scheme, crash-free."""
 
     STORED = "https://github.ibm.com/granite-dot-build/gb-test"
 
@@ -55,16 +43,16 @@ class TestSameSpaceRepo:
     )
     def test_same_git_repo_variants_match(self, other: str) -> None:
         """Scheme, userinfo/port, .git, @<ref>, #subdirectory, case, and scp form all match."""
-        assert _same_space_repo(self.STORED, other)
+        assert same_repo(self.STORED, other)
 
     def test_scp_form_different_repo_does_not_match(self) -> None:
         """An scp-form URL for a different repo must not match, and must not be
         mistaken for a local path (regression: urlparse read scp as a file path)."""
-        assert not _same_space_repo(
+        assert not same_repo(
             self.STORED, "git@github.ibm.com:granite-dot-build/other.git"
         )
         # scp form vs a local path for a same-looking string are not equal.
-        assert not _same_space_repo(
+        assert not same_repo(
             "git@github.ibm.com:granite-dot-build/gb-test.git",
             "file:///granite-dot-build/gb-test",
         )
@@ -79,7 +67,7 @@ class TestSameSpaceRepo:
     )
     def test_different_git_repo_does_not_match(self, other: str) -> None:
         """A different host, owner, or repo must not compare equal."""
-        assert not _same_space_repo(self.STORED, other)
+        assert not same_repo(self.STORED, other)
 
     def test_local_spaces_sharing_prefix_do_not_match(self) -> None:
         """Two distinct local spaces must NOT collapse to the same identity.
@@ -89,15 +77,15 @@ class TestSameSpaceRepo:
         """
         a = "file:///home/user/spaceA"
         b = "file:///home/user/spaceB"
-        assert not _same_space_repo(a, b)
-        assert _same_space_repo(a, a)
+        assert not same_repo(a, b)
+        assert same_repo(a, a)
         # Trailing-slash / redundant-segment normalization still matches.
-        assert _same_space_repo(a, "file:///home/user/spaceA/")
-        assert _same_space_repo(a, "file:///home/user/./spaceA")
+        assert same_repo(a, "file:///home/user/spaceA/")
+        assert same_repo(a, "file:///home/user/./spaceA")
 
     def test_local_and_git_do_not_match(self) -> None:
         """A local space and a git space are never the same space."""
-        assert not _same_space_repo("file:///home/user/gb-test", self.STORED)
+        assert not same_repo("file:///home/user/gb-test", self.STORED)
 
     @pytest.mark.parametrize(
         "pair",
@@ -114,4 +102,4 @@ class TestSameSpaceRepo:
     def test_short_or_empty_uris_do_not_crash(self, pair: tuple) -> None:
         """Short/empty URIs return a graceful mismatch, never raise."""
         a, b = pair
-        assert _same_space_repo(a, b) is False
+        assert same_repo(a, b) is False

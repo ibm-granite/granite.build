@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from typing import Optional
 
 from gbserver.storage.sql.artifact_registry import SQLArtifactRegistry

@@ -69,7 +69,7 @@ Most directory names are self-describing; these carry non-obvious behavior worth
 - **buildwatcher/** — Watches for pending builds (PRs or local dirs) and dispatches runners as k8s jobs, processes, or threads (`GBSERVER_DEFAULT_BUILDRUNNER_TYPE`).
 - **storage/** — Persistence layer; `storage_factory.py` selects the backend (`sql/` PostgreSQL, `sqlite/` local) from `GBSERVER_METADATA_STORAGE`. `singleton_storage.py` is the global access point.
 - **types/** — Pydantic models. `constants.py` is the central `GBSERVER_*` env-var registry; `gbserverenvconfig.py` handles DEV/STAGING/PROD config.
-- **builtins/** — Built-in step implementations (gbstep, hfpull, lhpull, lhpush, cosrclone).
+- **builtins/** — Built-in step implementations (gbstep, hfpull, hfpush, lhpull, lhpush, cosrclone, s3pull, s3push).
 - **api/** (FastAPI, routes under `/api/v1`), **spacesecretmanager/**, **github/**, **messaging/**, **resilience/**, **metrics/**, **monitoring/**, **environment/** (k8s, LSF) — self-explanatory by name.
 
 ### Test Layout (`test/`)
@@ -94,7 +94,9 @@ The central registry is `src/gbserver/types/constants.py`. All gbserver env vars
 - Formatting: **black** (default config) + **isort** (profile: black)
 - Linting: **pylint** (config in `.pylintrc`) + **mypy** (`--disable-error-code=import-untyped`)
 - Python 3.11+ required (3.12 for pylint target)
-- Apache License 2.0
+- Apache License 2.0. Every source file needs the license header (see
+  "License headers" in [CONTRIBUTING.md](CONTRIBUTING.md)); add it with
+  `python scripts/check_license_headers.py --fix FILE...`
 
 ## Frontend (gb-ui)
 

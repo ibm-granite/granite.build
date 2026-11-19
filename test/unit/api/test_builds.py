@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for POST /builds/ and POST /builds/validate identity binding.
 
@@ -821,3 +809,19 @@ def test_list_build_tags_excludes_other_spaces_for_non_admin():
         _set_alice_access(manager)
         tags = list_build_tags(_fake_request(ALICE, f"{ALICE}@example.com"))
     assert tags == ["alpha"]
+
+
+def test_validate_build_rejects_db_space_uri():
+    """db:// names a registered space's snapshot; only space_name (membership
+    checked) may reach it."""
+    with (
+        _patched_storage(),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        _NO_OP_VALIDATION,
+    ):
+        with pytest.raises(HTTPException) as exc:
+            validate_build(
+                _fake_request(ATTACKER, f"{ATTACKER}@example.com"),
+                _validate_req(ATTACKER, space_uri="db://spaces/private-team"),
+            )
+        assert exc.value.status_code == 400

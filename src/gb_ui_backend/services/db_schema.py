@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 SQLAlchemy models — ported from gb_dashboard's gbd_* tables.
 IBM-specific fields (DMF, Tekton, Aspera) are omitted.

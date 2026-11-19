@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The api-bridge's ``tables.py`` agrees with the ORM on what the database must provide.
 
 The bridge writes the same tables through SQLAlchemy Core and its own copy of their

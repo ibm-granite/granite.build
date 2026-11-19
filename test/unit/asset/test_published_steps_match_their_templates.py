@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Every published step asset must be what `make publish-step` would write.
 
 Steps are authored at steps/<name>/<env>/step-template.yaml and PUBLISHED into
 configurations/assets/environments/<env>/steps/<name>/step.yaml, which is what a
 `space://steps/<name>` URI actually resolves to. The two are a source and a build
-product, and nothing enforced that until this file.
+product, and nothing enforced that until this file. It renders the template the way
+`make publish-step` does -- gb-include expansion through
+steps/scripts/render_step_template.py, then ${IMAGE_REF} taken from the image ref
+committed in the asset, as `make check-published` reads it -- so image steps and
+include steps are covered too.
 
 THE DRIFT THIS EXISTS TO CATCH, because it happened. vllm-server's allocation
 lifetime cap (max_lifetime_seconds plus its watchdog, ~40 lines) was added to the
@@ -42,12 +34,28 @@ the template, and in the vllm-server case it was not).
 """
 
 import pathlib
+import re
 
 import pytest
+from libgbtest.step_templates import render_step_template as _load_renderer
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 STEPS_DIR = REPO_ROOT / "steps"
 ASSETS_DIR = REPO_ROOT / "configurations" / "assets" / "environments"
+
+render_step_template = _load_renderer()
+
+# check-published: sed -n 's#.*image_id: *"docker:\(.*\)".*#\1#p' | head -1
+_IMAGE_REF = re.compile(r'image_id: *"docker:(.*)"')
+
+
+def _committed_image_ref(asset_text):
+    """The image ref committed in the asset, read as check-published reads it."""
+    for line in asset_text.splitlines():
+        match = _IMAGE_REF.search(line)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def _pairs():
@@ -78,23 +86,12 @@ def test_there_is_something_to_check():
 
 @pytest.mark.parametrize("name,env,template,asset", PAIRS)
 def test_the_published_asset_matches_its_template(name, env, template, asset):
-    template_text = template.read_text(encoding="utf-8")
     asset_text = asset.read_text(encoding="utf-8")
+    rendered = render_step_template.render(template, _committed_image_ref(asset_text))
 
-    # publish-step substitutes ${IMAGE_REF} from the step's Makefile. No step that is
-    # both templated that way and published exists today (steps/eval/eval-example uses it and is
-    # not published), so the comparison is a plain one. If that changes, this test has
-    # to learn the substitution rather than start failing for a legitimate difference
-    # -- hence an explicit, self-explaining skip rather than silence.
-    if "${IMAGE_REF}" in template_text:
-        pytest.skip(
-            f"{name} templates ${{IMAGE_REF}}; teach this test the substitution that "
-            "publish-step applies before comparing"
-        )
-
-    assert asset_text == template_text, (
-        f"{name} ({env}): the published asset and its authoring template have "
-        f"diverged.\n"
+    assert asset_text == rendered, (
+        f"{name} ({env}): the published asset and its rendered authoring template "
+        f"have diverged.\n"
         f"  template: {template.relative_to(REPO_ROOT)}\n"
         f"  asset:    {asset.relative_to(REPO_ROOT)}\n"
         "Decide which side is correct FIRST -- the asset is what the cluster runs, so "

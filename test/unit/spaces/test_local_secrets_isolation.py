@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """The default local secret store keys each space's directory on its space.yaml
 ``name`` (space_secrets/<name>/). Registered names are unique but space.yaml names
@@ -183,3 +171,18 @@ def test_create_spaces_rejects_collisions_within_and_across_runs(tmp_path):
     _check_local_secrets_collisions(
         _FakeSpaceStorage([_stored("team-a", a)]), [_stored("team-a", c)]
     )
+
+
+def test_same_repo_in_other_uri_form_is_an_alias(tmp_path):
+    """Rows naming one repo in different forms are aliases, not a collision."""
+    from unittest.mock import patch
+
+    a = _space(tmp_path, "a", "public")
+    with patch(
+        "gbserver.spaces.local_secrets_isolation.get_space_config_uri",
+        lambda _s: a,
+    ):
+        check_local_secrets_collision(
+            _stored("public", "https://github.example.com/o/gbspace-public"),
+            [_stored("alias", "git+ssh://github.example.com/o/gbspace-public.git@b")],
+        )

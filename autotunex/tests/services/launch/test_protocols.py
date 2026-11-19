@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The TuningLauncher seam: value objects and Protocol conformance."""
 
 from __future__ import annotations

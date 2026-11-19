@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 # from .artifact import ArtifactStoreType, ArtifactType
 # from .resources import ResourceSpec, ResourceType
@@ -44,6 +32,7 @@ from gbserver.types.constants import (
     GBSERVER_GITHUB_TOKEN,
     GBSERVER_LOG_RECORD_MAX_CHARS,
 )
+from gbserver.utils.git_retry import get_build_git_breaker
 from gbserver.utils.logger import get_logger
 from gbserver.utils.unwrap_errors import escape_for_one_record
 
@@ -153,20 +142,14 @@ class BuildPRLogger(AbstractBuildLogger):
             markdown = "## ❌  ERROR!\n\n" + str(markdown)
         # Create a logger message.
         # Post to git PR
-        if self.github_api is not None or self.pr_id is not None:
-            assert self.github_api is not None
-            assert self.pr_id is not None
-            assert isinstance(self.github_api, MyGHApi)
-            try:
-                self.github_api.update_issue_comment(body=markdown, pr_id=self.pr_id)
-            except Exception as e:
-                logger.error(
-                    "failed to update pr %s in repo %s as %s: %s",
-                    self.pr_id,
-                    self.github_api.repo,
-                    self.github_api.owner,
-                    e,
-                )
+        if self.github_api is not None and self.pr_id:
+            # Optional: give up on PR messages for this run once GitHub keeps
+            # failing; the events table still records every message.
+            github_api, pr_id = self.github_api, self.pr_id
+            get_build_git_breaker(self.stored_build.uuid).call(
+                f"post a message to PR {github_api.owner}/{github_api.repo}#{pr_id}",
+                lambda: github_api.update_issue_comment(body=markdown, pr_id=pr_id),
+            )
 
     def _log(
         self: Self,

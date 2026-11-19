@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Mixed NLI build: ELI5 + MNLI + SNLI train/val, balanced ELI5 test, benchmark tests.
 
 What matters beyond the counts:

@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 
 from pathlib import Path
@@ -22,7 +10,9 @@ import click
 import yaml
 from pydantic import BaseModel
 
+from gbserver.spaces.db_space import check_own_space_uri, is_db_uri
 from gbserver.spaces.local_secrets_isolation import check_local_secrets_collision
+from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage import singleton_storage
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import (
@@ -50,7 +40,34 @@ predefined_spaces = [
 ]
 
 
-def _check_local_secrets_collisions(storage, spaces: List[StoredSpace]) -> None:
+def _check_db_specs(spaces: List[StoredSpace]) -> None:
+    """Refuse db:// specs that can't be served, before anything is changed.
+
+    A db-backed space is served from its own snapshot, which only
+    ``gbserver space-snapshot`` creates: the space_uri must name the row
+    itself, and the row must have a snapshot.
+
+    Raises:
+        click.ClickException: For the first spec that can't be served.
+    """
+    for space in spaces:
+        if not is_db_uri(space.space_uri):
+            continue
+        try:
+            check_own_space_uri(space)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+        if space.space is None or not space.space.archive:
+            raise click.ClickException(
+                f"space {space.name!r} has space_uri {space.space_uri} but no"
+                " snapshot to serve; create it with `gbserver space-snapshot"
+                f" --space-name {space.name}`"
+            )
+
+
+def _check_local_secrets_collisions(
+    storage, spaces: List[StoredSpace], clear: bool = False
+) -> None:
     """Refuse spaces that would share another space's default local secrets.
 
     Each space is checked against the spaces that stay registered (minus any
@@ -64,14 +81,55 @@ def _check_local_secrets_collisions(storage, spaces: List[StoredSpace]) -> None:
         LocalSecretsCollisionError: See check_local_secrets_collision().
     """
     names = {s.name for s in spaces}
-    accepted = [
-        s
-        for s in cast(List[StoredSpace], storage.get_by_uuid(None) or [])
-        if s.name not in names
-    ]
+    accepted = (
+        []
+        if clear
+        else [
+            s
+            for s in cast(List[StoredSpace], storage.get_by_uuid(None) or [])
+            if s.name not in names
+        ]
+    )
     for space in spaces:
         check_local_secrets_collision(space, accepted)
         accepted.append(space)
+
+
+def _keep_db_snapshots(storage, spaces: List[StoredSpace]) -> List[StoredSpace]:
+    """Carry registered rows' space_uri and snapshots over to specs re-creating them.
+
+    A spec for the same repo (e.g. the predefined public space,
+    PUBLIC_SPACE_GIT_URI) keeps a db-served row's space_uri and snapshots
+    unless it sets its own, so re-running create-spaces neither moves the space
+    back to git nor reaches git. Read before --clear/--replace drop the rows.
+
+    Args:
+        storage: The admin space storage.
+        spaces: The spaces about to be added.
+
+    Returns:
+        The specs, with space_uri and snapshots carried over where they apply.
+    """
+    result = []
+    for space in spaces:
+        existing = storage.get_by_name(space.name)
+        if (
+            existing is not None
+            and existing.space_uri
+            and same_repo(existing.git_repo_uri, space.git_repo_uri)
+        ):
+            logger.info(
+                "space %s is served from %s; keeping it", space.name, existing.space_uri
+            )
+            space = space.model_copy(
+                update={
+                    "space_uri": space.space_uri or existing.space_uri,
+                    "space": space.space or existing.space,
+                    "base_uris": space.base_uris or existing.base_uris,
+                }
+            )
+        result.append(space)
+    return result
 
 
 class CLICreateSpacesConfig(BaseModel):
@@ -135,8 +193,14 @@ def cli(
 
     logger.info("Working on spaces in Lakehouse %s environment", LAKEHOUSE_ENVIRONMENT)
     storage = singleton_storage.get_admin_storage().space_storage
+    spaces_to_create = _keep_db_snapshots(storage, spaces_to_create)
+    # Before --clear/--replace delete anything, so a refusal never leaves the
+    # table emptied. PROD without --force keeps its rows: check against them.
+    will_clear = clear and (force or LAKEHOUSE_ENVIRONMENT.lower() != "prod")
+    _check_db_specs(spaces_to_create)
+    _check_local_secrets_collisions(storage, spaces_to_create, will_clear)
     if clear:
-        if force or LAKEHOUSE_ENVIRONMENT.lower() != "prod":
+        if will_clear:
             logger.info("Deleting the space table")
             storage.delete_table()
         else:
@@ -153,8 +217,6 @@ def cli(
                 storage.delete(record.uuid)
             else:
                 logger.info("Skipped clearing of pre-existing space %s", space.name)
-
-    _check_local_secrets_collisions(storage, spaces_to_create)
 
     logger.info("Create all the spaces")
     storage.add(spaces_to_create)

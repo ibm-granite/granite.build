@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # Cleanup the standalone SQLite metadata DB by deleting builds and everything
 # linked to them (targets, steps, events, artifact-registry rows). Spaces are
 # preserved. Underlying artifact files (COS/disk) are NOT touched - only the DB

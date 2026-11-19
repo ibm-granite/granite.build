@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Normalize an artifact URI into a stable lineage identity.
 
@@ -67,7 +55,7 @@ from gbcommon.uri.lh import (
 )
 from gbcommon.uri.lh import URLSEGMENT_MODELS as LH_URLSEGMENT_MODELS
 from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
-from gbserver.types.constants import FILE_SCHEME, MEM_URI_SCHEME
+from gbserver.types.constants import FILE_SCHEME
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -225,7 +213,7 @@ def _normalize_hf(candidate: str, parsed) -> str:
     if default_revision_path and hf_type != HfType.BUCKET:
         revision, path_in_repo = DEFAULT_REVISION, default_revision_path
     segments = []
-    if hf_type != HfType.MODEL:
+    if hf_type is not None and hf_type != HfType.MODEL:
         segments.append(HF_TYPE_TO_SEGMENT[hf_type])
     segments.extend([hf.get_owner(), hf.get_repo()])
     if hf_type == HfType.BUCKET:
@@ -385,17 +373,6 @@ def _normalize_git(candidate: str, parsed) -> str:
     return urlunparse((_GIT_CANONICAL_SCHEME, host, path, "", "", fragment))
 
 
-def _normalize_mem(candidate: str, parsed) -> str:
-    """Return a ``mem://`` URI byte for byte.
-
-    ``MemURI`` is an opaque key into the build's in-memory state, and its own
-    ``custom_str`` exists precisely to avoid normalization: the value it carries
-    may itself be a URL (``http://host:8000``), which path normalization
-    corrupts. Passing it through unchanged is the rule, not an omission.
-    """
-    return candidate
-
-
 def _normalize_https(candidate: str, parsed) -> str:
     """Canonicalize a HuggingFace web URL, the identity every HF spelling reaches.
 
@@ -453,7 +430,6 @@ _NORMALIZERS = {
     COS_SCHEME: _normalize_cos,
     S3_SCHEME: _normalize_cos,
     FILE_SCHEME: _normalize_file,
-    MEM_URI_SCHEME: _normalize_mem,
     "https": _normalize_https,
     **{scheme: _normalize_git for scheme in _GIT_SCHEMES},
 }

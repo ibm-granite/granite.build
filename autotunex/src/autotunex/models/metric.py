@@ -1,4 +1,3 @@
-# Copyright IBM Corp. 2024-2026
 # SPDX-License-Identifier: Apache-2.0
 """API models for the per-step training-metrics endpoints."""
 

@@ -1,17 +1,25 @@
-# Run AutoTuneX standalone with Podman or Docker Compose. This starts just the
+# Run AutoTuneX standalone with Docker Compose. This starts just the
 # `autotunex` service; the all-in-one `aio` service below is held back by a
 # profile and is not started unless that profile is activated.
-#   podman compose up --build      # older Podman: podman-compose up --build
 #   docker compose up --build
+# Docker Compose only: these builds rely on BuildKit reading
+# autotunex/Dockerfile*.dockerignore, which Podman ignores (it applies the root
+# .dockerignore, which excludes autotunex/). With Podman, build directly:
+#   podman build --ignorefile Dockerfile.dockerignore -f Dockerfile -t autotunex:local ..
 #
 # All defaults are baked into the image (see Dockerfile); uncomment the
 # environment / args blocks only to override them.
+#
+# The build context is the repository root (..): the llmb variant and the aio
+# image install granite.build from the same checkout.
 services:
   autotunex:
     build:
-      context: .
+      context: ..
+      dockerfile: autotunex/Dockerfile
       # args:
       #   PUBLIC_AUTOTUNEX_API_URL: ""   # set only if the API is fronted elsewhere
+      #   JOB_BACKEND: llmb              # the llmb backend instead of local
     image: autotunex:local
     ports:
       - "8000:8000"
@@ -31,11 +39,10 @@ services:
     # requires .env.aio, which is gitignored and absent from a fresh clone.
     profiles: ["aio"]
     build:
-      context: .
-      dockerfile: Dockerfile.aio
+      context: ..
+      dockerfile: autotunex/Dockerfile.aio
       # args:
       #   PUBLIC_AUTOTUNEX_API_URL: ""             # set only if the API is fronted elsewhere
-      #   GB_REF: stable                           # pin granite.build to a tag instead of tracking main
       #   INSTALL_AUTOTUNE_CORE: "1"               # also install the vendored fm-tune core (src/fm-tune[core,mlx], local backend)
     image: autotunex-aio:local
     ports:
@@ -63,7 +70,8 @@ services:
     # build runs under emulation and is much slower.
     platform: linux/amd64
     build:
-      context: .
+      context: ..
+      dockerfile: autotunex/Dockerfile
       args:
         DEVICE: cuda
       # CUDA_KERNEL_BASE overrides the kernel base (docker/cuda-base/Dockerfile),

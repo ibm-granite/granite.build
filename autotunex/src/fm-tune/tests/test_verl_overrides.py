@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Wiring tests for autotune.trainers.verl_overrides.
 
 They build fm-tune's verl override dict from a trial config shaped the way

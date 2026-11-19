@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Environment variable constants used exclusively in test contexts.
 # These env vars are generally passed to distributed components (i.e. steps, buildrunners, etc)
 # that are then responsible for implementing/following their implications.
@@ -51,8 +53,7 @@ def enable_hf_mocks() -> None:
     env var at call time, this takes effect immediately without patching, and the
     env var is forwarded to remote pods so they mock too.
     """
-    _HF_MOCK_SAVED.append(os.environ.get(ENV_VAR_GBTEST_MOCK_HF))
-    os.environ[ENV_VAR_GBTEST_MOCK_HF] = "true"
+    _push_env_true(ENV_VAR_GBTEST_MOCK_HF, _HF_MOCK_SAVED)
 
 
 def disable_hf_mocks() -> None:
@@ -61,11 +62,70 @@ def disable_hf_mocks() -> None:
     Restores the prior value (or removes the var if there was none), so per-test
     enable/disable does not clobber a suite-level default set outside the test.
     """
-    prior = _HF_MOCK_SAVED.pop() if _HF_MOCK_SAVED else None
+    _pop_env(ENV_VAR_GBTEST_MOCK_HF, _HF_MOCK_SAVED)
+
+
+def _push_env_true(name: str, saved: list[Optional[str]]) -> None:
+    """Save the current value of env var ``name`` on ``saved`` and set it to "true".
+
+    Args:
+        name: the environment variable to set.
+        saved: the per-variable stack the prior value is pushed onto, so the
+            matching :func:`_pop_env` restores it.
+    """
+    saved.append(os.environ.get(name))
+    os.environ[name] = "true"
+
+
+def _pop_env(name: str, saved: list[Optional[str]]) -> None:
+    """Restore env var ``name`` to the value most recently saved on ``saved``.
+
+    Removes the variable when there was no prior value (or nothing was saved).
+
+    Args:
+        name: the environment variable to restore.
+        saved: the per-variable stack written by :func:`_push_env_true`.
+    """
+    prior = saved.pop() if saved else None
     if prior is None:
-        os.environ.pop(ENV_VAR_GBTEST_MOCK_HF, None)
+        os.environ.pop(name, None)
     else:
-        os.environ[ENV_VAR_GBTEST_MOCK_HF] = prior
+        os.environ[name] = prior
+
+
+# Controls whether S3/COS object-store I/O done by the builtin s3pull/s3push
+# steps is mocked. Same contract as GBTEST_MOCK_HF: a plain boolean read at call
+# time, forwarded to remote jobs so the step's shell mock hook (cos_mocked in the
+# skypilot s3pull/s3push step.yaml) short-circuits before any network call. When
+# set, the Skypilot env also skips declaring the COS credential secrets, so a
+# mocked build needs no S3 credentials.
+ENV_VAR_GBTEST_MOCK_COS = f"{_GBTEST_PREFIX}MOCK_COS"
+
+# Stack of prior GBTEST_MOCK_COS values saved by enable_cos_mocks().
+_COS_MOCK_SAVED: list[Optional[str]] = []
+
+
+def is_cos_mocked() -> bool:
+    """Return True if S3/COS object-store I/O should be mocked.
+
+    Returns:
+        bool: True when GBTEST_MOCK_COS parses as truthy ("true"/"1"/"yes"/"on").
+    """
+    return getenv_boolean(ENV_VAR_GBTEST_MOCK_COS)
+
+
+def enable_cos_mocks() -> None:
+    """Enable S3/COS mocking for this process and any remote jobs.
+
+    Sets GBTEST_MOCK_COS=true; the previous value is restored by the matching
+    disable_cos_mocks().
+    """
+    _push_env_true(ENV_VAR_GBTEST_MOCK_COS, _COS_MOCK_SAVED)
+
+
+def disable_cos_mocks() -> None:
+    """Restore GBTEST_MOCK_COS to the value saved by the matching enable_cos_mocks()."""
+    _pop_env(ENV_VAR_GBTEST_MOCK_COS, _COS_MOCK_SAVED)
 
 
 # Causes the supporting environments that implement step-level retry to inject
@@ -146,6 +206,7 @@ def standalone_rg_environment() -> str:
 # The set of all GBTEST_ env var names defined in this module.
 _GBTEST_EXPORTED_ENV_VARS = {
     ENV_VAR_GBTEST_MOCK_HF,
+    ENV_VAR_GBTEST_MOCK_COS,
     ENV_VAR_GBTEST_SIMULATE_FAILURE_SCENARIO,
     ENV_VAR_GBTEST_SKY_SSH_RESET,
     ENV_VAR_GBTEST_STANDALONE_ENVIRONMENT,

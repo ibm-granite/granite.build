@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for GET /spaces/ list scoping.
 
@@ -27,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from fastapi import HTTPException
 from unit.api._space_scoping_test_helpers import (
     ALICE,
     ALICE_SPACE,
@@ -37,8 +26,8 @@ from unit.api._space_scoping_test_helpers import row_matches as _row_matches
 from unit.api._space_scoping_test_helpers import set_alice_access as _set_alice_access
 
 from gbserver.api import spaces as spaces_module
-from gbserver.api.spaces import list_spaces, spaces_for_user
-from gbserver.storage.stored_space import StoredSpace
+from gbserver.api.spaces import get_space, list_spaces, spaces_for_user
+from gbserver.storage.stored_space import RepoSnapshot, StoredSpace
 
 
 def _patched_list_storage(spaces: list):
@@ -105,3 +94,62 @@ def test_spaces_for_user_propagates_storage_error():
     ):
         with pytest.raises(RuntimeError, match="db unavailable"):
             spaces_for_user(_fake_request(ALICE, f"{ALICE}@example.com"))
+
+
+def _snapshotted(name: str) -> StoredSpace:
+    space = RepoSnapshot(source_uri="https://h/o/gbspace-a", source_commit="abc")
+    space.save_archive(b"zip")
+    base = RepoSnapshot(source_uri="https://h/o/assets", source_commit="def")
+    base.save_archive(b"zip")
+    return StoredSpace(
+        name=name,
+        git_repo_uri="https://h/o/gbspace-a",
+        space_uri=f"db://spaces/{name}",
+        space=space,
+        base_uris=[base],
+    )
+
+
+def _patched_get_storage(spaces: list):
+    by_name = {s.name: s for s in spaces}
+    fake_storage = SimpleNamespace(
+        space_storage=SimpleNamespace(get_by_name=by_name.get)
+    )
+    return patch.object(spaces_module, "get_admin_storage", return_value=fake_storage)
+
+
+def test_list_spaces_strips_archives_keeps_sources():
+    with (
+        _patched_list_storage([_snapshotted(ALICE_SPACE)]),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+    ):
+        resp = list_spaces(_fake_request("admin_x", "admin_x@example.com"))
+    (space,) = resp.spaces
+    assert space.space.archive is None and space.base_uris[0].archive is None
+    assert space.space.source_commit == "abc"
+    assert space.base_uris[0].source_uri == "https://h/o/assets"
+
+
+def test_get_space_returns_archives_to_member():
+    with (
+        _patched_get_storage([_snapshotted(ALICE_SPACE)]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        space = get_space(_fake_request(ALICE, f"{ALICE}@example.com"), ALICE_SPACE)
+    assert space.space.load_archive() == b"zip"
+    assert space.base_uris[0].load_archive() == b"zip"
+
+
+@pytest.mark.parametrize("space_name", [BOB_SPACE, "no-such-space"])
+def test_get_space_404_for_non_member_or_missing(space_name):
+    with (
+        _patched_get_storage([_snapshotted(BOB_SPACE)]),
+        patch("gbserver.api.utils.is_super_admin", return_value=False),
+        patch("gbserver.api.utils.get_space_access_manager") as manager,
+    ):
+        _set_alice_access(manager)
+        with pytest.raises(HTTPException) as exc:
+            get_space(_fake_request(ALICE, f"{ALICE}@example.com"), space_name)
+    assert exc.value.status_code == 404

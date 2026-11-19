@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# SPDX-License-Identifier: Apache-2.0
+
 # teardown-postgres.sh -- Stop the local test PostgreSQL started by setup-postgres.sh.
 #
 # Removes the container (and with it all test data) and the env file and CA

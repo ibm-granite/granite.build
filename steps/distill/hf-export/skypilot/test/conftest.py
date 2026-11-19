@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Resolve the upstream distillation package for the ported unit tests.
 
 IDENTICAL IN EVERY PORTED DISTILLATION STEP.

@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """REST endpoints for browsing folders on a supported environment's login nodes.
 
@@ -56,6 +44,7 @@ canonicalizes ``workspace_remote_dir``), never the folder, so open-latency
 reveals nothing about the requested folder.
 """
 
+import asyncio
 from pathlib import PurePosixPath
 from typing import AsyncIterator, List, Optional, Union
 
@@ -98,6 +87,15 @@ files_api = FastAPI()
 
 
 # --------------------------------------------------------------------- helpers
+
+
+async def _resolve_environment(environment: str) -> EnvironmentFilesConfig:
+    """resolve_environment off the event loop.
+
+    It may read the public space's gb_spaces row and unpack its stored snapshot;
+    on the loop that would stall every concurrent request.
+    """
+    return await asyncio.to_thread(resolve_environment, environment)
 
 
 async def _resolve_folder_paths(
@@ -154,7 +152,7 @@ async def search_environment_files(
     """
     with translate_remote_file_errors():
         reject_pattern_control_chars(pattern)
-        config = resolve_environment(environment)
+        config = await _resolve_environment(environment)
         folder = validate_folder_name(folder)
 
         async with open_lsf_tunnel(config.space_name, config.environment_uri) as (
@@ -218,7 +216,7 @@ async def list_environment_files(
     with translate_remote_file_errors():
         if pattern is not None:
             reject_pattern_control_chars(pattern)
-        config = resolve_environment(environment)
+        config = await _resolve_environment(environment)
         folder = validate_folder_name(folder)
 
         async with open_lsf_tunnel(config.space_name, config.environment_uri) as (
@@ -275,7 +273,7 @@ async def download_environment_file(
     """
     with translate_remote_file_errors():
         peek = validate_peek_args(head, tail, range_)
-    config = resolve_environment(environment)
+    config = await _resolve_environment(environment)
     folder = validate_folder_name(folder)
 
     if peek is not None:

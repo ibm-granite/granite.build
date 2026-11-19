@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """
 The space.
@@ -23,13 +11,20 @@ import shutil
 import tempfile
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional, Self, Union
+from typing import Callable, Dict, List, Optional, Self, Union
 from urllib.parse import urlparse
 
 from gbcommon.uri.space import SpaceURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
+from gbserver.spaces.db_space import (
+    is_db_uri,
+    new_unpack_dir,
+    parse_db_uri,
+    resolve_db_uri,
+)
 from gbserver.spacesecretmanager.spacesecretmanager import SpaceSecretManager
+from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.constants import GBSERVER_PROCEED_WITHOUT_SECRETS, is_debug_mode
 from gbserver.types.spaceconfig import SpaceConfig
 from gbserver.utils.logger import get_logger
@@ -40,7 +35,7 @@ logger = get_logger(__name__)
 SPACE_YAML = "space.yaml"
 
 
-def _resolve_base_uris(base_uris: List[str], space_uri: str) -> List[str]:
+def _resolve_base_uris(base_uris: List[str], space: "Space") -> List[str]:
     """Resolve relative file:// base_uris against the space's source directory.
 
     Absolute URIs (any scheme, including file:///abs/path) pass through
@@ -50,19 +45,29 @@ def _resolve_base_uris(base_uris: List[str], space_uri: str) -> List[str]:
 
     Args:
         base_uris: The base_uris list from a SpaceConfig.
-        space_uri: The URI string of the space being loaded
-            (``Space.uristr``).  Used as the anchor for relative paths.
+        space: The space being loaded. Its ``uristr`` anchors relative paths;
+            ``db://`` entries may only name its ``db_space_name`` row.
 
     Returns:
         A new list with relative entries resolved to absolute file:// URIs.
 
     Raises:
         ValueError: A relative ``file://`` URI or bare relative path appears
-            in ``base_uris`` while ``space_uri`` is not a local ``file://``
+            in ``base_uris`` while the space URI is not a local ``file://``
             URI — there is no anchor to resolve it against.
     """
-    space_dir = _space_dir_from_uri(space_uri)
-    return [_resolve_one_base_uri(b, space_dir, space_uri) for b in base_uris]
+    space_dir = _space_dir_from_uri(space.uristr)
+    return [
+        _resolve_one_base_uri(
+            b,
+            space_dir,
+            space.uristr,
+            space.db_space_name,
+            space.db_row,
+            space.unpack_dir,
+        )
+        for b in base_uris
+    ]
 
 
 def _space_dir_from_uri(space_uri: str) -> Optional[Path]:
@@ -84,11 +89,17 @@ def _space_dir_from_uri(space_uri: str) -> Optional[Path]:
 
 
 def _resolve_one_base_uri(
-    base_uri: str, space_dir: Optional[Path], space_uri: str
+    base_uri: str,
+    space_dir: Optional[Path],
+    space_uri: str,
+    db_space_name: Optional[str] = None,
+    db_row: Optional[StoredSpace] = None,
+    unpack_dir: Optional[Callable[[], Path]] = None,
 ) -> str:
     """Resolve a single base_uri entry.
 
-    Absolute URIs are returned unchanged.  Relative file:// URIs and bare
+    ``db://`` URIs are unpacked and returned as ``file://``.  Other absolute
+    URIs are returned unchanged.  Relative file:// URIs and bare
     relative paths are resolved against ``space_dir``.  When ``space_dir``
     is None (i.e. the space URI is non-local, such as ``git://...``), a
     relative entry has no anchor to resolve against and a ``ValueError``
@@ -103,8 +114,22 @@ def _resolve_one_base_uri(
 
     Raises:
         ValueError: ``base_uri`` is a relative ``file://`` URI or bare
-            relative path while ``space_dir`` is None.
+            relative path while ``space_dir`` is None, or one that escapes a
+            db-backed space's snapshot.
     """
+    if is_db_uri(base_uri):
+        # A db-backed space's base_uris[i] snapshot (db://spaces/<n>/base_uri_<i>).
+        # Only its own row: another space's is not supported (and would bypass
+        # that space's access).
+        if parse_db_uri(base_uri).space_name != db_space_name:
+            raise ValueError(
+                f"base_uri {base_uri!r} names another space's snapshot, which is"
+                f" not supported; a space ({space_uri!r}) uses only its own"
+            )
+        if unpack_dir is None:
+            raise ValueError(f"base_uri {base_uri!r} needs a db-backed space")
+        # The space's own row, if already loaded (resolve_db_uri checks it).
+        return resolve_db_uri(base_uri, unpack_dir(), row=db_row).file_uri
     parsed = urlparse(base_uri)
     if parsed.scheme and parsed.scheme != "file":
         return base_uri
@@ -125,7 +150,15 @@ def _resolve_one_base_uri(
             f"Use an absolute file:// URI or a non-file scheme "
             f"(git://, hf://, etc.) instead."
         )
-    return f"file://{(space_dir / p).resolve()}"
+    resolved = (space_dir / p).resolve()
+    if db_space_name is not None and not resolved.is_relative_to(space_dir.resolve()):
+        # space_dir is an unpacked snapshot: its neighbours in the cache root are
+        # other spaces' snapshots.
+        raise ValueError(
+            f"base_uri {base_uri!r} of db-backed space {space_uri!r} escapes its"
+            " snapshot"
+        )
+    return f"file://{resolved}"
 
 
 class Space:
@@ -136,9 +169,39 @@ class Space:
         uri: Union[URI, str],
         username: Optional[str] = None,
         force_fetch: bool = False,
+        identity_uri: Optional[str] = None,
+        stored_space: Optional[StoredSpace] = None,
     ):
-        """Create the instance."""
+        """Create the instance.
+
+        Args:
+            uri: Where to pull the space definitions from. A ``db://spaces/...``
+                URI is served from the snapshot stored in gb_spaces.
+            username: The user whose secrets are merged in.
+            force_fetch: Re-pull even if cached.
+            identity_uri: The space's repo identity, used for secret lookup and
+                space-match checks. Defaults to ``uri``, or for a db:// URI to
+                the snapshot's source repo.
+            stored_space: The already-loaded gb_spaces row a db:// ``uri``
+                names, reused for it and its db:// base_uris instead of
+                re-reading the row. Ignored for any other URI, or a row it
+                doesn't name.
+        """
         self.uristr = URI.get_uristr(uri)
+        # The gb_spaces row the space is served from (db://), else None.
+        self.db_space_name: Optional[str] = None
+        # Only while constructing: it carries every archive.
+        self.db_row = stored_space
+        # Its db:// snapshots, unpacked here; removed with the Space. They must
+        # outlive construction: base_uris are read lazily during the build.
+        self._unpack_dir: Optional["tempfile.TemporaryDirectory[str]"] = None
+        if is_db_uri(self.uristr):
+            self.db_space_name = parse_db_uri(self.uristr).space_name
+            resolved = resolve_db_uri(self.uristr, self.unpack_dir(), row=self.db_row)
+            logger.info("db space %s unpacked at %s", self.uristr, resolved.file_uri)
+            self.uristr = uri = resolved.file_uri
+            identity_uri = identity_uri or resolved.identity_uri
+        self.identity_uri = identity_uri or self.uristr
         self.secrets = {}
         uriobj = URI.get_uri(uri=uri, default_scheme="file")
         # A fresh, private checkout dir we own. pull() copies the space into it
@@ -157,7 +220,7 @@ class Space:
             if self.space_config is not None:
                 if self.space_config.base_uris is not None:
                     base_uris = base_uris + _resolve_base_uris(
-                        self.space_config.base_uris, self.uristr
+                        self.space_config.base_uris, self
                     )
                 URI.set_space_config(self.space_config)
             # Builtins last: the fallback for any asset the space and its
@@ -181,6 +244,13 @@ class Space:
             # current pull does.)
             if not is_debug_mode():
                 shutil.rmtree(tmppath, ignore_errors=True)
+            self.db_row = None
+
+    def unpack_dir(self: Self) -> Path:
+        """This space's private dir for its unpacked db:// snapshots."""
+        if self._unpack_dir is None:
+            self._unpack_dir = new_unpack_dir()
+        return Path(self._unpack_dir.name)
 
     def get_secrets(self: Self) -> Dict[str, str]:
         """Returns the cached secrets for the space."""
@@ -309,7 +379,7 @@ class Space:
             remote_secrets_manager: SpaceSecretManager = (
                 SpaceSecretManager.get_spacesecretmanager(
                     secret_manager_type=remote_type,
-                    uri=self.uristr,
+                    uri=self.identity_uri,
                     **remote_config,
                 )
             )
@@ -332,7 +402,7 @@ class Space:
             self.secret_manager: SpaceSecretManager = (
                 SpaceSecretManager.get_spacesecretmanager(
                     secret_manager_type=self.space_config.secret_manager.type,
-                    uri=self.uristr,
+                    uri=self.identity_uri,
                     space_name=self.space_config.name,
                     **self.space_config.secret_manager.config,
                 )

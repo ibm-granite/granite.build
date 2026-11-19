@@ -92,6 +92,7 @@ outputs:
       type: dataset
 environment_configs:
   Skypilot:
+    # single_node: true          # one node only: gbserver refuses any other num_nodes
     default_launcher: <name>
     launchers:
       <name>:
@@ -118,7 +119,12 @@ environment_configs:
 ```
 
 If `setup` gains arguments rendered from config, define `q()` there too: macros are
-block-scoped.
+block-scoped. For a longer macro both blocks need (a `validate` of `raise_error`
+checks), write it once in `macros/<name>.j2` and put a
+`{#- gb-include macros/<name>.j2 -#}` line in each block instead of two copies; a
+macro several steps share goes in `steps/<category>/shared/`. `make space` and
+`make publish-step` expand those lines (steps/README.md, "Sharing Jinja between
+templates").
 
 **Custom image:** the scripts are baked into the image, so change the launcher
 `config` to this (no `file_mounts`; `${IMAGE_REF}` is filled in by `make space` and

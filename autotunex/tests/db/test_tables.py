@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The ORM mirrors ``resources/autotunex_schema.sql``.
 
 The MySQL database is live, so fidelity to that file matters more than

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import TuningDetailPageClient from './TuningDetailPageClient'
 
 export const dynamic = 'force-static'

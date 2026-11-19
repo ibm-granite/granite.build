@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the canonical in-repo space configuration files.
 
 Validates the structure of `configurations/assets/` (the leaf primitives

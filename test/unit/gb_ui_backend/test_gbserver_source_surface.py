@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """GbserverSource keeps its public methods on the class.
 
 This exists because of a real regression that every other test missed. Adding

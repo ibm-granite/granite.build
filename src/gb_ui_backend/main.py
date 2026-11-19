@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """gb-ui analytics service — FastAPI application.
 
 Normally mounted directly into gbserver's own app (see

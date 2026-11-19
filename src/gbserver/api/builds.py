@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 import base64
 import binascii
@@ -47,6 +35,7 @@ from gbserver.api.utils import (
 )
 from gbserver.buildrunner.validation import BuildValidation
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
+from gbserver.spaces.db_space import is_db_uri
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
@@ -476,6 +465,13 @@ def validate_build(request: Request, req: BuildValidateRequest) -> JSONResponse:
             )
 
     _confirm_build_archive_within_limits(req.build_archive)
+    if req.space_uri and is_db_uri(req.space_uri):
+        # db:// names a registered space's snapshot; that goes through
+        # space_name, whose membership is checked, not a raw URI.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="space_uri may not be a db:// URI; use space_name",
+        )
 
     errors = BuildValidation.validate_build_archive(
         build_archive=req.build_archive,

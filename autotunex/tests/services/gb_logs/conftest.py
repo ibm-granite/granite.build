@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Contains a real import-time side effect in the ``gbcli``/``gbserver`` stack.
 
 Importing ``gbcli.utils.log_query`` transitively imports
@@ -19,7 +21,7 @@ package; the single remaining real import is
 ``test_the_real_gbcli_exposes_what_the_reader_imports``, which is skipped
 entirely when gbcli is not installed. This fixture is kept rather than deleted
 because that one test still trips the leak wherever gbcli *is* installed — a
-developer machine with the ``granite-build`` extra, which is exactly where the
+developer machine with granite.build installed, which is exactly where the
 original breakage was found.
 
 Snapshotting and restoring ``os.environ`` around every test in this directory

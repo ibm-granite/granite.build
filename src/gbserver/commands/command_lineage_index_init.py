@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Place the lineage *indexer* checkpoint without starting the indexer.
 
@@ -34,6 +22,7 @@ import click
 from gbserver.lineage.indexer import create_indexer, resolve_indexer_source
 from gbserver.lineage.lineage_seeding import SEED_ALL, LineageSeedError
 from gbserver.storage.singleton_storage import get_admin_storage
+from gbserver.types.constants import MEM_URI_SCHEME
 from gbserver.types.context import CliEnvironment, pass_environment
 
 
@@ -84,6 +73,17 @@ from gbserver.types.context import CliEnvironment, pass_environment
     ),
 )
 @click.option(
+    "--purge-mem",
+    is_flag=True,
+    default=False,
+    help=(
+        "Remove the mem:// endpoints that rows indexed before mem:// filtering "
+        "still carry, and exit. Each affected job keeps its real artifacts (as a "
+        "no-output or no-input row when mem:// was its only other side). "
+        "Does not touch the checkpoint. Must be passed alone."
+    ),
+)
+@click.option(
     "--show",
     is_flag=True,
     default=False,
@@ -99,9 +99,23 @@ def cli(
     force: bool,
     rebuild: bool,
     empty_from_beginning: bool,
+    purge_mem: bool,
     show: bool,
 ) -> None:
     """Seed the lineage indexer checkpoint (gb_kv_pairs) without running it."""
+    if purge_mem:
+        if base_timestamp is not None or force or rebuild or show:
+            raise click.ClickException(
+                "--purge-mem is a one-off cleanup and must be passed alone."
+            )
+        deleted, added = get_admin_storage().lineage_row_storage.purge_scheme(
+            MEM_URI_SCHEME
+        )
+        click.echo(
+            f"Deleted {deleted} gb_lineage_index row(s) with a mem:// endpoint; "
+            f"added {added} terminal row(s) for the real artifacts they left alone."
+        )
+        return
     if rebuild:
         if show:
             raise click.ClickException(

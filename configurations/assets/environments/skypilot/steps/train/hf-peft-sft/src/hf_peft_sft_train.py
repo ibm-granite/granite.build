@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+
 # SPDX-License-Identifier: Apache-2.0
 """LoRA / QLoRA / aLoRA supervised fine-tuning with HF PEFT + TRL SFTTrainer.
 

@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Access assets in HuffingFace Hub."""
 
@@ -22,7 +10,7 @@ from typing import Dict, List, Optional, Self, Union
 
 from huggingface_hub import create_repo, upload_file, upload_folder
 
-from gbcommon.uri.hf import HfURI
+from gbcommon.uri.hf import HfType, HfURI
 from gbcommon.uri.uri import URI
 from gbserver.asset.assetstore import Assetstore
 from gbserver.types.artifact import ArtifactType
@@ -109,6 +97,19 @@ class Hfstore(Assetstore):
     def get_asset_type(self, uri: URI) -> ArtifactType:
         assert isinstance(uri, HfURI)
         return uri.get_artifact_type()
+
+    def uri_exists(self, uri: URI) -> bool:
+        """Check that ``uri`` exists on the Hub with this store's token.
+
+        Resolves the token through the store (:meth:`resolve_token`, honoring
+        ``token_secretname``) rather than the URI's fixed ``HF_TOKEN`` lookup, so
+        existence checks use the same credential as pull/push.
+
+        :param uri: an HfURI this store handles.
+        :returns: whether it exists (True when HF is mocked).
+        """
+        assert isinstance(uri, HfURI), f"expected HfURI, got {type(uri)}"
+        return uri.exists(token=self.resolve_token(uri))
 
     def resolve_token(self, uri) -> Optional[str]:
         metadata = self.get_metadata(uri)
@@ -221,7 +222,12 @@ class Hfstore(Assetstore):
             # Sub-path within the repo ("" when none). The skypilot/LSF hfpull
             # scripts download only it (``--include``), into ``path`` with the
             # repo layout kept; the k8s template re-parses it from ``uri``.
-            "path_in_repo": hfuri.get_path_in_repo(),
+            # A bucket is bound at ``path`` itself (HfURI.local_path), so it
+            # gets no filter. (The scripts' ``hf download`` has no bucket repo
+            # type, so they cannot pull a bucket either way.)
+            "path_in_repo": (
+                "" if hfuri.get_hf_type() == HfType.BUCKET else hfuri.get_path_in_repo()
+            ),
             "hf": {
                 "type": hf_type,
             },

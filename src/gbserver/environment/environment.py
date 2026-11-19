@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """
 The environment where the workloads run.
@@ -40,6 +28,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    Mapping,
     Optional,
     Self,
     Set,
@@ -50,6 +39,7 @@ from typing import (
 
 if TYPE_CHECKING:
     from gbserver.resilience.retry_handler import RetryHandler, RetryStrategy
+    from gbserver.types.stepconfig import StepEnvironmentTypeConfig
 
 from pydantic import Field
 
@@ -233,6 +223,48 @@ class RetryArtifactFilterQueue(asyncio.Queue):
     def put_nowait(self, item: Any) -> None:
         if self._should_forward(item) and self._event_q is not None:
             self._event_q.put_nowait(item)
+
+
+def select_assetstore(
+    stores: Mapping[Assetstore, AssetStoreEnvironmentConfig], uri: URI
+) -> Tuple[Optional[Assetstore], Optional[AssetStoreEnvironmentConfig]]:
+    """Pick the store in ``stores`` whose base_uri/uri_regex matches ``uri`` longest.
+
+    The one routing rule pull/push dispatch (:meth:`Environment._get_storeconfig`)
+    and existence checks (:func:`asset_uri_exists`) share.
+
+    :param stores: store -> its environment.yaml entry.
+    :param uri: the URI to route.
+    :returns: ``(store, entry)``, or ``(None, None)`` when nothing matches.
+    """
+    longest_match = 0
+    chosen: Tuple[Optional[Assetstore], Optional[AssetStoreEnvironmentConfig]] = (
+        None,
+        None,
+    )
+    for assetstore, assetstoreenv_config in stores.items():
+        curr_len = assetstore.can_handle_len(uri)
+        if curr_len > longest_match:
+            longest_match = curr_len
+            chosen = (assetstore, assetstoreenv_config)
+    return chosen
+
+
+def asset_uri_exists(stores: Mapping[Assetstore, Any], uri: URI) -> bool:
+    """Return whether ``uri`` exists, checked by the store ``stores`` route it to.
+
+    Stores whose URIs need store settings to be checked (e.g. S3/COS endpoint and
+    credentials, the hf token secret name) answer via ``Assetstore.uri_exists``.
+    Falls back to ``uri.exists()`` when no store matches.
+
+    :param stores: an environment's assetstores (store -> entry).
+    :param uri: the URI to check.
+    :returns: whether it exists.
+    """
+    assetstore, _ = select_assetstore(stores, uri)
+    if assetstore is None:
+        return uri.exists()
+    return assetstore.uri_exists(uri)
 
 
 class Environment(ABC):
@@ -1152,6 +1184,32 @@ class Environment(ABC):
         }
         return declared | twins
 
+    def validate_launch_config(  # pylint: disable=unused-argument
+        self: Self,
+        step_env_config: "StepEnvironmentTypeConfig",
+        launcher_config: Dict,
+        config: Dict,
+    ) -> None:
+        """Check a step's filled launch configs at step creation.
+
+        ``TargetStepRun.__init__`` calls this right after the strict launcher
+        fill, so an error fails the step "on creation", before anything is
+        launched or provisioned. An environment that resolves launch settings a
+        step can constrain overrides it; this default refuses the constraint
+        rather than ignore it.
+
+        :param step_env_config: The step's environment config for this env.
+        :param launcher_config: The filled launcher block ``config``.
+        :param config: The filled step config (step and build layers).
+        :raises ValueError: If the step sets ``single_node``, which this
+            environment does not enforce.
+        """
+        if getattr(step_env_config, "single_node", False):
+            raise ValueError(
+                f"The step sets single_node, but the {self.type} environment does "
+                "not enforce it; only the SkyPilot environments do."
+            )
+
     def launch(
         self: Self,
         launcher_type: str,
@@ -1478,19 +1536,48 @@ class Environment(ABC):
         except BaseException:
             return None
 
+    def input_exists(self: Self, uri: URI) -> bool:
+        """Return whether input ``uri`` exists, checked against this env's store.
+
+        Uses :func:`asset_uri_exists` over this environment's own assetstores, so
+        the check runs against the store this environment pulls from -- not a
+        process-wide registry, which may be unpopulated on this thread or hold
+        another environment's store for the same prefix.
+
+        :param uri: the input URI.
+        :returns: whether it exists.
+        """
+        return asset_uri_exists(self.supported_assetstores, uri)
+
+    @classmethod
+    def load_declared_assetstores(
+        cls: Type[Self], environment_uri: str, context: Optional[str] = None
+    ) -> Dict[Assetstore, AssetStoreEnvironmentConfig]:
+        """Load the assetstores an environment.yaml declares, without building the env.
+
+        For callers that need an environment's store routing (e.g. to check an
+        artifact against the store its build used) but not a live environment,
+        whose construction may have side effects. The implicit ``env://`` /
+        ``mem://`` stores are not included; their URIs answer ``exists()`` alone.
+        ``space://`` store URIs resolve against the space set on this thread.
+
+        :param environment_uri: the environment's URI (e.g. a target's stored one).
+        :param context: optional template context for the URIs.
+        :returns: store -> its environment.yaml entry.
+        """
+        config, _ = cls.load_environment_config(environment_uri, context=context)
+        return {
+            Asset.get_assetstore_from_store_uri(
+                store_uri=s.store_uri, context=context
+            ): s
+            for s in (config.assetstores or [])
+        }
+
     def _get_storeconfig(
         self: Self, uri: URI, raise_exceptions: bool = False
     ) -> Tuple[Optional[Assetstore], Optional[AssetStoreEnvironmentConfig]]:
         """Returns the asset store and config that matches the longest prefix of the URI."""
-        longest_match = 0
-        t1 = None
-        t2 = None
-        for assetstore, assetstoreenv_config in self.supported_assetstores.items():
-            curr_len = assetstore.can_handle_len(uri)
-            if curr_len > longest_match:
-                longest_match = curr_len
-                t1 = assetstore
-                t2 = assetstoreenv_config
+        t1, t2 = select_assetstore(self.supported_assetstores, uri)
         if t1 is None or t2 is None:
             if raise_exceptions:
                 uristr = URI.get_uristr(uri)
@@ -1535,6 +1622,19 @@ class Environment(ABC):
         """
         return not uristr.startswith("env://")
 
+    def _caches_pulled_binding(self: Self, uristr: str) -> bool:
+        """Whether :meth:`pullasset` caches (and reuses) the pulled binding of *uristr*.
+
+        A cached pull is handed to later consumers on this instance without
+        pulling again. An environment whose pull does per-consumer work (e.g.
+        Skypilot's s3pull takes a reader lease for the consuming target run)
+        overrides this to opt out. Defaults to :meth:`_is_cached_uri`.
+
+        :param uristr: the URI being pulled.
+        :returns: whether the binding is cached.
+        """
+        return Environment._is_cached_uri(uristr)
+
     def _caches_pushed_binding(self: Self, uristr: str, binding: Any) -> bool:
         """Whether :meth:`pushasset` caches the producer *binding* of *uristr*.
 
@@ -1546,7 +1646,11 @@ class Environment(ABC):
         return Environment._is_cached_uri(uristr)
 
     def pullasset(
-        self: Self, task_group: TaskGroup, uri: URI, binding: Optional[Any] = None
+        self: Self,
+        task_group: TaskGroup,
+        uri: URI,
+        binding: Optional[Any] = None,
+        setup_config: Optional[Dict] = None,
     ) -> Task[Tuple[Dict, Optional[BuildTargetStepConfig]]]:
         """Pull an asset and make it available in the environment for the workload.
 
@@ -1554,13 +1658,21 @@ class Environment(ABC):
         ``asset_bindings`` cache (see :meth:`_is_cached_uri`): its pull is
         no-transfer, and an environment may need to act on every pull of it
         (Docker mounts the path into the consumer's container).
+
+        :param task_group: the task group to run the pull in (or None).
+        :param uri: the asset to pull.
+        :param binding: an existing binding, if any.
+        :param setup_config: the consuming target's setup config, forwarded to
+            the store's ``pullasset_*`` (e.g. Skypilot binds s3:// inputs under
+            the run's workdir from it).
+        :returns: a task yielding ``(binding_config, pull step config or None)``.
         """
 
         async def pullasset_as_binding() -> (
             Tuple[Dict, Optional[BuildTargetStepConfig]]
         ):
             uristr = URI.get_uristr(uri)
-            if Environment._is_cached_uri(uristr) and uristr in self.asset_bindings:
+            if self._caches_pulled_binding(uristr) and uristr in self.asset_bindings:
                 return self.asset_bindings[uristr], None
             await Environment._thread_local.asset_events[uristr].wait()
             assetstore, assetstoreenv_config = self._get_storeconfig(
@@ -1593,8 +1705,9 @@ class Environment(ABC):
                     storeload_config=storeload_config,
                     assetstore=assetstore,
                     secrets=assetstore.get_secrets(),
+                    setup_config=setup_config,
                 )
-                if Environment._is_cached_uri(uristr):
+                if self._caches_pulled_binding(uristr):
                     self.asset_bindings[uristr] = local_binding
                 return local_binding, targetrun_config
             except Exception as e:

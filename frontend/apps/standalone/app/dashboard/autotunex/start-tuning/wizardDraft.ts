@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import type { WizardDraft } from '@granite-build/ui-core/types'
 
 const DRAFT_KEY = 'autotunex_wizard_draft'

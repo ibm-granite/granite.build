@@ -1,0 +1,44 @@
+# YAML spec for test_skypilot_slurm_bluevela_train_fms_hf_tuning.py.
+targets:
+  - lora-fsdp
+  - full-fsdp
+target_expectations:
+  - target_name: lora-fsdp
+    # skypilot/slurm runs each hf:// pull as its own hfpull step:
+    # hfpull(base_model) + hfpull(dataset) + step (as hf-peft-sft's lora-fsdp).
+    # Calibrated on BlueVela, build 718527f5 (2026-11-09, fms-v3.2.2-3);
+    # re-confirmed on -4 (a4190905).
+    step_count: 3
+    input_artifact_count: 2
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/train/fms-hf-tuning
+        config:
+          fms_hf_tuning_config:
+            peft_method: lora
+            distributed: fsdp
+        metadata_matches:
+          peft_method: "lora"
+          distributed: "fsdp"
+          fms_hf_tuning_version: "3\\.2\\.2"
+  - target_name: full-fsdp
+    step_count: 3               # hfpull(base_model) + hfpull(capybara) + step
+    input_artifact_count: 2
+    output_artifact_count: 1
+    expected_steps:
+      - step_uri: space://steps/train/fms-hf-tuning
+        config:
+          fms_hf_tuning_config:
+            peft_method: none
+            distributed: fsdp
+        metadata_matches:
+          peft_method: "none"
+          distributed: "fsdp"
+          fms_hf_tuning_version: "3\\.2\\.2"
+space_uri: ../../space
+tests:
+  - runner
+simulate_step_failure: false
+# A cold image cache adds a CPU import job first; then gpu-mid queueing for two
+# 2-GPU jobs, hfpull jobs, and short runs.
+timeout_minutes: 300

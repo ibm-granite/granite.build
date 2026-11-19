@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Keep spaces from sharing the default local secret store.
 
@@ -30,8 +18,9 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from gbcommon.uri.git import GitURI
 from gbcommon.uri.uri import URI
+from gbserver.spaces.db_space import get_space_config_uri, local_uri
+from gbserver.spaces.repo_identity import same_repo
 from gbserver.storage.stored_space import StoredSpace
 from gbserver.types.spaceconfig import SpaceConfig
 from gbserver.utils.logger import get_logger
@@ -45,13 +34,16 @@ class LocalSecretsCollisionError(ValueError):
     """Two different spaces would share one default local secrets directory."""
 
 
-def load_space_config(space_uri: str) -> SpaceConfig:
+def load_space_config(space_uri: str, row: Optional[StoredSpace] = None) -> SpaceConfig:
     """Pull a space into a temporary directory and parse its space.yaml.
 
     The temporary copy is removed before returning.
 
     Args:
-        space_uri: The space's URI (a bare path is treated as ``file:``).
+        space_uri: The space's URI (a bare path is treated as ``file:``; a
+            ``db://`` URI is served from its stored snapshot).
+        row: The already-loaded row a db:// URI names (it may not be
+            stored yet).
 
     Returns:
         SpaceConfig: The parsed space.yaml.
@@ -59,9 +51,8 @@ def load_space_config(space_uri: str) -> SpaceConfig:
     Raises:
         ValueError: If the space has no space.yaml.
     """
-    uriobj = URI.get_uri(uri=space_uri, default_scheme="file")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        uriobj.pull(dest=Path(tmpdir))
+    with local_uri(space_uri, row) as uri, tempfile.TemporaryDirectory() as tmpdir:
+        URI.get_uri(uri=uri, default_scheme="file").pull(dest=Path(tmpdir))
         space_yamls = glob.glob(str(Path(tmpdir) / "**" / SPACE_YAML), recursive=True)
         if not space_yamls:
             raise ValueError(f"No '{SPACE_YAML}' found for space at {space_uri}")
@@ -107,8 +98,8 @@ def _registered_key(space: StoredSpace) -> Optional[str]:
         Optional[str]: See default_local_secrets_key().
     """
     try:
-        config_uri = GitURI.get_gb_space_config_uri(uri=space.git_repo_uri)
-        return default_local_secrets_key(load_space_config(config_uri))
+        config_uri = get_space_config_uri(space)
+        return default_local_secrets_key(load_space_config(config_uri, space))
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.warning(
             "Skipping local-secrets collision check against space '%s' (%s):"
@@ -125,7 +116,8 @@ def check_local_secrets_collision(
 ) -> None:
     """Refuse to register a space that would share another's local secrets.
 
-    Spaces with the same ``git_repo_uri`` are aliases of one space and may share.
+    Spaces with the same repo (``git_repo_uri``, in any URI form) are aliases of
+    one space and may share.
 
     Args:
         candidate: The space about to be registered (or re-pointed).
@@ -140,7 +132,7 @@ def check_local_secrets_collision(
         ValueError: If the candidate's own space.yaml cannot be loaded.
     """
     key = default_local_secrets_key(
-        load_space_config(GitURI.get_gb_space_config_uri(uri=candidate.git_repo_uri))
+        load_space_config(get_space_config_uri(candidate), candidate)
     )
     if key is None:
         return
@@ -152,7 +144,7 @@ def check_local_secrets_collision(
             " secret_manager.config.secrets_dir"
         )
     for other in registered:
-        if other.git_repo_uri == candidate.git_repo_uri:
+        if same_repo(other.git_repo_uri, candidate.git_repo_uri):
             continue
         if _registered_key(other) == key:
             raise LocalSecretsCollisionError(

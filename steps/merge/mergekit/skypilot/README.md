@@ -104,15 +104,19 @@ so they still download. The macro checks:
   what prepare accepts (a hand-written path that differs from the binding only by a
   trailing `/` or a symlink is the exception). Prepare checks the reference fields
   themselves, and also catches a name that appears only outside them.
-- `num_nodes` is 1, and a GPU count comes with a GPU request (`accelerators` or
-  `instance_type`, #536). Both use gbserver's own rules for these values.
+- a GPU count comes with a GPU request (`accelerators` or `instance_type`, #536),
+  using gbserver's own rule for the count.
+
+The step sets `single_node: true`, so gbserver itself refuses a `num_nodes` other than 1
+(from `compute_config`, the step's launcher config or `launcher_config`, the last one set
+winning) when it creates the step.
 
 `mergekit_prepare.py` repeats the recipe-shape, `args`, `chat_template` and binding
 checks on the node, for a direct run. It also covers what only the node
 can see: the installed mergekit's methods and template names, and mapping-form
 references. `test_render_and_prepare_agree` runs one table of cases through both and
-checks they agree. The `num_nodes`, GPU and `mergekit_version` checks are render-only,
-since they concern the launch rather than the recipe.
+checks they agree. The GPU and `mergekit_version` checks are render-only, since they
+concern the launch rather than the recipe.
 
 **After the merge**, `run.sh` checks the output before registering it, because MergeKit
 reports some failures as success:

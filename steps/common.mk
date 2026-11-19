@@ -1,6 +1,6 @@
 # steps/common.mk — shared conventions for generating Granite.build step directories.
 #
-# Each step's environment dir (e.g. steps/misc/byoc/skypilot) has a thin Makefile that
+# Each step's environment dir (e.g. steps/aux/byoc/skypilot) has a thin Makefile that
 # sets a few variables and then `include`s this file. It provides the canonical
 # targets used across all steps:
 #
@@ -77,7 +77,7 @@
 #
 # The rendered $(SPACE_DIR)/ directory (named "space" by default) is a
 # self-contained Granite.build Space. Point a build test / build.yaml at it via
-#   space_uri: <path to steps/misc/byoc/skypilot/space>
+#   space_uri: <path to steps/aux/byoc/skypilot/space>
 # and reference the step by the stable URI  step_uri: space://steps/$(STEP_PATH)
 # — everything else (environments, monitors, other steps) resolves through the
 # generated space.yaml's base_uris chain to $(SPACE_BASE_URI).
@@ -271,8 +271,8 @@ REPO_ROOT        := $(abspath $(COMMON_MK_DIR)..)
 #   STEP_ROOT = the enclosing steps/ dir (COMMON_MK_DIR points at it: it is the
 #               `../..`-style include path, one `..` per authoring level, so
 #               $(abspath) lands on steps/ regardless of nesting depth).
-#   STEP_REL  = CURDIR relative to steps/  (e.g. foo/skypilot | misc/byoc/skypilot).
-#   STEP_PATH = STEP_REL with the final <env> segment removed (foo | misc/byoc).
+#   STEP_REL  = CURDIR relative to steps/  (e.g. foo/skypilot | aux/byoc/skypilot).
+#   STEP_PATH = STEP_REL with the final <env> segment removed (foo | aux/byoc).
 # STEP_PATH is structural — derived from CURDIR, independent of any STEP_ENV
 # override — so it stays correct when check-published re-invokes publish-step.
 STEP_ROOT        := $(abspath $(COMMON_MK_DIR))
@@ -441,16 +441,18 @@ endif
 
 # ---- Rendering helper -------------------------------------------------------
 
-# render-step-template — render step-template.yaml to the file named by $(1),
-# substituting ONLY the literal ${IMAGE_REF} token (empty for non-custom-image steps).
-# Everything else passes through verbatim: runtime Jinja ({{ ... }}) and shell
-# expansions (${VAR}, $(cmd)) in run:/setup: blocks. Uses sed (POSIX, always
-# present) rather than envsubst, so no gettext install is required. The image
-# ref is escaped for sed's replacement text (the # delimiter, & and \) so a
-# value containing any of them cannot corrupt the substitution.
+# render-step-template — render step-template.yaml to the file named by $(1) with
+# scripts/render_step_template.py: each `{#- gb-include <path> -#}` line is replaced
+# by the file it names (see steps/README.md, "Sharing Jinja between templates"),
+# then ONLY the literal ${IMAGE_REF} token is substituted (empty for
+# non-custom-image steps). Everything else passes through verbatim: runtime Jinja
+# ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in run:/setup: blocks. The
+# script is standard-library Python (no install), inserts the image ref as is (a
+# value containing #, & or \ cannot corrupt the output), and writes $(1) only when
+# the render succeeds.
+RENDER_STEP_TEMPLATE = $(PYTHON) $(COMMON_MK_DIR)scripts/render_step_template.py
 define render-step-template
-	@ref=$$(printf '%s' '$(IMAGE_REF)' | sed 's/[#&\\]/\\&/g'); \
-	sed "s#\$${IMAGE_REF}#$$ref#g" "$(TEMPLATE)" > "$(1)"
+	@$(RENDER_STEP_TEMPLATE) "$(TEMPLATE)" "$(1)" --image-ref='$(IMAGE_REF)'
 endef
 
 # copy-gbignore — copy the step's own .gbignore next to the rendered step.yaml, so
@@ -561,9 +563,10 @@ endef
 #   $(SPACE_DIR)/steps/$(STEP_PATH)/step.yaml   (+ bundled src/)
 #   $(SPACE_DIR)/steps/$(STEP_PATH)/.gbignore   (the step's own, copied)
 #   $(SPACE_DIR)/space.yaml                       (base_uris -> $(SPACE_BASE_URI))
-# step-template.yaml is rendered substituting ONLY ${IMAGE_REF} so runtime Jinja
-# ({{ ... }}) and shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass
-# through untouched (see render-step-template above). The generated space.yaml's
+# step-template.yaml is rendered by render-step-template above (gb-include lines
+# expanded, then ONLY ${IMAGE_REF} substituted), so runtime Jinja ({{ ... }}) and
+# shell expansions (${VAR}, $(cmd)) in the run/setup blocks pass through
+# untouched. The generated space.yaml's
 # own directory is the first base_uri, so `space://steps/$(STEP_PATH)` resolves
 # here and everything else falls through to $(SPACE_BASE_URI). STEP_PATH (not the
 # slash-free STEP_NAME) is used for the steps/ tree so a nested step's identity is
@@ -609,8 +612,9 @@ space:
 # `test/`-rooted path to the parallel `test-data/` one — so the SAME test file
 # resolves in both homes (Mode 1 co-located beside the step, Mode 2 here).
 #
-# step.yaml is rendered exactly as `space` does (render-step-template substitutes
-# ONLY ${IMAGE_REF}, so runtime Jinja/${VAR} pass through). Only the per-cluster
+# step.yaml is rendered exactly as `space` does (render-step-template expands
+# gb-include lines and substitutes ONLY ${IMAGE_REF}, so runtime Jinja/${VAR} pass
+# through). Only the per-cluster
 # SUBDIRS of $(TEST_DIR) are copied — the step's build/integration tests — so
 # loose payload/unit tests in $(TEST_DIR)/ (which import from src/) and src/
 # itself are intentionally NOT copied; those stay Mode-1 only (run via `make

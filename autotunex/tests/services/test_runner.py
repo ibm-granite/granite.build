@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """InProcessJobRunner.process terminal behavior, with a fake launcher.
 
 The runner opens its OWN session, so these build a sessionmaker on the shared

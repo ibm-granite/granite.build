@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate inventory tables (one per category) of the step implementations under steps/.
 
 Run from the repo root:  python3 .claude/skills/list-steps/scripts/steps_table.py --help
