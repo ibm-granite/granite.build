@@ -14,8 +14,8 @@ from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
 
-# SSO login's default_provider value and credentials section, named for the
-# provider `--sso ibm` logs in to.
+# SSO login's default_provider value and credentials section; their names
+# match existing credentials files.
 SSO_PROVIDER = "ibmid"
 SSO_SECTION = "user.ibmid"
 

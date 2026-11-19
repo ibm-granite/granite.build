@@ -8,8 +8,8 @@ Currently supported providers:
 
 | Provider | Token Format | Mode Value | Description |
 |----------|-------------|------------|-------------|
-| **GitHub Enterprise** | Opaque (`ghp_*`, `gho_*`) | `github` | IBM GitHub Enterprise tokens validated via `/user` API (default) |
-| **IBMid SSO** | JWT (RS256) | `ibmid` | IBMid OIDC tokens validated via JWKS signature verification |
+| **GitHub Enterprise** | Opaque (`ghp_*`, `gho_*`) | `github` | GitHub Enterprise tokens validated via `/user` API (default) |
+| **SSO (OIDC)** | JWT (RS256) | `ibmid` | OIDC tokens validated via JWKS signature verification |
 | **API Key** | Static string | `apikey` | Static key for standalone / local development |
 
 The server can run with a single provider or multiple providers simultaneously. When multiple providers are active (`multi` mode), the server auto-detects the token type using format heuristics — JWT tokens are routed to JWT-based providers, opaque tokens are routed to GitHub.
@@ -41,7 +41,7 @@ The system distinguishes tokens by their format:
 2. **Issuer matching**: For JWT tokens, the `iss` claim is extracted (without signature verification) and matched against registered providers
 3. **Opaque fallback**: Non-JWT tokens are routed to the GitHub provider
 
-This is reliable because GitHub tokens are always opaque strings, while IBMid tokens are always RS256-signed JWTs.
+This is reliable because GitHub tokens are always opaque strings, while SSO tokens are always RS256-signed JWTs.
 
 ### Auth Middleware
 
@@ -74,8 +74,8 @@ Nothing is stored server-side, so any worker or replica can serve each request. 
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/v1/auth/authorize` | CLI opens this in the browser. Stores the PKCE challenge and redirects to IBMid. |
-| `GET /api/v1/auth/callback` | IBMid redirects here after the user authenticates. Exchanges the code for tokens (server-side, with `client_secret`), stores them in a short-lived session, and shows a "close this tab" HTML page. |
+| `GET /api/v1/auth/authorize` | CLI opens this in the browser. Stores the PKCE challenge and redirects to the SSO provider. |
+| `GET /api/v1/auth/callback` | The SSO provider redirects here after the user authenticates. Exchanges the code for tokens (server-side, with `client_secret`), stores them in a short-lived session, and shows a "close this tab" HTML page. |
 | `GET /api/v1/auth/status` | CLI polls this with `state` and `code_verifier`. Once PKCE is verified, returns the tokens (one-time retrieval). |
 
 Sessions are in-memory with a 5-minute TTL, so this flow needs a single-worker server: with `GBSERVER_REST_SERVER_WORKERS` above 1, a step can land on a worker without the session.
@@ -87,9 +87,9 @@ Sessions are in-memory with a 5-minute TTL, so this flow needs a single-worker s
 ```python
 class User(BaseModel):
     login: str          # Username / identifier
-    id: int             # Numeric ID (GitHub ID or hash of IBMid sub)
-    url: str            # API URL (empty for IBMid)
-    html_url: str       # Profile URL (empty for IBMid)
+    id: int             # Numeric ID (GitHub ID or hash of the OIDC sub)
+    url: str            # API URL (empty for SSO)
+    html_url: str       # Profile URL (empty for SSO)
     name: str           # Display name
     email: str          # Email (used for space-access checks)
     auth_provider: str  # "github", "ibmid", or "apikey"
@@ -123,9 +123,9 @@ The `auth_provider` field defaults to `"github"` for backward compatibility. Dow
 
 **`github` (default)** — Only GitHub Enterprise tokens accepted. This is the original behavior. No configuration changes needed for existing deployments.
 
-**`ibmid`** — Only IBMid JWT tokens accepted. Requires `GBSERVER_IBMID_CLIENT_ID` to be set for audience validation.
+**`ibmid`** — Only SSO (OIDC) JWT tokens accepted. Requires `GBSERVER_IBMID_CLIENT_ID` to be set for audience validation.
 
-**`multi`** — Both GitHub and IBMid tokens accepted simultaneously. The server auto-detects the token type. IBMid providers are checked first (JWT detection), then GitHub (opaque fallback).
+**`multi`** — Both GitHub and SSO tokens accepted simultaneously. The server auto-detects the token type. The SSO provider is checked first (JWT detection), then GitHub (opaque fallback).
 
 **`apikey`** — Static API key or localhost-only access. Used for standalone / local development.
 
@@ -135,10 +135,10 @@ The `auth_provider` field defaults to `"github"` for backward compatibility. Dow
 
 ### Prerequisites
 
-IBMid SSO authentication requires:
+SSO authentication requires:
 
-1. An IBMid OIDC client registration (confidential client type) with the `authorization_code` grant type enabled
-2. Register the gbserver callback URL as a redirect URI (e.g., `https://api.llm-build-prod.vpc-int.res.ibm.com/api/v1/auth/callback`)
+1. An OIDC client registration with the SSO provider (confidential client type) with the `authorization_code` grant type enabled
+2. Register the redirect URIs: `http://127.0.0.1:48731/callback` and `https://<gbserver-host>/api/v1/auth/oidc/remote-callback` (plus `https://<gbserver-host>/api/v1/auth/callback` for older CLIs)
 3. Configure the gbserver with `GBSERVER_IBMID_CLIENT_ID`, `GBSERVER_IBMID_CLIENT_SECRET`, and `GBSERVER_IBMID_CALLBACK_URL`
 
 The CLI itself requires no OIDC configuration — it only needs the gbserver URL (`GBSERVER_HOST`), which is already configured per environment. The client secret is held exclusively on the server.
@@ -152,7 +152,7 @@ gbcli auth login
 # GitHub Enterprise (provide token directly)
 gbcli auth login --token
 
-# IBMid SSO (browser-based Authorization Code + PKCE via gbserver proxy)
+# SSO (browser-based Authorization Code + PKCE via gbserver proxy)
 gbcli auth login --sso          # defaults to ibm
 gbcli auth login --sso ibm      # explicit
 gbcli auth login --sso --remote # CLI can't receive the browser redirect (e.g. over SSH)
@@ -184,7 +184,7 @@ Provider name mapping (synonyms resolve to the same internal value):
 | CLI Value | Internal Value | Description |
 |-----------|---------------|-------------|
 | `github` | `github` | GitHub Enterprise token |
-| `sso`, `ibmid` | `ibmid` | IBMid OIDC id_token |
+| `sso`, `ibmid` | `ibmid` | SSO (OIDC) id_token |
 | `gbserver`, `apikey` | `apikey` | Static API key |
 
 ### SSO Login Flow (Proxy-Based)
@@ -237,13 +237,13 @@ The `default_provider` key determines which token `get_user_token()` returns whe
 - `ibmid` → returns `[user.ibmid] id_token` (the JWT identity token, not the access token)
 - `apikey` → returns `[user.gbserver] api_key`
 
-It is set automatically by each `auth login` command and can be changed manually with `auth provider --set`. The CLI warns when an IBMid token is close to expiry.
+It is set automatically by each `auth login` command and can be changed manually with `auth provider --set`. The CLI warns when an SSO token is close to expiry.
 
 ---
 
 ## Lakehouse Integration
 
-The Lakehouse token exchange (`generate_lakehouse_key_from_user_token`) currently only works with GitHub tokens. When `auth_provider` is `"ibmid"`, the system calls `generate_lakehouse_key_from_ibmid_token()` instead, which is a stub awaiting the Lakehouse IBMid endpoint details. Until then, IBMid-authenticated users fall back to the `StorageSpaceAccessManager` for space membership checks.
+The Lakehouse token exchange (`generate_lakehouse_key_from_user_token`) currently only works with GitHub tokens. When `auth_provider` is `"ibmid"`, the system calls `generate_lakehouse_key_from_ibmid_token()` instead, which is a stub awaiting the Lakehouse endpoint details for SSO tokens. Until then, SSO-authenticated users fall back to the `StorageSpaceAccessManager` for space membership checks.
 
 See `src/gbserver/api/utils.py` (`get_lh_token_if_needed()`) and `src/gbserver/utils/lakehouse_token_generator.py`.
 

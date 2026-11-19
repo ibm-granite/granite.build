@@ -30,7 +30,7 @@ important ones by concern. Defaults shown are the built-in values (before any `G
 | `GBSERVER_API_KEY` | `` | Shared secret for `apikey` mode. |
 | `GBSERVER_API_USER` | `standalone` | Default user for API-key auth. |
 
-## Authentication (IBMid OIDC)
+## Authentication (SSO / OIDC)
 
 Needed when `GBSERVER_AUTH_MODE` is `ibmid` or `multi` (see [authentication](../rest-api/multi-provider-authentication.md)).
 

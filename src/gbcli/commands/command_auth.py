@@ -99,7 +99,7 @@ def cli(ctx):
     flag_value="ibm",
     type=click.Choice(["ibm"], case_sensitive=False),
     default=None,
-    help="Login via an SSO provider (default: ibm, i.e. IBMid).",
+    help="Login via an SSO provider (default: ibm).",
 )
 @click.option(
     "--remote",

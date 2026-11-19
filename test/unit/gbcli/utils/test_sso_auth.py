@@ -70,9 +70,9 @@ TOKEN_RESPONSE = {
     "refresh_token": "rt_test",
     "expires_in": 3600,
     "user_info": {
-        "sub": "IBMid-123",
+        "sub": "user-123",
         "name": "Test User",
-        "email": "test@ibm.com",
+        "email": "test@example.com",
         "preferred_username": "testuser",
     },
 }
@@ -164,7 +164,7 @@ class TestSSOLoginClient:
         )
 
         assert result.access_token == "at_test"
-        assert result.user_info.email == "test@ibm.com"
+        assert result.user_info.email == "test@example.com"
 
     def test_loopback_ignores_other_state_and_keeps_waiting(self):
         """A stale tab (or another page) must not abort or complete the login."""
@@ -360,14 +360,14 @@ class TestSSOLoginClient:
 
 
 class TestCredentialStorage:
-    def test_get_user_token_returns_ibmid_when_default_provider(self, tmp_path):
-        """When default_provider is ibmid, get_user_token should return the IBMid id_token."""
+    def test_get_user_token_returns_sso_token_when_default_provider(self, tmp_path):
+        """With the SSO default_provider, get_user_token returns the SSO id_token."""
         creds_path = tmp_path / "credentials"
         creds_path.write_text(
             '[user]\ndefault_provider = "ibmid"\n\n'
-            '[user.ibmid]\naccess_token = "ibmid_access_token"\n'
-            'id_token = "ibmid_id_token"\n'
-            'login = "user@ibm.com"\nemail = "user@ibm.com"\nexpires_at = 9999999999\n'
+            '[user.ibmid]\naccess_token = "sso_access_token"\n'
+            'id_token = "sso_id_token"\n'
+            'login = "user@example.com"\nemail = "user@example.com"\nexpires_at = 9999999999\n'
         )
 
         with patch(
@@ -378,16 +378,16 @@ class TestCredentialStorage:
 
                 token = get_user_token()
 
-        assert token == "ibmid_id_token"
+        assert token == "sso_id_token"
 
-    def test_get_user_token_exits_when_ibmid_token_expired(self, tmp_path):
-        """When default_provider is ibmid and the token has expired, get_user_token should sys.exit."""
+    def test_get_user_token_exits_when_sso_token_expired(self, tmp_path):
+        """With the SSO default_provider and an expired token, get_user_token exits."""
         creds_path = tmp_path / "credentials"
         creds_path.write_text(
             '[user]\ndefault_provider = "ibmid"\n\n'
-            '[user.ibmid]\naccess_token = "ibmid_access_token"\n'
-            'id_token = "ibmid_id_token"\n'
-            'login = "user@ibm.com"\nemail = "user@ibm.com"\nexpires_at = 1000000000\n'
+            '[user.ibmid]\naccess_token = "sso_access_token"\n'
+            'id_token = "sso_id_token"\n'
+            'login = "user@example.com"\nemail = "user@example.com"\nexpires_at = 1000000000\n'
         )
 
         with patch(
@@ -410,7 +410,7 @@ class TestCredentialStorage:
         creds_path = tmp_path / "credentials"
         creds_path.write_text(
             '[user.github]\ntoken = "ghp_test_token"\n'
-            'login = "testuser"\nemail = "test@ibm.com"\n'
+            'login = "testuser"\nemail = "test@example.com"\n'
         )
 
         with patch(
@@ -429,7 +429,7 @@ class TestCredentialStorage:
     def test_check_sso_values(self, tmp_path):
         creds_path = tmp_path / "credentials"
         creds_path.write_text(
-            '[user.ibmid]\naccess_token = "at"\nid_token = "idt"\nlogin = "user"\nemail = "u@ibm.com"\n'
+            '[user.ibmid]\naccess_token = "at"\nid_token = "idt"\nlogin = "user"\nemail = "u@example.com"\n'
         )
 
         with patch(
@@ -514,7 +514,9 @@ class TestAuthLoginCommand:
                 "gbcli.commands.command_auth.local_browser_unavailable_reason",
                 return_value="this is an SSH session",
             ),
-            patch("gbcli.client.GBClient.Auth.login_sso", return_value="user@ibm.com"),
+            patch(
+                "gbcli.client.GBClient.Auth.login_sso", return_value="user@example.com"
+            ),
         ):
             result = CliRunner().invoke(login, ["--sso", "--remote"])
         assert result.exit_code == 0, result.output
@@ -556,20 +558,20 @@ class TestAuthLoginCommand:
         assert result.exit_code != 0
 
     def test_sso_ibm_invokes_sso_login(self):
-        """--sso ibm should call the IBMid proxy-based login flow."""
+        """--sso ibm should call the proxy-based SSO login flow."""
         from click.testing import CliRunner
 
         from gbcli.commands.command_auth import login
 
         runner = CliRunner()
         with patch(
-            "gbcli.client.GBClient.Auth.login_sso", return_value="user@ibm.com"
+            "gbcli.client.GBClient.Auth.login_sso", return_value="user@example.com"
         ) as mock_login:
             result = runner.invoke(login, ["--sso", "ibm"], input="y\n")
 
         mock_login.assert_called_once()
         assert mock_login.call_args.kwargs.get("open_browser") is not None
-        assert "user@ibm.com" in result.output
+        assert "user@example.com" in result.output
         assert "SSO authentication is successful" in result.output
 
     def test_sso_bare_defaults_to_ibm(self):
@@ -580,7 +582,7 @@ class TestAuthLoginCommand:
 
         runner = CliRunner()
         with patch(
-            "gbcli.client.GBClient.Auth.login_sso", return_value="user@ibm.com"
+            "gbcli.client.GBClient.Auth.login_sso", return_value="user@example.com"
         ) as mock_login:
             result = runner.invoke(login, ["--sso"], input="y\n")
 
@@ -598,7 +600,7 @@ class TestAuthLoginCommand:
             assert remote is True
             open_browser("https://gbserver.example.com/api/v1/auth/oidc/authorize?x=1")
             assert read_code() == "pasted-code"
-            return "user@ibm.com"
+            return "user@example.com"
 
         runner = CliRunner()
         with patch(
@@ -624,7 +626,7 @@ class TestAuthLoginCommand:
 
         runner = CliRunner()
         with patch(
-            "gbcli.client.GBClient.Auth.login_sso", return_value="user@ibm.com"
+            "gbcli.client.GBClient.Auth.login_sso", return_value="user@example.com"
         ) as mock_login:
             result = runner.invoke(
                 login, ["--sso", "--redirect-port", "50123"], input="y\n"
@@ -670,7 +672,7 @@ class TestAuthProviderCommand:
         creds_path = tmp_path / "credentials"
         creds_path.write_text(
             '[user]\ndefault_provider = "github"\n\n'
-            '[user.github]\ntoken = "ghp_x"\nlogin = "testuser"\nemail = "t@ibm.com"\n'
+            '[user.github]\ntoken = "ghp_x"\nlogin = "testuser"\nemail = "t@example.com"\n'
         )
 
         runner = CliRunner()
@@ -699,13 +701,13 @@ class TestAuthProviderCommand:
                 instance = MockCreds.return_value
                 instance.get.side_effect = lambda key, section="default": {
                     ("default_provider", "user"): "ibmid",
-                    ("login", "user.ibmid"): "user@ibm.com",
+                    ("login", "user.ibmid"): "user@example.com",
                 }.get((key, section))
                 result = runner.invoke(provider)
 
         assert result.exit_code == 0
         assert "sso" in result.output
-        assert "user@ibm.com" in result.output
+        assert "user@example.com" in result.output
 
     def test_provider_set_sso(self):
         """auth provider --set sso stores 'ibmid' as default_provider."""
@@ -736,7 +738,7 @@ class TestAuthProviderCommand:
             instance.get.side_effect = lambda key, section="default": {
                 ("token", "user.github"): "ghp_x",
                 ("login", "user.github"): "testuser",
-                ("email", "user.github"): "t@ibm.com",
+                ("email", "user.github"): "t@example.com",
             }.get((key, section))
             result = runner.invoke(provider, ["--set", "github"])
 

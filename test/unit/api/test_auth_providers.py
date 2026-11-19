@@ -133,16 +133,14 @@ class TestTokenFormatDetection:
         )
         payload = (
             base64.urlsafe_b64encode(
-                json.dumps(
-                    {"iss": "https://login.ibm.com/oidc/endpoint/default"}
-                ).encode()
+                json.dumps({"iss": "https://idp.example.com/oidc"}).encode()
             )
             .rstrip(b"=")
             .decode()
         )
         sig = base64.urlsafe_b64encode(b"fakesig").rstrip(b"=").decode()
         token = f"{header}.{payload}.{sig}"
-        assert _peek_jwt_issuer(token) == "https://login.ibm.com/oidc/endpoint/default"
+        assert _peek_jwt_issuer(token) == "https://idp.example.com/oidc"
 
     def test_peek_issuer_returns_none_for_opaque(self):
         assert _peek_jwt_issuer("ghp_abc123") is None
@@ -179,16 +177,16 @@ class TestGitHubAuthProvider:
         assert provider.provider_name == "github"
 
     def test_validate_success(self):
-        provider = GitHubAuthProvider(gh_domain="github.ibm.com")
+        provider = GitHubAuthProvider(gh_domain="github.example.com")
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
             "login": "testuser",
             "id": 12345,
-            "url": "https://api.github.ibm.com/users/testuser",
-            "html_url": "https://github.ibm.com/testuser",
+            "url": "https://api.github.example.com/users/testuser",
+            "html_url": "https://github.example.com/testuser",
             "name": "Test User",
-            "email": "test@ibm.com",
+            "email": "user@example.com",
         }
         mock_response.raise_for_status = MagicMock()
 
@@ -199,12 +197,12 @@ class TestGitHubAuthProvider:
 
         assert user is not None
         assert user.login == "testuser"
-        assert user.email == "test@ibm.com"
+        assert user.email == "user@example.com"
         assert user.auth_provider == "github"
         assert error == ""
 
     def test_validate_failure(self):
-        provider = GitHubAuthProvider(gh_domain="github.ibm.com")
+        provider = GitHubAuthProvider(gh_domain="github.example.com")
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = Exception("401 Unauthorized")
 
@@ -227,32 +225,32 @@ class TestOIDCAuthProvider:
         return _make_rsa_keypair()
 
     @pytest.fixture
-    def ibmid_issuer(self):
-        return "https://login.ibm.com/oidc/endpoint/default"
+    def issuer_url(self):
+        return "https://idp.example.com/oidc"
 
     def _make_provider(self, rsa_keypair, issuer):
         """Create an OIDCAuthProvider with mocked JWKS."""
         provider = OIDCAuthProvider(
             issuer=issuer,
-            jwks_uri="https://login.ibm.com/oidc/endpoint/default/jwks",
+            jwks_uri="https://idp.example.com/oidc/jwks",
             client_id="test-client-id",
         )
         return provider
 
-    def test_provider_name(self, rsa_keypair, ibmid_issuer):
-        provider = self._make_provider(rsa_keypair, ibmid_issuer)
+    def test_provider_name(self, rsa_keypair, issuer_url):
+        provider = self._make_provider(rsa_keypair, issuer_url)
         assert provider.provider_name == "ibmid"
 
-    def test_identify_valid_ibmid_jwt(self, rsa_keypair, ibmid_issuer):
-        provider = self._make_provider(rsa_keypair, ibmid_issuer)
+    def test_identify_valid_oidc_jwt(self, rsa_keypair, issuer_url):
+        provider = self._make_provider(rsa_keypair, issuer_url)
         token = _make_test_jwt(
             rsa_keypair,
-            {"iss": ibmid_issuer, "sub": "testuser", "exp": int(time.time()) + 3600},
+            {"iss": issuer_url, "sub": "testuser", "exp": int(time.time()) + 3600},
         )
         assert provider.identify_token(token) is True
 
-    def test_identify_rejects_wrong_issuer(self, rsa_keypair, ibmid_issuer):
-        provider = self._make_provider(rsa_keypair, ibmid_issuer)
+    def test_identify_rejects_wrong_issuer(self, rsa_keypair, issuer_url):
+        provider = self._make_provider(rsa_keypair, issuer_url)
         token = _make_test_jwt(
             rsa_keypair,
             {
@@ -263,22 +261,22 @@ class TestOIDCAuthProvider:
         )
         assert provider.identify_token(token) is False
 
-    def test_identify_rejects_opaque_token(self, rsa_keypair, ibmid_issuer):
-        provider = self._make_provider(rsa_keypair, ibmid_issuer)
+    def test_identify_rejects_opaque_token(self, rsa_keypair, issuer_url):
+        provider = self._make_provider(rsa_keypair, issuer_url)
         assert provider.identify_token("ghp_abc123def456") is False
 
-    def test_validate_valid_jwt(self, rsa_keypair, ibmid_issuer):
-        provider = self._make_provider(rsa_keypair, ibmid_issuer)
+    def test_validate_valid_jwt(self, rsa_keypair, issuer_url):
+        provider = self._make_provider(rsa_keypair, issuer_url)
 
         now = int(time.time())
         token = _make_test_jwt(
             rsa_keypair,
             {
-                "iss": ibmid_issuer,
-                "sub": "IBMid-12345",
-                "email": "test@ibm.com",
+                "iss": issuer_url,
+                "sub": "user-12345",
+                "email": "user@example.com",
                 "name": "Test User",
-                "preferred_username": "testuser@ibm.com",
+                "preferred_username": "testuser@example.com",
                 "aud": "test-client-id",
                 "exp": now + 3600,
                 "iat": now,
@@ -298,21 +296,21 @@ class TestOIDCAuthProvider:
             user, error = provider.validate_token(token)
 
         assert user is not None
-        assert user.login == "testuser@ibm.com"
-        assert user.email == "test@ibm.com"
+        assert user.login == "testuser@example.com"
+        assert user.email == "user@example.com"
         assert user.name == "Test User"
         assert user.auth_provider == "ibmid"
         assert error == ""
 
-    def test_validate_expired_jwt(self, rsa_keypair, ibmid_issuer):
-        provider = self._make_provider(rsa_keypair, ibmid_issuer)
+    def test_validate_expired_jwt(self, rsa_keypair, issuer_url):
+        provider = self._make_provider(rsa_keypair, issuer_url)
 
         token = _make_test_jwt(
             rsa_keypair,
             {
-                "iss": ibmid_issuer,
-                "sub": "IBMid-12345",
-                "email": "test@ibm.com",
+                "iss": issuer_url,
+                "sub": "user-12345",
+                "email": "user@example.com",
                 "aud": "test-client-id",
                 "exp": int(time.time()) - 3600,  # expired
                 "iat": int(time.time()) - 7200,
@@ -333,18 +331,18 @@ class TestOIDCAuthProvider:
         assert user is None
         assert "expired" in error.lower()
 
-    def test_validate_wrong_signature(self, rsa_keypair, ibmid_issuer):
+    def test_validate_wrong_signature(self, rsa_keypair, issuer_url):
         """Token signed with a different key should fail validation."""
-        provider = self._make_provider(rsa_keypair, ibmid_issuer)
+        provider = self._make_provider(rsa_keypair, issuer_url)
 
         # Sign with a different key
         other_key = _make_rsa_keypair()
         token = _make_test_jwt(
             other_key,
             {
-                "iss": ibmid_issuer,
-                "sub": "IBMid-12345",
-                "email": "test@ibm.com",
+                "iss": issuer_url,
+                "sub": "user-12345",
+                "email": "user@example.com",
                 "aud": "test-client-id",
                 "exp": int(time.time()) + 3600,
                 "iat": int(time.time()),
@@ -388,7 +386,7 @@ class TestBuildProviderList:
     def test_multi_mode(self):
         providers = build_provider_list("multi")
         assert len(providers) == 2
-        # IBMid should come first (JWT providers checked first)
+        # The OIDC provider comes first (JWT providers checked first)
         assert providers[0].provider_name == "ibmid"
         assert providers[1].provider_name == "github"
 
@@ -427,10 +425,10 @@ class TestUserAuthProvider:
         data = {
             "login": "testuser",
             "id": 12345,
-            "url": "https://api.github.ibm.com/users/testuser",
-            "html_url": "https://github.ibm.com/testuser",
+            "url": "https://api.github.example.com/users/testuser",
+            "html_url": "https://github.example.com/testuser",
             "name": "Test User",
-            "email": "test@ibm.com",
+            "email": "user@example.com",
         }
         user = User.model_validate(data)
         assert user.auth_provider == "github"
@@ -450,10 +448,10 @@ class TestAuthMiddlewareMultiProvider:
         mock_response.json.return_value = {
             "login": "testuser",
             "id": 12345,
-            "url": "https://api.github.ibm.com/users/testuser",
-            "html_url": "https://github.ibm.com/testuser",
+            "url": "https://api.github.example.com/users/testuser",
+            "html_url": "https://github.example.com/testuser",
             "name": "Test User",
-            "email": "test@ibm.com",
+            "email": "user@example.com",
         }
         mock_response.raise_for_status = MagicMock()
 

@@ -168,8 +168,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     * ``"apikey"``  – static API key or localhost access
     * ``"github"``  – GitHub Enterprise token (default)
-    * ``"ibmid"``   – IBMid JWT token
-    * ``"multi"``   – both GitHub and IBMid simultaneously
+    * ``"ibmid"``   – SSO (OIDC) JWT
+    * ``"multi"``   – both GitHub and SSO simultaneously
     """
 
     user_cache: dict[str, User]

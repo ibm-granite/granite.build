@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Token exchange proxy for SSO (OIDC) login; the provider is IBMid by default.
+"""Token exchange proxy for SSO (OIDC) login.
 
 The CLI is a public client and must not hold secrets. These endpoints
 let gbserver act as the confidential client that holds the
@@ -20,8 +20,8 @@ Nothing is stored, so any worker or pod can serve any step.
 Legacy polling flow, kept for older CLIs:
 1. CLI opens browser to ``/authorize`` with a PKCE code_challenge and
    a random ``state``.
-2. This endpoint redirects the browser to IBMid's authorize URL.
-3. After the user authenticates, IBMid redirects to ``/callback``.
+2. This endpoint redirects the browser to the provider's authorize URL.
+3. After the user authenticates, the provider redirects to ``/callback``.
 4. The callback exchanges the authorization code for tokens (using the
    server-side client_secret) and stores them in an in-memory session.
 5. The CLI polls ``/status`` with the ``state`` and ``code_verifier``.
@@ -102,7 +102,7 @@ def _cleanup_expired() -> None:
 
 _AUTH_COMPLETE_HTML = (
     "<html><body>"
-    "<h2>IBMid login successful.</h2>"
+    "<h2>SSO login successful.</h2>"
     "<p>You may close this tab and return to the terminal.</p>"
     "</body></html>"
 )
@@ -134,9 +134,9 @@ def authorize(
     code_challenge_method: str = Query(...),
     state: str = Query(...),
 ):
-    """Start the IBMid OIDC flow via the proxy.
+    """Start the legacy SSO flow via the proxy.
 
-    Stores the PKCE challenge and redirects the browser to IBMid.
+    Stores the PKCE challenge and redirects the browser to the provider.
     """
     if code_challenge_method != "S256":
         return JSONResponse(
@@ -178,8 +178,8 @@ def authorize(
         "scope": "openid profile email",
         "state": state,
     }
-    ibmid_url = f"{authorize_url}?{urllib.parse.urlencode(params)}"
-    return RedirectResponse(url=ibmid_url, status_code=302)
+    provider_url = f"{authorize_url}?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(url=provider_url, status_code=302)
 
 
 @auth_api.get("/callback")
@@ -189,7 +189,7 @@ def callback(
     error: Optional[str] = Query(None),
     error_description: Optional[str] = Query(None),
 ):
-    """IBMid redirects here after the user authenticates.
+    """The provider redirects here after the user authenticates.
 
     Exchanges the authorization code for tokens and stores them in the
     session so the CLI can retrieve them via ``/status``.
@@ -211,7 +211,7 @@ def callback(
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(
                 detail=html.escape(
-                    f"IBMid returned an error: {error_description or error}"
+                    f"The SSO provider returned an error: {error_description or error}"
                 )
             ),
             status_code=200,
@@ -222,7 +222,7 @@ def callback(
         session.error_detail = "No authorization code received."
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(
-                detail="No authorization code received from IBMid."
+                detail="No authorization code received from the SSO provider."
             ),
             status_code=200,
         )
@@ -260,11 +260,11 @@ def callback(
             session.status = "error"
             session.error_detail = f"Token exchange failed: {desc}"
             logger.error(
-                "IBMid token exchange failed (%s): %s", token_resp.status_code, desc
+                "SSO token exchange failed (%s): %s", token_resp.status_code, desc
             )
             return HTMLResponse(
                 content=_AUTH_ERROR_HTML_TEMPLATE.format(
-                    detail="Token exchange with IBMid failed. Please try again."
+                    detail="Token exchange with the SSO provider failed. Please try again."
                 ),
                 status_code=200,
             )
@@ -277,7 +277,7 @@ def callback(
     except Exception as e:
         session.status = "error"
         session.error_detail = f"Token exchange error: {e}"
-        logger.exception("IBMid token exchange error")
+        logger.exception("SSO token exchange error")
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(
                 detail="An error occurred during token exchange. Please try again."
@@ -295,7 +295,7 @@ def callback(
         ui_resp.raise_for_status()
         session.user_info = ui_resp.json()
     except Exception as e:
-        logger.warning("Failed to fetch IBMid userinfo: %s", e)
+        logger.warning("Failed to fetch SSO userinfo: %s", e)
         session.user_info = {}
 
     session.status = "complete"

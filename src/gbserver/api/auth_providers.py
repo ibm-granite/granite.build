@@ -166,18 +166,17 @@ class GitHubAuthProvider(AuthProvider):
 
 
 # ---------------------------------------------------------------------------
-# OIDC provider (IBMid by default)
+# OIDC provider
 # ---------------------------------------------------------------------------
 
 
 class OIDCAuthProvider(AuthProvider):
-    """Validates OIDC JWTs against the issuer's JWKS. Registered as ``"ibmid"``,
-    configured from the ``GBSERVER_IBMID_*`` settings."""
+    """Validates OIDC JWTs against the issuer's JWKS."""
 
     def __init__(
         self,
-        issuer: str = "https://login.ibm.com/oidc/endpoint/default",
-        jwks_uri: str = "https://login.ibm.com/oidc/endpoint/default/jwks",
+        issuer: str,
+        jwks_uri: str,
         client_id: str = "",
     ):
         self._issuer = issuer

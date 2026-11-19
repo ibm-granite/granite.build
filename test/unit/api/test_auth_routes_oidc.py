@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the stateless IBMid flow: /oidc/authorize, /oidc/remote-callback,
+"""Tests for the stateless SSO flow: /oidc/authorize, /oidc/remote-callback,
 /oidc/token."""
 
 import base64
@@ -21,9 +21,9 @@ from gbserver.api.auth_routes import auth_api, encode_remote_code
 ENV = {
     "GBSERVER_IBMID_CLIENT_ID": "test-client-id",
     "GBSERVER_IBMID_CLIENT_SECRET": "test-client-secret",
-    "GBSERVER_IBMID_AUTHORIZE_URL": "https://login.ibm.com/v1.0/endpoint/default/authorize",
-    "GBSERVER_IBMID_TOKEN_URL": "https://login.ibm.com/v1.0/endpoint/default/token",
-    "GBSERVER_IBMID_USERINFO_URL": "https://login.ibm.com/v1.0/endpoint/default/userinfo",
+    "GBSERVER_IBMID_AUTHORIZE_URL": "https://idp.example.com/authorize",
+    "GBSERVER_IBMID_TOKEN_URL": "https://idp.example.com/token",
+    "GBSERVER_IBMID_USERINFO_URL": "https://idp.example.com/userinfo",
     "GBSERVER_IBMID_CALLBACK_URL": "https://gbserver.example.com/api/v1/auth/callback",
 }
 REMOTE_CALLBACK = "https://gbserver.example.com/api/v1/auth/oidc/remote-callback"
@@ -62,7 +62,7 @@ def _authorize(**overrides):
     return _client().get("/oidc/authorize", params=params)
 
 
-def _ibmid_token_ok():
+def _provider_token_ok():
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {
@@ -74,9 +74,9 @@ def _ibmid_token_ok():
     return resp
 
 
-def _ibmid_userinfo_ok():
+def _provider_userinfo_ok():
     resp = MagicMock()
-    resp.json.return_value = {"sub": "IBMid-1", "email": "test@ibm.com"}
+    resp.json.return_value = {"sub": "user-1", "email": "user@example.com"}
     return resp
 
 
@@ -86,12 +86,12 @@ def _ibmid_userinfo_ok():
 
 
 class TestOIDCAuthorize:
-    def test_redirects_to_ibmid_with_pkce_passed_through(self):
+    def test_redirects_to_provider_with_pkce_passed_through(self):
         resp = _authorize()
 
         assert resp.status_code == 302
         loc = urlparse(resp.headers["location"])
-        assert loc.hostname == "login.ibm.com"
+        assert loc.hostname == "idp.example.com"
         qs = parse_qs(loc.query)
         assert qs["client_id"] == ["test-client-id"]
         assert qs["redirect_uri"] == [LOOPBACK]
@@ -175,7 +175,7 @@ class TestOIDCRemoteCallback:
         raw = base64.urlsafe_b64decode(expected + "=" * (-len(expected) % 4))
         assert json.loads(raw) == {"s": "state-1", "c": "auth-code"}
 
-    def test_ibmid_error_is_shown_escaped(self):
+    def test_provider_error_is_shown_escaped(self):
         resp = _client().get(
             "/oidc/remote-callback",
             params={
@@ -207,7 +207,7 @@ class TestOIDCRemoteCallback:
         )
         assert resp.headers["cache-control"] == "no-store"
 
-    def test_never_calls_ibmid(self):
+    def test_never_calls_provider(self):
         with patch("gbserver.api.auth_routes.requests.post") as post:
             _client().get("/oidc/remote-callback", params={"state": "s", "code": "c"})
         post.assert_not_called()
@@ -228,11 +228,12 @@ class TestOIDCToken:
     def test_redeems_with_secret_and_verifier(self):
         with (
             patch(
-                "gbserver.api.auth_routes.requests.post", return_value=_ibmid_token_ok()
+                "gbserver.api.auth_routes.requests.post",
+                return_value=_provider_token_ok(),
             ) as post,
             patch(
                 "gbserver.api.auth_routes.requests.get",
-                return_value=_ibmid_userinfo_ok(),
+                return_value=_provider_userinfo_ok(),
             ) as get,
         ):
             resp = self._post(redirect_uri=LOOPBACK)
@@ -243,7 +244,7 @@ class TestOIDCToken:
             "id_token": "idt_test",
             "refresh_token": "rt_test",
             "expires_in": 3600,
-            "user_info": {"sub": "IBMid-1", "email": "test@ibm.com"},
+            "user_info": {"sub": "user-1", "email": "user@example.com"},
         }
         assert post.call_args.args[0] == ENV["GBSERVER_IBMID_TOKEN_URL"]
         sent = post.call_args.kwargs["data"]
@@ -260,11 +261,12 @@ class TestOIDCToken:
     def test_omitted_redirect_uri_uses_remote_callback(self):
         with (
             patch(
-                "gbserver.api.auth_routes.requests.post", return_value=_ibmid_token_ok()
+                "gbserver.api.auth_routes.requests.post",
+                return_value=_provider_token_ok(),
             ) as post,
             patch(
                 "gbserver.api.auth_routes.requests.get",
-                return_value=_ibmid_userinfo_ok(),
+                return_value=_provider_userinfo_ok(),
             ),
         ):
             resp = self._post()
@@ -272,14 +274,14 @@ class TestOIDCToken:
         assert resp.status_code == 200
         assert post.call_args.kwargs["data"]["redirect_uri"] == REMOTE_CALLBACK
 
-    def test_rejects_disallowed_redirect_uri_without_calling_ibmid(self):
+    def test_rejects_disallowed_redirect_uri_without_calling_provider(self):
         with patch("gbserver.api.auth_routes.requests.post") as post:
             resp = self._post(redirect_uri="https://evil.example.com/callback")
 
         assert resp.status_code == 400
         post.assert_not_called()
 
-    def test_ibmid_rejection_maps_to_400(self):
+    def test_provider_rejection_maps_to_400(self):
         bad = MagicMock()
         bad.status_code = 400
         bad.json.return_value = {
@@ -292,7 +294,7 @@ class TestOIDCToken:
         assert resp.status_code == 400
         assert "PKCE verification failed" in resp.json()["detail"]
 
-    def test_ibmid_server_error_maps_to_502(self):
+    def test_provider_server_error_maps_to_502(self):
         bad = MagicMock()
         bad.status_code = 503
         bad.json.side_effect = ValueError("not json")
@@ -300,7 +302,7 @@ class TestOIDCToken:
             resp = self._post(redirect_uri=LOOPBACK)
         assert resp.status_code == 502
 
-    def test_ibmid_unreachable_maps_to_502(self):
+    def test_provider_unreachable_maps_to_502(self):
         with patch(
             "gbserver.api.auth_routes.requests.post",
             side_effect=ConnectionError("down"),
@@ -314,7 +316,8 @@ class TestOIDCToken:
         ui.raise_for_status.side_effect = RuntimeError("boom")
         with (
             patch(
-                "gbserver.api.auth_routes.requests.post", return_value=_ibmid_token_ok()
+                "gbserver.api.auth_routes.requests.post",
+                return_value=_provider_token_ok(),
             ),
             patch("gbserver.api.auth_routes.requests.get", return_value=ui),
         ):
@@ -365,7 +368,7 @@ class TestOIDCToken:
 
     @pytest.mark.parametrize("status", [200, 400])
     @pytest.mark.parametrize("body", [ValueError("not json"), ["a", "list"]])
-    def test_non_object_ibmid_body_is_a_clean_error(self, status, body):
+    def test_non_object_provider_body_is_a_clean_error(self, status, body):
         resp_obj = MagicMock()
         resp_obj.status_code = status
         if isinstance(body, Exception):
@@ -420,9 +423,12 @@ def test_steps_on_separate_app_instances():
     assert resp.status_code == 302
 
     with (
-        patch("gbserver.api.auth_routes.requests.post", return_value=_ibmid_token_ok()),
         patch(
-            "gbserver.api.auth_routes.requests.get", return_value=_ibmid_userinfo_ok()
+            "gbserver.api.auth_routes.requests.post", return_value=_provider_token_ok()
+        ),
+        patch(
+            "gbserver.api.auth_routes.requests.get",
+            return_value=_provider_userinfo_ok(),
         ),
     ):
         resp = TestClient(worker_b).post(
@@ -456,11 +462,12 @@ class TestMiddlewareExemption:
         with (
             patch.dict(os.environ, {"GBSERVER_AUTH_MODE": "ibmid"}),
             patch(
-                "gbserver.api.auth_routes.requests.post", return_value=_ibmid_token_ok()
+                "gbserver.api.auth_routes.requests.post",
+                return_value=_provider_token_ok(),
             ),
             patch(
                 "gbserver.api.auth_routes.requests.get",
-                return_value=_ibmid_userinfo_ok(),
+                return_value=_provider_userinfo_ok(),
             ),
         ):
             resp = client.post(
@@ -491,7 +498,7 @@ class TestMiddlewareExemption:
 
 
 def test_legacy_callback_escapes_error_description():
-    """The legacy page renders IBMid's error text; it must not be markup."""
+    """The legacy page renders the provider's error text; it must not be markup."""
     auth_routes._sessions["xss-state"] = auth_routes._AuthSession(code_challenge="c")
     resp = _client().get(
         "/callback",
