@@ -29,6 +29,7 @@ import requests
 from pydantic import BaseModel
 
 from gbcli.utils.gbconstants import GBSERVER_INSTANCE, SSO_REDIRECT_PORT
+from gbcli.utils.gbserver import _response_detail
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +147,12 @@ class _LoopbackHandler(http.server.BaseHTTPRequestHandler):
                 if error
                 else "No authorization code received from the SSO provider."
             )
-            self._respond(_LOOPBACK_ERROR_HTML_TEMPLATE, detail)
             self.server.error = detail
+            self._respond(_LOOPBACK_ERROR_HTML_TEMPLATE, detail)
         else:
-            self._respond(_LOOPBACK_DONE_HTML, "")
+            # Record first: a dropped browser connection must not lose the code.
             self.server.code = code
+            self._respond(_LOOPBACK_DONE_HTML, "")
 
     def _respond(self, template: str, detail: str) -> None:
         body = template.format(detail=html.escape(detail)).encode("utf-8")
@@ -243,7 +245,8 @@ class SSOLoginClient:
         read_code = read_code or (lambda: input("Paste the verification code: "))
         verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
         show_url(self._authorize_url(verifier, state, None))
-        for attempt in range(max(attempts, 1)):
+        attempts = max(attempts, 1)
+        for attempt in range(attempts):
             try:
                 code = decode_remote_code(read_code(), state)
                 break
@@ -279,11 +282,7 @@ class SSOLoginClient:
             f"{self.gbserver_auth_base}/oidc/token", json=payload, timeout=60
         )
         if resp.status_code != 200:
-            try:
-                detail = resp.json().get("detail", resp.text)
-            except Exception:
-                detail = resp.text
-            raise Exception(f"SSO authentication error: {detail}")
+            raise Exception(f"SSO authentication error: {_response_detail(resp)}")
         data = resp.json()
         return AuthFlowResult(
             access_token=data["access_token"],

@@ -141,6 +141,17 @@ def login(ctx, token, gbserver, sso, remote, redirect_port):
     # ---- SSO flow ----
     if sso == "ibm":
         click.echo(f"🔒 {PROJECT_NAME} SSO login")
+        if not remote:
+            reason = local_browser_unavailable_reason()
+            if reason:
+                click.echo(
+                    f"Error: can't receive the login redirect here ({reason}). "
+                    "Use 'gb auth login --sso --remote', or set BROWSER if the "
+                    "redirect can reach this machine (e.g. SSH port forwarding).",
+                    err=True,
+                )
+                ctx.exit(1)
+                return
         try:
             if remote:
 
@@ -160,21 +171,9 @@ def login(ctx, token, gbserver, sso, remote, redirect_port):
                     open_browser=_show_url, remote=True, read_code=_read_code
                 )
             else:
-                reason = local_browser_unavailable_reason()
-                if reason:
-                    click.echo(
-                        f"Error: can't receive the login redirect here ({reason}). "
-                        "Use 'gb auth login --sso --remote'.",
-                        err=True,
-                    )
-                    ctx.exit(1)
-                    return
-                runnable_browser = check_runnable_browser()
 
                 def _open_browser(url):
-                    if runnable_browser and click.confirm(
-                        "Open the browser?", default=True
-                    ):
+                    if click.confirm("Open the browser?", default=True):
                         webbrowser.open(url)
                     else:
                         click.echo(f"Open this link in the browser: {url}")

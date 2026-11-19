@@ -181,12 +181,14 @@ def get_user_token() -> str:
                 if remaining < 0:
                     sys.exit(
                         "❌ Error: SSO token has expired. "
-                        "Please re-authenticate with 'auth login --sso ibm'."
+                        "Please re-authenticate with 'auth login --sso' "
+                        "(add --remote over SSH)."
                     )
                 elif remaining < 300:
                     logger.warning(
                         "SSO access token expires in %d seconds. "
-                        "Consider re-authenticating with 'auth login --sso ibm'.",
+                        "Consider re-authenticating with 'auth login --sso' "
+                        "(add --remote over SSH).",
                         remaining,
                     )
 

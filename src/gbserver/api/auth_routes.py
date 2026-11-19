@@ -408,7 +408,7 @@ def _remote_callback_url() -> str:
     url = oidc_setting(ENV_VAR_OIDC_REMOTE_CALLBACK_URL)
     if url:
         return url
-    legacy = oidc_setting(ENV_VAR_OIDC_CALLBACK_URL)
+    legacy = oidc_setting(ENV_VAR_OIDC_CALLBACK_URL).rstrip("/")
     if legacy.endswith("/callback"):
         return legacy[: -len("/callback")] + _REMOTE_CALLBACK_PATH
     return ""
@@ -450,7 +450,8 @@ def encode_remote_code(state: str, code: str) -> str:
 
 @auth_api.get("/oidc/authorize")
 def oidc_authorize(
-    code_challenge: str = Query(...),
+    # An S256 challenge is always 43 base64url characters (RFC 7636 section 4.2).
+    code_challenge: str = Query(..., pattern=r"^[A-Za-z0-9_-]{43}$"),
     code_challenge_method: str = Query(...),
     state: str = Query(...),
     redirect_uri: Optional[str] = Query(None),
@@ -569,8 +570,12 @@ def oidc_token(body: OIDCTokenRequest):
         body_json = _json_object(token_resp)
         desc = body_json.get("error_description", body_json.get("error", ""))
         logger.error("SSO token exchange failed (%s): %s", token_resp.status_code, desc)
-        # 4xx: the provider rejected the code or verifier.
-        status_code = 400 if 400 <= token_resp.status_code < 500 else 502
+        # 4xx: the provider rejected the code or verifier, except invalid_client:
+        # gbserver's own client credentials are wrong.
+        client_error = 400 <= token_resp.status_code < 500
+        if body_json.get("error") == "invalid_client" or token_resp.status_code == 401:
+            client_error = False
+        status_code = 400 if client_error else 502
         return JSONResponse(
             status_code=status_code,
             content={
@@ -594,13 +599,17 @@ def oidc_token(body: OIDCTokenRequest):
             timeout=10,
         )
         ui_resp.raise_for_status()
-        user_info = ui_resp.json()
+        user_info = _json_object(ui_resp)
     except Exception as e:
         logger.warning("Failed to fetch SSO userinfo: %s", e)
-    return {
-        "access_token": access_token,
-        "id_token": tokens.get("id_token", ""),
-        "refresh_token": tokens.get("refresh_token", ""),
-        "expires_in": tokens.get("expires_in", 0),
-        "user_info": user_info,
-    }
+    # RFC 6749 section 5.1: token responses must not be cached.
+    return JSONResponse(
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        content={
+            "access_token": access_token,
+            "id_token": tokens.get("id_token", ""),
+            "refresh_token": tokens.get("refresh_token", ""),
+            "expires_in": tokens.get("expires_in", 0),
+            "user_info": user_info,
+        },
+    )

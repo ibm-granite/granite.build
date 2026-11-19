@@ -502,6 +502,7 @@ class TestAuthLoginCommand:
 
         assert result.exit_code == 1
         assert "SSH session" in result.output and "--remote" in result.output
+        assert "authentication failed" not in result.output
         mock_login.assert_not_called()
 
     def test_sso_remote_skips_the_local_browser_check(self):
@@ -842,7 +843,14 @@ class TestLocalBrowserUnavailableReason:
 
         env.setattr("gbcli.utils.utils.sys.platform", "linux")
         assert local_browser_unavailable_reason() == "no graphical display"
-        env.setenv("BROWSER", "wslview")
+
+    def test_browser_env_skips_the_checks(self, env):
+        """A set $BROWSER (VS Code Remote-SSH, SSH port forwarding) is trusted."""
+        from gbcli.utils.utils import local_browser_unavailable_reason
+
+        env.setenv("SSH_CONNECTION", "10.0.0.1 50000 10.0.0.2 22")
+        env.setattr("gbcli.utils.utils.sys.platform", "linux")
+        env.setenv("BROWSER", "code-browser")
         assert local_browser_unavailable_reason() is None
 
     def test_no_browser_found(self, env):

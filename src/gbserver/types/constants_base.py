@@ -56,7 +56,9 @@ _OIDC_DEFAULTS = {
 
 
 def oidc_setting(env_var: str) -> str:
-    """An ``ENV_VAR_OIDC_*`` setting, read now: the variable, else its legacy
-    ``GBSERVER_IBMID_*`` name, else the default ("" if none)."""
-    legacy = _LEGACY_OIDC_PREFIX + env_var[len(_OIDC_PREFIX) :]
-    return os.getenv(env_var) or os.getenv(legacy) or _OIDC_DEFAULTS.get(env_var, "")
+    """An ``ENV_VAR_OIDC_*`` setting, read now: the variable if set (even to
+    ""), else its legacy ``GBSERVER_IBMID_*`` name; empty means the default."""
+    value = os.environ.get(env_var)
+    if value is None:
+        value = os.environ.get(_LEGACY_OIDC_PREFIX + env_var[len(_OIDC_PREFIX) :])
+    return value or _OIDC_DEFAULTS.get(env_var, "")

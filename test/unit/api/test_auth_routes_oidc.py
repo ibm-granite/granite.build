@@ -29,6 +29,7 @@ ENV = {
 REMOTE_CALLBACK = "https://gbserver.example.com/api/v1/auth/oidc/remote-callback"
 LOOPBACK = "http://127.0.0.1:48731/callback"
 VERIFIER = "v" * 43  # RFC 7636 minimum length
+CHALLENGE = "c" * 43  # an S256 challenge is 43 base64url characters
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +57,7 @@ def _client():
 
 def _authorize(**overrides):
     params = {
-        "code_challenge": "challenge-abc",
+        "code_challenge": CHALLENGE,
         "code_challenge_method": "S256",
         "state": "state-1",
         "redirect_uri": LOOPBACK,
@@ -100,7 +101,7 @@ class TestOIDCAuthorize:
         assert qs["client_id"] == ["test-client-id"]
         assert qs["redirect_uri"] == [LOOPBACK]
         assert qs["state"] == ["state-1"]
-        assert qs["code_challenge"] == ["challenge-abc"]
+        assert qs["code_challenge"] == [CHALLENGE]
         assert qs["code_challenge_method"] == ["S256"]
         assert qs["response_type"] == ["code"]
         assert "client_secret" not in qs
@@ -109,6 +110,15 @@ class TestOIDCAuthorize:
         resp = _authorize(redirect_uri=None)
 
         assert resp.status_code == 302
+        qs = parse_qs(urlparse(resp.headers["location"]).query)
+        assert qs["redirect_uri"] == [REMOTE_CALLBACK]
+
+    def test_remote_callback_derived_despite_trailing_slash(self):
+        with patch.dict(
+            os.environ,
+            {"GBSERVER_OIDC_CALLBACK_URL": ENV["GBSERVER_OIDC_CALLBACK_URL"] + "/"},
+        ):
+            resp = _authorize(redirect_uri=None)
         qs = parse_qs(urlparse(resp.headers["location"]).query)
         assert qs["redirect_uri"] == [REMOTE_CALLBACK]
 
@@ -150,6 +160,10 @@ class TestOIDCAuthorize:
     def test_rejects_non_s256(self):
         resp = _authorize(code_challenge_method="plain")
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize("challenge", ["", "short", "c" * 44, "c" * 42 + "="])
+    def test_rejects_malformed_code_challenge(self, challenge):
+        assert _authorize(code_challenge=challenge).status_code == 422
 
     def test_requires_code_challenge(self):
         resp = _authorize(code_challenge=None)
@@ -315,6 +329,43 @@ class TestOIDCToken:
         assert resp.status_code == 502
         assert "down" not in resp.text
 
+    def test_invalid_client_is_a_server_error(self):
+        """The provider rejecting gbserver's own credentials isn't the user's fault."""
+        bad = MagicMock()
+        bad.status_code = 401
+        bad.json.return_value = {"error": "invalid_client"}
+        with patch("gbserver.api.auth_routes.requests.post", return_value=bad):
+            resp = self._post(redirect_uri=LOOPBACK)
+        assert resp.status_code == 502
+
+    def test_non_object_userinfo_is_dropped(self):
+        ui = MagicMock()
+        ui.json.return_value = ["not", "an", "object"]
+        with (
+            patch(
+                "gbserver.api.auth_routes.requests.post",
+                return_value=_provider_token_ok(),
+            ),
+            patch("gbserver.api.auth_routes.requests.get", return_value=ui),
+        ):
+            resp = self._post(redirect_uri=LOOPBACK)
+        assert resp.status_code == 200
+        assert resp.json()["user_info"] == {}
+
+    def test_token_response_is_not_cacheable(self):
+        with (
+            patch(
+                "gbserver.api.auth_routes.requests.post",
+                return_value=_provider_token_ok(),
+            ),
+            patch(
+                "gbserver.api.auth_routes.requests.get",
+                return_value=_provider_userinfo_ok(),
+            ),
+        ):
+            resp = self._post(redirect_uri=LOOPBACK)
+        assert resp.headers["cache-control"] == "no-store"
+
     def test_userinfo_failure_still_returns_tokens(self):
         ui = MagicMock()
         ui.raise_for_status.side_effect = RuntimeError("boom")
@@ -418,7 +469,7 @@ def test_steps_on_separate_app_instances():
     resp = TestClient(worker_a, follow_redirects=False).get(
         "/auth/oidc/authorize",
         params={
-            "code_challenge": "c",
+            "code_challenge": CHALLENGE,
             "code_challenge_method": "S256",
             "state": "s",
             "redirect_uri": LOOPBACK,
@@ -542,6 +593,13 @@ class TestOIDCSetting:
 
         monkeypatch.setenv("GBSERVER_IBMID_CLIENT_ID", "old")
         assert oidc_setting(ENV_VAR_OIDC_CLIENT_ID) == "old"
+
+    def test_generic_name_set_empty_still_wins(self, monkeypatch):
+        from gbserver.types.constants_base import ENV_VAR_OIDC_CLIENT_ID, oidc_setting
+
+        monkeypatch.setenv("GBSERVER_OIDC_CLIENT_ID", "")
+        monkeypatch.setenv("GBSERVER_IBMID_CLIENT_ID", "old")
+        assert oidc_setting(ENV_VAR_OIDC_CLIENT_ID) == ""
 
     def test_default_when_unset(self):
         from gbserver.types.constants_base import (
