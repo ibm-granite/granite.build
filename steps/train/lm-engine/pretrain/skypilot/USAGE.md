@@ -5,10 +5,6 @@ SkyPilot-on-Kubernetes cluster. One target is one pretraining job: it renders
 lm-engine's `config.yml` from `config.lme`, launches the run, and emits the
 checkpoints as artifacts.
 
-> **Status: scaffold.** The configuration schema below is final, but the launcher's
-> `run:` block is still a stub that exits non-zero. Until the implementation lands,
-> this step cannot run a build.
-
 Reference it from a `build.yaml` as:
 
 ```yaml

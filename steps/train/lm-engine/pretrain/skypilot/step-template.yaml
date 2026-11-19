@@ -12,11 +12,11 @@ version: 0.1.0
 # cloned at launch. The step's own Python/bash helpers live in src/ and are
 # file-mounted into the run (.gbignore keeps them out of the Jinja pass).
 #
-# SCAFFOLD. The launcher's `run:` block is deliberately a stub: the render script
-# (src/render_config.py), the checkpoint watcher (src/ckpt_watch.py), resume
-# (src/resume.py), the data check (src/data_check.py), the entry point
-# (src/run_pretrain.sh) and the monitor wiring are added by a later change. Only
-# the config schema below is final.
+# The launcher exports this config as environment variables and hands the job to
+# src/run_pretrain.sh, which renders lm-engine's config.yml (src/render_config.py)
+# from the resume decision (src/resume.py), launches torchrun, and on rank 0 runs
+# the checkpoint watcher (src/ckpt_watch.py) that emits the mid-run checkpoint
+# artifacts. The `data-check` phase runs src/data_check.py instead and exits.
 #
 type: training
 config:
@@ -84,6 +84,8 @@ environment_configs:
     launchers:
       lm-engine-pretrain:
         type: skypilot
+        monitors:
+          - skypilot_monitor
         config:
           image_id: '{{ ("docker:" ~ config.image) if config.image else "" }}'
           resources: {}
@@ -91,9 +93,97 @@ environment_configs:
           # the tree into the run's working directory (fm-tune does the same).
           file_mounts:
             src: src
-          # SCAFFOLD: replaced by the real run block (env exports, torchrun launch,
-          # checkpoint watcher, artifact markers) in a later change. It fails loudly
-          # rather than reporting success for a job that trained nothing.
+          # Nothing is computed here that the job could compute itself: this block
+          # turns `config` into the environment src/run_pretrain.sh documents, and
+          # the script owns every decision. The two render-time checks below are
+          # the exception — a config gbserver can reject when it creates the step
+          # costs no allocation.
           run: |
-            echo "lm-engine-pretrain: the run block is not implemented yet." >&2
-            exit 1
+            {#- q: shell-quote one value; a YAML null renders as empty, like an unset key. -#}
+            {%- macro q(v) -%}'{{ ("" if v is none else v) | string | replace("'", "'\"'\"'") }}'{%- endmacro -%}
+            {#- The spellings gbserver's Jinja accepts for a true flag; it has no `bool` filter. -#}
+            {%- set _true = [true, "true", "True", "1", 1] -%}
+            {%- if not config.train_dir %}{{ raise_error("lm-engine-pretrain: config.train_dir is required; set it to a path on the cluster's shared filesystem that is stable across attempts of this build.") }}{% endif %}
+            {%- if config.phase not in ["train", "data-check"] %}{{ raise_error("lm-engine-pretrain: config.phase must be 'train' or 'data-check', got '" ~ config.phase ~ "'.") }}{% endif %}
+            {#- num_nodes is the build's, not the step's: gbserver fills this block from
+                the merged config at step creation, and a build that never sets
+                compute_config gets one node. -#}
+            {%- if config.compute_config is defined and config.compute_config is not none and config.compute_config is not mapping %}{{ raise_error("lm-engine-pretrain: config.compute_config must be a mapping, got '" ~ config.compute_config ~ "'.") }}{% endif %}
+            {%- set compute = config.compute_config if (config.compute_config is defined and config.compute_config) else {} %}
+            {%- set num_nodes = (compute.get("num_nodes") or 1) | int -%}
+            # ── what the job is ──
+            export TRAIN_DIR={{ q(config.train_dir) }}
+            export LME_PHASE={{ q(config.phase) }}
+            export LME_KNOBS_JSON={{ q(config.lme | json_dumps) }}
+            export LME_RUNGS={{ q(config.ckpt_rungs) }}
+            export LME_EMIT={{ q("true" if config.emit_checkpoint_artifacts in _true else "false") }}
+            export LME_WATCH_INTERVAL={{ q(config.checkpoint_watch_interval_seconds) }}
+            export LME_RESUME_SRC={{ q(config.resume_from_checkpoint_dir) }}
+            export LME_REQUIRE_PROGRESS={{ q("true" if config.require_progress in _true else "false") }}
+            # retry_workload relaunches into the same per-run workdir, so the file
+            # handshakes under the build-stable train_dir need a name that changes per
+            # attempt. GB_SKYPILOT_CLUSTER_NAME carries the relaunch counter
+            # (gb-...-r<attempt>, skypilot.py _cluster_name_for); GB_TARGETRUN_ID and
+            # GB_SKYPILOT_LAUNCH_ID are replayed unchanged and cannot tell two attempts
+            # apart. Every node of one attempt reads the same value, which is the point.
+            export GB_ATTEMPT_TOKEN="$(printf '%s' "${GB_SKYPILOT_CLUSTER_NAME:-${GB_SKYPILOT_LAUNCH_ID:-local}}" | tr -c 'A-Za-z0-9._-' '_')"
+            # ── code facts: this step's defaults, the same on every cluster ──
+            export NCCL_TIMEOUT=10800000
+            export CUDA_DEVICE_MAX_CONNECTIONS=1
+            export PYTORCH_ALLOC_CONF=expandable_segments:True
+            export OMP_NUM_THREADS=1
+            export TOKENIZERS_PARALLELISM=false
+            export TRITON_CACHE_DIR=/tmp/triton
+            export HOME=/tmp
+            export NCCL_IGNORE_CPU_AFFINITY=1
+            export NCCL_SOCKET_NTHREADS=2
+            export CUDA_DEVICE_ORDER=PCI_BUS_ID
+            export CUDA_MODULE_LOADING=LAZY
+            export NCCL_ALGO=Ring
+            export NCCL_DEBUG={{ q(config.nccl_debug) }}
+            {%- if num_nodes > 1 %}
+            # ── cluster facts: config.nccl_env, verbatim, keys as the site file spells them ──
+            {%- for key, value in (config.nccl_env or {}) | dictsort %}
+            export {{ key }}={{ q(value) }}
+            {%- endfor %}
+            {%- else %}
+            # One node: there is no inter-node traffic to route, so InfiniBand is
+            # turned off and the cluster's nccl_env is not applied.
+            export NCCL_IB_DISABLE=1
+            {%- endif %}
+            {%- if config.wandb.project %}
+            # ── W&B: rendered only when wandb.project is set ──
+            export WANDB_PROJECT={{ q(config.wandb.project) }}
+            export WANDB_MODE={{ q(config.wandb.mode) }}
+            {%- if config.wandb.name %}
+            export WANDB_NAME={{ q(config.wandb.name) }}
+            {%- endif %}
+            {%- if config.wandb.entity %}
+            export WANDB_ENTITY={{ q(config.wandb.entity) }}
+            {%- endif %}
+            {%- endif %}
+            bash ./src/run_pretrain.sh
+    monitors:
+      skypilot_monitor:
+        # Artifact/binding convention from the shipped library, with `periodic` log
+        # retrieval: the rank-0 watcher's GB_ARTIFACT_ID lines are what dispatch the
+        # mid-run export targets, and the default on_completion mode parses the job
+        # log only once, at terminal status — which for a training run that lasts
+        # hours is long after every rung it announced.
+        ref: space://monitors/skypilot
+        config:
+          poll_interval_seconds: "{{ config.poll_interval_seconds | default(300) }}"
+          log_retrieval:
+            mode: "{{ config.log_retrieval_mode | default('periodic') }}"
+            interval_seconds: "{{ config.log_retrieval_interval_seconds | default(300) }}"
+          extra_event_configs:
+            # Progress, so a long run is visibly alive between checkpoints: the
+            # per-node banner run_pretrain.sh prints at startup, and lm-engine's own
+            # training log line (it logs `step = <n>` each log_interval).
+            - event_type: WORKLOAD_STATUS_EVENT
+              line_regex: "(lm-engine: node_rank=|step = )"
+              event_fields:
+                - field_name: status
+                  field_value_template: "RUNNING"
+                - field_name: message
+                  field_regex: ".+"

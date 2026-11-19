@@ -8,18 +8,22 @@ The SkyPilot env (kubernetes subtype: Vela) of `space://steps/train/lm-engine/pr
 one lm-engine pretraining job from scratch. The framework is described in
 [steps/README.md](../../../../README.md).
 
-**This directory is a scaffold.** The config schema in `step-template.yaml` is final;
-the launcher's `run:` block is a stub that exits non-zero, and `src/` does not exist
-yet. Do not publish the step until both are real.
+The launcher's `run:` block exports `config` as the environment
+[`src/run_pretrain.sh`](src/run_pretrain.sh) documents and hands it the job; the
+script owns every decision from there. Its handshake files (the per-attempt resume
+decision, the per-build progress baseline, the watcher's stop file) live under
+`config.train_dir`, and the reasons for each lifetime are in the script's comments.
 
 ## Layout
 
 ```
 step-template.yaml   the step: the config schema and the SkyPilot launcher
 .gbignore            files gbserver ships without Jinja-rendering (docs, src/)
-src/                 (not yet) the step's Python helpers and entry point,
+src/                 the step's Python helpers and entry point (run_pretrain.sh),
                      file-mounted into the run
-test/                Mode-1 tests of the template's contract
+test/                Mode-1 tests: the helpers, the template's contract, the
+                     rendered run block (golden_run_scripts.json) and the entry
+                     point's behaviour under stubbed python/torchrun
 USAGE.md             user docs; published as the released step's README.md
 ```
 
@@ -52,6 +56,12 @@ messages.
 ```
 cd steps/train/lm-engine/pretrain/skypilot
 GB_ENVIRONMENT=STANDALONE GB_HOME_DIR=$(mktemp -d) ../../../../../.venv/bin/pytest test -q
+```
+
+Regenerate the rendered-`run:` goldens after a deliberate template change:
+
+```
+GB_ENVIRONMENT=STANDALONE ../../../../../.venv/bin/python test/golden_run_scripts.py
 ```
 
 `GB_ENVIRONMENT` must be set (unset means `PROD`, and the suite refuses to run), and a
