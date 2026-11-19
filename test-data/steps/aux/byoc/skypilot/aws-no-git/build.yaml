@@ -21,7 +21,8 @@ granite.build:
           config:
             poll_interval_seconds: 5
             byoc_config:
-              # The image the granite-switch answerability-sr recipe uses. CUDA
+              # The image the granite-switch AWS answerability-sr recipe's
+              # parameters.yaml names for IMAGE (its default is still empty). CUDA
               # libraries do not need a GPU to load, and the clone needs none.
               image: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
               repo: "https://github.com/octocat/Hello-World.git"
