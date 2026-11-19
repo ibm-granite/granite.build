@@ -20,9 +20,12 @@ FROM ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb3896588064
 
 # uv 0.13.8 == the version in the reference image
 # us.icr.io/cil15-shared-registry/lm-engine:0.1.0-cuda-fa2cc, whose environment this
-# image reproduces. ghcr.io/astral-sh/uv:0.13.8 is
-# sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85.
+# image reproduces. Pinned by DIGEST as well as tag, like the eval families do: a tag
+# is mutable, so a tag-only pin means a rebuild -- or a pre-build scan of this layer --
+# cannot say what it actually got. The digest is the multi-arch index's, so platform
+# selection still works.
 ARG UV_VERSION=0.13.8
+ARG UV_DIGEST=sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85
 # lm-engine's own .python-version says "3.12" -- a minor-version pin, which would
 # float the patch release at build time. Pin it exactly, at the reference image's
 # interpreter: the flash-attn wheel below is cp312-only.
@@ -53,12 +56,32 @@ ENV DEBIAN_FRONTEND=noninteractive
 # is uv's standalone CPython 3.12 (which ships its own include/python3.12), not the
 # distro's python3.10. python3-dev would install 3.10 headers nothing here compiles
 # against -- the reference image carried them, redundantly.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `apt-get upgrade` FIRST, before the installs, so everything below builds against the
+# upgraded libraries. The digest pin gives a reproducible STARTING layer; it is not a
+# security boundary. At 9abcaffc -- which IS the current ubuntu:22.04, so bumping the
+# digest is not available as a fix -- libc6/libc-bin sit at 2.35-0ubuntu3.15, which a
+# trivy scan reports as six fixable MEDIUM CVEs (CVE-2026-18374, -84243, -8674,
+# -86805, -95818, -97399), resolved in jammy-updates' 2.35-0ubuntu3.18.
+#
+# Blanket, not `--only-upgrade libc6 libc-bin`, and matching the sibling image
+# steps/train/openinstruct-sft (its Dockerfile does the same): the targeted form fixes
+# the base's two packages and leaves the fixable CVEs of everything the install below
+# adds. Nothing is given up -- the install already takes whatever jammy-updates holds
+# for every package it names.
+#
+# BUILD A PUBLISHED IMAGE WITH --no-cache (`make image BUILD_ARGS=--no-cache`): a
+# cached build reuses an old upgrade layer and silently ships un-upgraded packages. See
+# the Scanning section of steps/train/openinstruct-sft/skypilot/README.md, where a
+# cached build cost a fixable CRITICAL and 44 fixable HIGHs the no-cache build did not
+# have.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
       ca-certificates git curl wget rsync netcat-openbsd gcc patch pciutils openssh-server \
       build-essential rdma-core ibverbs-providers ibverbs-utils \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION}@${UV_DIGEST} /uv /uvx /bin/
 
 # Keep the managed interpreter under /app, not /root (mode 700): SkyPilot k8s pods may
 # run this image as a non-root user, who must still be able to read it.
@@ -76,8 +99,12 @@ RUN want="$(awk '/^sha:/{print $2}' /app/UPSTREAM)" \
 RUN uv python install "$PYTHON_VERSION"
 RUN git clone "$LME_REPO" src && git -C src checkout "$LME_SHA"
 COPY patches/ /tmp/patches/
-RUN cd src && for p in /tmp/patches/*.patch; do git apply --check "$p" && git apply "$p"; done \
-    && rm -rf /tmp/patches
+# `set -e` first, and it is load-bearing: a `for` loop's exit status is the status of
+# its LAST iteration, so without it a patch that fails to apply is masked by any later
+# one that succeeds and the build ships a silently unpatched lm-engine (0001/0002 are
+# the restored IBM scalable dataloader -- losing them is a training-time fault far from
+# here). scripts/check-patches.sh, which tests/test_patches.py runs, gets this right.
+RUN set -e; cd src; for p in /tmp/patches/*.patch; do git apply --check "$p"; git apply "$p"; done; rm -rf /tmp/patches
 
 # deps only (code is on PYTHONPATH, so .git and tools/ stay available)
 RUN cd src && UV_PROJECT_ENVIRONMENT=/app/venv UV_CACHE_DIR=/tmp/uvc \
