@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
 """Tests for ``gbserver.api.environment_queue``.
 
@@ -25,6 +13,7 @@ import logging
 import textwrap
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import unquote
 
 import pytest
 from fastapi import HTTPException
@@ -264,29 +253,54 @@ def test_jobs_command_quotes_the_user():
     assert "%j" not in eq.SQUEUE_LOAD and "%k" not in eq.SQUEUE_LOAD
 
 
-# ------------------------------------------------------------ registry/asset
+# ------------------------------------------------------------- path / asset
 
 
-class TestRegistry:
-    def test_parses_config(self):
-        reg = eq._load_registry(
-            '{"cluster-a": {"space": "ops", "environment": "skypilot/slurm/cluster-a"}}'
-        )
-        assert reg == {
-            "cluster-a": eq.QueueEnvironment(
-                space="ops", env_path="skypilot/slurm/cluster-a"
-            )
-        }
+class TestParseQueueEnvironment:
+    def test_space_and_asset_path(self):
+        rec = eq.parse_queue_environment("ops", "skypilot/slurm/cluster-a/")
+        assert rec == eq.QueueEnvironment("ops", "skypilot/slurm/cluster-a")
+        assert rec.key == "ops/skypilot/slurm/cluster-a"
 
-    @pytest.mark.parametrize("raw", ["", "not json", '{"a": {"space": "x"}}', "[]"])
-    def test_bad_or_empty_config_is_empty(self, raw):
-        assert eq._load_registry(raw) == {}
-
-    def test_unknown_environment_is_404(self, monkeypatch):
-        monkeypatch.setattr(eq, "QUEUE_ENVIRONMENT_REGISTRY", {})
+    @pytest.mark.parametrize(
+        "space, path",
+        [
+            ("ops", ""),
+            ("ops", "a//b"),
+            ("ops", ".."),
+            ("ops", "a/../b"),
+            ("ops", "./a"),
+            ("ops", ".hidden"),
+            ("ops", "a b"),
+            ("ops", "a" * 300),
+            ("", "a"),
+        ],
+    )
+    def test_malformed_is_404(self, space, path):
         with pytest.raises(HTTPException) as exc:
-            eq.lookup_queue_environment("nowhere")
+            eq.parse_queue_environment(space, path)
         assert exc.value.status_code == 404
+
+
+class TestSpaceEnvironmentUri:
+    def test_db_space_uses_a_subdirectory(self, monkeypatch):
+        monkeypatch.setattr(
+            eq.db_space, "get_space_config_uri", lambda row: "db://spaces/ops"
+        )
+        assert (
+            eq.space_environment_uri(object(), "skypilot/slurm/cluster-a")
+            == "db://spaces/ops#subdirectory=environments/skypilot/slurm/cluster-a"
+        )
+
+    def test_git_space_appends_to_its_subdirectory(self, monkeypatch):
+        monkeypatch.setattr(
+            eq.db_space,
+            "get_space_config_uri",
+            lambda row: "git+ssh://git@git.example/o/ops.git@cfg#subdirectory=defs",
+        )
+        uri = eq.space_environment_uri(object(), "skypilot/slurm/cluster-a")
+        assert uri.startswith("git+ssh://git@git.example/o/ops.git@cfg")
+        assert unquote(uri).endswith("defs/environments/skypilot/slurm/cluster-a")
 
 
 ASSET = textwrap.dedent(f"""\
@@ -352,7 +366,6 @@ class TestConnectionFromEnvConfig:
     @pytest.mark.parametrize(
         "over, reason",
         [
-            ({"subtype": "lsf"}, "not slurm"),
             ({"config": {}}, "no matching"),
             (
                 {
@@ -397,13 +410,19 @@ class TestConnectionFromEnvConfig:
         assert reason in caplog.text
 
 
+def test_non_slurm_asset_is_404():
+    with pytest.raises(HTTPException) as exc:
+        eq.connection_from_env_config("x", _cfg(subtype="lsf"))
+    assert exc.value.status_code == 404 and exc.value.detail == "environment not found"
+
+
 class TestResolveConnection:
     record = eq.QueueEnvironment(space="ops", env_path="skypilot/slurm/cluster-a")
 
     @pytest.fixture(autouse=True)
     def _fakes(self, monkeypatch, asset_config):
         monkeypatch.setattr(eq, "_connections", {})
-        space = SimpleNamespace(git_repo_uri="file:///spaces/ops")
+        space = SimpleNamespace(name="ops")
         monkeypatch.setattr(
             eq,
             "get_admin_storage",
@@ -415,15 +434,15 @@ class TestResolveConnection:
         )
         monkeypatch.setattr(
             eq,
-            "get_space_environment_uri",
-            lambda repo, path: f"{repo}/environments/{path}",
+            "space_environment_uri",
+            lambda row, path: f"file:///spaces/{row.name}/environments/{path}",
         )
-        self.state = SimpleNamespace(loads=0, fail=False, threads=[])
+        self.state = SimpleNamespace(loads=[], fail=None, threads=[])
 
-        def load(_uri):
-            self.state.loads += 1
+        def load(uri):
+            self.state.loads.append(uri)
             if self.state.fail:
-                raise RuntimeError("git clone of file:///spaces/ops failed")
+                raise self.state.fail
             return asset_config, None
 
         monkeypatch.setattr(eq.Environment, "load_environment_config", load)
@@ -441,21 +460,31 @@ class TestResolveConnection:
     async def test_blocking_work_runs_off_the_loop_and_is_cached(self):
         conn, key = await eq.resolve_connection("cluster-a", self.record)
         await eq.resolve_connection("cluster-a", self.record)
-        assert self.state.threads == ["_load_asset"] and self.state.loads == 1
+        assert self.state.threads == ["_load_asset"]
+        assert self.state.loads == [
+            "file:///spaces/ops/environments/skypilot/slurm/cluster-a"
+        ]
         assert conn.username == SVC and key == "KEY-MATERIAL"
         self.key.assert_awaited_once_with("ops", "CLUSTER_A_SSH_KEY")
 
     @pytest.mark.asyncio
-    async def test_unknown_space_is_503(self):
+    async def test_unknown_space_is_404(self):
         with pytest.raises(HTTPException) as exc:
             await eq.resolve_connection(
                 "cluster-a", eq.QueueEnvironment(space="nope", env_path="p")
             )
-        assert exc.value.status_code == 503
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_path_without_an_environment_yaml_is_404(self):
+        self.state.fail = eq.UnknownEnvironmentType("environment.yaml not found")
+        with pytest.raises(HTTPException) as exc:
+            await eq.resolve_connection("cluster-a", self.record)
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_load_failure_keeps_uri_and_error_out_of_the_body(self):
-        self.state.fail = True
+        self.state.fail = RuntimeError("git clone of file:///spaces/ops failed")
         with pytest.raises(HTTPException) as exc:
             await eq.resolve_connection("cluster-a", self.record)
         assert exc.value.status_code == 503
@@ -506,12 +535,7 @@ class FakeTunnel:
 
 @pytest.fixture
 def queue(monkeypatch):
-    """One configured environment backed by a fake tunnel; caller sees `public`."""
-    monkeypatch.setattr(
-        eq,
-        "QUEUE_ENVIRONMENT_REGISTRY",
-        {"cluster-a": eq.QueueEnvironment("ops", "skypilot/slurm/cluster-a")},
-    )
+    """One environment backed by a fake tunnel; caller has `ops` and `public`."""
     monkeypatch.setattr(eq, "_snapshots", {})
     monkeypatch.setattr(eq, "_locks", {})
     monkeypatch.setattr(eq, "_connections", {})
@@ -526,7 +550,7 @@ def queue(monkeypatch):
         ),
     )
     state = SimpleNamespace(
-        tunnel=FakeTunnel(), opens=[], open_error=None, scope=["public"]
+        tunnel=FakeTunnel(), opens=[], open_error=None, scope=["ops", "public"]
     )
     monkeypatch.setattr(eq, "scope_space_name_filter", lambda request: state.scope)
 
@@ -541,14 +565,18 @@ def queue(monkeypatch):
     return state
 
 
+KEY = "ops/skypilot/slurm/cluster-a"
+URL = f"/{KEY}/queue"
+
+
 def jobs_of(client, query=""):
-    r = client.get(f"/cluster-a/queue{query}")
+    r = client.get(f"{URL}{query}")
     assert r.status_code == 200, r.text
     return {j["job_id"]: j for j in r.json()["jobs"]}
 
 
 def test_lists_the_service_accounts_jobs_and_whole_queue_counts(queue, client):
-    body = client.get("/cluster-a/queue").json()
+    body = client.get(URL).json()
     assert queue.tunnel.commands == [eq.squeue_jobs_command(SVC), eq.SQUEUE_LOAD]
     assert queue.opens[0]["key_material"] == "KEY"
     assert body["counts"] == {"running": 3, "pending": 2, "running_gpus": 40}
@@ -579,13 +607,13 @@ def test_untagged_job_fails_closed(queue, client):
 
 
 def test_space_is_compared_in_the_tags_spelling(queue, client):
-    queue.scope = ["my space"]  # the tag stores "my_space"
+    queue.scope = ["ops", "my space"]  # the tag stores "my_space"
     jobs = jobs_of(client)
     assert not jobs["101"]["redacted"] and jobs["100"]["redacted"]
 
 
-def test_no_accessible_space_redacts_everything(queue, client):
-    queue.scope = NO_ACCESSIBLE_SPACE
+def test_only_the_environments_space_redacts_everything_else(queue, client):
+    queue.scope = ["ops"]
     assert all(j["redacted"] for j in jobs_of(client).values())
 
 
@@ -599,42 +627,66 @@ def test_super_admin_sees_every_tagged_job(queue, client):
 def test_filters_run_on_the_callers_view(queue, client):
     assert list(jobs_of(client, "?mine=true")) == ["100"]
     assert jobs_of(client, "?username=bob") == {}  # hidden from this caller
-    queue.scope = ["public", "my space"]
+    queue.scope = ["ops", "public", "my space"]
     assert list(jobs_of(client, "?space=my space&state=pending")) == ["101"]
     assert list(jobs_of(client, "?gb_env=STAGING")) == ["101"]
 
 
 def test_cache_shares_one_session(queue, client):
-    client.get("/cluster-a/queue")
-    client.get("/cluster-a/queue?state=running")
+    client.get(URL)
+    client.get(f"{URL}?state=running")
     assert len(queue.opens) == 1
 
 
 def test_squeue_failure_is_503_cached_and_generic(queue, client):
     queue.tunnel = FakeTunnel(rc=1, stderr="slurm_load_jobs error: timed out")
-    r1, r2 = client.get("/cluster-a/queue"), client.get("/cluster-a/queue")
+    r1, r2 = client.get(URL), client.get(URL)
     assert (r1.status_code, r2.status_code) == (503, 503) and len(queue.opens) == 1
     assert "slurm_load_jobs" not in r1.json()["detail"]
 
 
 def test_failed_tunnel_open_clears_the_connection_cache(queue, client):
-    eq._connections["cluster-a"] = "stale"
+    eq._connections[KEY] = "stale"
     queue.open_error = HTTPException(503, "no reachable login nodes")
-    assert client.get("/cluster-a/queue").status_code == 503
-    assert "cluster-a" not in eq._connections
+    assert client.get(URL).status_code == 503
+    assert KEY not in eq._connections
 
 
 def test_ssh_error_mid_session_clears_the_connection_cache(queue, client):
-    eq._connections["cluster-a"] = "stale"
+    eq._connections[KEY] = "stale"
     queue.tunnel = FakeTunnel(run_error=SshTunnelError("session dropped"))
-    r = client.get("/cluster-a/queue")
+    r = client.get(URL)
     assert r.status_code == 503 and "dropped" not in r.json()["detail"]
-    assert "cluster-a" not in eq._connections
+    assert KEY not in eq._connections
 
 
 def test_bad_state_is_422(queue, client):
-    assert client.get("/cluster-a/queue?state=done").status_code == 422
+    assert client.get(f"{URL}?state=done").status_code == 422
 
 
-def test_unknown_environment_is_404(queue, client):
-    assert client.get("/nowhere/queue").status_code == 404
+def test_response_names_the_environment(queue, client):
+    assert client.get(URL).json()["environment"] == KEY
+
+
+@pytest.mark.parametrize("scope", [["public"], NO_ACCESSIBLE_SPACE])
+def test_space_without_access_is_404_before_any_ssh(queue, client, scope):
+    queue.scope = scope
+    r = client.get(URL)
+    assert r.status_code == 404 and r.json()["detail"] == "environment not found"
+    assert queue.opens == [] and not eq.resolve_connection.await_count
+
+
+def test_malformed_path_is_404(queue, client):
+    assert client.get("/ops/a/%2e%2e/b/queue").status_code == 404
+    assert client.get("/ops/.hidden/queue").status_code == 404
+    assert client.get("/ops/queue").status_code == 404
+
+
+def test_caches_are_bounded(monkeypatch):
+    monkeypatch.setattr(eq, "_MAX_CACHED_ENVIRONMENTS", 3)
+    cache = {"stale": 0, "a": 1, "b": 1}
+    eq._bound(cache, lambda v: v == 0)
+    assert list(cache) == ["a", "b"]
+    cache["c"] = 1
+    eq._bound(cache, lambda v: v == 0)
+    assert list(cache) == ["b", "c"]

@@ -9,7 +9,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
@@ -1218,52 +1218,6 @@ PUBLIC_SPACE_NAME = "public"
 SPACE_REPO_CONFIG_BRANCH_NAME = GB_ENVIRONMENT_CONFIG.space_config_branch_name
 SPACE_REPO_BUILD_BRANCH_NAME = "main"  # tentative- may move to a different branch name
 PUBLIC_SPACE_GIT_URI = GB_ENVIRONMENT_CONFIG.public_space_git_uri
-
-
-# Derived space environment URIs, keyed by (space repo URL, env path). Only stable
-# results are cached (file://, or git with a config branch), so a branchless or
-# failed derivation is retried once the config branch or token is healthy.
-_SPACE_ENV_URI_CACHE: Dict[Tuple[str, str], str] = {}
-
-
-def get_space_environment_uri(space_git_uri: str, env_path: str) -> str:
-    """Asset URI of ``environments/<env_path>`` in a space's config repo.
-
-    Uses the same conversion as the build path (``GitURI.get_gb_space_config_uri``).
-    Returns ``""`` when no URI can be produced (no repo, or the GitHub branch probe
-    failed), so callers can answer 503 rather than 500. Imports are function-local
-    because git.py imports this module.
-    """
-    if not space_git_uri:
-        return ""
-    cache_key = (space_git_uri, env_path)
-    cached = _SPACE_ENV_URI_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    from requests import RequestException
-
-    from gbcommon.uri.git import GitURI
-    from gbcommon.uri.uri import URI
-    from gbserver.utils.logger import get_logger
-
-    try:
-        base = GitURI.get_gb_space_config_uri(space_git_uri)
-    except (ValueError, RuntimeError, RequestException) as e:
-        get_logger(__name__).warning(
-            "failed to derive environments/%s URI from %r: %s",
-            env_path,
-            space_git_uri,
-            e,
-        )
-        return ""
-    if not base:
-        return ""
-    uri = URI.get_uri(base)
-    uri.append_path(f"environments/{env_path}")
-    resolved = str(uri)
-    if base.startswith("file://") or "@" in base.split("#", 1)[0]:
-        _SPACE_ENV_URI_CACHE[cache_key] = resolved
-    return resolved
 PUBLIC_SPACE_LH_NAMESPACE = f"{GRANITE_DOT_BUILD_PARENT_NAMESPACE}.{GB_ENVIRONMENT_CONFIG.public_space_lh_subnamespace}"
 
 # Leaving the below contants for now as they seem to be used by tests

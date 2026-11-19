@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
 
-# Copyright LLM.build Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
-"""``GET /environments/{environment}/queue``: a Slurm queue read over SSH.
+"""``GET /environments/{space}/{env_path}/queue``: a Slurm queue read over SSH.
 
-Environments come from ``GBSERVER_ENV_QUEUE_ENVIRONMENTS``. Login details are read
-from the environment asset builds launch with. The remote commands are fixed and
-every filter runs in Python.
+The environment is addressed as builds address it: a space and the asset's path
+under its ``environments/``. Login details are read from that asset, so nothing
+is configured on the server. The caller must have access to the space, and the
+asset must be a Slurm environment; anything else is a 404 that does not say which.
+The remote commands are fixed and every filter runs in Python.
 
 Trust assumption: only gbserver and its operators submit jobs as the asset's
 ``User``. Jobs are listed for that user only, so the free text in the output (job
@@ -33,7 +23,6 @@ scheduler fields only.
 """
 
 import asyncio
-import json
 import os
 import re
 import shlex
@@ -45,12 +34,14 @@ from typing import Dict, List, Literal, Optional, Set, Tuple
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
+from gbcommon.uri.uri import URI
 from gbserver.api.login_tunnel import fetch_space_ssh_key, open_login_tunnel
 from gbserver.api.utils import NO_ACCESSIBLE_SPACE, scope_space_name_filter
 from gbserver.environment import _skypilot_metadata as tagmeta
-from gbserver.environment.environment import Environment
+from gbserver.environment.environment import Environment, UnknownEnvironmentType
+from gbserver.spaces import db_space
 from gbserver.storage.singleton_storage import get_admin_storage
-from gbserver.types.constants import ENV_VAR_PREFIX, get_space_environment_uri
+from gbserver.types.constants import ENV_VAR_PREFIX
 from gbserver.types.environmentconfig import ClusterSshConfigs
 from gbserver.utils.logger import get_logger
 from gbserver.utils.ssh_tunnel import SshTunnelError
@@ -66,40 +57,56 @@ GBSERVER_ENV_QUEUE_SSH_BUDGET_S = float(os.getenv(_P + "SSH_BUDGET_S", "20"))
 GBSERVER_ENV_QUEUE_COMMAND_TIMEOUT_S = float(os.getenv(_P + "COMMAND_TIMEOUT_S", "20"))
 # Asset load and key fetch hit git and the Secret Manager; reuse them across refreshes.
 _CONNECTION_TTL_S = 600.0
+# Cache keys come from request paths: bound each cache (stale entries go first).
+_MAX_CACHED_ENVIRONMENTS = 256
 
 
-# ----------------------------------------------------------------- registry
+def _bound(cache: dict, is_stale) -> None:
+    """Make room for one more entry: drop stale ones, then the oldest inserted."""
+    if len(cache) < _MAX_CACHED_ENVIRONMENTS:
+        return
+    for k in [k for k, v in cache.items() if is_stale(v)]:
+        del cache[k]
+    while len(cache) >= _MAX_CACHED_ENVIRONMENTS:
+        del cache[next(iter(cache))]
+
+
+# ------------------------------------------------------------- environments
+
+# Segments of an asset path under environments/: no '.', '..' or empty segment.
+_ENV_PATH_RE = re.compile(
+    r"[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*"
+)
+_ENV_PATH_MAX = 256
 
 
 @dataclass(frozen=True)
 class QueueEnvironment:
-    """A queue-capable environment: which space holds it, and its asset path."""
+    """A Slurm environment asset: the space holding it, and its path in there."""
 
     space: str
     env_path: str
 
-
-def _load_registry(raw: str) -> Dict[str, QueueEnvironment]:
-    """Parse ``{"<name>": {"space": "...", "environment": "<path>"}}``; bad input → {}."""
-    try:
-        data = json.loads(raw or "{}")
-        return {
-            name: QueueEnvironment(space=v["space"], env_path=v["environment"])
-            for name, v in data.items()
-        }
-    except (ValueError, TypeError, KeyError, AttributeError) as e:
-        logger.error("ignoring malformed %sENVIRONMENTS: %s", _P, e)
-        return {}
+    @property
+    def key(self) -> str:
+        return f"{self.space}/{self.env_path}"
 
 
-QUEUE_ENVIRONMENT_REGISTRY = _load_registry(os.getenv(_P + "ENVIRONMENTS", ""))
+def _not_found() -> HTTPException:
+    # One body for every reason, so a caller can't probe spaces or asset paths.
+    return HTTPException(status.HTTP_404_NOT_FOUND, "environment not found")
 
 
-def lookup_queue_environment(environment: str) -> QueueEnvironment:
-    record = QUEUE_ENVIRONMENT_REGISTRY.get(environment)
-    if record is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "environment not found")
-    return record
+def parse_queue_environment(space_name: str, env_path: str) -> QueueEnvironment:
+    """Validate the URL's space and asset path; 404 when malformed."""
+    env_path = env_path.strip("/")
+    if (
+        not space_name
+        or len(env_path) > _ENV_PATH_MAX
+        or not _ENV_PATH_RE.fullmatch(env_path)
+    ):
+        raise _not_found()
+    return QueueEnvironment(space=space_name, env_path=env_path)
 
 
 def _unavailable(environment: str, why: str) -> HTTPException:
@@ -123,9 +130,11 @@ def connection_from_env_config(environment: str, env_config) -> QueueConnection:
 
     The host block is the one named by the asset's ``cluster``, or the only one.
     ``IdentityKey`` must name a secret; ``HostName``/``User`` must be literals.
+    A non-Slurm asset is a 404: this API has no such environment.
     """
     if (env_config.subtype or "").lower() != "slurm":
-        raise _unavailable(environment, f"subtype {env_config.subtype!r} is not slurm")
+        logger.info("[env-queue] %s: subtype %r", environment, env_config.subtype)
+        raise _not_found()
     cfg = env_config.config or {}
     hosts = (
         ClusterSshConfigs.model_validate(cfg.get("cluster_ssh_configs") or {}).slurm
@@ -159,18 +168,37 @@ def connection_from_env_config(environment: str, env_config) -> QueueConnection:
     return conn
 
 
+def space_environment_uri(row, env_path: str) -> str:
+    """URI of ``environments/<env_path>`` in a stored space's definitions.
+
+    A db-backed space gives a ``db://`` URI, read through ``db_space.local_uri``.
+    """
+    base = db_space.get_space_config_uri(row)
+    if db_space.is_db_uri(base):
+        return f"{base}#subdirectory=environments/{env_path}"
+    uri = URI.get_uri(base)
+    uri.append_path(f"environments/{env_path}")
+    return str(uri)
+
+
 def _load_asset(environment: str, record: QueueEnvironment):
-    """Space lookup, URI derivation (a GitHub probe) and asset load: all blocking."""
-    space = get_admin_storage().space_storage.get_by_name(record.space)
-    if space is None:
-        raise _unavailable(environment, f"space {record.space!r} not found")
-    uri = get_space_environment_uri(space.git_repo_uri, record.env_path)
-    if not uri:
-        raise _unavailable(environment, "environment asset URI unavailable")
+    """Space lookup, URI derivation (maybe a GitHub probe) and asset load: blocking.
+
+    An unknown space or a path with no environment.yaml is a 404; anything else
+    that fails (git, GitHub, the database) is a 503.
+    """
+    row = get_admin_storage().space_storage.get_by_name(record.space)
+    if row is None:
+        raise _not_found()
     try:
-        env_config, _ = Environment.load_environment_config(uri)
-    except Exception as e:
-        raise _unavailable(environment, f"failed to load {uri!r}: {e}") from e
+        uri = space_environment_uri(row, record.env_path)
+        with db_space.local_uri(uri, row) as local:
+            env_config, _ = Environment.load_environment_config(local)
+    except UnknownEnvironmentType as e:
+        logger.info("[env-queue] %s: %s", environment, e)
+        raise _not_found() from e
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        raise _unavailable(environment, f"failed to load the asset: {e}") from e
     return env_config
 
 
@@ -198,6 +226,7 @@ async def resolve_connection(
     except HTTPException as e:
         # A missing secret is misconfiguration, not an unknown environment.
         raise _unavailable(environment, str(e.detail)) from e
+    _bound(_connections, lambda v: v.expires <= time.monotonic())
     _connections[environment] = _ResolvedConnection(
         conn, key, time.monotonic() + _CONNECTION_TTL_S
     )
@@ -509,6 +538,8 @@ async def get_queue_snapshot(environment: str, record: QueueEnvironment) -> _Sna
     """One refresh per TTL per environment; failures are cached for the TTL too."""
     snap = _snapshots.get(environment)
     if snap is None or not _fresh(snap):
+        if environment not in _locks:
+            _bound(_locks, lambda lock: not lock.locked())
         async with _locks.setdefault(environment, asyncio.Lock()):
             snap = _snapshots.get(environment)
             if snap is None or not _fresh(snap):
@@ -516,6 +547,7 @@ async def get_queue_snapshot(environment: str, record: QueueEnvironment) -> _Sna
                     snap = await _fetch(environment, record)
                 except HTTPException as e:
                     snap = _Snapshot(fetched_at=time.monotonic(), error=e)
+                _bound(_snapshots, lambda v: not _fresh(v))
                 _snapshots[environment] = snap
     if snap.error is not None:
         raise snap.error
@@ -525,16 +557,21 @@ async def get_queue_snapshot(environment: str, record: QueueEnvironment) -> _Sna
 # --------------------------------------------------------------------- route
 
 
-async def visible_spaces(request: Request) -> Optional[Set[str]]:
-    """Caller's spaces in the tag's spelling; None means every space (super admin)."""
+async def caller_spaces(request: Request) -> Optional[Set[str]]:
+    """The caller's space names; None means every space (super admin)."""
     scope = await asyncio.to_thread(scope_space_name_filter, request)
     if isinstance(scope, str):
         # Only a super admin gets the (empty) requested filter back.
-        return None if scope == "" else {tagmeta.comment_value(scope)}
+        return None if scope == "" else {scope}
     if isinstance(scope, list):
-        return {tagmeta.comment_value(n) for n in scope}
+        return set(scope)
     assert scope is NO_ACCESSIBLE_SPACE
     return set()
+
+
+def tag_spaces(spaces: Optional[Set[str]]) -> Optional[Set[str]]:
+    """Space names in the tag's spelling: the comment writer sanitizes values."""
+    return None if spaces is None else {tagmeta.comment_value(n) for n in spaces}
 
 
 def view_for(job: QueueJob, spaces: Optional[Set[str]], caller: str) -> QueueJob:
@@ -558,10 +595,11 @@ _STATE_ARGS = {"running": "RUNNING", "pending": "PENDING"}
 _TAG_MAX = tagmeta.MAX_COMMENT_VALUE_LEN
 
 
-@queue_api.get("/{environment}/queue", response_model=QueueResponse)
+@queue_api.get("/{space_name}/{env_path:path}/queue", response_model=QueueResponse)
 async def get_environment_queue(
     request: Request,
-    environment: str,
+    space_name: str,
+    env_path: str,
     state: str = Query(
         "running,pending", max_length=32, description="Subset of: running, pending"
     ),
@@ -577,9 +615,15 @@ async def get_environment_queue(
         "whichever deployment launched them",
     ),
 ) -> QueueResponse:
-    """granite.build's running and pending jobs. ``counts`` cover the whole queue;
-    filters AND together and run on the caller's view. 503, never an empty list,
-    when the queue can't be read."""
+    """granite.build's running and pending jobs on the Slurm environment asset
+    ``environments/<env_path>`` of ``space_name``. ``counts`` cover the whole
+    queue; filters AND together and run on the caller's view. 404 unless the
+    caller has access to the space and the asset is a Slurm environment; 503,
+    never an empty list, when the queue can't be read."""
+    record = parse_queue_environment(space_name, env_path)
+    spaces = await caller_spaces(request)
+    if spaces is not None and record.space not in spaces:
+        raise _not_found()
     wanted = {s.strip().lower() for s in state.split(",") if s.strip()}
     if not wanted or not wanted <= _STATE_ARGS.keys():
         raise HTTPException(
@@ -598,17 +642,18 @@ async def get_environment_queue(
         )
         if v is not None
     }
-    record = lookup_queue_environment(environment)
-    snap = await get_queue_snapshot(environment, record)
-    spaces = await visible_spaces(request)
+    snap = await get_queue_snapshot(record.key, record)
+    visible = tag_spaces(spaces)
     caller = request.state.data["user"].login
 
-    views = (view_for(j, spaces, caller) for j in snap.jobs if j.state in wanted_states)
+    views = (
+        view_for(j, visible, caller) for j in snap.jobs if j.state in wanted_states
+    )
     jobs = [
         j for j in views if (not mine or j.mine) and _tag_matches(j.gb, tag_filters)
     ]
     return QueueResponse(
-        environment=environment,
+        environment=record.key,
         as_of=snap.as_of,
         cache_age_s=round(time.monotonic() - snap.fetched_at, 1),
         login_node=snap.login_node,

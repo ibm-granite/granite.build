@@ -135,13 +135,14 @@ Limits on the build-files REST endpoints: `GBSERVER_BUILD_FILES_DOWNLOAD_MAX_BYT
 
 ## Environment queue API
 
-`GET /api/v1/environments/{environment}/queue` reads a Slurm cluster's running and pending
-granite.build jobs over SSH. Login nodes, user and key secret come from the configured
-environment asset's `cluster_ssh_configs.slurm` host.
+`GET /api/v1/environments/{space}/{env_path}/queue` reads a Slurm cluster's running and
+pending granite.build jobs over SSH. The environment is the asset at `environments/{env_path}`
+in `{space}`; login nodes, user and key secret come from
+its `cluster_ssh_configs.slurm` host, so no server configuration names environments. It is a
+404 unless the caller has access to the space and the asset is a Slurm environment.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GBSERVER_ENV_QUEUE_ENVIRONMENTS` | `{}` | JSON map of queue environments: `{"<name>": {"space": "<space>", "environment": "<path under environments/>"}}`. Unlisted names return 404. |
 | `GBSERVER_ENV_QUEUE_CACHE_TTL_S` | `30` | One squeue refresh per environment per TTL; a failed refresh is cached too. |
 | `GBSERVER_ENV_QUEUE_SSH_BUDGET_S` | `20` | Time budget for trying the login nodes in turn. |
 | `GBSERVER_ENV_QUEUE_COMMAND_TIMEOUT_S` | `20` | Timeout per remote command. |
