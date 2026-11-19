@@ -250,8 +250,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `logit-distill`, which drops the retired `ce_coef`, `log_student_entropy`,
   `entropy_guard_drop_frac`, `entropy_guard_baseline_steps`, `entropy_guard_patience`
   and `entropy_guard_action` keys and the `GOLD_MIN_TOKENS` env (all retired with the
-  CE-anchor patch they belonged to); migrating a recipe means
-  changing its `step_uri` to the new name below and dropping those keys; the shipped recipes use the new URIs. Resume markers keep
+  CE-anchor patch they belonged to), and **refuses `loss_arm: adaptive_kld`** (the
+  vendored implementation does not compute the paper's objective; see
+  `REJECTED_LOSS_ARMS` in `render_gold_config.py`); migrating a recipe means
+  changing its `step_uri` to the new name below, dropping those keys, and switching
+  any `adaptive_kld` arm to `jsd` or `kl_interpolation`; the shipped recipes use the new URIs. Resume markers keep
   their recorded step names, so outputs written before the move are still skipped, not redone.
 
   | Was | Now `space://steps/train/distill/…` |

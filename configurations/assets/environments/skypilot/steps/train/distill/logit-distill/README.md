@@ -399,7 +399,7 @@ it silently becomes a different arm.
 |---|---|---|
 | `jsd` | mixture generalized JSD; `beta` 0.0 = forward KL, 1.0 = reverse KL | — |
 | `kl_interpolation` | convex `(1-beta)*FKL + beta*RKL` | `0 < beta < 1` (else identical to `jsd`) |
-| `adaptive_kld` | adaptive KL divergence weighting | — |
+| ~~`adaptive_kld`~~ | ~~adaptive KL divergence weighting~~ **refused**: the vendored implementation does not compute the paper's objective (arXiv 2404.02657) — see `REJECTED_LOSS_ARMS` in `render_gold_config.py` | render fails |
 | `liger_fused_jsd` | same JSD math via Liger's fused kernel; lower peak memory | — |
 | `liger_fused_kl_interpolation` | fused kernel computing the convex FKL/RKL interpolation | `0 < beta < 1` |
 | `distillm2` | DistiLLM-2, comparative: reverse KL on on-policy tokens, forward KL off | `0 < lmbda < 1` |
