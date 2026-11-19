@@ -98,6 +98,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to count as one node) is now refused, and a malformed count fails at step creation, with an
   error that names the key it came from (`compute_config.num_nodes`,
   `launchers.<name>.config.num_nodes` or `launcher_config.num_nodes`).
+- **Stateless SSO login for the CLI (#723).** `gb auth login --sso` receives the provider's
+  browser redirect on a local listener, `http://127.0.0.1:48731/callback` (`--redirect-port`
+  overrides the port). `gb auth login --sso --remote` is for a CLI that can't receive that
+  redirect, e.g. over SSH: sign in on any device and paste the verification code shown. Both use
+  new gbserver endpoints, `/api/v1/auth/oidc/{authorize,token,remote-callback}`, which keep no
+  login state, so any worker or replica can serve them. **Operators:** register
+  `http://127.0.0.1:48731/callback` and `https://<gbserver-host>/api/v1/auth/oidc/remote-callback`
+  as redirect URIs with the SSO provider, and deploy the server before the CLI: the new CLI
+  can't log in to an older gbserver, and says so before opening the browser. An older CLI
+  still works with a new gbserver, through the legacy endpoints, which still need a single
+  rest-server worker.
 
 ### Changed
 
@@ -331,6 +342,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch-time error — add the secret to `secret_names_to_use_as_env_variable` to restore
   it. (Builds whose secret bag contained a non-identifier name were already failing to
   launch on SkyPilot before this change; see Fixed.)
+- **SSO settings are now `GBSERVER_OIDC_*` (#723):** `CLIENT_ID`, `CLIENT_SECRET`,
+  `CALLBACK_URL`, `REMOTE_CALLBACK_URL`, `ISSUER`, `JWKS_URI`, `AUTHORIZE_URL`, `TOKEN_URL`,
+  `USERINFO_URL`. The legacy `GBSERVER_IBMID_*` names are still accepted; the new name wins if
+  both are set, and an empty value counts as unset.
+- **Plain `gb auth login --sso` exits right away when a local browser can't take the redirect
+  (#723)**: in an SSH session, or with no display or browser. It points to `--remote`. Set
+  `BROWSER` to skip the check, e.g. for VS Code Remote-SSH or SSH port forwarding.
 
 ### Deprecated
 
@@ -403,3 +421,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   violated SkyPilot's env-key naming rules and failed the launch. Declared secrets are
   mapped to valid env-var names via `secret_names_to_use_as_env_variable`, so hyphenated
   (and otherwise non-identifier) secret names no longer break SkyPilot launches.
+- **SSO login with several rest-server workers (#723).** Pending logins lived in one worker's
+  memory, so the browser could show "Session not found or expired" or the CLI could poll
+  `/status` without end. The new CLI uses the stateless `/oidc/*` endpoints instead.
+
+### Security
+
+- **Reflected XSS on the legacy SSO `/api/v1/auth/callback` page (#723).** The provider's
+  `error_description` was put into the HTML unescaped; it is now escaped.

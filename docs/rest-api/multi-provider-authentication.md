@@ -70,6 +70,10 @@ Unauthenticated endpoints in `src/gbserver/api/auth_routes.py` implement this: a
 
 Nothing is stored server-side, so any worker or replica can serve each request. A code can be redeemed only with the PKCE verifier of the CLI that started the login.
 
+`POST /oidc/token` is unauthenticated, and each call sends gbserver's client credentials to the provider. A call needs a valid code to succeed, but anyone who can reach gbserver can make the provider see failing requests under gbserver's `client_id`, which may count against provider-side rate limits or lockouts for all users. gbserver doesn't rate-limit this endpoint; rely on network exposure and ingress limits.
+
+The `--remote` verification code is read with hidden input, which macOS terminals cap at 1024 bytes per line. The code is base64 of the `state` and the provider's code, so a provider code longer than about 700 characters is cut off and rejected as "not valid". (The server accepts codes up to 2048 characters.)
+
 **Legacy polling flow** (CLIs before the stateless flow):
 
 | Endpoint | Purpose |
@@ -119,7 +123,7 @@ The `auth_provider` field defaults to `"github"` for backward compatibility. Dow
 | `GBSERVER_OIDC_CALLBACK_URL` | (empty) | Legacy-flow callback URL registered with the SSO provider (e.g., `https://<gbserver-host>/api/v1/auth/callback`) |
 | `GBSERVER_OIDC_REMOTE_CALLBACK_URL` | derived | `--remote` callback URL registered with the SSO provider. Defaults to `GBSERVER_OIDC_CALLBACK_URL` with `/callback` replaced by `/oidc/remote-callback`. |
 
-Each `GBSERVER_OIDC_*` variable also accepts its legacy name, `GBSERVER_IBMID_*` (read only by `oidc_setting()` in `src/gbserver/types/constants_base.py`); the new name wins if both are set.
+Each `GBSERVER_OIDC_*` variable also accepts its legacy name, `GBSERVER_IBMID_*` (read only by `oidc_setting()` in `src/gbserver/types/constants_base.py`); the new name wins if both are set. An empty value counts as unset.
 
 ### Mode Details
 
@@ -192,6 +196,8 @@ Provider name mapping (synonyms resolve to the same internal value):
 ### SSO Login Flow (Proxy-Based)
 
 `gbcli auth login --sso`:
+
+First the CLI checks that gbserver has the `/oidc/*` login: without parameters, `GET /api/v1/auth/oidc/authorize` answers 422, while an older server answers 404 and the CLI stops with an upgrade message. Then:
 
 1. CLI generates a PKCE `code_verifier`, its `code_challenge` (SHA-256), and a random `state`
 2. CLI listens on `http://127.0.0.1:48731/callback` (`--redirect-port` overrides the port)

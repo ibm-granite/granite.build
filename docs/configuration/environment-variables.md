@@ -42,7 +42,7 @@ Needed when `GBSERVER_AUTH_MODE` is `ibmid` or `multi` (see [authentication](../
 | `GBSERVER_OIDC_ISSUER` / `GBSERVER_OIDC_JWKS_URI` | built-in default | Issuer + JWKS for token validation. |
 | `GBSERVER_OIDC_AUTHORIZE_URL` / `_TOKEN_URL` / `_USERINFO_URL` | built-in default | OIDC endpoints. |
 
-Each `GBSERVER_OIDC_*` variable also accepts its legacy name, `GBSERVER_IBMID_*`; the new name wins if both are set.
+Each `GBSERVER_OIDC_*` variable also accepts its legacy name, `GBSERVER_IBMID_*`; the new name wins if both are set. An empty value counts as unset.
 
 ## SQL storage
 

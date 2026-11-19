@@ -95,6 +95,10 @@ Paste a verification code only into a `gb` you started yourself, and never
 send it to anyone: whoever started the login can use it to sign in as you. Only
 sign in through a URL that your own `gb` printed.
 
+The paste is hidden. If a long code is reported as not valid on macOS, the
+terminal's 1024-byte input line limit may have cut it; see the
+[auth design notes](../rest-api/multi-provider-authentication.md#token-exchange-proxy).
+
 ### `space` — work with spaces
 
 A space is the gbserver-side container for environments, steps, builds, and

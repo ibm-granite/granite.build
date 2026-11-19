@@ -128,6 +128,12 @@ def _browser_hitting(query_for):
 
 
 class TestSSOLoginClient:
+    @pytest.fixture(autouse=True)
+    def _server_supports_login(self):
+        """No network: assume a gbserver with the /oidc/* login."""
+        with patch("gbcli.utils.sso_auth.SSOLoginClient._check_server_supports_login"):
+            yield
+
     def test_client_uses_gbserver_auth_base(self):
         from gbcli.utils.sso_auth import SSOLoginClient
 
@@ -868,3 +874,67 @@ class TestLocalBrowserUnavailableReason:
 
         env.setattr("gbcli.utils.utils.sys.platform", "darwin")
         assert local_browser_unavailable_reason() is None
+
+
+# ---------------------------------------------------------------------------
+# Server capability probe
+# ---------------------------------------------------------------------------
+
+
+class TestServerProbe:
+    def _resp(self, status):
+        resp = MagicMock()
+        resp.status_code = status
+        return resp
+
+    def test_old_server_fails_fast_before_the_browser(self):
+        from gbcli.utils.sso_auth import SSOLoginClient
+
+        opened = []
+        with patch(
+            "gbcli.utils.sso_auth.requests.get", return_value=self._resp(404)
+        ) as get:
+            with pytest.raises(Exception, match="doesn't support this CLI's SSO login"):
+                SSOLoginClient(AUTH_BASE).login_loopback(
+                    open_browser=opened.append, port=_free_port(), timeout=1
+                )
+        assert get.call_args.args[0] == f"{AUTH_BASE}/oidc/authorize"
+        assert opened == []
+
+    def test_old_server_fails_fast_before_the_remote_prompt(self):
+        from gbcli.utils.sso_auth import SSOLoginClient
+
+        shown = []
+        with patch("gbcli.utils.sso_auth.requests.get", return_value=self._resp(404)):
+            with pytest.raises(Exception, match="doesn't support this CLI's SSO login"):
+                SSOLoginClient(AUTH_BASE).login_remote(
+                    show_url=shown.append, read_code=lambda: "unused"
+                )
+        assert shown == []
+
+    def test_current_server_passes(self):
+        """Without parameters a current server answers 422."""
+        from gbcli.utils.sso_auth import SSOLoginClient
+
+        with patch("gbcli.utils.sso_auth.requests.get", return_value=self._resp(422)):
+            SSOLoginClient(AUTH_BASE)._check_server_supports_login()
+
+    def test_unreachable_server_is_a_clear_error(self):
+        import requests
+
+        from gbcli.utils.sso_auth import SSOLoginClient
+
+        with patch(
+            "gbcli.utils.sso_auth.requests.get",
+            side_effect=requests.ConnectionError("refused"),
+        ):
+            with pytest.raises(Exception, match="Cannot reach gbserver"):
+                SSOLoginClient(AUTH_BASE)._check_server_supports_login()
+
+    def test_probe_matches_the_server(self):
+        """Contract: the real /oidc/authorize answers 422 without parameters."""
+        from fastapi.testclient import TestClient
+
+        from gbserver.api.auth_routes import auth_api
+
+        assert TestClient(auth_api).get("/oidc/authorize").status_code == 422

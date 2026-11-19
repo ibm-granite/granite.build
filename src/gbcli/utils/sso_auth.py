@@ -206,6 +206,7 @@ class SSOLoginClient:
         ``webbrowser.open``) gets the URL once the listener is up."""
         opener: Callable[[str], object] = open_browser or webbrowser.open
         port = port or SSO_REDIRECT_PORT
+        self._check_server_supports_login()
         verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
         redirect_uri = f"http://127.0.0.1:{port}/callback"
         try:
@@ -222,9 +223,11 @@ class SSOLoginClient:
             while server.code is None and server.error is None:
                 if time.time() >= deadline:
                     raise Exception(
-                        "Timed out waiting for the SSO browser redirect. If "
-                        "sign-in failed in the browser, try again; if the browser "
-                        "can't reach this machine, use 'gb auth login --sso --remote'."
+                        "Timed out waiting for the SSO browser redirect. If the "
+                        f"browser showed a redirect error, {redirect_uri} may not be "
+                        "registered with the SSO provider; ask your gbserver admin. "
+                        "If the browser can't reach this machine, use "
+                        "'gb auth login --sso --remote'."
                     )
                 server.handle_request()
         if server.error is not None:
@@ -244,6 +247,7 @@ class SSOLoginClient:
         on_bad_code = on_bad_code or (lambda msg: print(msg, file=sys.stderr))
         read_code = read_code or (lambda: input("Paste the verification code: "))
         verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
+        self._check_server_supports_login()
         show_url(self._authorize_url(verifier, state, None))
         attempts = max(attempts, 1)
         for attempt in range(attempts):
@@ -255,6 +259,19 @@ class SSOLoginClient:
                     raise
                 on_bad_code(str(e))
         return self._redeem(code, verifier, None)
+
+    def _check_server_supports_login(self) -> None:
+        """Fail fast on a gbserver without /oidc/* (it answers 404; a current
+        one answers 422 without parameters)."""
+        try:
+            resp = requests.get(f"{self.gbserver_auth_base}/oidc/authorize", timeout=10)
+        except requests.RequestException as e:
+            raise Exception(f"Cannot reach gbserver for SSO login: {e}") from e
+        if resp.status_code == 404:
+            raise Exception(
+                "This gbserver doesn't support this CLI's SSO login. Upgrade the "
+                "server, or use a gb CLI version that matches it."
+            )
 
     def _authorize_url(
         self, verifier: str, state: str, redirect_uri: Optional[str]

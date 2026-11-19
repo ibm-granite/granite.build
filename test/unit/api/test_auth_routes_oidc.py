@@ -91,6 +91,11 @@ def _provider_userinfo_ok():
 
 
 class TestOIDCAuthorize:
+    @pytest.mark.parametrize("port", [1, 65535])
+    def test_accepts_loopback_port_bounds(self, port):
+        resp = _authorize(redirect_uri=f"http://127.0.0.1:{port}/callback")
+        assert resp.status_code == 302
+
     def test_redirects_to_provider_with_pkce_passed_through(self):
         resp = _authorize()
 
@@ -148,6 +153,10 @@ class TestOIDCAuthorize:
             "https://127.0.0.1:48731/callback",
             "http://localhost:48731/callback",
             "http://127.0.0.1:48731/callback\n",
+            "http://127.0.0.1:0/callback",
+            "http://127.0.0.1:65536/callback",
+            "http://127.0.0.1:99999/callback",
+            "http://127.0.0.1:048731/callback",
             # The legacy callback: its handler expects an in-memory session.
             "https://gbserver.example.com/api/v1/auth/callback",
         ],
@@ -219,10 +228,12 @@ class TestOIDCRemoteCallback:
         assert resp.status_code == 200
         assert "denied" in resp.text
 
-    def test_code_page_is_not_cached(self):
-        resp = _client().get(
-            "/oidc/remote-callback", params={"state": "s", "code": "c"}
-        )
+    @pytest.mark.parametrize(
+        "params",
+        [{"state": "s", "code": "c"}, {"state": "s", "error": "access_denied"}],
+    )
+    def test_page_is_not_cached(self, params):
+        resp = _client().get("/oidc/remote-callback", params=params)
         assert resp.headers["cache-control"] == "no-store"
 
     def test_never_calls_provider(self):
@@ -328,6 +339,23 @@ class TestOIDCToken:
             resp = self._post(redirect_uri=LOOPBACK)
         assert resp.status_code == 502
         assert "down" not in resp.text
+
+    def test_provider_error_is_capped_and_redacted(self, caplog):
+        bad = MagicMock()
+        bad.status_code = 400
+        bad.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "code auth-code was rejected " + "x" * 500,
+        }
+        with patch("gbserver.api.auth_routes.requests.post", return_value=bad):
+            resp = self._post(redirect_uri=LOOPBACK)
+
+        detail = resp.json()["detail"]
+        assert detail.startswith("Token exchange failed: invalid_grant: code [code]")
+        assert len(detail) < 300
+        for text in (detail, caplog.text):
+            assert "auth-code" not in text
+            assert "x" * 300 not in text
 
     def test_invalid_client_is_a_server_error(self):
         """The provider rejecting gbserver's own credentials isn't the user's fault."""
@@ -459,12 +487,12 @@ class TestOIDCToken:
 
 
 def test_steps_on_separate_app_instances():
-    """Each step stands alone: authorize on one app instance and redeem on
-    another (the multi-worker case the legacy flow breaks on)."""
+    """Authorize in one worker, redeem in another with its own copy of
+    auth_routes, so no module-level state carries over."""
+    import importlib.util
+
     worker_a = FastAPI()
-    worker_a.mount("/auth", auth_api)
-    worker_b = FastAPI()
-    worker_b.mount("/auth", auth_api)
+    worker_a.mount("/auth", auth_routes.auth_api)
 
     resp = TestClient(worker_a, follow_redirects=False).get(
         "/auth/oidc/authorize",
@@ -477,14 +505,20 @@ def test_steps_on_separate_app_instances():
     )
     assert resp.status_code == 302
 
+    # Worker B: a separate module object, as in another process.
+    spec = importlib.util.spec_from_file_location(
+        "auth_routes_worker_b", auth_routes.__file__
+    )
+    worker_b_routes = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker_b_routes)
+    assert worker_b_routes.auth_api is not auth_routes.auth_api
+
+    worker_b = FastAPI()
+    worker_b.mount("/auth", worker_b_routes.auth_api)
+    # Patching requests reaches both copies.
     with (
-        patch(
-            "gbserver.api.auth_routes.requests.post", return_value=_provider_token_ok()
-        ),
-        patch(
-            "gbserver.api.auth_routes.requests.get",
-            return_value=_provider_userinfo_ok(),
-        ),
+        patch("requests.post", return_value=_provider_token_ok()),
+        patch("requests.get", return_value=_provider_userinfo_ok()),
     ):
         resp = TestClient(worker_b).post(
             "/auth/oidc/token",
@@ -594,12 +628,21 @@ class TestOIDCSetting:
         monkeypatch.setenv("GBSERVER_IBMID_CLIENT_ID", "old")
         assert oidc_setting(ENV_VAR_OIDC_CLIENT_ID) == "old"
 
-    def test_generic_name_set_empty_still_wins(self, monkeypatch):
-        from gbserver.types.constants_base import ENV_VAR_OIDC_CLIENT_ID, oidc_setting
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_counts_as_unset(self, monkeypatch, blank):
+        from gbserver.types.constants_base import (
+            ENV_VAR_OIDC_CLIENT_ID,
+            ENV_VAR_OIDC_TOKEN_URL,
+            oidc_setting,
+        )
 
-        monkeypatch.setenv("GBSERVER_OIDC_CLIENT_ID", "")
+        monkeypatch.setenv("GBSERVER_OIDC_CLIENT_ID", blank)
         monkeypatch.setenv("GBSERVER_IBMID_CLIENT_ID", "old")
-        assert oidc_setting(ENV_VAR_OIDC_CLIENT_ID) == ""
+        assert oidc_setting(ENV_VAR_OIDC_CLIENT_ID) == "old"
+        # Blank at every level: the default.
+        monkeypatch.setenv("GBSERVER_OIDC_TOKEN_URL", blank)
+        monkeypatch.setenv("GBSERVER_IBMID_TOKEN_URL", blank)
+        assert oidc_setting(ENV_VAR_OIDC_TOKEN_URL).startswith("https://")
 
     def test_default_when_unset(self):
         from gbserver.types.constants_base import (

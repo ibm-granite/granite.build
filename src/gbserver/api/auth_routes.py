@@ -366,7 +366,13 @@ def status(
 # ---------------------------------------------------------------------------
 
 # The CLI's loopback listener (RFC 8252). The provider's registration pins the port.
-_LOOPBACK_REDIRECT_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}/callback")
+_LOOPBACK_REDIRECT_RE = re.compile(r"http://127\.0\.0\.1:([1-9]\d{0,4})/callback")
+
+
+def _is_loopback_redirect(uri: str) -> bool:
+    m = _LOOPBACK_REDIRECT_RE.fullmatch(uri)
+    return m is not None and int(m.group(1)) <= 65535
+
 
 _REMOTE_CALLBACK_PATH = "/oidc/remote-callback"
 
@@ -420,9 +426,7 @@ def _resolve_redirect_uri(redirect_uri: Optional[str]) -> Optional[str]:
     remote = _remote_callback_url()
     if redirect_uri is None:
         return remote or None
-    if _LOOPBACK_REDIRECT_RE.fullmatch(redirect_uri) or (
-        remote and redirect_uri == remote
-    ):
+    if _is_loopback_redirect(redirect_uri) or (remote and redirect_uri == remote):
         return redirect_uri
     return None
 
@@ -503,6 +507,7 @@ def oidc_remote_callback(
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(detail=html.escape(detail)),
             status_code=200,
+            headers={"Cache-Control": "no-store"},
         )
     return HTMLResponse(
         content=_REMOTE_CODE_HTML_TEMPLATE.format(
@@ -511,6 +516,19 @@ def oidc_remote_callback(
         status_code=200,
         headers={"Cache-Control": "no-store"},
     )
+
+
+_ERROR_DESCRIPTION_MAX = 200
+
+
+def _provider_error_summary(body: dict, code: str) -> str:
+    """``error`` plus a capped ``error_description``, with the submitted code
+    redacted (some providers echo it)."""
+    error = str(body.get("error") or "")[:64]
+    desc = str(body.get("error_description") or "").replace(code, "[code]")
+    if len(desc) > _ERROR_DESCRIPTION_MAX:
+        desc = desc[:_ERROR_DESCRIPTION_MAX] + "…"
+    return ": ".join(part for part in (error, desc) if part)
 
 
 def _json_object(resp) -> dict:
@@ -568,7 +586,7 @@ def oidc_token(body: OIDCTokenRequest):
         )
     if token_resp.status_code != 200:
         body_json = _json_object(token_resp)
-        desc = body_json.get("error_description", body_json.get("error", ""))
+        desc = _provider_error_summary(body_json, body.code)
         logger.error("SSO token exchange failed (%s): %s", token_resp.status_code, desc)
         # 4xx: the provider rejected the code or verifier, except invalid_client:
         # gbserver's own client credentials are wrong.
