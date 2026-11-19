@@ -279,7 +279,13 @@ def build_teacher_inputs_from_texts_with_eos_control(
         for j in range(left_pad_count + len(prompt_ids)):
             labels[j] = -100
         labels_tensor = torch.tensor(labels, dtype=torch.long)
-        if pad_token_id is not None:
+        # Mask pad tokens by value only when pad != eos: gold.py sets
+        # pad_token = eos_token for models without a dedicated pad token,
+        # and masking by value then drops the appended EOS the student
+        # must learn to predict. Positional masking above already covers
+        # the prompt and left-padding; `pad()` below right-pads labels
+        # with -100.
+        if pad_token_id is not None and pad_token_id != eos_token_id:
             labels_tensor[labels_tensor == pad_token_id] = -100
         labels_list.append(labels_tensor)
 
@@ -5692,19 +5698,29 @@ class CustomGOLDTrainer(GOLDTrainer):
 
             # Create properly masked student labels (fixing batch size > 1 issue)
             student_labels = inputs["labels"].clone()
+            # Mask pad tokens by value only when pad != eos: gold.py sets
+            # pad_token = eos_token for models without a dedicated pad, and
+            # masking by value then drops the EOS the student must learn
+            # to predict. Positional masking (the collator's prompt-length
+            # boundary) already covers padding.
             if (
                 hasattr(self.processing_class, "pad_token_id")
                 and self.processing_class.pad_token_id is not None
+                and self.processing_class.pad_token_id
+                != self.processing_class.eos_token_id
             ):
                 student_labels[student_labels == self.processing_class.pad_token_id] = (
                     -100
                 )
 
             # Also mask pad tokens in teacher labels for consistency
+            # (same pad != eos guard as above)
             if (
                 hasattr(self, "teacher_tokenizer")
                 and hasattr(self.teacher_tokenizer, "pad_token_id")
                 and self.teacher_tokenizer.pad_token_id is not None
+                and self.teacher_tokenizer.pad_token_id
+                != self.teacher_tokenizer.eos_token_id
             ):
                 teacher_labels[
                     teacher_labels == self.teacher_tokenizer.pad_token_id

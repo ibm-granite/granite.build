@@ -21,28 +21,17 @@ from pathlib import Path
 
 def _gold_source() -> str:
     """The source of gold.py, read from the vendored package on disk."""
-    # The test runs from the step directory; the package is at
-    # steps/train/distill/src/gb_steps_post_training/distillation/gold.py
-    # relative to the repo root. Resolve it from this test file's location.
-    test_dir = Path(__file__).parent
+    # test file: steps/train/distill/logit-distill/skypilot/test/<this>.py
+    # gold.py:   steps/train/distill/src/gb_steps_post_training/distillation/gold.py
+    # 3 parents up from the test dir: .../logit-distill/skypilot/test -> .../distill/
     gold_path = (
-        test_dir.parent.parent  # .../logit-distill/skypilot -> .../logit-distill
-        / "src"  # no -- gold.py is under the shared src/ tree, not the step's
-    )
-    # The shared package lives at steps/train/distill/src/gb_steps_post_training/
-    gold_path = (
-        test_dir.parent.parent.parent.parent.parent
+        Path(__file__).parent.parent.parent.parent
         / "src"
         / "gb_steps_post_training"
         / "distillation"
         / "gold.py"
     )
-    if not gold_path.exists():
-        # Fall back: find it relative to the CWD (pytest runs from the step dir)
-        for candidate in Path.cwd().rglob("distillation/gold.py"):
-            if "gb_steps_post_training" in str(candidate):
-                gold_path = candidate
-                break
+    assert gold_path.exists(), f"could not find gold.py at {gold_path}"
     return gold_path.read_text()
 
 
