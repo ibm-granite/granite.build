@@ -98,49 +98,25 @@ def _resolve_cache_dir(
     return os.path.join(os.path.expanduser("~"), ".cache", "gbserver", home_leaf)
 
 
-def hf_pull_dest(cache_dir: Union[str, Path], hfuri: "HfURI") -> Path:
-    """Return the directory under *cache_dir* that *hfuri* is pulled into.
-
-    Bash, Docker and Skypilot all pull here. A model, dataset, space or bucket
-    of the same name, or on another host, never shares a directory:
-
-    - a model: ``<owner>/<repo>/<revision>``, the layout these caches have
-      always had, so existing model caches stay valid;
-    - a dataset or space: the same, under ``datasets/`` or ``spaces/``;
-    - a bucket: ``buckets/<owner>/<bucket>``;
-    - any of these on a host other than huggingface.co: under ``@<host>``, with
-      a port's ``:`` as ``_``, keeping ``:`` out of the cache's directory names
-      (``docker run -v`` and similar ``src:dst`` specs read it as a separator;
-      a host has no ``_`` of its own, so this stays unambiguous).
-
-    A path in a repo or bucket is not part of the directory: every path of one
-    repo revision or bucket pulls into its directory, behind its one download
-    lock, and lands at its own path there (``HfURI.local_path``).
-
-    No owner directory can collide with these: ``datasets``, ``spaces`` and
-    ``buckets`` are Hub URL routes (``huggingface.co/datasets``), and
-    huggingface_hub's ``validate_repo_id`` refuses an owner starting with ``@``.
+def as_hfuri(uri) -> "HfURI":
+    """Return *uri* as an ``HfURI``, parsing a URI string.
 
     Args:
-        cache_dir: The HF cache directory (:func:`get_hf_cache_dir`).
-        hfuri: The URI to pull.
+        uri: An ``HfURI`` or an ``hf://`` URI string.
 
     Returns:
-        The pull destination.
-    """
-    from gbcommon.uri.hf import HF_HOST, HF_TYPE_TO_SEGMENT, HfType
+        The ``HfURI``.
 
-    parts = []
-    host = hfuri.get_host()
-    if host != HF_HOST:
-        parts.append("@" + host.replace(":", "_"))
-    hf_type = hfuri.get_hf_type()
-    if hf_type not in (None, HfType.MODEL):
-        parts.append(HF_TYPE_TO_SEGMENT[hf_type])
-    parts += [hfuri.get_owner(), hfuri.get_repo()]
-    if hf_type != HfType.BUCKET:
-        parts.append(hfuri.get_revision())
-    return Path(cache_dir).joinpath(*parts)
+    Raises:
+        AssertionError: If ``uri`` is None or does not resolve to an HfURI.
+    """
+    from gbcommon.uri.hf import HfURI
+    from gbcommon.uri.uri import URI
+
+    assert uri is not None, "uri is required for hfstore loading"
+    hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
+    assert isinstance(hfuri, HfURI), f"expected HfURI, got: {type(hfuri)}"
+    return hfuri
 
 
 def pull_asset_hfstore(
@@ -157,7 +133,7 @@ def pull_asset_hfstore(
 
     Uses ``HfURI.pull`` to download the repo into *dest*, or only its path in
     the repo when the URI has one. When *dest* is not provided it defaults to
-    :func:`hf_pull_dest` under the cache dir.
+    ``HfURI.pull_dest`` under the cache dir.
 
     Args:
         uri: HfURI instance or URI string pointing to the model to pull.
@@ -177,18 +153,15 @@ def pull_asset_hfstore(
         AssertionError: If ``uri`` is None or does not resolve to an HfURI.
         RuntimeError: If the pull fails.
     """
-    from gbcommon.uri.hf import HfURI
     from gbcommon.uri.uri import URI
 
-    assert uri is not None, "uri is required for hfstore loading"
-    hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
-    assert isinstance(hfuri, HfURI), f"expected HfURI, got: {type(hfuri)}"
+    hfuri = as_hfuri(uri)
 
     if assetstore is not None:
         hfuri.secrets = {**(hfuri.secrets or {}), **(assetstore.get_secrets() or {})}
 
     if dest is None:
-        dest = hf_pull_dest(get_hf_cache_dir(storeload_config), hfuri)
+        dest = hfuri.pull_dest(get_hf_cache_dir(storeload_config))
     dest.mkdir(parents=True, exist_ok=True)
 
     if not hfuri.pull(dest):

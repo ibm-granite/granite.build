@@ -360,18 +360,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`hf://` inputs that differ only in type, host or bucket path no longer share files (#715).**
-  On Bash, Docker and SkyPilot, `<cache>/<owner>/<repo>/<revision>` ignored all three, so a model
-  and a same-named dataset overwrote each other's files, and on Docker both were mounted at one
-  container path. A dataset or space is now pulled under `datasets/` or `spaces/`, a bucket under
-  `buckets/<owner>/<bucket>`, and content on another host under `@<host>/`; models on
-  huggingface.co keep their dirs, so their caches stay valid. A bucket pull (Bash, Docker, K8s) now
-  keeps the bucket layout, as a repo pull does: a path is synced to `<dir>/<path>` and bound there,
-  so two paths of one bucket no longer sync into one dir, and a path that matches nothing fails the
-  pull. Docker refuses an input whose content another `cache_path` already mounted, instead of
-  failing every later container on a duplicate mount point, and passes mounts as structured bind
-  mounts, so a `:` in a path in a repo or bucket no longer breaks the volume spec. **Behavior
-  change:** cached datasets, spaces and buckets are downloaded once more into their new dirs.
+- **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
+  longer share a pull dir (#715).** `<cache>/<owner>/<repo>/<revision>` ignored all three, so a
+  model and a same-named dataset overwrote each other's files, two paths of one bucket synced into
+  one dir, and on Docker both were mounted at one container path. A dataset or space is now pulled
+  under `datasets/` or `spaces/`, each bucket input under `buckets/<owner>/<bucket>/<hash of its
+  path>`, and content on another host under `@<host>/`; models on huggingface.co keep their dirs,
+  so their caches stay valid. Docker refuses an input whose content another `cache_path` already
+  mounted, instead of failing every later container on a duplicate mount point, and passes mounts
+  as structured bind mounts, so a `:` in a path in a repo no longer breaks the volume spec. K8s
+  and LSF are unchanged. **Behavior change:** cached datasets, spaces and buckets are downloaded
+  once more into their new dirs. A dataset or space pulled before this change still sits in the
+  model layout, so if one shared an owner/repo with a model you use, delete
+  `<cache>/<owner>/<repo>/<revision>` once, or the model pull adds to its files. The cache is the
+  store's `cache_path`, else `~/.cache/gbserver/hf` (Bash, Docker) or `<shared_workdir>/hf_cache`
+  (SkyPilot).
 - **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
   memory (#657).** Before, it was always dropped on SLURM, so jobs got SkyPilot's 1 GB per CPU.
   The built-in `hfpull`/`hfpush` (10Gi) were OOM-killed on BlueVela. gbserver now reads the

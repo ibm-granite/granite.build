@@ -34,8 +34,8 @@ from gbcommon.types.constants import get_gb_home_dir
 from gbcommon.uri.uri import URI
 from gbserver.environment.environment import Environment, EventLogLineParserConfig
 from gbserver.environment.local_assets import (
+    as_hfuri,
     get_hf_cache_dir,
-    hf_pull_dest,
     pull_asset_hfstore,
     push_asset_hfstore,
 )
@@ -465,10 +465,9 @@ class Docker(Environment):
         """Download an HF snapshot and bind it through a container volume mount.
 
         Only what the input names is mounted, read-only: its pull dir
-        (``hf_pull_dest``, e.g. ``<cache_dir>/<owner>/<repo>/<revision>`` for a
-        model or ``<cache_dir>/buckets/<owner>/<bucket>`` for a bucket), or
-        the directory or file a URI's path in the repo or bucket names inside
-        it (``HfURI.local_path``). It is mounted at the same path under
+        (``HfURI.pull_dest``, e.g. ``<cache_dir>/<owner>/<repo>/<revision>``
+        for a model), or the directory or file a URI's path in the repo names
+        inside it (``HfURI.local_path``). It is mounted at the same path under
         ``/gb-hf-models``, so inputs naming different content get their own
         container paths. The pull writes real files (``local_dir``), so the
         mount needs no HF cache ``blobs/`` directory.
@@ -478,38 +477,50 @@ class Docker(Environment):
         for every later container, so that input is refused before it is
         pulled. Two ``cache_path`` values naming one directory (e.g. through a
         symlink) share its mount instead.
-        """
-        from gbcommon.uri.hf import HfURI
 
+        Args:
+            uri: The ``hf://`` input, an ``HfURI`` or a URI string.
+            binding: Unused.
+            storeload_config: The store's pull config; ``config.cache_path``
+                overrides the cache dir (``get_hf_cache_dir``).
+            assetstore: The ``Hfstore``, whose secrets authenticate the pull.
+            secrets: Unused.
+
+        Returns:
+            ``({"binding": {"path": <container path>}}, None)``: no extra step.
+
+        Raises:
+            AssertionError: If ``uri`` or ``assetstore`` is missing, or ``uri``
+                is not an ``hf://`` URI.
+            ValueError: If another ``cache_path`` already mounted this content's
+                container path from a different directory.
+            RuntimeError: If the pull fails.
+        """
         self._warn_non_default_mode(storeload_config, uri)
-        assert uri is not None, "uri is required for hfstore loading"
         assert assetstore is not None, "assetstore is required for hfstore loading"
         # Normalized here, not only in pull_asset_hfstore: the mount is checked
         # before the pull, so a refused input downloads nothing.
-        hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
-        assert isinstance(hfuri, HfURI), f"expected HfURI, got: {type(hfuri)}"
+        hfuri = as_hfuri(uri)
         cache_dir = Path(get_hf_cache_dir(storeload_config))
-        dest = hf_pull_dest(cache_dir, hfuri)
+        dest = hfuri.pull_dest(cache_dir)
         local_path = hfuri.local_path(dest)
         container_path = (
             f"{_HF_MODELS_MOUNT}/{local_path.relative_to(cache_dir).as_posix()}"
         )
-        mounted = False
-        for host_path, volume in self._extra_volumes.items():
-            if volume["bind"] != container_path:
-                continue
-            # Resolved, as in _shared_volume_for: keys are the paths as pulled.
-            if Path(host_path).resolve() != local_path.resolve():
-                raise ValueError(
-                    f"hf assetstore pull of '{hfuri}': {local_path} would be "
-                    f"mounted at {container_path}, where {host_path} already is. "
-                    "Docker refuses two mounts at one container path, so pull "
-                    "the same hf:// content through one cache_path in this "
-                    "environment."
-                )
-            mounted = True
+        mounted = next(
+            (h for h, v in self._extra_volumes.items() if v["bind"] == container_path),
+            None,
+        )
+        # Resolved, as in _shared_volume_for: keys are the paths as pulled.
+        if mounted is not None and Path(mounted).resolve() != local_path.resolve():
+            raise ValueError(
+                f"hf assetstore pull of '{hfuri}': {local_path} would be mounted "
+                f"at {container_path}, where {mounted} already is. Docker "
+                "refuses two mounts at one container path, so pull the same "
+                "hf:// content through one cache_path in this environment."
+            )
         pull_asset_hfstore(hfuri, assetstore, storeload_config, dest=dest)
-        if not mounted:
+        if mounted is None:
             self._extra_volumes[str(local_path)] = {
                 "bind": container_path,
                 "mode": "ro",

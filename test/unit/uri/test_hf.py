@@ -6,7 +6,6 @@
 
 import json
 import os
-from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -775,12 +774,9 @@ class TestHfURIBucketPullUnit:
         MockApi.return_value.sync_bucket.assert_called_once_with(
             source="hf://buckets/org/my-bucket",
             dest=str(tmp_path),
-            include=None,
         )
 
     def test_with_path_in_repo(self, tmp_path, monkeypatch):
-        """The bucket layout is kept, as in a repo pull: the root is synced,
-        filtered to the path, so the path lands at dest/<path>."""
         monkeypatch.delenv("HF_TOKEN", raising=False)
         uri = HfURI.from_parts(
             owner="org",
@@ -789,27 +785,11 @@ class TestHfURIBucketPullUnit:
             path_in_repo="data/train",
         )
 
-        def fake_sync(**kwargs):
-            (Path(kwargs["dest"]) / "data" / "train").mkdir(parents=True)
-
         with patch("gbcommon.uri.hf.HfApi") as MockApi:
-            MockApi.return_value.sync_bucket.side_effect = fake_sync
-            assert uri.pull(tmp_path) is True
+            uri.pull(tmp_path)
 
-        MockApi.return_value.sync_bucket.assert_called_once_with(
-            source="hf://buckets/org/my-bucket",
-            dest=str(tmp_path),
-            include=["data/train", "data/train/*"],
-        )
-        assert uri.local_path(tmp_path) == tmp_path / "data" / "train"
-
-    def test_path_that_matches_nothing_fails(self, tmp_path, monkeypatch):
-        """A bucket path the sync didn't download fails the pull, as for a repo."""
-        monkeypatch.delenv("HF_TOKEN", raising=False)
-        uri = HfURI.parse("hf:///buckets/org/my-bucket/no/such/dir")
-
-        with patch("gbcommon.uri.hf.HfApi"):
-            assert uri.pull(tmp_path) is False
+        _, kwargs = MockApi.return_value.sync_bucket.call_args
+        assert kwargs["source"] == "hf://buckets/org/my-bucket/data/train"
 
     def test_does_not_call_snapshot_download(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HF_TOKEN", raising=False)

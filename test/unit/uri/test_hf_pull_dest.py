@@ -5,18 +5,23 @@
 A model on huggingface.co keeps the ``<owner>/<repo>/<revision>`` layout, so
 existing caches stay valid. Other types and other hosts get a directory of
 their own, so a model never shares one with a dataset, space or bucket of the
-same name. Paths of one repo or bucket share its directory, where each lands at
-its own path (#715).
+same name. Each bucket input gets its own directory, named by its path, so no
+two bucket pull dirs nest (#715).
 """
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
 from gbcommon.uri.hf import HfURI
-from gbserver.environment.local_assets import hf_pull_dest
 
 _CACHE = Path("/cache")
+
+
+def _leaf(path_in_bucket: str) -> str:
+    """The directory a bucket input is pulled into, under its bucket."""
+    return hashlib.sha256(path_in_bucket.encode()).hexdigest()[:16]
 
 
 @pytest.mark.parametrize(
@@ -27,8 +32,9 @@ _CACHE = Path("/cache")
         ("hf:///org/r/main/config.json", "org/r/main"),
         ("hf:///datasets/org/r/main", "datasets/org/r/main"),
         ("hf:///spaces/org/r/main/app.py", "spaces/org/r/main"),
-        ("hf:///buckets/org/b", "buckets/org/b"),
-        ("hf:///buckets/org/b/sub/x", "buckets/org/b"),
+        ("hf:///buckets/org/b", f"buckets/org/b/{_leaf('')}"),
+        ("hf:///buckets/org/b/sub/x", f"buckets/org/b/{_leaf('sub/x')}"),
+        ("hf:///buckets/org/b//sub/x/", f"buckets/org/b/{_leaf('sub/x')}"),
         ("hf://hf.example.com/org/r", "@hf.example.com/org/r/main"),
         (
             "hf://hf.example.com:8443/datasets/org/r/v1",
@@ -43,46 +49,43 @@ _CACHE = Path("/cache")
         "space",
         "bucket",
         "bucket-path",
+        "bucket-path-slashes",
         "other-host",
         "other-host-port",
     ],
 )
-def test_hf_pull_dest(uri, dest):
-    assert hf_pull_dest(_CACHE, HfURI.parse(uri)) == _CACHE / dest
+def test_pull_dest(uri, dest):
+    assert HfURI.parse(uri).pull_dest(_CACHE) == _CACHE / dest
 
 
-def test_hf_pull_dest_keeps_types_and_hosts_apart():
-    """One owner/repo as a model, dataset, space, bucket and on another host: no
-    two share a pull dir or nest in another's."""
+def test_pull_dest_keeps_types_hosts_and_bucket_inputs_apart():
+    """One owner/repo as a model, dataset, space, on another host, and as a
+    whole bucket and two nested paths of it: no two share a pull dir or nest in
+    another's, so each pull has its own lock and its own files."""
     uris = [
         "hf:///org/r/main",
         "hf:///datasets/org/r/main",
         "hf:///spaces/org/r/main",
         "hf://hf.example.com/org/r/main",
         "hf:///buckets/org/r",
+        "hf:///buckets/org/r/a",
+        "hf:///buckets/org/r/a/b",
     ]
-    dests = [hf_pull_dest(_CACHE, HfURI.parse(uri)) for uri in uris]
+    dests = [HfURI.parse(uri).pull_dest(_CACHE) for uri in uris]
     assert len(set(dests)) == len(dests)
     for a in dests:
         for b in dests:
             assert a == b or not b.is_relative_to(a), (a, b)
 
 
-@pytest.mark.parametrize(
-    "uris",
-    [
-        ("hf:///buckets/org/b", "hf:///buckets/org/b/a", "hf:///buckets/org/b/a/x"),
-        ("hf:///datasets/org/r/main/a", "hf:///datasets/org/r/main/b"),
-    ],
-    ids=["bucket", "repo"],
-)
-def test_paths_of_one_repo_share_its_pull_dir(uris):
-    """Every path of a bucket or repo pulls into one dir, behind one lock, and
-    is bound at its own path there, so nested paths never nest pull dirs."""
-    hfuris = [HfURI.parse(uri) for uri in uris]
-    dests = {hf_pull_dest(_CACHE, hfuri) for hfuri in hfuris}
-    assert len(dests) == 1
+def test_paths_of_one_repo_share_its_pull_dir():
+    """Every path of one repo revision pulls into its dir, behind one lock, and
+    is bound at its own path there."""
+    hfuris = [
+        HfURI.parse(uri)
+        for uri in ("hf:///datasets/org/r/main/a", "hf:///datasets/org/r/main/b")
+    ]
+    dests = {hfuri.pull_dest(_CACHE) for hfuri in hfuris}
+    assert dests == {_CACHE / "datasets" / "org" / "r" / "main"}
     (dest,) = dests
-    bound = [hfuri.local_path(dest) for hfuri in hfuris]
-    assert len(set(bound)) == len(bound)
-    assert all(path.is_relative_to(dest) for path in bound)
+    assert [hfuri.local_path(dest) for hfuri in hfuris] == [dest / "a", dest / "b"]

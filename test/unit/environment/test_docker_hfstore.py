@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import hashlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -159,8 +160,10 @@ async def test_pullasset_hfstore_mounts_only_the_path_in_the_repo(
 async def test_pullasset_hfstore_mounts_only_the_path_in_a_bucket(
     docker_env, hf_storeload_config, tmp_path
 ):
-    """A bucket is pulled into its own dir with the bucket layout kept, so only
-    the input's path is mounted, not the whole bucket or a same-named model."""
+    """Each bucket input is synced into a pull dir of its own (named by its
+    path), so only that path is mounted, not the whole bucket, another path of
+    it, or a same-named model."""
+    leaf = hashlib.sha256(b"sub").hexdigest()[:16]
     with patch.object(HfURI, "pull", return_value=True) as mock_pull:
         binding_config, _ = await docker_env.pullasset_hfstore(
             uri=HfURI.parse("hf:///buckets/org/b/sub"),
@@ -168,12 +171,11 @@ async def test_pullasset_hfstore_mounts_only_the_path_in_a_bucket(
             storeload_config=hf_storeload_config,
         )
 
-    bucket_dir = tmp_path / "hf-cache" / "buckets" / "org" / "b"
-    assert mock_pull.call_args[0][0] == bucket_dir
-    bound = "/gb-hf-models/buckets/org/b/sub"
+    host = tmp_path / "hf-cache" / "buckets" / "org" / "b" / leaf
+    assert mock_pull.call_args[0][0] == host
+    bound = f"/gb-hf-models/buckets/org/b/{leaf}"
     assert binding_config[BINDING_KEY]["path"] == bound
-    host = str(bucket_dir / "sub")
-    assert docker_env._extra_volumes == {host: {"bind": bound, "mode": "ro"}}
+    assert docker_env._extra_volumes == {str(host): {"bind": bound, "mode": "ro"}}
 
 
 @pytest.mark.asyncio
@@ -766,7 +768,8 @@ def test_pull_asset_hfstore_raises_on_no_uri():
 
 
 def test_pull_asset_hfstore_bucket_cache_path_omits_revision(tmp_path):
-    """A bucket is pulled under buckets/, with no revision segment."""
+    """A bucket is pulled under buckets/, with no revision segment, into a dir
+    named by its (here empty) path, and is bound at that dir."""
     uri = HfURI.from_parts(owner="org", repo="my-bucket", hf_type=HfType.BUCKET)
     store = MagicMock()
     store.get_secrets.return_value = {}
@@ -776,7 +779,8 @@ def test_pull_asset_hfstore_bucket_cache_path_omits_revision(tmp_path):
     with patch.object(HfURI, "pull", return_value=True):
         result = pull_asset_hfstore(uri, store, sc)
 
-    assert result == tmp_path / "cache" / "buckets" / "org" / "my-bucket"
+    leaf = hashlib.sha256(b"").hexdigest()[:16]
+    assert result == tmp_path / "cache" / "buckets" / "org" / "my-bucket" / leaf
 
 
 @pytest.mark.asyncio

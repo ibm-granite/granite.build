@@ -130,12 +130,13 @@ and translates it to Docker container limits:
   env vars. Wire a resolved binding into the container explicitly, e.g. via `launcher_config.env` using
   `{{ bindings.<name>.binding.path }}`. For HuggingFace inputs loaded via the `hf` asset store, what
   the input names is bind-mounted read-only, and the binding is the in-container path: the pull dir,
-  or the file or directory a URI's path in the repo or bucket names inside it, at the same path
-  under `/gb-hf-models` as under the cache dir. A model's pull dir is `<owner>/<repo>/<revision>`
+  or the file or directory a URI's path in the repo names inside it, at the same path under
+  `/gb-hf-models` as under the cache dir. A model's pull dir is `<owner>/<repo>/<revision>`
   (e.g. `/gb-hf-models/<owner>/<repo>/<revision>/<path>`); a dataset's or space's is the same under
-  `datasets/` or `spaces/`; a bucket's is `buckets/<owner>/<bucket>`, with the bucket layout kept
-  under it; and content on a host other than huggingface.co sits under `@<host>/` (a port's `:`
-  becomes `_`). Inputs naming different content therefore get their own mounts. The same content
+  `datasets/` or `spaces/`; each bucket input has its own, `buckets/<owner>/<bucket>/<hash>` (the
+  hash names its path in the bucket, whose contents are synced there); and content on a host other
+  than huggingface.co sits under `@<host>/` (a port's `:` becomes `_`). Inputs naming different
+  content therefore get their own mounts. The same content
   pulled through two `cache_path` values would need two mounts at one container path, so the second
   input is refused before it is pulled (unless both name one directory, e.g. through a symlink).
   Mounts are passed to Docker as structured bind mounts, so a `:` in a path is fine. `env://` inputs (a

@@ -6114,9 +6114,9 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         A bucket input is refused: both download paths use ``hf download``,
         which has no bucket repo type.
         """
-        from gbcommon.uri.hf import HfType, HfURI
+        from gbcommon.uri.hf import HfType
         from gbserver.asset.hfstore import Hfstore
-        from gbserver.environment.local_assets import get_hf_cache_dir, hf_pull_dest
+        from gbserver.environment.local_assets import as_hfuri, get_hf_cache_dir
 
         assert isinstance(
             assetstore, Hfstore
@@ -6124,7 +6124,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
 
         self._warn_non_default_mode(storeload_config, uri)
 
-        hfuri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
+        hfuri = as_hfuri(uri)
         if hfuri.get_hf_type() == HfType.BUCKET:
             # Refuse here, before a cluster is launched for this input, rather
             # than fail later on the CLI's argument parsing.
@@ -6140,7 +6140,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             self._worker_cache_dir(storeload_config, get_hf_cache_dir, "hf", uri)
         )
         # The same pull dir as bash and docker, apart per type and host.
-        binding_path = hf_pull_dest(cache_dir, hfuri)
+        binding_path = hfuri.pull_dest(cache_dir)
 
         hf_token = assetstore.resolve_token(hfuri) or ""
         # The pull keeps the repo layout under binding_path; a path in the repo

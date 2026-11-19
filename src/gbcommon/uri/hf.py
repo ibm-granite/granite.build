@@ -4,6 +4,7 @@
 
 """URI referring to models/datasets/spaces/etc. in HuggingFace Hub"""
 
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Self, Tuple
+from typing import Any, Iterator, List, Optional, Self, Tuple, Union
 
 from huggingface_hub import (
     HfApi,
@@ -1011,15 +1012,62 @@ class HfURI(URI):
     def local_path(self, dest: Path) -> Path:
         """Where this URI's content is once :meth:`pull` has downloaded to *dest*.
 
-        A pull keeps the repo (or bucket) layout under *dest*, so a path in the
-        repo is bound at ``dest/<path_in_repo>``; without one it is *dest*
-        itself.
+        A pull keeps the repo layout under *dest*, so a path in the repo is
+        bound at ``dest/<path_in_repo>``; without one it is *dest* itself.
+        Buckets sync the path's contents into *dest*, so for them it is always
+        *dest*.
 
         :param dest: The pull destination (the hfpull ``--local-dir``).
         :returns: The path to bind.
         """
         path = self.get_path_in_repo().strip("/")
-        return Path(dest) / path if path else Path(dest)
+        if not path or self.get_hf_type() == HfType.BUCKET:
+            return Path(dest)
+        return Path(dest) / path
+
+    def pull_dest(self, cache_dir: Union[str, Path]) -> Path:
+        """The directory under *cache_dir* that this URI is pulled into.
+
+        Used by the Bash, Docker and Skypilot environments (K8s and LSF key
+        their pull dirs on :meth:`hash` instead). A model, dataset, space or
+        bucket of the same name, or on another host, never shares a directory:
+
+        - a model: ``<owner>/<repo>/<revision>``, the layout these caches have
+          always had, so existing model caches stay valid;
+        - a dataset or space: the same, under ``datasets/`` or ``spaces/``;
+        - a bucket: ``buckets/<owner>/<bucket>/<hash>``, where the hash names
+          the path in the bucket. A bucket pull syncs that path's contents into
+          the directory, so each bucket input gets one of its own, and no two
+          nest: a whole bucket and a path in it never share a download lock or
+          write the same files;
+        - any of these on a host other than huggingface.co: under ``@<host>``,
+          with a port's ``:`` as ``_``, keeping ``:`` out of the cache's
+          directory names (``docker run -v`` and similar ``src:dst`` specs read
+          it as a separator; a host has no ``_`` of its own).
+
+        Every path of one repo revision shares its directory, behind one
+        download lock, and lands at its own path there (:meth:`local_path`).
+        No owner directory can collide with these: ``datasets``, ``spaces`` and
+        ``buckets`` are Hub URL routes (``huggingface.co/datasets``), and
+        huggingface_hub's ``validate_repo_id`` refuses an owner starting with
+        ``@``.
+
+        :param cache_dir: The HF cache directory.
+        :returns: The pull destination.
+        """
+        p = self._parts()
+        parts = []
+        if p.host != HF_HOST:
+            parts.append("@" + p.host.replace(":", "_"))
+        if p.hf_type not in (None, HfType.MODEL):
+            parts.append(_HF_TYPE_TO_SEGMENT[p.hf_type])
+        parts += [p.owner, p.repo]
+        if p.hf_type == HfType.BUCKET:
+            path = p.path_in_repo.strip("/")
+            parts.append(hashlib.sha256(path.encode()).hexdigest()[:16])
+        else:
+            parts.append(p.revision)
+        return Path(cache_dir).joinpath(*parts)
 
     def _verify_path_in_repo_pulled(self, dest: Path) -> bool:
         """Whether a pull into *dest* found this URI's path in the repo.
@@ -1195,8 +1243,7 @@ class HfURI(URI):
 
         For repos, uses ``huggingface_hub.snapshot_download`` with ``local_dir``
         so all repo files land directly in *dest*.  For buckets, uses
-        ``HfApi.sync_bucket`` to download the bucket's files to *dest*, with
-        the bucket layout kept.
+        ``HfApi.sync_bucket`` to download bucket contents to *dest*.
 
         Pulls into the same *dest* are serialized behind a cross-process
         ``mkdir`` lock (issue #320): a waiter blocks while the holder keeps
@@ -1211,11 +1258,10 @@ class HfURI(URI):
         with ``force_download`` and, if needed, clearing the scratch download
         dir.
 
-        A URI with a path in the repo (``.../<revision>/<path_in_repo>``, or
-        ``.../<bucket>/<path>`` for a bucket) downloads only that file or
-        directory, to ``dest/<path_in_repo>`` (see :meth:`local_path`); a path
-        that matches nothing fails the pull rather than binding an empty
-        directory.
+        A repo URI with a path in the repo (``.../<revision>/<path_in_repo>``)
+        downloads only that file or directory, to ``dest/<path_in_repo>`` (see
+        :meth:`local_path`); a path that matches nothing in the repo fails the
+        pull rather than binding an empty directory.
 
         Returns ``True`` immediately without network calls when HF mocking is
         enabled via ``GBTEST_MOCK_HF``. A path in the repo is then created as
@@ -1287,18 +1333,12 @@ class HfURI(URI):
                 try:
                     with _hfpull_download_lock(dest, progress_path) as lock:
                         if p.hf_type == HfType.BUCKET:
+                            bucket_hf_path = f"hf://buckets/{repo_id}"
+                            if p.path_in_repo:
+                                bucket_hf_path += f"/{p.path_in_repo}"
                             logger.info("Downloading HF bucket %s to %s", repo_id, dest)
                             api = HfApi(endpoint=endpoint, token=token)
-                            # Sync from the bucket root, filtered to the path,
-                            # so the bucket layout is kept, as for a repo: the
-                            # path lands at dest/<path> and every path of the
-                            # bucket shares dest and its lock. (A prefix source
-                            # would put a single file at dest/<basename>.)
-                            api.sync_bucket(
-                                source=f"hf://buckets/{repo_id}",
-                                dest=str(dest),
-                                include=hf_path_patterns(p.path_in_repo),
-                            )
+                            api.sync_bucket(source=bucket_hf_path, dest=str(dest))
                             logger.debug(
                                 "Completed HF pull of bucket %s to %s", repo_id, dest
                             )

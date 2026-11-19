@@ -37,6 +37,8 @@ def mock_hfuri():
     uri.get_revision.return_value = "main"
     uri.get_hf_type.return_value = "model"
     uri.get_host.return_value = "huggingface.co"
+    # A model's pull dir, as HfURI.pull_dest lays it out.
+    uri.pull_dest.side_effect = lambda cache_dir: Path(cache_dir) / "myorg/myrepo/main"
     # No path in the repo: the content is bound at the download root.
     uri.local_path.side_effect = lambda dest: dest
     uri.__str__ = lambda self: "hf://models/myorg/myrepo"
