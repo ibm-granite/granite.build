@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from gbserver.api.auth import AuthMiddleware
 from gbserver.api.auth_providers import (
     GitHubAuthProvider,
-    IBMidAuthProvider,
+    OIDCAuthProvider,
     _is_jwt_shaped,
     _peek_jwt_issuer,
     build_provider_list,
@@ -217,11 +217,11 @@ class TestGitHubAuthProvider:
 
 
 # ---------------------------------------------------------------------------
-# IBMidAuthProvider tests
+# OIDCAuthProvider tests
 # ---------------------------------------------------------------------------
 
 
-class TestIBMidAuthProvider:
+class TestOIDCAuthProvider:
     @pytest.fixture
     def rsa_keypair(self):
         return _make_rsa_keypair()
@@ -231,8 +231,8 @@ class TestIBMidAuthProvider:
         return "https://login.ibm.com/oidc/endpoint/default"
 
     def _make_provider(self, rsa_keypair, issuer):
-        """Create an IBMidAuthProvider with mocked JWKS."""
-        provider = IBMidAuthProvider(
+        """Create an OIDCAuthProvider with mocked JWKS."""
+        provider = OIDCAuthProvider(
             issuer=issuer,
             jwks_uri="https://login.ibm.com/oidc/endpoint/default/jwks",
             client_id="test-client-id",

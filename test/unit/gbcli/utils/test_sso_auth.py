@@ -17,13 +17,13 @@ import pytest
 
 class TestPKCEHelpers:
     def test_code_verifier_length(self):
-        from gbcli.utils.ibmid_auth import _generate_code_verifier
+        from gbcli.utils.sso_auth import _generate_code_verifier
 
         verifier = _generate_code_verifier()
         assert 43 <= len(verifier) <= 128
 
     def test_code_verifier_url_safe(self):
-        from gbcli.utils.ibmid_auth import _generate_code_verifier
+        from gbcli.utils.sso_auth import _generate_code_verifier
 
         verifier = _generate_code_verifier()
         # URL-safe characters only
@@ -33,7 +33,7 @@ class TestPKCEHelpers:
         assert all(c in allowed for c in verifier)
 
     def test_code_challenge_s256(self):
-        from gbcli.utils.ibmid_auth import (
+        from gbcli.utils.sso_auth import (
             _generate_code_challenge,
             _generate_code_verifier,
         )
@@ -50,7 +50,7 @@ class TestPKCEHelpers:
         assert challenge == expected
 
     def test_code_verifier_uniqueness(self):
-        from gbcli.utils.ibmid_auth import _generate_code_verifier
+        from gbcli.utils.sso_auth import _generate_code_verifier
 
         v1 = _generate_code_verifier()
         v2 = _generate_code_verifier()
@@ -58,7 +58,7 @@ class TestPKCEHelpers:
 
 
 # ---------------------------------------------------------------------------
-# IBMidOIDCClient tests (loopback and --remote flows)
+# SSOLoginClient tests (loopback and --remote flows)
 # ---------------------------------------------------------------------------
 
 
@@ -94,7 +94,7 @@ def _token_ok():
 
 
 def _browser_hitting(query_for):
-    """An open_browser stand-in that follows the authorize URL like IBMid would:
+    """An open_browser stand-in that follows the authorize URL like the SSO provider would:
     calls the loopback redirect_uri with ``query_for(params)`` (one query or a
     list, hit in order) on a thread."""
     import threading
@@ -127,24 +127,24 @@ def _browser_hitting(query_for):
     return open_browser, calls
 
 
-class TestIBMidOIDCClient:
+class TestSSOLoginClient:
     def test_client_uses_gbserver_auth_base(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
 
-        client = IBMidOIDCClient(gbserver_auth_base=AUTH_BASE)
+        client = SSOLoginClient(gbserver_auth_base=AUTH_BASE)
         assert client.gbserver_auth_base == AUTH_BASE
 
     def test_loopback_receives_redirect_and_redeems(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient, _generate_code_challenge
+        from gbcli.utils.sso_auth import SSOLoginClient, _generate_code_challenge
 
         port = _free_port()
         open_browser, calls = _browser_hitting(
             lambda p: {"state": p["state"], "code": "auth-code-1"}
         )
         with patch(
-            "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+            "gbcli.utils.sso_auth.requests.post", return_value=_token_ok()
         ) as post:
-            result = IBMidOIDCClient(AUTH_BASE).login_loopback(
+            result = SSOLoginClient(AUTH_BASE).login_loopback(
                 open_browser=open_browser, port=port, timeout=10
             )
         calls["thread"].join(5)
@@ -152,13 +152,13 @@ class TestIBMidOIDCClient:
         params = calls["params"]
         assert params["redirect_uri"] == f"http://127.0.0.1:{port}/callback"
         assert params["code_challenge_method"] == "S256"
-        assert "sign-in received" in calls["page"]
+        assert "Sign-in received" in calls["page"]
 
         assert post.call_args.args[0] == f"{AUTH_BASE}/oidc/token"
         sent = post.call_args.kwargs["json"]
         assert sent["code"] == "auth-code-1"
         assert sent["redirect_uri"] == params["redirect_uri"]
-        # The verifier sent to /oidc/token matches the challenge sent to IBMid.
+        # The verifier sent to /oidc/token matches the challenge sent to the provider.
         assert (
             _generate_code_challenge(sent["code_verifier"]) == params["code_challenge"]
         )
@@ -168,7 +168,7 @@ class TestIBMidOIDCClient:
 
     def test_loopback_ignores_other_state_and_keeps_waiting(self):
         """A stale tab (or another page) must not abort or complete the login."""
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
 
         open_browser, calls = _browser_hitting(
             lambda p: [
@@ -178,9 +178,9 @@ class TestIBMidOIDCClient:
             ]
         )
         with patch(
-            "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+            "gbcli.utils.sso_auth.requests.post", return_value=_token_ok()
         ) as post:
-            result = IBMidOIDCClient(AUTH_BASE).login_loopback(
+            result = SSOLoginClient(AUTH_BASE).login_loopback(
                 open_browser=open_browser, port=_free_port(), timeout=10
             )
         calls["thread"].join(5)
@@ -191,8 +191,8 @@ class TestIBMidOIDCClient:
         assert post.call_args.kwargs["json"]["code"] == "auth-code-1"
         assert result.access_token == "at_test"
 
-    def test_loopback_reports_ibmid_error(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+    def test_loopback_reports_provider_error(self):
+        from gbcli.utils.sso_auth import SSOLoginClient
 
         open_browser, _ = _browser_hitting(
             lambda p: {
@@ -201,34 +201,32 @@ class TestIBMidOIDCClient:
                 "error_description": "User denied access",
             }
         )
-        with patch("gbcli.utils.ibmid_auth.requests.post") as post:
+        with patch("gbcli.utils.sso_auth.requests.post") as post:
             with pytest.raises(Exception, match="User denied access"):
-                IBMidOIDCClient(AUTH_BASE).login_loopback(
+                SSOLoginClient(AUTH_BASE).login_loopback(
                     open_browser=open_browser, port=_free_port(), timeout=10
                 )
         post.assert_not_called()
 
     def test_loopback_timeout_suggests_remote(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
 
         with pytest.raises(Exception, match="--remote"):
-            IBMidOIDCClient(AUTH_BASE).login_loopback(
+            SSOLoginClient(AUTH_BASE).login_loopback(
                 open_browser=lambda url: None, port=_free_port(), timeout=1
             )
 
     def test_loopback_port_reusable_right_after_a_login(self):
         """A quick retry must not hit TIME_WAIT 'Address already in use'."""
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
 
         port = _free_port()
         for _ in range(2):
             open_browser, calls = _browser_hitting(
                 lambda p: {"state": p["state"], "code": "c"}
             )
-            with patch(
-                "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
-            ):
-                IBMidOIDCClient(AUTH_BASE).login_loopback(
+            with patch("gbcli.utils.sso_auth.requests.post", return_value=_token_ok()):
+                SSOLoginClient(AUTH_BASE).login_loopback(
                     open_browser=open_browser, port=port, timeout=10
                 )
             calls["thread"].join(5)
@@ -236,19 +234,19 @@ class TestIBMidOIDCClient:
     def test_loopback_port_in_use_suggests_remote(self):
         import socket
 
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
 
         with socket.socket() as busy:
             busy.bind(("127.0.0.1", 0))
             busy.listen()
             port = busy.getsockname()[1]
             with pytest.raises(Exception, match="--remote"):
-                IBMidOIDCClient(AUTH_BASE).login_loopback(
+                SSOLoginClient(AUTH_BASE).login_loopback(
                     open_browser=lambda url: None, port=port, timeout=1
                 )
 
     def test_remote_decodes_pasted_code_and_redeems(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient, _generate_code_challenge
+        from gbcli.utils.sso_auth import SSOLoginClient, _generate_code_challenge
         from gbserver.api.auth_routes import encode_remote_code
 
         seen = {}
@@ -270,9 +268,9 @@ class TestIBMidOIDCClient:
             )
 
         with patch(
-            "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+            "gbcli.utils.sso_auth.requests.post", return_value=_token_ok()
         ) as post:
-            result = IBMidOIDCClient(AUTH_BASE).login_remote(
+            result = SSOLoginClient(AUTH_BASE).login_remote(
                 show_url=show_url, read_code=read_code
             )
 
@@ -288,12 +286,12 @@ class TestIBMidOIDCClient:
         assert result.id_token == "idt_test"
 
     def test_remote_rejects_code_from_another_login(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
         from gbserver.api.auth_routes import encode_remote_code
 
-        with patch("gbcli.utils.ibmid_auth.requests.post") as post:
+        with patch("gbcli.utils.sso_auth.requests.post") as post:
             with pytest.raises(ValueError, match="different login"):
-                IBMidOIDCClient(AUTH_BASE).login_remote(
+                SSOLoginClient(AUTH_BASE).login_remote(
                     show_url=lambda url: None,
                     read_code=lambda: encode_remote_code("other-state", "code"),
                     on_bad_code=lambda msg: None,
@@ -301,7 +299,7 @@ class TestIBMidOIDCClient:
         post.assert_not_called()
 
     def test_remote_reprompts_after_bad_paste(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
         from gbserver.api.auth_routes import encode_remote_code
 
         seen, bad = {}, []
@@ -319,9 +317,9 @@ class TestIBMidOIDCClient:
             return p if p is not None else encode_remote_code(seen["state"], "c2")
 
         with patch(
-            "gbcli.utils.ibmid_auth.requests.post", return_value=_token_ok()
+            "gbcli.utils.sso_auth.requests.post", return_value=_token_ok()
         ) as post:
-            IBMidOIDCClient(AUTH_BASE).login_remote(
+            SSOLoginClient(AUTH_BASE).login_remote(
                 show_url=show_url, read_code=read_code, on_bad_code=bad.append
             )
 
@@ -329,31 +327,31 @@ class TestIBMidOIDCClient:
         assert post.call_args.kwargs["json"]["code"] == "c2"
 
     def test_remote_non_ascii_state_is_a_clean_error(self):
-        from gbcli.utils.ibmid_auth import decode_remote_code
+        from gbcli.utils.sso_auth import decode_remote_code
         from gbserver.api.auth_routes import encode_remote_code
 
         with pytest.raises(ValueError, match="different login"):
             decode_remote_code(encode_remote_code("ünïcode", "c"), "state-1")
 
     def test_remote_rejects_garbled_code(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
 
         with pytest.raises(ValueError, match="not valid"):
-            IBMidOIDCClient(AUTH_BASE).login_remote(
+            SSOLoginClient(AUTH_BASE).login_remote(
                 show_url=lambda url: None,
                 read_code=lambda: "not-a-code!!",
                 on_bad_code=lambda msg: None,
             )
 
     def test_redeem_surfaces_server_error(self):
-        from gbcli.utils.ibmid_auth import IBMidOIDCClient
+        from gbcli.utils.sso_auth import SSOLoginClient
 
         resp = MagicMock()
         resp.status_code = 400
         resp.json.return_value = {"detail": "Token exchange failed: invalid_grant"}
-        with patch("gbcli.utils.ibmid_auth.requests.post", return_value=resp):
+        with patch("gbcli.utils.sso_auth.requests.post", return_value=resp):
             with pytest.raises(Exception, match="invalid_grant"):
-                IBMidOIDCClient(AUTH_BASE)._redeem("c", "v", None)
+                SSOLoginClient(AUTH_BASE)._redeem("c", "v", None)
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +426,7 @@ class TestCredentialStorage:
 
         assert token == "ghp_test_token"
 
-    def test_check_ibmid_values(self, tmp_path):
+    def test_check_sso_values(self, tmp_path):
         creds_path = tmp_path / "credentials"
         creds_path.write_text(
             '[user.ibmid]\naccess_token = "at"\nid_token = "idt"\nlogin = "user"\nemail = "u@ibm.com"\n'
@@ -440,9 +438,9 @@ class TestCredentialStorage:
             from gbcli.utils.gbcredentials import GBCredentials
 
             creds = GBCredentials()
-            assert creds.check_ibmid_values() is True
+            assert creds.check_sso_values() is True
 
-    def test_check_ibmid_values_missing(self, tmp_path):
+    def test_check_sso_values_missing(self, tmp_path):
         creds_path = tmp_path / "credentials"
         creds_path.write_text("[user.github]\ntoken = 'x'\n")
 
@@ -452,7 +450,7 @@ class TestCredentialStorage:
             from gbcli.utils.gbcredentials import GBCredentials
 
             creds = GBCredentials()
-            assert creds.check_ibmid_values() is False
+            assert creds.check_sso_values() is False
 
     def test_get_user_token_returns_gbserver_api_key(self, tmp_path):
         """When default_provider is apikey, get_user_token should return the API key."""
@@ -498,7 +496,7 @@ class TestAuthLoginCommand:
                 "gbcli.commands.command_auth.local_browser_unavailable_reason",
                 return_value="this is an SSH session",
             ),
-            patch("gbcli.client.GBClient.Auth.login_ibmid") as mock_login,
+            patch("gbcli.client.GBClient.Auth.login_sso") as mock_login,
         ):
             result = CliRunner().invoke(login, ["--sso"])
 
@@ -516,9 +514,7 @@ class TestAuthLoginCommand:
                 "gbcli.commands.command_auth.local_browser_unavailable_reason",
                 return_value="this is an SSH session",
             ),
-            patch(
-                "gbcli.client.GBClient.Auth.login_ibmid", return_value="user@ibm.com"
-            ),
+            patch("gbcli.client.GBClient.Auth.login_sso", return_value="user@ibm.com"),
         ):
             result = CliRunner().invoke(login, ["--sso", "--remote"])
         assert result.exit_code == 0, result.output
@@ -531,7 +527,7 @@ class TestAuthLoginCommand:
         def fake_login(open_browser, remote, read_code, **_):
             return read_code()  # no input: click aborts
 
-        with patch("gbcli.client.GBClient.Auth.login_ibmid", side_effect=fake_login):
+        with patch("gbcli.client.GBClient.Auth.login_sso", side_effect=fake_login):
             result = CliRunner().invoke(login, ["--sso", "--remote"], input="")
 
         assert result.exit_code == 1
@@ -559,7 +555,7 @@ class TestAuthLoginCommand:
         result = runner.invoke(login, ["--sso", "ibm", "--gbserver"])
         assert result.exit_code != 0
 
-    def test_sso_ibm_invokes_ibmid_login(self):
+    def test_sso_ibm_invokes_sso_login(self):
         """--sso ibm should call the IBMid proxy-based login flow."""
         from click.testing import CliRunner
 
@@ -567,14 +563,14 @@ class TestAuthLoginCommand:
 
         runner = CliRunner()
         with patch(
-            "gbcli.client.GBClient.Auth.login_ibmid", return_value="user@ibm.com"
+            "gbcli.client.GBClient.Auth.login_sso", return_value="user@ibm.com"
         ) as mock_login:
             result = runner.invoke(login, ["--sso", "ibm"], input="y\n")
 
         mock_login.assert_called_once()
         assert mock_login.call_args.kwargs.get("open_browser") is not None
         assert "user@ibm.com" in result.output
-        assert "IBMid authentication is successful" in result.output
+        assert "SSO authentication is successful" in result.output
 
     def test_sso_bare_defaults_to_ibm(self):
         """--sso without a value should default to ibm."""
@@ -584,13 +580,13 @@ class TestAuthLoginCommand:
 
         runner = CliRunner()
         with patch(
-            "gbcli.client.GBClient.Auth.login_ibmid", return_value="user@ibm.com"
+            "gbcli.client.GBClient.Auth.login_sso", return_value="user@ibm.com"
         ) as mock_login:
             result = runner.invoke(login, ["--sso"], input="y\n")
 
         mock_login.assert_called_once()
         assert mock_login.call_args.kwargs.get("open_browser") is not None
-        assert "IBMid authentication is successful" in result.output
+        assert "SSO authentication is successful" in result.output
 
     def test_sso_remote_prompts_for_code(self):
         """--sso --remote prints the URL and passes the pasted code through."""
@@ -606,7 +602,7 @@ class TestAuthLoginCommand:
 
         runner = CliRunner()
         with patch(
-            "gbcli.client.GBClient.Auth.login_ibmid", side_effect=fake_login
+            "gbcli.client.GBClient.Auth.login_sso", side_effect=fake_login
         ) as mock_login:
             result = runner.invoke(login, ["--sso", "--remote"], input="pasted-code\n")
 
@@ -619,7 +615,7 @@ class TestAuthLoginCommand:
         )
         # The pasted code is read hidden, never echoed.
         assert "pasted-code" not in result.output
-        assert "IBMid authentication is successful" in result.output
+        assert "SSO authentication is successful" in result.output
 
     def test_sso_redirect_port_passed_through(self):
         from click.testing import CliRunner
@@ -628,7 +624,7 @@ class TestAuthLoginCommand:
 
         runner = CliRunner()
         with patch(
-            "gbcli.client.GBClient.Auth.login_ibmid", return_value="user@ibm.com"
+            "gbcli.client.GBClient.Auth.login_sso", return_value="user@ibm.com"
         ) as mock_login:
             result = runner.invoke(
                 login, ["--sso", "--redirect-port", "50123"], input="y\n"
@@ -652,7 +648,7 @@ class TestAuthLoginCommand:
         from gbcli.commands.command_auth import login
 
         runner = CliRunner()
-        with patch("gbcli.client.GBClient.Auth.login_ibmid") as mock_login:
+        with patch("gbcli.client.GBClient.Auth.login_sso") as mock_login:
             result = runner.invoke(login, args)
 
         assert result.exit_code == 1
@@ -720,7 +716,7 @@ class TestAuthProviderCommand:
         runner = CliRunner()
         with patch("gbcli.commands.command_auth.GBCredentials") as MockCreds:
             instance = MockCreds.return_value
-            instance.check_ibmid_values.return_value = True
+            instance.check_sso_values.return_value = True
             result = runner.invoke(provider, ["--set", "sso"])
 
         assert result.exit_code == 0
@@ -789,7 +785,7 @@ class TestAuthProviderCommand:
         runner = CliRunner()
         with patch("gbcli.commands.command_auth.GBCredentials") as MockCreds:
             instance = MockCreds.return_value
-            instance.check_ibmid_values.return_value = True
+            instance.check_sso_values.return_value = True
             result = runner.invoke(provider, ["--set", "ibmid"])
 
         assert result.exit_code == 0
@@ -797,7 +793,7 @@ class TestAuthProviderCommand:
         instance.save.assert_called_once()
 
     def test_provider_set_sso_missing_credentials(self):
-        """auth provider --set sso fails when no IBMid credentials exist."""
+        """auth provider --set sso fails when no SSO credentials exist."""
         from click.testing import CliRunner
 
         from gbcli.commands.command_auth import provider
@@ -805,11 +801,11 @@ class TestAuthProviderCommand:
         runner = CliRunner()
         with patch("gbcli.commands.command_auth.GBCredentials") as MockCreds:
             instance = MockCreds.return_value
-            instance.check_ibmid_values.return_value = False
+            instance.check_sso_values.return_value = False
             result = runner.invoke(provider, ["--set", "sso"])
 
         assert result.exit_code != 0
-        assert "No IBMid credentials" in result.output or "No IBMid credentials" in (
+        assert "No SSO credentials" in result.output or "No SSO credentials" in (
             result.output + (result.stderr if hasattr(result, "stderr") else "")
         )
 

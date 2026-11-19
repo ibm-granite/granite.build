@@ -14,6 +14,11 @@ from gbcommon.types.gbenvconfig import is_standalone
 
 logger = logging.getLogger(__name__)
 
+# SSO login's default_provider value and credentials section, named for the
+# provider `--sso ibm` logs in to.
+SSO_PROVIDER = "ibmid"
+SSO_SECTION = "user.ibmid"
+
 
 class ConfigLockException(Exception):
     """Custom exception for locking errors."""
@@ -121,13 +126,13 @@ class GBCredentials(GBTomlConfig):
         ]
         return all(val is not None for val in credentials)
 
-    def check_ibmid_values(self):
-        """Return True if IBMid credentials are present."""
+    def check_sso_values(self):
+        """Return True if SSO credentials are present."""
         credentials = [
-            self.get("access_token", section="user.ibmid"),
-            self.get("id_token", section="user.ibmid"),
-            self.get("login", section="user.ibmid"),
-            self.get("email", section="user.ibmid"),
+            self.get("access_token", section=SSO_SECTION),
+            self.get("id_token", section=SSO_SECTION),
+            self.get("login", section=SSO_SECTION),
+            self.get("email", section=SSO_SECTION),
         ]
         return all(val is not None for val in credentials)
 
@@ -153,7 +158,7 @@ def get_user_token() -> str:
     In standalone mode (GB_ENVIRONMENT=STANDALONE), checks [user.gbserver] api_key
     in credentials first, then falls back to GBSERVER_API_KEY env var.
     Otherwise, checks the ``default_provider`` setting to return the
-    appropriate token (IBMid or GitHub).
+    appropriate token (SSO or GitHub).
     """
     if is_standalone():
         creds = GBCredentials()
@@ -165,28 +170,28 @@ def get_user_token() -> str:
     creds = GBCredentials()
     default_provider = creds.get("default_provider", section="user")
 
-    if default_provider == "ibmid":
-        if creds.check_ibmid_values():
+    if default_provider == SSO_PROVIDER:
+        if creds.check_sso_values():
             # Check token expiry before making any API call
-            expires_at = creds.get("expires_at", section="user.ibmid")
+            expires_at = creds.get("expires_at", section=SSO_SECTION)
             if expires_at is not None:
                 import time as _time
 
                 remaining = int(expires_at) - int(_time.time())
                 if remaining < 0:
                     sys.exit(
-                        "❌ Error: IBMid token has expired. "
+                        "❌ Error: SSO token has expired. "
                         "Please re-authenticate with 'auth login --sso ibm'."
                     )
                 elif remaining < 300:
                     logger.warning(
-                        "IBMid access token expires in %d seconds. "
+                        "SSO access token expires in %d seconds. "
                         "Consider re-authenticating with 'auth login --sso ibm'.",
                         remaining,
                     )
 
             creds.check_permissions()
-            token = creds.get("id_token", section="user.ibmid")
+            token = creds.get("id_token", section=SSO_SECTION)
             return token or ""
 
     if default_provider == "apikey":

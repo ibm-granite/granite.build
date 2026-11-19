@@ -97,7 +97,7 @@ def _configure_analytics_env(host: str = "127.0.0.1", port: int = 8080) -> None:
     get_config.cache_clear()
 
 
-_IBMID_REQUIRED_VARS = [
+_SSO_REQUIRED_VARS = [
     "GBSERVER_IBMID_CLIENT_ID",
     "GBSERVER_IBMID_CLIENT_SECRET",
     "GBSERVER_IBMID_CALLBACK_URL",
@@ -115,7 +115,7 @@ def cli(
     auth_mode = os.getenv("GBSERVER_AUTH_MODE", "github")
 
     if auth_mode in ("ibmid", "multi"):
-        missing = [v for v in _IBMID_REQUIRED_VARS if not os.getenv(v)]
+        missing = [v for v in _SSO_REQUIRED_VARS if not os.getenv(v)]
         if missing:
             logger.error(
                 "GBSERVER_AUTH_MODE=%s requires the following env vars: %s",

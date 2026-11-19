@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Token exchange proxy for IBMid OIDC authentication.
+"""Token exchange proxy for SSO (OIDC) login; the provider is IBMid by default.
 
 The CLI is a public client and must not hold secrets. These endpoints
 let gbserver act as the confidential client that holds the
@@ -10,10 +10,10 @@ let gbserver act as the confidential client that holds the
 behalf of the CLI.
 
 Stateless flow (``/oidc/*``), used by the CLI:
-1. ``/oidc/authorize`` redirects to IBMid, passing the PKCE challenge through.
-2. IBMid redirects with the code to the CLI's loopback listener or, for
+1. ``/oidc/authorize`` redirects to the provider, passing the PKCE challenge through.
+2. The provider redirects with the code to the CLI's loopback listener or, for
    ``--remote``, to ``/oidc/remote-callback``, which shows it for pasting.
-3. ``/oidc/token`` redeems the code with the client secret; IBMid checks the
+3. ``/oidc/token`` redeems the code with the client secret; the provider checks the
    CLI's verifier.
 Nothing is stored, so any worker or pod can serve any step.
 
@@ -365,7 +365,7 @@ def status(
 # Stateless flow: /oidc/authorize, /oidc/remote-callback, /oidc/token
 # ---------------------------------------------------------------------------
 
-# The CLI's loopback listener (RFC 8252). IBMid's registration pins the port.
+# The CLI's loopback listener (RFC 8252). The provider's registration pins the port.
 _LOOPBACK_REDIRECT_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}/callback")
 
 _REMOTE_CALLBACK_PATH = "/oidc/remote-callback"
@@ -374,7 +374,7 @@ _REMOTE_CALLBACK_PATH = "/oidc/remote-callback"
 # if the clipboard is unavailable. Braces doubled for str.format.
 _REMOTE_CODE_HTML_TEMPLATE = (
     "<html><body>"
-    "<h2>IBMid sign-in complete</h2>"
+    "<h2>Sign-in complete</h2>"
     "<p>Copy the verification code and paste it into the gb CLI that is "
     "waiting for it.</p>"
     '<p><button id="copy" type="button">Copy verification code</button> '
@@ -455,7 +455,7 @@ def oidc_authorize(
     state: str = Query(...),
     redirect_uri: Optional[str] = Query(None),
 ):
-    """Redirect the browser to IBMid, passing the PKCE challenge through."""
+    """Redirect the browser to the SSO provider, passing the PKCE challenge through."""
     if code_challenge_method != "S256":
         return JSONResponse(
             status_code=400,
@@ -498,9 +498,9 @@ def oidc_remote_callback(
     """``--remote`` landing page: show the code for the user to paste."""
     if error or not code or not state:
         detail = (
-            f"IBMid returned an error: {error_description or error}"
+            f"The SSO provider returned an error: {error_description or error}"
             if error
-            else "No authorization code received from IBMid."
+            else "No authorization code received from the SSO provider."
         )
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(detail=html.escape(detail)),
@@ -534,7 +534,7 @@ class OIDCTokenRequest(BaseModel):
 
 @auth_api.post("/oidc/token")
 def oidc_token(body: OIDCTokenRequest):
-    """Redeem the code with the client secret; IBMid checks the verifier."""
+    """Redeem the code with the client secret; the provider checks the verifier."""
     redirect_uri = _resolve_redirect_uri(body.redirect_uri)
     if redirect_uri is None:
         return _bad_redirect_uri(body.redirect_uri)
@@ -569,17 +569,16 @@ def oidc_token(body: OIDCTokenRequest):
             timeout=30,
         )
     except Exception:
-        logger.exception("IBMid token exchange error")
+        logger.exception("SSO token exchange error")
         return JSONResponse(
-            status_code=502, content={"detail": "Token exchange with IBMid failed."}
+            status_code=502,
+            content={"detail": "Token exchange with the SSO provider failed."},
         )
     if token_resp.status_code != 200:
         body_json = _json_object(token_resp)
         desc = body_json.get("error_description", body_json.get("error", ""))
-        logger.error(
-            "IBMid token exchange failed (%s): %s", token_resp.status_code, desc
-        )
-        # 4xx: IBMid rejected the code or verifier.
+        logger.error("SSO token exchange failed (%s): %s", token_resp.status_code, desc)
+        # 4xx: the provider rejected the code or verifier.
         status_code = 400 if 400 <= token_resp.status_code < 500 else 502
         return JSONResponse(
             status_code=status_code,
@@ -591,9 +590,10 @@ def oidc_token(body: OIDCTokenRequest):
     tokens = _json_object(token_resp)
     access_token = tokens.get("access_token", "")
     if not access_token:
-        logger.error("IBMid token response had no access_token")
+        logger.error("SSO token response had no access_token")
         return JSONResponse(
-            status_code=502, content={"detail": "IBMid returned no access token."}
+            status_code=502,
+            content={"detail": "The SSO provider returned no access token."},
         )
     user_info: dict = {}
     try:
@@ -605,7 +605,7 @@ def oidc_token(body: OIDCTokenRequest):
         ui_resp.raise_for_status()
         user_info = ui_resp.json()
     except Exception as e:
-        logger.warning("Failed to fetch IBMid userinfo: %s", e)
+        logger.warning("Failed to fetch SSO userinfo: %s", e)
     return {
         "access_token": access_token,
         "id_token": tokens.get("id_token", ""),

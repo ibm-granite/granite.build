@@ -285,7 +285,7 @@ make py-test ARGS=test/unit/api/test_auth_routes_oidc.py
 make py-test ARGS=test/unit/api/test_auth_providers.py
 
 # CLI SSO auth tests (PKCE, loopback and --remote flows, credentials, CLI options)
-make py-test ARGS=test/unit/gbcli/utils/test_ibmid_auth.py
+make py-test ARGS=test/unit/gbcli/utils/test_sso_auth.py
 
 # Existing auth middleware tests (backward compatibility)
 make py-test ARGS=test/unit/api/test_auth.py

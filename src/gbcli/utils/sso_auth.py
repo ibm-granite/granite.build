@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""IBMid OIDC authentication for the CLI via gbserver proxy.
+"""SSO (OIDC) login for the CLI via gbserver proxy.
 
 The CLI is a public client: gbserver adds the client secret when redeeming
 the code, and the CLI's PKCE verifier proves it started the login.
@@ -28,7 +28,7 @@ from typing import Callable, Optional
 import requests
 from pydantic import BaseModel
 
-from gbcli.utils.gbconstants import GBSERVER_INSTANCE, IBMID_REDIRECT_PORT
+from gbcli.utils.gbconstants import GBSERVER_INSTANCE, SSO_REDIRECT_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ GBSERVER_AUTH_BASE = f"{GBSERVER_INSTANCE}/api/v1/auth"
 # ---------------------------------------------------------------------------
 
 
-class IBMidUserInfo(BaseModel):
+class SSOUserInfo(BaseModel):
     sub: str = ""
     name: str = ""
     email: str = ""
@@ -56,7 +56,7 @@ class AuthFlowResult(BaseModel):
     id_token: str = ""
     refresh_token: str = ""
     expires_in: int = 0
-    user_info: IBMidUserInfo
+    user_info: SSOUserInfo
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +76,12 @@ def _generate_code_challenge(verifier: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# IBMid OIDC client (proxy-based)
+# SSO (OIDC) client (proxy-based)
 # ---------------------------------------------------------------------------
 
 _LOOPBACK_DONE_HTML = (
     "<html><body>"
-    "<h2>IBMid sign-in received.</h2>"
+    "<h2>Sign-in received.</h2>"
     "<p>You may close this tab; the terminal shows whether login completed.</p>"
     "</body></html>"
 )
@@ -101,7 +101,7 @@ def _same_state(a: str, b: str) -> bool:
 
 
 def decode_remote_code(pasted: str, state: str) -> str:
-    """The IBMid code in a pasted verification code; ValueError if malformed
+    """The code in a pasted verification code; ValueError if malformed
     or from another login."""
     text = "".join(pasted.split())
     try:
@@ -142,9 +142,9 @@ class _LoopbackHandler(http.server.BaseHTTPRequestHandler):
             )
         elif error or not code:
             detail = (
-                f"IBMid returned an error: {error_description or error}"
+                f"The SSO provider returned an error: {error_description or error}"
                 if error
-                else "No authorization code received from IBMid."
+                else "No authorization code received from the SSO provider."
             )
             self._respond(_LOOPBACK_ERROR_HTML_TEMPLATE, detail)
             self.server.error = detail
@@ -188,8 +188,8 @@ class _LoopbackServer(http.server.ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
-class IBMidOIDCClient:
-    """Drives IBMid OIDC authentication via gbserver proxy."""
+class SSOLoginClient:
+    """Drives SSO (OIDC) login via gbserver proxy."""
 
     def __init__(self, gbserver_auth_base: str = ""):
         self.gbserver_auth_base = gbserver_auth_base or GBSERVER_AUTH_BASE
@@ -200,17 +200,17 @@ class IBMidOIDCClient:
         port: Optional[int] = None,
         timeout: int = 300,
     ) -> AuthFlowResult:
-        """Log in via IBMid's redirect to a local port; *open_browser* (default
+        """Log in via the SSO redirect to a local port; *open_browser* (default
         ``webbrowser.open``) gets the URL once the listener is up."""
         opener: Callable[[str], object] = open_browser or webbrowser.open
-        port = port or IBMID_REDIRECT_PORT
+        port = port or SSO_REDIRECT_PORT
         verifier, state = _generate_code_verifier(), secrets.token_urlsafe(32)
         redirect_uri = f"http://127.0.0.1:{port}/callback"
         try:
             server = _LoopbackServer(port, state)
         except OSError as e:
             raise Exception(
-                f"Cannot listen on 127.0.0.1:{port} for the IBMid redirect ({e}). "
+                f"Cannot listen on 127.0.0.1:{port} for the SSO redirect ({e}). "
                 "Free the port, or use 'gb auth login --sso --remote'."
             ) from e
         with server:
@@ -220,7 +220,7 @@ class IBMidOIDCClient:
             while server.code is None and server.error is None:
                 if time.time() >= deadline:
                     raise Exception(
-                        "Timed out waiting for the IBMid browser redirect. If "
+                        "Timed out waiting for the SSO browser redirect. If "
                         "sign-in failed in the browser, try again; if the browser "
                         "can't reach this machine, use 'gb auth login --sso --remote'."
                     )
@@ -283,12 +283,12 @@ class IBMidOIDCClient:
                 detail = resp.json().get("detail", resp.text)
             except Exception:
                 detail = resp.text
-            raise Exception(f"IBMid authentication error: {detail}")
+            raise Exception(f"SSO authentication error: {detail}")
         data = resp.json()
         return AuthFlowResult(
             access_token=data["access_token"],
             id_token=data.get("id_token", ""),
             refresh_token=data.get("refresh_token", ""),
             expires_in=data.get("expires_in", 0),
-            user_info=IBMidUserInfo.model_validate(data.get("user_info") or {}),
+            user_info=SSOUserInfo.model_validate(data.get("user_info") or {}),
         )

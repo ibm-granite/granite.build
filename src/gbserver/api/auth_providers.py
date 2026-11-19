@@ -166,12 +166,13 @@ class GitHubAuthProvider(AuthProvider):
 
 
 # ---------------------------------------------------------------------------
-# IBMid OIDC provider
+# OIDC provider (IBMid by default)
 # ---------------------------------------------------------------------------
 
 
-class IBMidAuthProvider(AuthProvider):
-    """Validates IBMid JWT access tokens using OIDC discovery / JWKS."""
+class OIDCAuthProvider(AuthProvider):
+    """Validates OIDC JWTs against the issuer's JWKS. Registered as ``"ibmid"``,
+    configured from the ``GBSERVER_IBMID_*`` settings."""
 
     def __init__(
         self,
@@ -233,11 +234,11 @@ class IBMidAuthProvider(AuthProvider):
             )
             return (user, "")
         except jwt.ExpiredSignatureError:
-            return (None, "IBMid token has expired")
+            return (None, "OIDC token has expired")
         except jwt.InvalidTokenError as e:
-            return (None, f"IBMid token validation failed: {e}")
+            return (None, f"OIDC token validation failed: {e}")
         except Exception as e:
-            return (None, f"IBMid authentication error: {e}")
+            return (None, f"OIDC authentication error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +250,7 @@ class IBMidAuthProvider(AuthProvider):
 # exactly like the other name-keyed subsystems. The registry drives the *class
 # lookup*; ordering and per-provider construction stay in ``build_provider_list``
 # (see below), because an ``auth_mode`` selects an ordered *set* of providers and
-# some (IBMid) need constructor arguments.
+# some (OIDC) need constructor arguments.
 # ---------------------------------------------------------------------------
 
 # Provider name -> class. Populated by ``_load_auth_providers`` (in-tree scan +
@@ -260,7 +261,7 @@ provider_types: dict = {}
 # list rather than a directory scan: both live in this module.
 _BUILTIN_PROVIDERS = [
     ("github", GitHubAuthProvider),
-    ("ibmid", IBMidAuthProvider),
+    ("ibmid", OIDCAuthProvider),
 ]
 
 # auth_mode -> ordered provider names. Order matters: JWT-based providers are
@@ -314,7 +315,7 @@ def _load_auth_providers(force: bool = False) -> None:
 def _make_provider(name: str) -> Optional[AuthProvider]:
     """Instantiate the registered provider *name*, supplying its constructor args.
 
-    Construction is kept out of the registry (which holds classes): IBMid needs
+    Construction is kept out of the registry (which holds classes): OIDC needs
     its issuer/JWKS/client-id from configuration, and other providers may need
     their own arguments. Plugin providers with no special arguments construct
     with defaults.
@@ -326,7 +327,7 @@ def _make_provider(name: str) -> Optional[AuthProvider]:
     if cls is None:
         logger.warning("Auth provider '%s' is not registered; skipping", name)
         return None
-    # Construction can fail (e.g. IBMid's PyJWKClient with a misconfigured JWKS
+    # Construction can fail (e.g. OIDC's PyJWKClient with a misconfigured JWKS
     # URI); degrade gracefully rather than raise on the request path, matching
     # the None-on-missing contract above.
     try:

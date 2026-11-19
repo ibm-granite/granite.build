@@ -270,5 +270,5 @@ HTTP_POST_BUFFER = to_int(
 # character compatibility
 CLIPBOARD_CHAR = "📋 " if platform == "darwin" else ""
 
-# Loopback port for `gb auth login --sso`; must match IBMid's registration.
-IBMID_REDIRECT_PORT = 48731
+# Loopback port for `gb auth login --sso`; must match the SSO provider's registration.
+SSO_REDIRECT_PORT = 48731
