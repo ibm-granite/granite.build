@@ -66,4 +66,4 @@ jobs:
         if: failure() && steps.scan.outcome == 'failure'
         run: |
           echo "::error title=gitleaks found possible secrets::See the findings above. If one is a real secret, rotate or revoke it: deleting it from the PR does not undo the exposure."
-          echo "::error title=Placeholder or public value?::Add its Fingerprint to .gitleaksignore as <path>:<rule>:<line>, WITHOUT the leading commit hash (PRs are squash-merged, so the hash will not survive the merge). Add a comment explaining why it is safe."
+          echo "::error title=Placeholder or public value?::Put '# gitleaks:allow' (with a short reason) on the same line as the flagged value. Only if the file cannot hold a comment, add its Fingerprint to .gitleaksignore as <path>:<rule>:<line> WITHOUT the leading commit hash (PRs are squash-merged, so the hash will not survive the merge). See the header of .gitleaksignore."

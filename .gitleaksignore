@@ -1,20 +1,24 @@
 # Reviewed gitleaks findings that are placeholders, fixtures or public values.
 # Format: [<commit>:]<path>:<rule>:<line>. Entries with a commit apply to that commit only.
-# Entries should match a real, reviewed finding; remove stale ones when you notice them.
 #
-# Adding an entry for a NEW finding: pull requests here are squash-merged (as of this writing;
-# every recent commit on main is a squash), so the hash of a commit in your PR does not survive
-# the merge and a pinned entry would fail again on main. For new findings, omit the commit and
-# use <path>:<rule>:<line>, which matches in any commit.
-# Trade-off: a hash-less entry also suppresses any LATER finding with the same path, rule and
-# line, including a real secret. Reviewers should check such entries closely, and remove them
-# once the line they cover changes.
-# Commit-pinned entries below are for history that is already on main.
+# Policy for a NEW finding (in code you are adding):
+#   1. Put "# gitleaks:allow" on the SAME line as the flagged value, with a short reason. It
+#      travels with the line, so it survives the squash merge and does not drift with line
+#      numbers. A marker on the line above has no effect.
+#   2. Only if the file cannot carry a comment (JSON, some YAML or Markdown), add an entry here
+#      WITHOUT a commit hash: <path>:<rule>:<line>. PRs here are squash-merged (as of this
+#      writing), so a hash from your PR does not survive the merge. A hash-less entry also
+#      suppresses any LATER finding with the same path, rule and line, including a real secret,
+#      and the line number can drift, so reviewers should check these entries closely.
+#
+# The entries below cover history that is already on main, so each one is pinned to the commit
+# that introduced it. Do not remove an entry just because the line has since changed: the scan
+# covers full history, and the introducing commit still contains the finding.
 
 # Example API key in sample config documentation
-samples/spaces/hybrid-secrets-example/README.md:generic-api-key:92
+9dc564fc35774afc6b3d6a5d98a6e8a7f033abb6:samples/spaces/hybrid-secrets-example/README.md:generic-api-key:92
 # Test fixture: empty-string ClearML cred name in enablement unit test (not a secret)
-steps/train/nemo-rl/skypilot/test/test_clearml_launch.py:generic-api-key:45
+0ca9f8c7234be1c4e91ed4097a7fbd0c6ae09f81:steps/train/nemo-rl/skypilot/test/test_clearml_launch.py:generic-api-key:45
 
 # Public SHA-256 task digests keyed by task name in the tbench step
 c80970c8890162a5b54ee361cd036dc0c990f7c3:steps/eval/tbench/src/tbench.py:generic-api-key:111
