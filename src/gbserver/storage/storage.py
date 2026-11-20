@@ -5,6 +5,7 @@ import json
 import re
 import threading
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import (
     Annotated,
     Any,
@@ -84,6 +85,17 @@ class Pagination(BaseModel):
 
     index: Annotated[int, Field(ge=0)]
     size: Annotated[int, Field(gt=0)]
+
+
+@dataclass(frozen=True)
+class Like:
+    """A ``get_by_where`` dict value requesting a case-insensitive SQL ``LIKE`` match
+    on a string column instead of the default equality, e.g. ``{"name": Like("%sft%")}``.
+
+    ``pattern`` uses ``%`` and ``_`` as wildcards and ``\\`` as the escape character.
+    """
+
+    pattern: str
 
 
 class QueryControl(BaseModel):

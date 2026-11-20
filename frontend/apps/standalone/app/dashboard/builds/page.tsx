@@ -2,21 +2,21 @@
 
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Dropdown,
   MultiSelect,
   InlineNotification,
 } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
-import { listBuilds, getBuildTags, listSpaces } from "@granite-build/ui-core/api/gbserver";
+import {
+  listBuilds,
+  searchBuilds,
+  getBuildTags,
+  listSpaces,
+} from "@granite-build/ui-core/api/gbserver";
 import { BuildsTable } from "@granite-build/ui-core/components/BuildsTable";
 import { PageHeader } from "@granite-build/ui-core/components/PageHeader";
-import {
-  SEARCH_WINDOW,
-  buildsView,
-  type BuildsFetchMode,
-} from "@granite-build/ui-core/lib/buildSearch";
 import type { BuildStatus } from "@granite-build/ui-core/types";
 import styles from "./page.module.scss";
 
@@ -71,33 +71,24 @@ export default function BuildsPage() {
     queryFn: () => getBuildTags(spaceName),
   });
 
-  const searching = search.trim().length > 0;
-  const mode: BuildsFetchMode = searching ? "window" : "page";
+  const term = search.trim();
 
-  // Builds — server-paginated normally; one bounded window while searching
-  // (lib/buildSearch: the term is not in the key, as filtering is local).
+  // Builds — server-side search and pagination (see searchBuilds).
   const { data, isLoading, error } = useQuery({
-    queryKey: [
-      "builds",
-      spaceName,
-      selectedTags,
-      status,
-      ...(searching ? ["search-window"] : [page, pageSize]),
-    ],
-    queryFn: async () => ({
-      mode,
-      ...(await listBuilds({
+    queryKey: ["builds", spaceName, selectedTags, status, term, page, pageSize],
+    queryFn: () => {
+      const params = {
         space_name: spaceName,
         tags: selectedTags.length ? selectedTags : undefined,
         status: status === "all" ? undefined : (status as BuildStatus),
         sort: "created_time:desc",
-        page_index: searching ? 0 : page - 1,
-        page_size: searching ? SEARCH_WINDOW : pageSize,
-      })),
-    }),
+        page_index: page - 1,
+        page_size: pageSize,
+      };
+      return term ? searchBuilds(params, term) : listBuilds(params);
+    },
     // Keep the previous result while the next loads: without it BuildsTable
-    // shows its skeleton, which unmounts the search box mid-typing. buildsView
-    // renders it per the mode it was fetched in, not the one now wanted.
+    // shows its skeleton, which unmounts the search box mid-typing.
     placeholderData: (prev) => prev,
   });
 
@@ -106,12 +97,16 @@ export default function BuildsPage() {
     setPageSize(ps);
   }, []);
 
-  const handleSearch = useCallback((term: string) => {
-    setSearch(term);
-    setPage(1);
+  // Each keystroke would otherwise be a server round-trip.
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(searchDebounceRef.current), []);
+  const handleSearch = useCallback((value: string) => {
+    clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      setSearch(value);
+      setPage(1);
+    }, 300);
   }, []);
-
-  const view = buildsView(data, data?.mode, { term: search, page, pageSize });
 
   const spaceItems = [
     { id: "__all__", label: "All spaces" },
@@ -202,20 +197,9 @@ export default function BuildsPage() {
         />
       )}
 
-      {view.truncated && (
-        <InlineNotification
-          kind="info"
-          lowContrast
-          hideCloseButton
-          title="Search limited to recent builds"
-          subtitle={`Searching the ${SEARCH_WINDOW} most recent builds matching the current filters. Narrow the filters to search further back.`}
-          style={{ marginBottom: "1rem" }}
-        />
-      )}
-
       <BuildsTable
-        builds={view.items}
-        total={view.total}
+        builds={data?.items ?? []}
+        total={data?.total ?? 0}
         page={page}
         pageSize={pageSize}
         isLoading={isLoading}
