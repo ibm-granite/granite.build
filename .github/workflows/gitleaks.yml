@@ -13,8 +13,12 @@ on:
 permissions:
   contents: read
 
+# PRs: a newer push to the same PR cancels its superseded run. Everything else (pushes to main,
+# merge queue) is keyed on the commit, so each commit gets its own run: keying on the ref would
+# let GitHub drop a queued run when several merges land close together, leaving one main commit
+# with a cancelled check.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -38,7 +42,16 @@ jobs:
 
       - name: Check version matches the pre-commit hook
         run: |
-          hook=$(grep -A1 'github.com/gitleaks/gitleaks' .pre-commit-config.yaml | sed -n 's/.*rev: v\(.*\)/\1/p')
+          # Take the first `rev:` inside the gitleaks block; tolerate quotes, a trailing comment,
+          # a leading "v", and other keys or comments between the repo line and `rev:`.
+          hook=$(sed -n '/github.com\/gitleaks\/gitleaks/,/^[[:space:]]*- repo:/p' .pre-commit-config.yaml \
+            | grep -m1 -E '^[[:space:]]*rev:' \
+            | sed -E 's/^[[:space:]]*rev:[[:space:]]*//; s/[[:space:]]*#.*$//' \
+            | tr -d "\"'" | sed 's/^v//')
+          if [ -z "$hook" ]; then
+            echo "::error::could not find the gitleaks rev in .pre-commit-config.yaml"
+            exit 1
+          fi
           if [ "$hook" != "$GITLEAKS_VERSION" ]; then
             echo "::error::gitleaks version in this workflow ($GITLEAKS_VERSION) differs from .pre-commit-config.yaml ($hook)"
             exit 1
@@ -60,6 +73,11 @@ jobs:
         # --log-opts limits the scan to history reachable from HEAD (for a PR, the merge ref:
         # the PR's commits plus main). Without it gitleaks runs `git log --all`, so a finding
         # on an unrelated branch or tag would fail every run.
+        # Known gap: `git log -p` shows no patch for merge commits, so a value that appears only in
+        # a conflict resolution is not scanned here; the squash commit on main is scanned normally.
+        # Adding -m or --diff-merges=first-parent would close it, but flags the merge commit itself
+        # (a hash nobody can pin) whenever main, with any already-ignored finding, is merged into a
+        # PR branch. Combined-diff options (--cc) are not parsed by gitleaks.
         run: gitleaks git --redact --verbose --exit-code 1 --log-opts="--full-history HEAD" .
 
       - name: How to resolve findings
