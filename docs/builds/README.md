@@ -85,8 +85,8 @@ Common schemes: `hf://` (HuggingFace), `file://`, `git://`, `cos://` / `s3://` (
 - **Outputs** declare a `uri` (often Jinja-templated) and may set `store_push` to push the result to a
   remote store after the step writes it (e.g. HuggingFace — see [hf-push](hf-push.md)).
 
-The full input/output schema — `wait_for_push`, `event`, `event_selectors`, `store_push`, artifact
-`type` — is in the [`build.yaml` specification](build-yaml-specification.md#inputs-direct-or-bound).
+The full input/output schema — `wait_for_push`, `store_push`, artifact `type` — is in the
+[`build.yaml` specification](build-yaml-specification.md#inputs-direct-or-bound).
 
 ## Bindings: chaining targets
 

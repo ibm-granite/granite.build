@@ -1354,8 +1354,7 @@ A downstream target could now bind to `hello.greeting` and read
 - [`samples/standalone/standalone-quickstart`](https://github.com/ibm-granite/granite.build/tree/main/samples/standalone/standalone-quickstart):
   a single target with several environment options and a basic `compute_config`.
 - [`samples/templates/local_multi_stage`](https://github.com/ibm-granite/granite.build/tree/main/samples/templates/local_multi_stage):
-  four targets chained by bindings. Its `event:` input is not supported by the runner (see
-  [Inputs: direct or bound](#inputs-direct-or-bound)).
+  four targets chained by bindings.
 - [`test-data/integration/standalone/buildrunner/bash/retry`](https://github.com/ibm-granite/granite.build/tree/main/test-data/integration/standalone/buildrunner/bash/retry):
   a top-level `retries` block with `max_retries`.
 

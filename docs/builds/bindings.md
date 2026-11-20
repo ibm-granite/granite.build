@@ -76,7 +76,7 @@ normalisation turns `http://host:8000` into `/http:/host:8000`. A `mem://` outpu
 `{{ run_metadata.targetsteprun_id | short_hash }}` or `{{ unique_hash }}`); see
 [Jinja templating](build-yaml-specification.md#c6-parameters-and-jinja-templating).
 
-Full output schema (`public`, `store_push`, `event_selectors`):
+Full output schema (`public`, `store_push`):
 [`build.yaml` specification — Outputs](build-yaml-specification.md#outputs-and-how-steps-produce-them).
 
 ### Inputs
@@ -98,7 +98,6 @@ targets:
 | `uri` | Direct artifact URI. It is checked to exist when the build is validated. |
 | `binding` | `<target-name>.<output-name>`. The target and output must both exist in this build. |
 | `wait_for_push` | `true`: don't start until the upstream output's `store_push` has finished, not just until it was produced. |
-| `event` | **Not supported.** The schema accepts it, but the build runner doesn't implement it: an input with only `event` logs `unsupported input.event being used`, and alongside a `binding` it is ignored. Order targets with a `binding` instead. |
 
 Full input schema: [`build.yaml` specification — Inputs](build-yaml-specification.md#inputs-direct-or-bound).
 
