@@ -2,30 +2,40 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Token exchange proxy for IBMid OIDC authentication.
+"""Token exchange proxy for SSO (OIDC) login.
 
 The CLI is a public client and must not hold secrets. These endpoints
 let gbserver act as the confidential client that holds the
-``GBSERVER_IBMID_CLIENT_SECRET`` and performs the token exchange on
+``GBSERVER_OIDC_CLIENT_SECRET`` and performs the token exchange on
 behalf of the CLI.
 
-Flow:
+Stateless flow (``/oidc/*``), used by the CLI:
+1. ``/oidc/authorize`` redirects to the provider, passing the PKCE challenge through.
+2. The provider redirects with the code to the CLI's loopback listener or, for
+   ``--remote``, to ``/oidc/remote-callback``, which shows it for pasting.
+3. ``/oidc/token`` redeems the code with the client secret; the provider checks the
+   CLI's verifier.
+Nothing is stored, so any worker or pod can serve any step.
+
+Legacy polling flow, kept for older CLIs:
 1. CLI opens browser to ``/authorize`` with a PKCE code_challenge and
    a random ``state``.
-2. This endpoint redirects the browser to IBMid's authorize URL.
-3. After the user authenticates, IBMid redirects to ``/callback``.
+2. This endpoint redirects the browser to the provider's authorize URL.
+3. After the user authenticates, the provider redirects to ``/callback``.
 4. The callback exchanges the authorization code for tokens (using the
    server-side client_secret) and stores them in an in-memory session.
 5. The CLI polls ``/status`` with the ``state`` and ``code_verifier``.
    Once the PKCE proof is verified, the tokens are returned (one-time).
 
-Note: The in-memory session store assumes a single-worker process.  If
-multi-worker mode is enabled, sessions need to move to a shared store.
+The legacy flow's in-memory sessions assume a single worker process.
 """
 
 import base64
 import hashlib
+import html
+import json
 import os
+import re
 import time
 import urllib.parse
 from typing import Optional
@@ -33,7 +43,18 @@ from typing import Optional
 import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel, Field
 
+from gbserver.types.constants_base import (
+    ENV_VAR_OIDC_AUTHORIZE_URL,
+    ENV_VAR_OIDC_CALLBACK_URL,
+    ENV_VAR_OIDC_CLIENT_ID,
+    ENV_VAR_OIDC_CLIENT_SECRET,
+    ENV_VAR_OIDC_REMOTE_CALLBACK_URL,
+    ENV_VAR_OIDC_TOKEN_URL,
+    ENV_VAR_OIDC_USERINFO_URL,
+    oidc_setting,
+)
 from gbserver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -90,7 +111,7 @@ def _cleanup_expired() -> None:
 
 _AUTH_COMPLETE_HTML = (
     "<html><body>"
-    "<h2>IBMid login successful.</h2>"
+    "<h2>SSO login successful.</h2>"
     "<p>You may close this tab and return to the terminal.</p>"
     "</body></html>"
 )
@@ -122,9 +143,9 @@ def authorize(
     code_challenge_method: str = Query(...),
     state: str = Query(...),
 ):
-    """Start the IBMid OIDC flow via the proxy.
+    """Start the legacy SSO flow via the proxy.
 
-    Stores the PKCE challenge and redirects the browser to IBMid.
+    Stores the PKCE challenge and redirects the browser to the provider.
     """
     if code_challenge_method != "S256":
         return JSONResponse(
@@ -139,22 +160,19 @@ def authorize(
         )
 
     # Read config at request time (not import time).
-    client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
-    authorize_url = os.getenv(
-        "GBSERVER_IBMID_AUTHORIZE_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/authorize",
-    )
-    callback_url = os.getenv("GBSERVER_IBMID_CALLBACK_URL", "")
+    client_id = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
+    authorize_url = oidc_setting(ENV_VAR_OIDC_AUTHORIZE_URL)
+    callback_url = oidc_setting(ENV_VAR_OIDC_CALLBACK_URL)
 
     if not client_id:
         return JSONResponse(
             status_code=500,
-            content={"detail": "GBSERVER_IBMID_CLIENT_ID is not configured."},
+            content={"detail": "GBSERVER_OIDC_CLIENT_ID is not configured."},
         )
     if not callback_url:
         return JSONResponse(
             status_code=500,
-            content={"detail": "GBSERVER_IBMID_CALLBACK_URL is not configured."},
+            content={"detail": "GBSERVER_OIDC_CALLBACK_URL is not configured."},
         )
 
     _sessions[state] = _AuthSession(code_challenge=code_challenge)
@@ -166,8 +184,8 @@ def authorize(
         "scope": "openid profile email",
         "state": state,
     }
-    ibmid_url = f"{authorize_url}?{urllib.parse.urlencode(params)}"
-    return RedirectResponse(url=ibmid_url, status_code=302)
+    provider_url = f"{authorize_url}?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(url=provider_url, status_code=302)
 
 
 @auth_api.get("/callback")
@@ -177,7 +195,7 @@ def callback(
     error: Optional[str] = Query(None),
     error_description: Optional[str] = Query(None),
 ):
-    """IBMid redirects here after the user authenticates.
+    """The provider redirects here after the user authenticates.
 
     Exchanges the authorization code for tokens and stores them in the
     session so the CLI can retrieve them via ``/status``.
@@ -198,7 +216,9 @@ def callback(
         session.error_detail = error_description or error
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(
-                detail=f"IBMid returned an error: {error_description or error}"
+                detail=html.escape(
+                    f"The SSO provider returned an error: {error_description or error}"
+                )
             ),
             status_code=200,
         )
@@ -208,23 +228,17 @@ def callback(
         session.error_detail = "No authorization code received."
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(
-                detail="No authorization code received from IBMid."
+                detail="No authorization code received from the SSO provider."
             ),
             status_code=200,
         )
 
     # Exchange the code for tokens (server-side, with client_secret).
-    client_id = os.getenv("GBSERVER_IBMID_CLIENT_ID", "")
-    client_secret = os.getenv("GBSERVER_IBMID_CLIENT_SECRET", "")
-    token_url = os.getenv(
-        "GBSERVER_IBMID_TOKEN_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/token",
-    )
-    callback_url = os.getenv("GBSERVER_IBMID_CALLBACK_URL", "")
-    userinfo_url = os.getenv(
-        "GBSERVER_IBMID_USERINFO_URL",
-        "https://login.ibm.com/v1.0/endpoint/default/userinfo",
-    )
+    client_id = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
+    client_secret = oidc_setting(ENV_VAR_OIDC_CLIENT_SECRET)
+    token_url = oidc_setting(ENV_VAR_OIDC_TOKEN_URL)
+    callback_url = oidc_setting(ENV_VAR_OIDC_CALLBACK_URL)
+    userinfo_url = oidc_setting(ENV_VAR_OIDC_USERINFO_URL)
 
     # Token exchange
     try:
@@ -246,11 +260,11 @@ def callback(
             session.status = "error"
             session.error_detail = f"Token exchange failed: {desc}"
             logger.error(
-                "IBMid token exchange failed (%s): %s", token_resp.status_code, desc
+                "SSO token exchange failed (%s): %s", token_resp.status_code, desc
             )
             return HTMLResponse(
                 content=_AUTH_ERROR_HTML_TEMPLATE.format(
-                    detail="Token exchange with IBMid failed. Please try again."
+                    detail="Token exchange with the SSO provider failed. Please try again."
                 ),
                 status_code=200,
             )
@@ -263,7 +277,7 @@ def callback(
     except Exception as e:
         session.status = "error"
         session.error_detail = f"Token exchange error: {e}"
-        logger.exception("IBMid token exchange error")
+        logger.exception("SSO token exchange error")
         return HTMLResponse(
             content=_AUTH_ERROR_HTML_TEMPLATE.format(
                 detail="An error occurred during token exchange. Please try again."
@@ -281,7 +295,7 @@ def callback(
         ui_resp.raise_for_status()
         session.user_info = ui_resp.json()
     except Exception as e:
-        logger.warning("Failed to fetch IBMid userinfo: %s", e)
+        logger.warning("Failed to fetch SSO userinfo: %s", e)
         session.user_info = {}
 
     session.status = "complete"
@@ -345,3 +359,275 @@ def status(
     del _sessions[state]
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Stateless flow: /oidc/authorize, /oidc/remote-callback, /oidc/token
+# ---------------------------------------------------------------------------
+
+# The CLI's loopback listener (RFC 8252). The provider's registration pins the port.
+_LOOPBACK_REDIRECT_RE = re.compile(r"http://127\.0\.0\.1:([1-9]\d{0,4})/callback")
+
+
+def _is_loopback_redirect(uri: str) -> bool:
+    m = _LOOPBACK_REDIRECT_RE.fullmatch(uri)
+    return m is not None and int(m.group(1)) <= 65535
+
+
+_REMOTE_CALLBACK_PATH = "/oidc/remote-callback"
+
+# Code collapsed so it stays off screen; Copy works regardless and expands it
+# if the clipboard is unavailable. Braces doubled for str.format.
+_REMOTE_CODE_HTML_TEMPLATE = (
+    "<html><body>"
+    "<h2>Sign-in complete</h2>"
+    "<p>Copy the verification code and paste it into the gb CLI that is "
+    "waiting for it.</p>"
+    '<p><button id="copy" type="button">Copy verification code</button> '
+    '<span id="status"></span></p>'
+    "<details><summary>Show code</summary>"
+    '<pre id="code" style="white-space:pre-wrap;word-break:break-all;'
+    'padding:8px;border:1px solid #888">{code}</pre></details>'
+    "<p><b>Only paste it into a gb CLI you started yourself. Never share it "
+    "with anyone.</b></p>"
+    "<script>"
+    "document.getElementById('copy').onclick = function () {{"
+    "  var status = document.getElementById('status');"
+    "  function manual() {{"
+    "    document.querySelector('details').open = true;"
+    "    status.textContent = 'Copy failed: copy the code below by hand.';"
+    "  }}"
+    "  try {{"
+    "    navigator.clipboard"
+    "      .writeText(document.getElementById('code').textContent)"
+    "      .then(function () {{ status.textContent = 'Copied.'; }}, manual);"
+    "  }} catch (e) {{ manual(); }}"
+    "}};"
+    "</script>"
+    "</body></html>"
+)
+
+
+def _remote_callback_url() -> str:
+    """The ``--remote`` redirect URI: the env override, else derived from the
+    legacy callback URL so deployments need no new setting."""
+    url = oidc_setting(ENV_VAR_OIDC_REMOTE_CALLBACK_URL)
+    if url:
+        return url
+    legacy = oidc_setting(ENV_VAR_OIDC_CALLBACK_URL).rstrip("/")
+    if legacy.endswith("/callback"):
+        return legacy[: -len("/callback")] + _REMOTE_CALLBACK_PATH
+    return ""
+
+
+def _resolve_redirect_uri(redirect_uri: Optional[str]) -> Optional[str]:
+    """The redirect URI to use, or None if not allowed. Omitted means
+    ``--remote``, so the CLI needn't know the registered URL."""
+    remote = _remote_callback_url()
+    if redirect_uri is None:
+        return remote or None
+    if _is_loopback_redirect(redirect_uri) or (remote and redirect_uri == remote):
+        return redirect_uri
+    return None
+
+
+def _bad_redirect_uri(redirect_uri: Optional[str]) -> JSONResponse:
+    if redirect_uri is None:  # --remote, but no URL to derive it from
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "GBSERVER_OIDC_REMOTE_CALLBACK_URL (or _CALLBACK_URL) "
+                "is not configured."
+            },
+        )
+    return JSONResponse(
+        status_code=400, content={"detail": "redirect_uri is not allowed."}
+    )
+
+
+def encode_remote_code(state: str, code: str) -> str:
+    """The string the user pastes: ``state`` plus ``code``, so the CLI can
+    reject a code from another login."""
+    raw = json.dumps({"s": state, "c": code}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).rstrip(b"=").decode("ascii")
+
+
+@auth_api.get("/oidc/authorize")
+def oidc_authorize(
+    # An S256 challenge is always 43 base64url characters (RFC 7636 section 4.2).
+    code_challenge: str = Query(..., pattern=r"^[A-Za-z0-9_-]{43}$"),
+    code_challenge_method: str = Query(...),
+    state: str = Query(...),
+    redirect_uri: Optional[str] = Query(None),
+):
+    """Redirect the browser to the SSO provider, passing the PKCE challenge through."""
+    if code_challenge_method != "S256":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Only S256 code_challenge_method is supported."},
+        )
+    resolved = _resolve_redirect_uri(redirect_uri)
+    if resolved is None:
+        return _bad_redirect_uri(redirect_uri)
+    client_id = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
+    if not client_id:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "GBSERVER_OIDC_CLIENT_ID is not configured."},
+        )
+    authorize_url = oidc_setting(ENV_VAR_OIDC_AUTHORIZE_URL)
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": resolved,
+        "scope": "openid profile email",
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return RedirectResponse(
+        url=f"{authorize_url}?{urllib.parse.urlencode(params)}", status_code=302
+    )
+
+
+@auth_api.get(_REMOTE_CALLBACK_PATH)
+def oidc_remote_callback(
+    state: Optional[str] = Query(None),
+    code: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
+):
+    """``--remote`` landing page: show the code for the user to paste."""
+    if error or not code or not state:
+        detail = (
+            f"The SSO provider returned an error: {error_description or error}"
+            if error
+            else "No authorization code received from the SSO provider."
+        )
+        return HTMLResponse(
+            content=_AUTH_ERROR_HTML_TEMPLATE.format(detail=html.escape(detail)),
+            status_code=200,
+            headers={"Cache-Control": "no-store"},
+        )
+    return HTMLResponse(
+        content=_REMOTE_CODE_HTML_TEMPLATE.format(
+            code=html.escape(encode_remote_code(state, code))
+        ),
+        status_code=200,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+_ERROR_DESCRIPTION_MAX = 200
+
+
+def _provider_error_summary(body: dict, code: str) -> str:
+    """``error`` plus a capped ``error_description``, with the submitted code
+    redacted (some providers echo it)."""
+    error = str(body.get("error") or "")[:64]
+    desc = str(body.get("error_description") or "").replace(code, "[code]")
+    if len(desc) > _ERROR_DESCRIPTION_MAX:
+        desc = desc[:_ERROR_DESCRIPTION_MAX] + "…"
+    return ": ".join(part for part in (error, desc) if part)
+
+
+def _json_object(resp) -> dict:
+    """``resp``'s JSON object body, or {} if it isn't one (e.g. an HTML page)."""
+    try:
+        body = resp.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+class OIDCTokenRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=2048)
+    # RFC 7636 section 4.1.
+    code_verifier: str = Field(min_length=43, max_length=128)
+    # Omitted for --remote.
+    redirect_uri: Optional[str] = None
+
+
+@auth_api.post("/oidc/token")
+def oidc_token(body: OIDCTokenRequest):
+    """Redeem the code with the client secret; the provider checks the verifier."""
+    redirect_uri = _resolve_redirect_uri(body.redirect_uri)
+    if redirect_uri is None:
+        return _bad_redirect_uri(body.redirect_uri)
+    client_id = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
+    client_secret = oidc_setting(ENV_VAR_OIDC_CLIENT_SECRET)
+    if not client_id or not client_secret:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "GBSERVER_OIDC_CLIENT_ID / _CLIENT_SECRET is not configured."
+            },
+        )
+    token_url = oidc_setting(ENV_VAR_OIDC_TOKEN_URL)
+    userinfo_url = oidc_setting(ENV_VAR_OIDC_USERINFO_URL)
+    try:
+        token_resp = requests.post(
+            token_url,
+            data={
+                "grant_type": "authorization_code",
+                "code": body.code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": body.code_verifier,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            timeout=30,
+        )
+    except Exception:
+        logger.exception("SSO token exchange error")
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "Token exchange with the SSO provider failed."},
+        )
+    if token_resp.status_code != 200:
+        body_json = _json_object(token_resp)
+        desc = _provider_error_summary(body_json, body.code)
+        logger.error("SSO token exchange failed (%s): %s", token_resp.status_code, desc)
+        # 4xx: the provider rejected the code or verifier, except invalid_client:
+        # gbserver's own client credentials are wrong.
+        client_error = 400 <= token_resp.status_code < 500
+        if body_json.get("error") == "invalid_client" or token_resp.status_code == 401:
+            client_error = False
+        status_code = 400 if client_error else 502
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "detail": f"Token exchange failed: {desc or token_resp.status_code}"
+            },
+        )
+
+    tokens = _json_object(token_resp)
+    access_token = tokens.get("access_token", "")
+    if not access_token:
+        logger.error("SSO token response had no access_token")
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "The SSO provider returned no access token."},
+        )
+    user_info: dict = {}
+    try:
+        ui_resp = requests.get(
+            userinfo_url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        ui_resp.raise_for_status()
+        user_info = _json_object(ui_resp)
+    except Exception as e:
+        logger.warning("Failed to fetch SSO userinfo: %s", e)
+    # RFC 6749 section 5.1: token responses must not be cached.
+    return JSONResponse(
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        content={
+            "access_token": access_token,
+            "id_token": tokens.get("id_token", ""),
+            "refresh_token": tokens.get("refresh_token", ""),
+            "expires_in": tokens.get("expires_in", 0),
+            "user_info": user_info,
+        },
+    )

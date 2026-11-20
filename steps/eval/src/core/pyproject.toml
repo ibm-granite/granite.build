@@ -97,11 +97,25 @@ judged = [
     "python-pptx>=1.0",
     "pypdf>=5.0",
 ]
+# OfficeQA (Databricks): the reward port is stdlib-only, but the oracle_parsed
+# context renders the parsed corpus' HTML tables to Markdown, which needs
+# pandas.read_html and its lxml parser (results.json records both versions).
+officeqa = [
+    "pandas>=2.2",
+    "lxml>=5.2",
+]
 # The inference server. Kept out of the base install so the CLI, tests and the
 # result tooling run on a laptop without CUDA.
 serve = [
     "vllm==0.27.1",
 ]
+# MCPMark (eval-sys). The extra is empty on purpose: the harness hard-pins
+# litellm==1.80.0 against the nemoskills/tbench camps and its wheel omits
+# pipeline.py (it must run from a checkout), so it cannot live in this venv;
+# mcpmark/extras.sh bakes the pinned commit with its own venv and the module
+# runs it as a subprocess. Kept as an extra so the family stays uniform
+# (image build, Benchmark.extra error messages).
+mcpmark = []
 
 [project.scripts]
 granite-evals = "granite_evals.cli:main"
@@ -155,6 +169,17 @@ conflicts = [
     [{ extra = "bird" }, { extra = "tbench" }],
     [{ extra = "ifbench" }, { extra = "tbench" }],
     [{ extra = "nemoskills" }, { extra = "tbench" }],
+    # judged's stirrup pins moviepy, which caps pillow<12 (no moviepy release
+    # allows more); every other family resolves pillow 13 and its CVE fixes.
+    # judged keeps the cap in its own fork (its image carries the scan-ignore).
+    [{ extra = "judged" }, { extra = "bfcl" }],
+    [{ extra = "judged" }, { extra = "tau" }],
+    [{ extra = "judged" }, { extra = "bird" }],
+    [{ extra = "judged" }, { extra = "ifbench" }],
+    [{ extra = "judged" }, { extra = "nemoskills" }],
+    [{ extra = "judged" }, { extra = "swebench" }],
+    [{ extra = "judged" }, { extra = "tbench" }],
+    [{ extra = "judged" }, { extra = "officeqa" }],
 ]
 
 [tool.pytest.ini_options]

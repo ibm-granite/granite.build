@@ -33,11 +33,11 @@ from gbcli.services.service_auth import (
     gh_login,
     gh_token,
     gh_token_verify,
-    ibmid_login,
     lakehouse_token_for_space,
     lh_artifact_token,
     lh_user_token,
     rits_user_api_key,
+    sso_login,
 )
 from gbcli.services.service_build import (
     build_cancel,
@@ -621,8 +621,15 @@ class GBClient:
         def login_gbserver(self, api_user: str, api_key: str):
             return gbserver_login(api_user, api_key)
 
-        def login_ibmid(self, open_browser=None):
-            return ibmid_login(open_browser=open_browser)
+        def login_sso(
+            self, open_browser=None, remote=False, read_code=None, redirect_port=None
+        ):
+            return sso_login(
+                open_browser=open_browser,
+                remote=remote,
+                read_code=read_code,
+                redirect_port=redirect_port,
+            )
 
     class Build:
         def __init__(self, github_token: str):

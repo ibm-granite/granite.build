@@ -17,7 +17,9 @@ tests sit beside its modules at `<family>/tests/`:
 | `ifbench/src/`               | `ifbench` (split out of upstream `chat_if.py`)                                |
 | `judged/src/`                | `judge_general` (profbench, gdpval), `mcpatlas`, `multi_challenge`, `safety`  |
 | `lmeval/src/`                | `chat_if` (mmlu-prox-lite)                                                    |
-| `nemoskills/src/`            | `nemo_skills_code`, `nemo_skills_extended`, `nemo_skills_ruler`, `scicode_prefill`, `tools_agentic` |
+| `mcpmark/src/`               | `mcpmark` (filesystem, postgres, playwright; upstream's own harness runs as a subprocess from the checkout `mcpmark/extras.sh` bakes with a side venv — it cannot live in this venv — and the service runtimes live in the family image; task state downloads at run time, never vendored) |
+| `nemoskills/src/`            | `nemo_skills_code`, `nemo_skills_codegen`, `nemo_skills_extended`, `nemo_skills_ruler`, `scicode_prefill`, `tools_agentic` |
+| `officeqa/src/`              | `officeqa` (a port of Databricks OfficeQA's Apache-2.0 scorer and page extraction; the gated CC-BY-SA-4.0 questions and corpus are fetched at run start, never vendored) |
 | `swebench/src/`              | `swebench`                                                                    |
 | `tau/src/`                   | `tau`                                                                         |
 | `tbench/src/`                | `tbench`                                                                      |

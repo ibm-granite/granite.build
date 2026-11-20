@@ -1,7 +1,9 @@
-"""Tool benchmarks (hle-tools, critpt-tools, browsecomp) and their tools, with
-fakes only: a tool-calling fake model, fake MCP search / web page / judge /
-CritPt API servers, and the python tool's ``unsafe-local`` sandbox (no
-container, so its network cannot be cut: ``python_network=on``)."""
+"""Tool benchmarks (hle-tools, critpt-tools, human-eval-tools, mbpp-tools,
+browsecomp, browsecomp-plus) and their tools, with fakes only: a tool-calling
+fake model, fake MCP search / web page / judge / CritPt API servers, and the
+python tool's ``unsafe-local`` sandbox (no container, so its network cannot be
+cut: ``python_network=on``; the codegen tools' grading runs there too, with
+``grade_network=on``)."""
 
 import asyncio
 import csv
@@ -42,7 +44,10 @@ def _cfg_file(tmp_path, **sections):
     [
         ("hle-tools", "pass@1 judge_correct", ["python", "search"]),
         ("critpt-tools", "Challenge Accuracy", ["python"]),
+        ("human-eval-tools", "pass@1 accuracy", ["python"]),
+        ("mbpp-tools", "pass@1 accuracy", ["python"]),
         ("browsecomp", "mean reward", ["search", "fetch"]),
+        ("browsecomp-plus", "mean reward", ["search", "fetch"]),
     ],
 )
 def test_registered_as_in_suite(bid, metric, tools, tmp_path):
@@ -369,6 +374,74 @@ def test_browsecomp_prompts_are_upstream_templates(tmp_path):
     assert b.uses_judge() and b.split() == "test"
 
 
+def test_browsecomp_plus_prepare_decrypts_the_hf_rows(tmp_path, monkeypatch):
+    """The pinned HF dataset's rows are canary-encrypted (everything but
+    query_id); prepare decrypts them into BrowseComp's ns row shape, checking
+    the pinned row count. No short-circuit: HF is re-read every phase."""
+    queries = [
+        ("Which fake city hosts the fake tower built in 1999?", "Springfield", "q-001"),
+        ("Name the fake author of the fake novel 'Q'.", "J. Doe", "q-002"),
+    ]
+    rows = [
+        {
+            "query_id": qid,
+            "query": ta.browsecomp_encrypt(q, ta.BROWSECOMP_PLUS_CANARY),
+            "answer": ta.browsecomp_encrypt(a, ta.BROWSECOMP_PLUS_CANARY),
+        }
+        for q, a, qid in queries
+    ]
+    reads = []
+
+    def load_split(source, *, revision=None, split="test", name=None):
+        reads.append((source, revision, split))
+        return rows
+
+    monkeypatch.setattr(ta.data, "load_split", load_split)
+    monkeypatch.setattr(ta, "BROWSECOMP_PLUS_N", 2)
+    b = bench("browsecomp-plus", tmp_path / "out")
+    path, prov = b.prepare_data()
+    assert reads == [(ta.BROWSECOMP_PLUS_DATASET, ta.BROWSECOMP_PLUS_REVISION, "test")]
+    assert _rows(path) == [
+        {"id": "q-001", "problem": "Which fake city hosts the fake tower built in 1999?",
+         "expected_answer": "Springfield", "subset_for_metrics": "browsecomp-plus"},  # fmt: skip
+        {"id": "q-002", "problem": "Name the fake author of the fake novel 'Q'.",
+         "expected_answer": "J. Doe", "subset_for_metrics": "browsecomp-plus"},  # fmt: skip
+    ]
+    assert prov["source"] == "Tevatron browsecomp-plus (HF), canary-decrypted"
+    assert prov["dataset"] == ta.BROWSECOMP_PLUS_DATASET and prov["revision"] == ta.BROWSECOMP_PLUS_REVISION
+    assert prov["tevatron_commit"] == ta.TEVATRON_COMMIT and prov["rows"] == 2
+    assert len(ta.BROWSECOMP_PLUS_REVISION) == 40  # a real commit pin, not a sha256: pin
+
+    # The pinned row count is checked (an unmolested dataset must have 830)
+    monkeypatch.setattr(ta, "BROWSECOMP_PLUS_N", 830)
+    with pytest.raises(RuntimeError, match="2 rows, expected 830"):
+        bench("browsecomp-plus", tmp_path / "out2").prepare_data()
+
+
+def test_browsecomp_plus_prompts_are_tevatron_templates(tmp_path):
+    import yaml
+
+    b = bench("browsecomp-plus", tmp_path)
+    b.prepare_prompts()
+    gen = yaml.safe_load((tmp_path / "prompts" / "browsecomp-plus.yaml").read_text())
+    judge = yaml.safe_load((tmp_path / "prompts" / "browsecomp-plus-judge.yaml").read_text())
+    # Tevatron's query template and grader, each a user turn only (Tevatron's
+    # grader is sent with no system message).
+    assert gen == {"user": ta.BROWSECOMP_PLUS_QUERY} and judge == {"user": ta.BROWSECOMP_PLUS_GRADER}
+    filled = gen["user"].format(problem="Q?")
+    assert filled.startswith("You are a deep research agent.") and "Question: Q?" in filled
+    assert "Exact Answer: {your succinct, final answer}" in filled
+    g = judge["user"].format(problem="Q", generation="R", expected_answer="A")
+    assert "[question]: Q\n\n[response]: R" in g and "[correct_answer]: A" in g and "0|\\%| and 100|\\%|" in g
+    assert f"++prompt_config={tmp_path / 'prompts' / 'browsecomp-plus.yaml'}" in b.generation_args([])
+    judge_args = b._module_attr("JUDGE_ARGS")
+    assert "browsecomp-plus-judge.yaml" in judge_args and "++generation_key=judgement" in judge_args
+    assert "Qwen/Qwen3-32B" in b.official_judge and ta.TEVATRON_COMMIT[:12] in b.official_judge
+    assert any("tevatron" in p for p in b.blocked_url_patterns)
+    assert any("texttron" in p for p in b.blocked_url_patterns)
+    assert b.uses_judge() and b.split() == "test"
+
+
 def test_critpt_code_extraction_matches_ns():
     gen = "text\n```python\nfirst()\n```\nmore\n```python\ndef answer():\n    return 1\n```\n"
     assert ta._critpt_code(gen) == "```python\ndef answer():\n    return 1\n```"
@@ -596,3 +669,65 @@ def test_critpt_tools_needs_key_and_refuses_gold(ns, tmp_path, monkeypatch):
         b._submit([])
     with pytest.raises(SystemExit, match="no answers=gold"):
         bench("critpt-tools", tmp_path, options={"answers": "gold"}).run("", "")
+
+
+def _codegen_data(tmp_path):
+    """One ns-shaped HumanEval row (``nemo_skills_codegen``'s row shape)."""
+    rows = [
+        {
+            "task_id": "HumanEval/999",
+            "prompt": 'def add(a: int, b: int) -> int:\n    """Add two integers."""\n',
+            "canonical_solution": "    return a + b\n",
+            "test": "def check(candidate):\n    assert candidate(2, 3) == 5\n    assert candidate(-1, 1) == 0\n",
+            "entry_point": "add",
+            "question": 'def add(a: int, b: int) -> int:\n\t"""Add two integers."""\n',
+        }
+    ]  # fmt: skip
+    p = tmp_path / "codegen.jsonl"
+    nsb._write_jsonl(p, rows)
+    return p
+
+
+def test_human_eval_tools_end_to_end_with_python(ns, tmp_path):
+    """The model runs code with the python tool, then answers; the final
+    answer's fenced block is the completion the grading harness runs."""
+    plan = [("stateful_python_code_exec", {"code": "2 + 3"})]
+
+    def answer(msgs):
+        tool_out = [m["content"] for m in msgs if m.get("role") == "tool"]
+        assert tool_out[0] == "5"
+        return "```python\n    return a + b\n```"
+
+    with _ToolModel(plan, answer) as model:
+        opts = {
+            "sandbox": "unsafe-local",
+            "python_network": "on",
+            "python_packages": "none",
+            "grade_network": "on",
+        }
+        b = bench(
+            "human-eval-tools",
+            tmp_path / "out",
+            dataset=str(_codegen_data(tmp_path)),
+            options=opts,
+        )
+        r = b.run(model.base_url, "fake")
+    assert (r["value"], r["n"]) == (1.0, 1)
+    gen = _rows(tmp_path / "out" / "generation" / "output-rs0.jsonl")
+    assert (
+        gen[0]["num_tool_calls"] == 1
+        and gen[0]["is_correct"]
+        and gen[0]["grade_status"] == "passed"
+    )
+    assert (
+        "Here is a problem" in model.requests[0]["messages"][0]["content"]
+    )  # ns's codegen prompt
+    assert {t["function"]["name"] for t in model.requests[0]["tools"]} == {
+        "stateful_python_code_exec"
+    }
+    assert r["tools"]["enabled"] == ["python"] and r["tools"]["calls"]["total"] == 1
+    assert r["tools"]["python_sandbox"]["ready"]  # the python tool's own sandbox
+    assert (
+        r["grading_sandbox"]["network_isolation"] == "not requested"
+    )  # the grading one
+    assert r["grading_sandbox"]["graded"] == 1

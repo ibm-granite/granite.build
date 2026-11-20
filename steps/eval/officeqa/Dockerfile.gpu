@@ -1,0 +1,103 @@
+# Copyright 2026 Granite.Build Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# granite-evals image for the `officeqa` benchmark family: OfficeQA (Databricks),
+# oracle_parsed mode, accuracy@0%.
+#
+# One image per benchmark family, because the upstream harnesses' own dependencies
+# conflict with one another (see [tool.uv] conflicts in src/core/pyproject.toml).
+# Build context is steps/eval/ (see the Makefile):
+#   podman build --platform linux/amd64 -f officeqa/Dockerfile.gpu . -t <registry>/gb-step-eval-officeqa:<tag>
+#
+# LICENSE / DATA: upstream's scorer and page extraction are Apache-2.0 (ported into
+# this repo with attribution). The question CSVs and the parsed corpus are
+# CC-BY-SA-4.0 behind the Hub's click-through gate, so NOTHING from the dataset is
+# baked into, or ever enters, this image: the adapter fetches the pinned revision
+# at run start -- before any question is processed -- and verifies it against
+# pinned blob sha1s and a corpus tree digest. HF_TOKEN must belong to an account
+# that has accepted the dataset's terms.
+#
+# Dependency / license enumeration: everything installed here carries an open
+# license:
+#   granite-evals (this repo, Apache-2.0) core dependencies:
+#     datasets        Apache-2.0
+#     httpx           BSD-3-Clause
+#     huggingface-hub Apache-2.0
+#     pyyaml          MIT
+#   `officeqa` extra (rendering the corpus' HTML tables to Markdown):
+#     pandas          BSD-3-Clause
+#     lxml            BSD-3-Clause
+#   `serve` extra:
+#     vllm            Apache-2.0
+# (transitives as resolved by src/core/uv.lock, the same set every family image
+# ships).
+#
+# The image carries vLLM (the `serve` extra), the shared granite_evals core
+# (src/core) overlaid with this family's benchmark modules (officeqa/src), and the
+# family's pinned harness (the `officeqa` extra). Nothing is cloned or mounted at
+# launch; the gated dataset is fetched at run start into the HF cache (see
+# scripts/prefetch_datasets.py). System packages are installed in a throwaway
+# stage and shipped as ONE plain layer. Installing them on top of the base image
+# in place would replace files the base ships (e.g. the /etc/alternatives awk
+# links), leaving overlay whiteouts. An unprivileged unsquashfs (Pyxis) cannot
+# create those, so the container would not start on SLURM.
+FROM python:3.12-slim-bookworm AS sysdeps
+
+ARG ENROOT_VERSION=4.2.1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl git jq gawk parallel pigz squashfs-tools zstd \
+        libcap2-bin procps build-essential \
+    && arch=$(dpkg --print-architecture) \
+    && curl -fsSLO "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${arch}.deb" \
+    && apt-get install -y --no-install-recommends ./enroot_${ENROOT_VERSION}-1_${arch}.deb \
+    && rm -f ./enroot_*.deb && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.12.20@sha256:100047e74f30778ab704942321a09750d6158739573ff58bf3924085cc6cd2d8 /uv /usr/local/bin/uv
+
+FROM scratch
+COPY --from=sysdeps / /
+# What the python base image would have set.
+ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LANG=C.UTF-8
+
+ENV EVALS_HOME=/opt/granite-evals
+WORKDIR ${EVALS_HOME}
+ENV UV_PROJECT_ENVIRONMENT=${EVALS_HOME}/.venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    VIRTUAL_ENV=${EVALS_HOME}/.venv \
+    PATH=${EVALS_HOME}/.venv/bin:$PATH
+
+# One sync with every extra, in a single layer. A later sync that re-resolved a package
+# would replace files from this layer and leave overlay whiteouts (see above). Dependencies
+# come first so code edits don't reinstall them. --chmod: the build host's checkout may be
+# unreadable to other users, which COPY would preserve.
+COPY --chmod=755 src/core/pyproject.toml src/core/uv.lock ./
+RUN uv sync --locked --no-install-project --no-dev --extra serve --extra officeqa
+# The shared core first, then the family's modules merged into the same package.
+COPY --chmod=755 src/core/granite_evals ./src/granite_evals
+COPY --chmod=755 officeqa/src ./src/granite_evals/benchmarks
+COPY --chmod=755 src/core/tests ./tests
+COPY --chmod=755 officeqa/tests ./tests
+RUN uv sync --locked --no-dev --extra serve --extra officeqa \
+    && uv run --no-sync --with pytest pytest -q -p no:cacheprovider --basetemp=/opt/granite-evals/.pytest-tmp tests \
+    && granite-evals list \
+    && rm -rf /opt/granite-evals/.pytest-tmp /tmp/pytest-of-root
+
+# The HF cache's fixed in-container mount point; the environment bind-mounts its
+# cache here (or overrides HF_HOME).
+ENV HF_HOME=/opt/hf-cache
+ENTRYPOINT []
+CMD ["granite-evals", "--help"]

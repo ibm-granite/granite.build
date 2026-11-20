@@ -1,0 +1,29 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_lmeval.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). The model-free
+# answers=gold mode of mmlu-prox-lite: the GoldLM answers every question with
+# its reference letter, so the run needs no model, no GPU and no API keys. It
+# proves the dispatch, the family image, the pinned dataset fetch, the lm-eval
+# harness path and the results.json artifact end to end; the gold answers
+# score 1.0.
+targets:
+  - lmeval-test
+target_expectations:
+  - target_name: lmeval-test
+    # One target, one step record: lmeval scores inside generation (phase all).
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 1
+    expected_steps:
+      - config:
+          benchmark: mmlu-prox-lite
+          phase: all
+          options: answers=gold
+# The Space rendered by `make space` (the local lmeval step), as for the other
+# clusters; publish-step rewrites it to configurations/spaces/local. The
+# environment comes from the shared BlueVela SLURM space.
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+  - runner
+simulate_step_failure: false
+# Shared-partition queueing on BlueVela can take a while.
+timeout_minutes: 30

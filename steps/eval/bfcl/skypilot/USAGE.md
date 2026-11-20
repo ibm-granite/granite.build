@@ -38,6 +38,10 @@ steps:
 | `dataset` / `dataset_revision` | `""` | Unused: the data ships inside the pinned bfcl-eval package. |
 | `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups, default `all_scoring`), `temperature`, `top_p`, `max_tokens` (default: the checkpoint's generation_config), `search_mcp_url`, `include_input_log`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
+| `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | `""` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Unused: this benchmark runs no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`. The memory_vector category downloads `all-MiniLM-L6-v2` into it. |
 

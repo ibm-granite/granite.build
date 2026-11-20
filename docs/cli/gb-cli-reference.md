@@ -74,8 +74,30 @@ Upload, download, register, and tag artifacts produced or consumed by builds.
 
 | Subcommand | Purpose |
 |------------|---------|
-| `gb auth login [--token \| --sso \| --gbserver]` | Authenticate. Default is GitHub; `--sso` uses IBMid; `--gbserver` uses an API-key gbserver. |
+| `gb auth login [--token \| --sso \| --gbserver]` | Authenticate. Default is GitHub; `--sso` uses single sign-on (see below); `--gbserver` uses an API-key gbserver. |
 | `gb auth provider [--set <provider>]` | Show or change the default auth provider. |
+
+#### SSO login (`--sso`)
+
+| Command | Use when |
+|---------|----------|
+| `gb auth login --sso` | The browser runs on the same machine as `gb`. The CLI opens the sign-in page and receives the browser's redirect on `http://127.0.0.1:48731/callback`. |
+| `gb auth login --sso --redirect-port N` | Port 48731 is taken. `N` must match a redirect URI registered with the SSO provider; ask your gbserver admin. |
+| `gb auth login --sso --remote` | `gb` can't receive the redirect (e.g. over SSH). Open the printed URL in a browser on any device, sign in, click **Copy verification code**, and paste it at the CLI's prompt. |
+
+`--remote` and `--redirect-port` require `--sso` and can't be combined. Over
+SSH, or with no desktop browser, `--sso` exits right away and points to
+`--sso --remote`; use that too if `--sso` times out or can't listen on the port.
+If the redirect can reach this machine anyway (VS Code Remote-SSH, or SSH port
+forwarding of 48731), a set `BROWSER` variable skips that check.
+
+Paste a verification code only into a `gb` you started yourself, and never
+send it to anyone: whoever started the login can use it to sign in as you. Only
+sign in through a URL that your own `gb` printed.
+
+The paste is hidden. If a long code is reported as not valid on macOS, the
+terminal's 1024-byte input line limit may have cut it; see the
+[auth design notes](../rest-api/multi-provider-authentication.md#token-exchange-proxy).
 
 ### `space` — work with spaces
 
