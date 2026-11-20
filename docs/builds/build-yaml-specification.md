@@ -102,10 +102,12 @@ Asset stores
 
 Every build runs **in a space**. A space is a named, self-contained context that supplies
 everything a build references but does not define inline. A `build.yaml` therefore stays short
-and portable: it says `space://environments/skypilot/slurm/bluevela` or `space://steps/eval/lmeval`.
+and portable with references into the space, for example, 
+`space://environments/skypilot/slurm/bluevela` or `space://steps/eval/lmeval`.
 The space decides what those names mean, what credentials they use, and where the data lives.
 Moving a build to a new team or cluster usually means running it in a different space, not
-rewriting it.
+rewriting it. A build contains executable components called targets and steps (contained within target).
+Targets are then executed within an environment defined within the space.
 
 **Space.** A space is a directory with a `space.yaml` at its root. That file names the space,
 selects its secret manager, lists `base_uris` (the search path used to resolve `space://` URIs),
@@ -130,12 +132,14 @@ On most environments, steps receive only the secrets they explicitly declare (le
 as environment variables. The exceptions are Bash, which loads every space secret into the step's
 environment, and RunPod, which has no support for declared secrets (see [II.4](#ii4-steps)).
 
-**Environments.** An environment is a compute backend definition, defined by an `environment.yaml`
-that gives the environment `type` (the Python class that drives it). It can also carry an optional
-`subtype` that tells apart backends of the same class, a type-specific `config` block, and the
-list of asset stores (see below) reachable from that compute. A target selects an environment with
-`environment_uri`. The environment owns the step lifecycle on its compute: setup, launch, monitor
-and cleanup. It also owns the movement of artifacts into and out of that compute.
+**Environments.** An environment is a compute backend definition such as an an instance of 
+AWS, Slurm, or LSF.  It is defined by an `environment.yaml`
+that gives the environment `type` (the Python class that drives it), an optional
+`subtype`, a type-specific `config` block, and the list of asset stores (see below) reachable 
+from that compute. A `build.yaml` execution block (i.e. target) selects an environment with `environment_uri`. 
+The environment owns and executes the target lifecycle: 
+setup, launch, monitor and cleanup. It also owns the movement of artifacts to/from 
+the available asset stores and the compute.
 
 **Asset stores.** An asset store, defined by a `store.yaml`, describes where artifacts of one URI
 family live and how to reach them. It does not move data itself. It covers which URIs it handles,
@@ -145,16 +149,22 @@ transfer is done by the environment, often by inserting a built-in transfer step
 or `s3push`. Two stores are implicit everywhere: `env://` (a path already visible to the worker)
 and `mem://` (a value passed between targets through the build's shared memory).
 
+**Targets.** Targets are elements of `build.yaml` that define the computation requested
+in the compute environment.  It can define input artifacts that are consumed by one or more
+steps defined within the target.  The step(s) is then responsible for creating the
+results that will be assigned to an output artifact.  Multiple targets may be defined
+in a `build.yaml` file. 
+
 **Input artifacts.** An input artifact is a named model, dataset, fileset or value that a target
 step consumes. A target declares each input either by URI, for an artifact outside the build such as
 `hf:///ibm-granite/granite-4.0-350m`, or by binding to an upstream target's output.
 The URI's scheme identifies the asset store, so the target's environment must
-be able to reach that store. Steps then refer to each input by name (see
+be able to reach that store. Targets then refer to each input by name (see
 [Referencing inputs within the target](#referencing-inputs-within-the-target)).
 
 **Output artifacts.** An output artifact is a named result that a target step produces. Its URI
 identifies the asset store to receive the output content, for example a HuggingFace repository.
-Steps are responsible for setting the output value (see
+Steps are responsible for assigning the output value (see
 [Outputs and how steps produce them](#outputs-and-how-steps-produce-them)).
 
 **Steps.** A step is a reusable unit of computation, defined by a `step.yaml`. A step declares
@@ -249,10 +259,9 @@ SkyPilot-specific configuration is collected in [section III](#iii-skypilot-envi
 <img src="../images/build-yaml-containment.svg" width="600"
   alt="Containment of the parts of a build.yaml: the build holds build settings and a stack of targets; each target holds its environment, inputs, a stack of steps, and outputs; each step holds step-specific and step-independent configuration">
 
-Stacked boxes stand for repeated elements, each with the same structure as the one drawn on top.
 A build has one or more targets, and a target has one or more steps and zero or more inputs and
 outputs. Each target names its own environment through `environment_uri`, so a single build can
-use several.
+run across multiple compute environments.
 
 <!-- Diagram source: docs/images/build-yaml-containment.d2. Regenerate with:
      d2 --layout elk docs/images/build-yaml-containment.d2 docs/images/build-yaml-containment.svg -->
@@ -308,7 +317,7 @@ as `prep`, `train` or `eval-mmlu`.
 Each target is **assigned to one operational compute environment** through `environment_uri`.
 All of its steps execute there, and its inputs are pulled into that environment's reach before
 the first step starts. The target's **steps** are what turn its **inputs** into its **outputs**:
-they run in list order, each step can read every input binding, and any step can emit any of the
+they run in list order, each step can read every input binding, and any step can assign any of the
 target's declared outputs.
 
 ```yaml
@@ -373,7 +382,7 @@ links to each environment type's own page, see the
 ### II.3 Input and output artifacts
 
 Inputs and outputs are the target's interface. They are also the inputs and outputs of its steps,
-which read the bound inputs and emit the declared outputs.
+which read the bound inputs and assign the declared outputs.
 
 #### Inputs: direct or bound
 
@@ -412,7 +421,8 @@ available by its input name through the `bindings` template variable:
 - `{{ bindings.<input-name>.binding.path }}` for filesystem artifacts;
 - `{{ bindings.<input-name>.binding.state }}` for `mem://` values.
 
-A `build.yaml` can use these expressions in a step's `config` values:
+A `build.yaml` can use these expressions in a step's `config` values or the step implementation.
+For example, in the `config`:
 
 ```yaml
 steps:
