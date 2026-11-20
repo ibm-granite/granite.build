@@ -122,6 +122,12 @@ environment_configs:
 
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
               2>&1 | tee ${OUTPUT_PATH}/${EVAL_NAME}.log
+            # The pipeline's own status is tee's; fail the step with the eval's.
+            rc=${PIPESTATUS[0]}
+            if [[ $rc -ne 0 ]]; then
+              echo "[$(date)] FAILED: ${EVAL_NAME} (exit code: ${rc})"
+              exit $rc
+            fi
 
             echo "$(date)" > ${OUTPUT_PATH}/${EVAL_NAME}.done
             echo "[$(date)] Eval complete: ${EVAL_NAME}"
