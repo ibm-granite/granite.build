@@ -18,6 +18,9 @@ real, measured consequences:
 * the install does not pass ``--no-cache-dir``, which would defeat linking.
 * requirements arrive as argv, so a specifier containing ``[extra]`` needs no
   shell re-quoting.
+* ``--constraint`` entries go to uv as a constraints file in the venv, never as
+  extra requirements; an entry that is not one specifier is refused, and a failed
+  install under constraints points at ``dpk_config.pip_constraints``.
 
 Cluster-agnostic, so this sits at the root of the step's ``test/`` dir (Mode 1
 only) and is not copied by ``make publish-step``.
@@ -288,6 +291,137 @@ class TestRequirements:
     def test_requirement_with_spaces_stays_one_argument(self, run_setup):
         _, calls = run_setup(*_BASE, "--", "pkg @ file:///some path/x.whl")
         assert _call(calls, "uv", "pip")["args"][-1] == "pkg @ file:///some path/x.whl"
+
+
+class TestConstraints:
+    """--constraint entries reach uv as a constraints file (#653's pyarrow<26)."""
+
+    def test_constraints_are_written_and_passed(self, run_setup):
+        proc, calls = run_setup(
+            *_BASE, "--constraint", "pyarrow<26", "--", "somepkg==1.0"
+        )
+        assert proc.returncode == 0, proc.stderr
+        args = _call(calls, "uv", "pip")["args"]
+        cfile = args[args.index("--constraint") + 1]
+        assert cfile == "./venv/gb-constraints.txt"
+        # The file stays in the venv, so a failed install can be diagnosed.
+        written = (run_setup.tmp_path / cfile).read_text()
+        assert written.splitlines() == ["pyarrow<26"]
+        # A constraint bounds a package; it is not itself a requirement.
+        assert args[-1] == "somepkg==1.0"
+        assert "pyarrow<26" not in args
+
+    def test_several_constraints_keep_their_order(self, run_setup):
+        _, calls = run_setup(
+            *_BASE,
+            "--constraint", "pyarrow<26",
+            "--constraint", "numpy<2",
+            "--", "somepkg",
+        )  # fmt: skip
+        args = _call(calls, "uv", "pip")["args"]
+        assert args.count("--constraint") == 1, "one file, not one flag per entry"
+        written = (run_setup.tmp_path / "venv" / "gb-constraints.txt").read_text()
+        assert written.splitlines() == ["pyarrow<26", "numpy<2"]
+
+    def test_no_constraints_passes_no_flag(self, run_setup):
+        _, calls = run_setup(*_BASE, "--", "somepkg")
+        assert "--constraint" not in _call(calls, "uv", "pip")["args"]
+        assert not (run_setup.tmp_path / "venv" / "gb-constraints.txt").exists()
+
+    def test_constraints_without_requirements_still_skip_the_install(self, run_setup):
+        proc, calls = run_setup(*_BASE, "--constraint", "pyarrow<26", "--")
+        assert proc.returncode == 0, proc.stderr
+        assert _call(calls, "uv", "pip") is None
+
+    def test_a_constraint_with_spaces_stays_one_line(self, run_setup):
+        _, calls = run_setup(*_BASE, "--constraint", "pyarrow >= 20, < 26", "--", "x")
+        written = (run_setup.tmp_path / "venv" / "gb-constraints.txt").read_text()
+        assert written.splitlines() == ["pyarrow >= 20, < 26"]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            "pyarrow<26\n--index-url https://evil.example/simple",
+            "pyarrow<26\r--index-url https://evil.example/simple",
+            "--index-url https://evil.example/simple",
+            "--extra-index-url https://evil.example/simple",
+            "-r other.txt",
+            "  --index-url https://evil.example/simple",
+            "#pyarrow<26",
+            "pyarrow<26 \\",
+        ],
+    )
+    def test_an_entry_that_is_not_one_specifier_is_refused(self, run_setup, value):
+        """The backstop for direct callers: dpk_guard.sh refuses these first.
+
+        Each would be read by the constraints-file parser as something other than
+        one bound — an option line (uv honours --extra-index-url there), a comment, a
+        continuation, a second line, or an ignored blank line. Refused before
+        anything is installed.
+        """
+        proc, calls = run_setup(*_BASE, "--constraint", value, "--", "somepkg")
+        assert proc.returncode == 2
+        assert "--constraint must be one version specifier" in proc.stderr
+        assert calls == []
+
+    @pytest.mark.parametrize("flag", ["--venv", "--index-url", "--constraint"])
+    def test_a_flag_given_last_without_a_value_is_refused(self, run_setup, flag):
+        """Not `set -u`'s "$2: unbound variable" (exit 1), which names nothing."""
+        # Every other option keeps its value; only `flag` comes last, bare.
+        pairs = dict(zip(_BASE[::2], _BASE[1::2]))
+        pairs.pop(flag, None)
+        args = [w for kv in pairs.items() for w in kv]
+        proc, calls = run_setup(*args, flag)
+        assert proc.returncode == 2
+        assert f"{flag} needs a value" in proc.stderr
+        assert "unbound variable" not in proc.stderr
+        assert calls == []
+
+
+class TestStaleConstraintHint:
+    """A failed install under constraints points at dpk_config.pip_constraints.
+
+    A constraint that has gone stale (a DPK release needing pyarrow>=26, say) shows up
+    as uv's "No solution found", which names the package but not where the bound came
+    from. The step is not tied to dpk_version on purpose — a newer release that still
+    caps numpy would silently lose the pin — so this hint is what makes a stale pin
+    self-explaining.
+    """
+
+    @pytest.fixture
+    def failing_install(self, tmp_path):
+        uv = tmp_path / "bin" / "uv"
+        uv.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "$1" = "venv" ]; then mkdir -p "$2/bin" && : > "$2/bin/activate";'
+            " exit 0; fi\n"
+            'echo "No solution found when resolving dependencies" >&2; exit 1\n'
+        )
+        uv.chmod(0o755)
+
+    def test_the_hint_names_the_config_key_and_the_constraints(
+        self, run_setup, failing_install
+    ):
+        proc, _ = run_setup(
+            *_BASE, "--constraint", "pyarrow<26", "--constraint", "numpy<2", "--", "x"
+        )
+        assert proc.returncode == 1, "uv's exit status is kept"
+        assert "No solution found" in proc.stderr
+        assert "dpk_config.pip_constraints" in proc.stderr
+        assert "dpk:   pyarrow<26" in proc.stderr
+        assert "dpk:   numpy<2" in proc.stderr
+        assert "([] for none)" in proc.stderr
+
+    def test_no_hint_without_constraints(self, run_setup, failing_install):
+        proc, _ = run_setup(*_BASE, "--", "x")
+        assert proc.returncode == 1
+        assert "pip_constraints" not in proc.stderr
+
+    def test_no_hint_on_success(self, run_setup):
+        proc, _ = run_setup(*_BASE, "--constraint", "pyarrow<26", "--", "x")
+        assert proc.returncode == 0, proc.stderr
+        assert "pip_constraints" not in proc.stderr
 
 
 class TestFailurePropagation:

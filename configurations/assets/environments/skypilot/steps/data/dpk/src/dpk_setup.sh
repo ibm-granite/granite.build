@@ -16,25 +16,73 @@
 # skips this entirely — the image is expected to already provide DPK.
 #
 # CONTRACT
-#   dpk_setup.sh --venv <dir> --index-url <url> [--] [pip requirements...]
+#   dpk_setup.sh --venv <dir> --index-url <url> [--constraint <spec>]...
+#                [--] [pip requirements...]
 #
 #   --venv        directory to create the virtualenv in (the step passes ./venv,
 #                 relative to the working directory `run` also starts in).
 #   --index-url   package index passed to `uv pip install`.
-#   --            everything after it is a pip requirement to install, already
-#                 resolved by the caller (the derived
-#                 data-prep-toolkit-transforms[extra]==version). Zero requirements
-#                 is valid — the caller may want a bare venv — so the install is
-#                 skipped rather than failing.
+#   --constraint  one version constraint (e.g. "pyarrow<26"); repeatable. They are
+#                 written one per line to <venv>/gb-constraints.txt and passed as
+#                 `uv pip install --constraint <file>`, which bounds packages the
+#                 requirements pull in without adding any. The file is left in the
+#                 venv so a failed install can be diagnosed on the node. The step
+#                 passes dpk_config.pip_constraints here (default "pyarrow<26",
+#                 #653), after dpk_guard.sh has validated them; the same per-entry
+#                 rule is repeated below as a backstop for direct callers. Zero
+#                 constraints is valid and passes no --constraint.
+#
+#   Every option takes a value; one given last with none is refused (exit 2)
+#   rather than tripping `set -u` on an unbound $2.
+#   --            everything after it is a pip requirement to install. The step
+#                 passes exactly one, the derived
+#                 data-prep-toolkit-transforms[extra]==version; constraints never
+#                 travel here, they have their own flag. Zero requirements is valid
+#                 — the caller may want a bare venv — so the install is skipped
+#                 rather than failing.
 set -euo pipefail
 
 venv=""
 index_url=""
+# Kept as a newline-joined string rather than an array: "${arr[@]}" on an empty
+# array is an unbound-variable error under `set -u` in bash < 4.4 (macOS /bin/bash
+# is 3.2), and these are written to a file one per line anyway.
+constraints=""
+
+# Each entry must be exactly one specifier line of the constraints file, which is
+# requirements-file syntax: a leading '-' is an OPTION line (uv honours
+# --extra-index-url, -c and -r there), a leading '#' a comment, a trailing '\' a
+# continuation, an embedded CR/LF a second line, and an empty entry a blank line
+# that is ignored. dpk_guard.sh refuses the same shapes with a config-level message;
+# see its "PIP CONSTRAINTS" section. Leading whitespace is refused because the
+# parser strips it before seeing the '-' or '#'.
+bad_constraint() {
+  case $1 in
+    ""|*$'\n'*|*$'\r'*|[[:space:]]*|-*|\#*|*\\) return 0 ;;
+  esac
+  return 1
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --venv|--index-url|--constraint)
+      if [ "$#" -lt 2 ]; then
+        echo "dpk_setup.sh: $1 needs a value" >&2
+        exit 2
+      fi ;;
+  esac
+  case "$1" in
     --venv)       venv="$2";       shift 2 ;;
     --index-url)  index_url="$2";  shift 2 ;;
+    --constraint)
+      if bad_constraint "$2"; then
+        echo "dpk_setup.sh: --constraint must be one version specifier (not empty," >&2
+        echo "dpk_setup.sh: multi-line, or starting with '-', '#' or whitespace, or" >&2
+        echo "dpk_setup.sh: ending with a backslash): '$2'" >&2
+        exit 2
+      fi
+      constraints="${constraints}${2}"$'\n'
+      shift 2 ;;
     --)           shift; break ;;
     *)            break ;;
   esac
@@ -99,5 +147,22 @@ uv venv "$venv"
 # Skip the install when there are none: `uv pip install` with no arguments is an
 # error, and a bare venv is a legitimate outcome.
 if [ "$#" -gt 0 ]; then
-  uv pip install --quiet --index-url "$index_url" "$@"
+  if [ -n "$constraints" ]; then
+    constraints_file="$venv/gb-constraints.txt"
+    printf '%s' "$constraints" > "$constraints_file"
+    # A constraint that has gone stale (say, a DPK release that needs pyarrow>=26)
+    # surfaces as uv's "No solution found", which names the package but not where
+    # the bound came from. Point at the config key, keeping uv's exit status.
+    rc=0
+    uv pip install --quiet --index-url "$index_url" --constraint "$constraints_file" "$@" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "dpk: the dependency install failed with these dpk_config.pip_constraints applied:" >&2
+      sed 's/^/dpk:   /' "$constraints_file" >&2
+      echo "dpk: if uv's error above names a constrained package, the constraint may conflict" >&2
+      echo "dpk: with this dpk_version: override pip_constraints in the build ([] for none)." >&2
+      exit "$rc"
+    fi
+  else
+    uv pip install --quiet --index-url "$index_url" "$@"
+  fi
 fi

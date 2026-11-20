@@ -11,7 +11,8 @@ config:
     # Every DPK transform exposes dpk_<name>.runtime (a PythonTransformLauncher),
     # and data-prep-toolkit-transforms declares one pip extra per transform, so
     # both rules hold for any transform — including ones added upstream later,
-    # with no change to this step.
+    # with no change to this step. (`pip_constraints` below bounds dependency
+    # versions for every transform alike; it holds no per-transform list.)
     # REQUIRED: the step runs exactly one DPK transform.
     transform: ""
     # DPK release installed for `transform`. Ignored when `dpk_image` is set (the
@@ -130,6 +131,36 @@ config:
     # this is an escape hatch for an upstream change rather than a routine setting.
     module: ""
     pip_index_url: "https://pypi.org/simple"
+    # Version constraints for the bare-node install, one specifier per entry,
+    # written to a constraints file and passed to `uv pip install --constraint`.
+    # A constraint only bounds a package the transform's extra already pulls in;
+    # it never adds one. Has no effect when `dpk_image` is set (nothing is
+    # installed), though a malformed value is still refused there.
+    #
+    # Must be a LIST of specifier strings; [] means no constraints. Anything else
+    # (null, "", a bare string, a mapping, a number) is refused by dpk_guard.sh
+    # before the install, as is an entry that is empty, multi-line, or starts with
+    # '-', '#' or whitespace, or ends with '\' (constraints-file syntax would read
+    # those as options, comments or continuations). Setting it REPLACES the
+    # default rather than adding to it (step config lists are replaced wholesale
+    # on merge), so a build that adds its own entry must keep "pyarrow<26" itself
+    # if it still needs it.
+    #
+    # Default "pyarrow<26" (#653): pyarrow 26 (2026-10-09) refuses to import
+    # under NumPy 1.x but declares no numpy requirement, so the resolver can pair
+    # it with the numpy<2 that several DPK extras pin on Python < 3.13
+    # (pii-redactor, fdedup, docling2parquet and others; images, faces, nsfw and
+    # people on every Python), and the transform then dies on
+    # `import pyarrow`. It applies to every transform, which is safe: with it,
+    # every extra of DPK 1.1.7 and 1.1.8 still resolves (to pyarrow 25.x), and
+    # pyarrow 25 works under both NumPy 1.26 and 2.x. Drop it once the DPK
+    # release in use allows NumPy 2 for every extra, or override it if a future
+    # release needs pyarrow>=26; a failed install with constraints applied prints
+    # a hint saying so. Not tied to dpk_version on purpose: a newer release that
+    # still caps numpy would silently lose the pin and crash at import (#653),
+    # where a stale pin fails loudly at install.
+    pip_constraints:
+      - "pyarrow<26"
     # Container image to run the transform in, from ANY registry (quay.io,
     # us.icr.io, a private one). Give the plain reference — the step adds
     # SkyPilot's `docker:` scheme marker, which tells SkyPilot this is a container
@@ -222,9 +253,9 @@ environment_configs:
                 "dpk_config.input is required".
 
                 Duplicated text rather than a shared definition, because Jinja macros are
-                block-scoped: the same constraint that makes q() appear in both blocks. A
-                test asserts the two copies stay byte-identical, so they cannot drift into
-                disagreeing about what is valid. #}
+                block-scoped: the same constraint that makes q() appear in both blocks. No
+                test compares the two copies as text; the behaviour tests render every
+                guarded case through BOTH blocks, so a copy that drifts fails them. #}
             {#- Required-config guards, in src/dpk_guard.sh so they are shellcheck'd,
                 bash -n'd and unit tested rather than Jinja. Run in BOTH phases: setup is
                 the expensive one — it carries the hf download and the dependency install
@@ -232,6 +263,22 @@ environment_configs:
                 The args keys go with them, as --arg-key. The input-name collision
                 guard that used to live here is gone along with the names themselves:
                 the step takes a path now. #}
+            {#- pip_constraints must be a LIST OF STRINGS ([] for none). Only here is
+                its type still visible: rendered, a mapping becomes its keys (the bounds
+                silently gone) and a number fails the render. So the problem, if any,
+                is handed to dpk_guard.sh to refuse with a clear message, and the
+                entries are passed only when the value is a list. Duplicated in both
+                blocks for the same reason as q(). #}
+            {%- set pcv = namespace(problem="", items=[]) %}
+            {%- set pc = config.dpk_config.pip_constraints %}
+            {%- if pc is none %}{% set pcv.problem = "is null" %}
+            {%- elif pc is string %}{% set pcv.problem = "is a string, not a list" %}
+            {%- elif pc is mapping %}{% set pcv.problem = "is a mapping, not a list" %}
+            {%- elif pc is not iterable %}{% set pcv.problem = "is not a list" %}
+            {%- else %}
+            {%- for c in pc %}{% if c is not string and not pcv.problem %}{% set pcv.problem = "entry " ~ loop.index ~ " is not a string" %}{% endif %}{% endfor %}
+            {%- if not pcv.problem %}{% set pcv.items = pc | list %}{% endif %}
+            {%- endif %}
             bash ./src/dpk_guard.sh \
               --transform '{{ q(config.dpk_config.transform) }}' \
               --module '{{ q(config.dpk_config.module) }}' \
@@ -240,6 +287,10 @@ environment_configs:
               --input-path '{{ q(input_path) }}' \
               {%- for k in config.dpk_config.args.keys() %}
               --arg-key '{{ q(k) }}' \
+              {%- endfor %}
+              --pip-constraints-problem '{{ q(pcv.problem) }}' \
+              {%- for c in pcv.items %}
+              --pip-constraint '{{ q(c) }}' \
               {%- endfor %}
               --arg-keys-empty '{% for k in config.dpk_config.args.keys()
                 %}{{ "x" if not (k | string) else "" }}{% endfor %}'
@@ -256,10 +307,13 @@ environment_configs:
             {#- The transform's own pip extra, derived from its name. That extra is
                 the WHOLE dependency set: DPK declares one per transform precisely so
                 a build never lists dependencies itself. The pure-python runtime needs
-                nothing beyond it — no `ray` extra, because this step has no Ray mode. #}
+                nothing beyond it — no `ray` extra, because this step has no Ray mode.
+                pip_constraints may bound the versions it resolves, never add to it. #}
             {%- set dpk_req = ("data-prep-toolkit-transforms[" ~ (t | replace("_", "-")) ~ "]==" ~ config.dpk_config.dpk_version)
                               if t
                               else "" %}
+            {#- pip_constraints (see its comment in `config`), already checked to be a
+                list of strings by the guard above; pcv.items is empty otherwise. #}
             # The dependency install is delegated to the bundled src/dpk_setup.sh
             # (file-mounted at ./src). Safe from `setup` because SkyPilot syncs
             # file mounts first: its stage order is PROVISION -> SYNC_WORKDIR ->
@@ -267,11 +321,12 @@ environment_configs:
             # header for the uv/UV_CACHE_DIR rationale, and dpk_run.sh's for why
             # the shell lives in scripts rather than inline.
             #
-            # Jinja computes only the VALUES: the venv path, the index, and the
-            # pip requirements, passed as real argv after `--` so a specifier
-            # containing "[extra]" needs no shell re-quoting.
+            # Jinja computes only the VALUES: the venv path, the index, one
+            # --constraint per pip_constraints entry, and the pip requirements,
+            # passed as real argv after `--` so a specifier containing "[extra]"
+            # needs no shell re-quoting.
             #
-            # Both values are escaped for the single quotes they sit inside, the same
+            # Every value is escaped for the single quotes it sits inside, the same
             # way and for the same reason as everything in the `run` block: a quote in
             # author-supplied config closes its quoting early and a backtick after it
             # then runs as a command on the node. Every config value is escaped, with
@@ -281,6 +336,9 @@ environment_configs:
             bash ./src/dpk_setup.sh \
               --venv ./venv \
               --index-url '{{ q(config.dpk_config.pip_index_url) }}' \
+              {%- for c in pcv.items %}
+              --constraint '{{ q(c) }}' \
+              {%- endfor %}
               --{% if dpk_req %} '{{ q(dpk_req) }}'{% endif %}
             {%- endif %}
           # run starts in the same working directory as setup, so ./venv and
@@ -321,6 +379,22 @@ environment_configs:
                 bash -n'd and unit tested rather than Jinja. Run in BOTH phases: setup is
                 the expensive one — it carries the hf download and the dependency install
                 — and run can be reached on a warm cluster without a fresh setup. #}
+            {#- pip_constraints must be a LIST OF STRINGS ([] for none). Only here is
+                its type still visible: rendered, a mapping becomes its keys (the bounds
+                silently gone) and a number fails the render. So the problem, if any,
+                is handed to dpk_guard.sh to refuse with a clear message, and the
+                entries are passed only when the value is a list. Duplicated in both
+                blocks for the same reason as q(). #}
+            {%- set pcv = namespace(problem="", items=[]) %}
+            {%- set pc = config.dpk_config.pip_constraints %}
+            {%- if pc is none %}{% set pcv.problem = "is null" %}
+            {%- elif pc is string %}{% set pcv.problem = "is a string, not a list" %}
+            {%- elif pc is mapping %}{% set pcv.problem = "is a mapping, not a list" %}
+            {%- elif pc is not iterable %}{% set pcv.problem = "is not a list" %}
+            {%- else %}
+            {%- for c in pc %}{% if c is not string and not pcv.problem %}{% set pcv.problem = "entry " ~ loop.index ~ " is not a string" %}{% endif %}{% endfor %}
+            {%- if not pcv.problem %}{% set pcv.items = pc | list %}{% endif %}
+            {%- endif %}
             bash ./src/dpk_guard.sh \
               --transform '{{ q(config.dpk_config.transform) }}' \
               --module '{{ q(config.dpk_config.module) }}' \
@@ -329,6 +403,10 @@ environment_configs:
               --input-path '{{ q(input_path) }}' \
               {%- for k in config.dpk_config.args.keys() %}
               --arg-key '{{ q(k) }}' \
+              {%- endfor %}
+              --pip-constraints-problem '{{ q(pcv.problem) }}' \
+              {%- for c in pcv.items %}
+              --pip-constraint '{{ q(c) }}' \
               {%- endfor %}
               --arg-keys-empty '{% for k in config.dpk_config.args.keys()
                 %}{{ "x" if not (k | string) else "" }}{% endfor %}'

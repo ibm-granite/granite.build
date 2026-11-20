@@ -64,9 +64,11 @@
 # CONTRACT
 #   dpk_guard.sh --transform <t> --module <m> --dpk-image <i> \
 #                --output <name> --input-path <dir> \
-#                [--arg-key <key> ...] --arg-keys-empty <flag>
+#                [--arg-key <key> ...] --arg-keys-empty <flag> \
+#                --pip-constraints-problem <msg> [--pip-constraint <spec> ...]
 #
 #   Every option is REQUIRED but may be EMPTY — that is what is being checked.
+#   (--arg-key and --pip-constraint are repeated, so zero of them is valid.)
 #
 #   --arg-key is repeated once per key of dpk_config.args, carrying the RAW key before
 #   it is rendered into a flag word. See "THE ARGS KEYS" below for why the keys are
@@ -74,6 +76,12 @@
 #
 #   --arg-keys-empty is non-empty when at least one key was the empty string. It needs
 #   its own option because an empty key renders no --arg-key word to be seen.
+#
+#   --pip-constraints-problem is non-empty when dpk_config.pip_constraints is not a
+#   list of strings (e.g. "is null", "is a mapping"). Only Jinja still sees the
+#   value's TYPE, so it reports it here; a mapping would otherwise render as its keys
+#   and silently lose the bounds. --pip-constraint is repeated once per entry, and
+#   only when the value is a list. See "PIP CONSTRAINTS" below.
 set -euo pipefail
 
 # Pattern matching below must be ASCII-exact: see the args-keys section for why a
@@ -88,6 +96,8 @@ output=""
 input_path=""
 arg_keys=()
 arg_keys_empty=""
+pip_constraints_problem=""
+pip_constraints=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -98,6 +108,8 @@ while [ "$#" -gt 0 ]; do
     --input-path) input_path="$2"; shift 2 ;;
     --arg-key)    arg_keys+=("$2"); shift 2 ;;
     --arg-keys-empty) arg_keys_empty="$2"; shift 2 ;;
+    --pip-constraints-problem) pip_constraints_problem="$2"; shift 2 ;;
+    --pip-constraint) pip_constraints+=("$2"); shift 2 ;;
     --)           shift; break ;;
     *)            break ;;
   esac
@@ -234,3 +246,55 @@ if [ -n "$arg_keys_empty" ]; then
   echo "dpk: than the missing flag name." >&2
   exit 1
 fi
+
+# --- pip constraints ------------------------------------------------------------
+# PIP CONSTRAINTS. dpk_config.pip_constraints is written one entry per line to the
+# constraints file `uv pip install --constraint` reads (see dpk_setup.sh). That file
+# is requirements-file syntax, so an entry that is not a plain specifier is not data:
+#
+#   "--extra-index-url https://x" -> an OPTION line, and uv honours it: the install
+#   "-c other.txt"                   then also queries that index, or reads another
+#                                    file (measured). A "--index-url" line is
+#                                    overridden by the --index-url this step always
+#                                    passes on the command line, but is still not a
+#                                    bound
+#   "  --extra-index-url ..."  -> the same, after the parser strips the indent
+#   "#pyarrow<26"              -> a COMMENT; the bound silently does nothing
+#   "pyarrow<26 \"             -> a CONTINUATION: pip joins it to the next entry,
+#                                 and uv fails the install with a parse error
+#   "a\nb", "a\rb"             -> a second line
+#   ""                         -> a blank line; ignored, so the entry does nothing
+#
+# Refused here, alongside every other config check, so one script owns what a valid
+# config is, and because a TYPE problem is only visible at render time.
+# dpk_setup.sh repeats the per-entry rule as a backstop for direct callers. Neither
+# placement saves the launcher's inline hf:// downloads: gbserver prepends those
+# ahead of the whole setup block, this guard included.
+#
+# NOT a privilege boundary: whoever writes the config already chooses
+# pip_index_url. The point is that each entry means exactly one bound.
+if [ -n "$pip_constraints_problem" ]; then
+  echo "dpk: ERROR dpk_config.pip_constraints $pip_constraints_problem." >&2
+  echo "dpk: it must be a YAML list of version specifiers, e.g. [\"pyarrow<26\"]," >&2
+  echo "dpk: or [] for no constraints. Setting it replaces the default." >&2
+  exit 1
+fi
+
+constraint_index=0
+for c in ${pip_constraints[@]+"${pip_constraints[@]}"}; do
+  constraint_index=$((constraint_index + 1))
+  reason=""
+  case $c in
+    "")                 reason="is empty" ;;
+    *$'\n'*|*$'\r'*)    reason="spans more than one line" ;;
+    [[:space:]]*)       reason="starts with whitespace" ;;
+    -*)                 reason="starts with '-', which a constraints file reads as an option" ;;
+    \#*)                reason="starts with '#', which a constraints file reads as a comment" ;;
+    *\\)               reason="ends with '\\', which joins it to the next line" ;;
+  esac
+  if [ -n "$reason" ]; then
+    echo "dpk: ERROR dpk_config.pip_constraints entry $constraint_index $reason: '$c'" >&2
+    echo "dpk: each entry must be one version specifier, e.g. pyarrow<26." >&2
+    exit 1
+  fi
+done
