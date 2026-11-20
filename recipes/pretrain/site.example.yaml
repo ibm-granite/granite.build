@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The site file: every value the pretraining recipe and its environment template
+# need that is a property of a CLUSTER rather than of an experiment.
+#
+# Copy it, fill in your own values, and keep the copy OUT of this repository --
+# ~/.granite.build/local-env/pretrain-k8s.yaml, or a private repo your gbserver's
+# space reads. Then:
+#
+#   scripts/setup-local-space.sh \
+#     --template recipes/pretrain/environments/skypilot-k8s.template.yaml \
+#     --site ~/.granite.build/local-env/pretrain-k8s.yaml \
+#     --name pretrain-k8s
+#
+# which renders the environment, registers it in a standalone space, and sets
+# ENVIRONMENT_URI below to the URI it registered. After that the same file is the
+# recipe's first --param-file:
+#
+#   gb build start -f recipes/pretrain/pretrain/build.yaml \
+#     --param-file ~/.granite.build/local-env/pretrain-k8s.yaml \
+#     --param RUN_NAME=run-$(date +%Y%m%d-%H%M)
+#
+# EVERY VALUE HERE IS FAKE. The names are the shape of a real one, nothing more:
+# no cluster, context, registry, PVC, node or HCA named below exists.
+#
+# Two rules this file exists to keep:
+#   * No path, image or cluster name in the recipe's parameters.yaml. A parameter
+#     is an experiment knob; a path is a site fact. A unit test holds the two sets
+#     disjoint, so a key here is never also a parameter.
+#   * List and mapping values (EXCLUDE_NODES, NCCL_ENV) can only arrive in a FILE.
+#     `--param KEY=VALUE` hands every value through as a string, so a list passed
+#     that way renders as the text of a list.
+
+# ─── The environment ──────────────────────────────────────────────────
+# Set by scripts/setup-local-space.sh; the only key the recipe reads to find the
+# environment at all.
+ENVIRONMENT_URI: "space://environments/skypilot-local/example"
+
+# ─── The cluster ──────────────────────────────────────────────────────
+# The kube context SkyPilot is pinned to, and the RWX claim every pod mounts.
+KUBE_CONTEXT: "example-context"
+RW_PVC: "example-rw-claim"
+# Where that claim is mounted in every pod. It is also the environment's
+# shared_workdir, and the root the two paths below sit under.
+RW_MOUNT: "/shared"
+# The queue's priority class; without one the pods run at the cluster default.
+PRIORITY_CLASS: "example-priority"
+# Nodes to keep off, by kubernetes.io/hostname. An EMPTY list renders no affinity
+# at all (an empty nodeSelectorTerms would match no node and make every pod
+# unschedulable), which is the right default: exclude a node only once it has
+# actually failed a run.
+EXCLUDE_NODES: []
+# RoCE: the NetworkAttachmentDefinition Multus attaches, and how many virtual
+# functions to request. The count must equal the number of attachments the
+# annotation ends up with -- one entry here, one VF -- and is a property of the
+# node's NIC layout (typically one per GPU rail).
+ROCE_NETWORK: "example-ns/example-roce-net"
+ROCE_GDR: 1
+# Shared memory for the dataloader's workers. The pod default (64 MiB) fails as a
+# bus error in torch rather than as an out-of-memory.
+SHM_SIZE: "16Gi"
+# A ConfigMap holding the cluster's NCCL topology file, if it publishes one, and
+# where to mount it. EMPTY disables both the volume and the mount; the env var that
+# points NCCL at the file belongs in NCCL_ENV below.
+TOPOLOGY_CONFIGMAP: ""
+TOPOLOGY_MOUNT: "/etc/example-topology"
+
+# ─── NCCL ─────────────────────────────────────────────────────────────
+# The cluster's own fabric facts, passed into the training job's environment. A
+# MAPPING, so it can only come from this file. Keep it to what the cluster
+# requires: an interface name, the HCA list, and the topology file if there is one.
+# NCCL_DEBUG is a recipe parameter, not a site fact.
+NCCL_ENV:
+  NCCL_SOCKET_IFNAME: "example0"
+  NCCL_IB_HCA: "example_hca0,example_hca1"
+
+# ─── Accelerators ─────────────────────────────────────────────────────
+# The accelerator model as this cluster's SkyPilot catalog names it: the training
+# pods' GPUs, and the single GPU one eval pod asks for.
+GPU_ACCELERATOR: "ExampleGPU"
+EVAL_ACCELERATORS: "ExampleGPU"
+
+# ─── Images ───────────────────────────────────────────────────────────
+# The lm-engine pretraining image (steps/train/lm-engine/Dockerfile.gpu, built and
+# pushed to a registry this cluster can pull from) and the granite-evals lmeval
+# image the eval fan-out runs. Pin both by tag or digest, never `latest`: a build
+# that resumes weeks later must run the same code.
+LME_IMAGE: "registry.example.org/example/lm-engine:0.1.0"
+LMEVAL_IMAGE: "registry.example.org/example/granite-evals-lmeval:0.1.0"
+
+# ─── Paths on the shared volume ───────────────────────────────────────
+# Where runs are written, where evals are written, and the HF cache both the
+# assetstore and the eval jobs read.
+WORKDIR_ROOT: "/shared/pretrain"
+EVAL_ROOT: "/shared/pretrain-evals"
+HF_CACHE: "/shared/hf-cache"
+
+# ─── The corpus ───────────────────────────────────────────────────────
+# The tokenized corpus and the tokenizer that produced it. Both are site facts:
+# the same experiment runs against whatever copy of the data a cluster holds.
+DATASET_PATH: "/shared/data/example-corpus"
+TOKENIZER_NAME: "/shared/tokenizers/example-tokenizer"
+# Streaming the corpus from object storage instead of the volume: the bucket, the
+# prefix under it, and a node-local cache directory. Empty COS_BUCKET keeps the
+# dataloader on DATASET_PATH.
+COS_BUCKET: ""
+COS_ROOT: ""
+COS_CACHE_DIR: "/tmp/example-cos-cache"

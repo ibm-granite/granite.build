@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# lm-engine pretraining image: upstream open-lm-engine/lm-engine at the UPSTREAM sha
+# + patches/. Shared by the steps under steps/train/lm-engine/<step>/<env>/; each
+# step takes the ref from its own config.image, so no step builds an image. Built by
+# the Makefile beside this file (build context = this directory):
+#
+#   make -C steps/train/lm-engine image check-image
+#
+# Not derived from upstream's docker/Dockerfile: that one installs google-cloud-cli +
+# gcsfuse (~1.05 GB, unused here) and `COPY .`s the tree with a .dockerignore that
+# drops uv.lock and .git. We clone at the pinned sha instead, so the committed lock
+# is present (reproducible `uv sync --locked`) and so is .git, which lm-engine's
+# train.py reads for run metadata.
+#
+# CUDA comes entirely from the torch wheel -- the base is plain ubuntu, there is no
+# nvcc and no CUDA toolkit. Keep it that way: the flash-attn wheel below is built
+# against the same torch.
+FROM ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde
+
+# uv 0.13.8 == the version in the reference image
+# us.icr.io/cil15-shared-registry/lm-engine:0.1.0-cuda-fa2cc, whose environment this
+# image reproduces. Pinned by DIGEST as well as tag, like the eval families do: a tag
+# is mutable, so a tag-only pin means a rebuild -- or a pre-build scan of this layer --
+# cannot say what it actually got. The digest is the multi-arch index's, so platform
+# selection still works.
+ARG UV_VERSION=0.13.8
+ARG UV_DIGEST=sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85
+# lm-engine's own .python-version says "3.12" -- a minor-version pin, which would
+# float the patch release at build time. Pin it exactly, at the reference image's
+# interpreter: the flash-attn wheel below is cp312-only.
+ARG PYTHON_VERSION=3.12.16
+ARG LME_REPO=https://github.com/open-lm-engine/lm-engine.git
+# MUST equal UPSTREAM's sha; the RUN below fails the build if it does not, and
+# tests/test_image_pins.py catches the drift without a build.
+ARG LME_SHA=a9c6e2b81ec33143419f82309706929195a740c0
+# Prebuilt upstream release artifact, pinned by URL and sha256 (repo policy allows an
+# upstream release wheel, not a personal build). Its ABI tag encodes torch 2.10 + cu12
+# + cp312 + cxx11abiTRUE, so it is rigidly tied to both pins above -- see README.md.
+# In the URL the file name is percent-encoded, literally `...%2Bcu12...`, so it has to
+# be fetched with curl and decoded on the way to disk -- see the RUN below.
+ARG FLASH_ATTN_WHL=https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+ARG FLASH_ATTN_SHA256=f47361af0ebe127db80040cb72e947e3a2ef97c59d641df0c167c5b48cafdc28
+# flash-attn's one runtime import that lm-engine's lock does not already carry. Pinned
+# like everything else; 0.8.2 is the version in the reference image.
+ARG EINOPS_VERSION=0.8.2
+
+ENV DEBIAN_FRONTEND=noninteractive
+# build-essential: Triton JIT (fused CE) compiles its launcher at runtime.
+# rdma-core/ibverbs-providers: NCCL over RoCE/IB -- what NCCL dlopens is
+# libibverbs.so.1 plus a provider for the host's NIC. ibverbs-utils adds ibv_devinfo /
+# ibv_devices, which is where you start when NCCL cannot find a rail (on jammy those
+# binaries are NOT in rdma-core).
+# The rest: SkyPilot's k8s pod bootstrap, preinstalled so pods need no apt at start.
+# NOT python3-dev: Triton needs the headers of the interpreter it runs under, and that
+# is uv's standalone CPython 3.12 (which ships its own include/python3.12), not the
+# distro's python3.10. python3-dev would install 3.10 headers nothing here compiles
+# against -- the reference image carried them, redundantly.
+# `apt-get upgrade` FIRST, before the installs, so everything below builds against the
+# upgraded libraries. The digest pin gives a reproducible STARTING layer; it is not a
+# security boundary. At 9abcaffc -- which IS the current ubuntu:22.04, so bumping the
+# digest is not available as a fix -- libc6/libc-bin sit at 2.35-0ubuntu3.15, which a
+# trivy scan reports as six fixable MEDIUM CVEs (CVE-2026-18374, -84243, -8674,
+# -86805, -95818, -97399), resolved in jammy-updates' 2.35-0ubuntu3.18.
+#
+# Blanket, not `--only-upgrade libc6 libc-bin`, and matching the sibling image
+# steps/train/openinstruct-sft (its Dockerfile does the same): the targeted form fixes
+# the base's two packages and leaves the fixable CVEs of everything the install below
+# adds. Nothing is given up -- the install already takes whatever jammy-updates holds
+# for every package it names.
+#
+# BUILD A PUBLISHED IMAGE WITH --no-cache (`make image BUILD_ARGS=--no-cache`): a
+# cached build reuses an old upgrade layer and silently ships un-upgraded packages. See
+# the Scanning section of steps/train/openinstruct-sft/skypilot/README.md, where a
+# cached build cost a fixable CRITICAL and 44 fixable HIGHs the no-cache build did not
+# have.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+      ca-certificates git curl wget rsync netcat-openbsd gcc patch pciutils openssh-server \
+      build-essential rdma-core ibverbs-providers ibverbs-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION}@${UV_DIGEST} /uv /uvx /bin/
+
+# Keep the managed interpreter under /app, not /root (mode 700): SkyPilot k8s pods may
+# run this image as a non-root user, who must still be able to read it.
+ENV UV_PYTHON_INSTALL_DIR=/app/python UV_LINK_MODE=copy
+
+WORKDIR /app
+# The source of truth for the sha is UPSTREAM, which also documents every patch; keep
+# it in the image as provenance, and refuse to build if LME_SHA has drifted from it.
+COPY UPSTREAM /app/UPSTREAM
+RUN want="$(awk '/^sha:/{print $2}' /app/UPSTREAM)" \
+    && if [ "$want" != "$LME_SHA" ]; then \
+         echo "LME_SHA=$LME_SHA does not match UPSTREAM sha=$want" >&2; exit 1; \
+       fi
+
+RUN uv python install "$PYTHON_VERSION"
+RUN git clone "$LME_REPO" src && git -C src checkout "$LME_SHA"
+COPY patches/ /tmp/patches/
+# `set -e` first, and it is load-bearing: a `for` loop's exit status is the status of
+# its LAST iteration, so without it a patch that fails to apply is masked by any later
+# one that succeeds and the build ships a silently unpatched lm-engine (0001/0002 are
+# the restored IBM scalable dataloader -- losing them is a training-time fault far from
+# here). scripts/check-patches.sh, which tests/test_patches.py runs, gets this right.
+RUN set -e; cd src; for p in /tmp/patches/*.patch; do git apply --check "$p"; git apply "$p"; done; rm -rf /tmp/patches
+
+# The VENDORED dependency metadata, copied over the clone's own. lock/pyproject.toml is
+# upstream's at LME_SHA with ONE appended [tool.uv] block that raises the packages
+# `make scan-lock` reports fixable CRITICAL advisories against; lock/uv.lock is what
+# `uv lock` resolved from it (regenerate with `make relock`). Against upstream's
+# resolution eight packages move and seven are added (112 -> 119); nothing is removed.
+# The transformers override is the consequential one -- it crosses a major version and
+# takes huggingface-hub across its own -- so the image MUST be smoke-run before a tag is
+# published, not just built. See README.md "Scanning".
+#
+# This is also what makes the pre-build scan honest: `uv sync --locked` installs exactly
+# what lock/uv.lock pins, so the set `make scan-lock` scans and the set the image
+# installs are the same file, not two resolutions that happen to agree.
+#
+# tests/test_vendored_lock.py holds lock/pyproject.toml byte-identical to upstream's at
+# the sha above the appended block, so bumping UPSTREAM without re-vendoring fails a
+# test rather than silently installing the old dependency set against new source.
+COPY lock/pyproject.toml lock/uv.lock /app/src/
+
+# deps only (code is on PYTHONPATH, so .git and tools/ stay available)
+RUN cd src && UV_PROJECT_ENVIRONMENT=/app/venv UV_CACHE_DIR=/tmp/uvc \
+      uv sync --locked --python "$PYTHON_VERSION" --extra cuda --no-install-project && rm -rf /tmp/uvc
+# The wheel keeps its own file name, with %2B decoded back to the `+` of its local
+# version: uv (like pip) parses the name to learn what it is installing and rejects a
+# renamed file ("the wheel filename `fa.whl` is invalid: Must have a version"). Letting
+# curl, not pip, do the fetch is what keeps the `+` from being re-encoded.
+RUN whl="/tmp/$(basename "$FLASH_ATTN_WHL" | sed 's/%2B/+/g')" \
+    && curl -fsSL -o "$whl" "$FLASH_ATTN_WHL" \
+    && echo "$FLASH_ATTN_SHA256  $whl" | sha256sum -c - \
+    && /bin/uv pip install --python /app/venv/bin/python "einops==$EINOPS_VERSION" "$whl" \
+    && rm -f "$whl"
+
+COPY scripts/check-image.sh /app/check-image.sh
+
+# World-readable: see UV_PYTHON_INSTALL_DIR above -- the whole tree has to be usable
+# by whatever uid the cluster gives the container.
+RUN chmod -R a+rX /app
+
+ENV PATH="/app/venv/bin:$PATH" PYTHONPATH=/app/src \
+    PYTORCH_ALLOC_CONF=expandable_segments:True
+WORKDIR /app/src

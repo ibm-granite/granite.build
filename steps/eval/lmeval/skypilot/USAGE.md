@@ -2,7 +2,7 @@
 
 Scores a checkpoint with lm-evaluation-harness's own tasks, served with vLLM inside
 the job. The job writes one `results.json` whose value is the benchmark's headline
-metric — the mean over languages, for both benchmarks in this family.
+metric — the mean over languages, for the two curated benchmarks in this family.
 
 The code is the vendored granite-evals runtime (`steps/eval/src`),
 baked into this family's image by `Dockerfile.gpu` one directory up (built by
@@ -19,6 +19,7 @@ steps:
 |---|---|---|
 | `include-44` | accuracy | Cohere Labs' INCLUDE-base-44 (`CohereLabs/include-base-44`, pinned commit): lm-eval's `include_base_44_<lang>_<domain>` tasks, 44 languages x 11 domains (178 tasks, ~500-550 test questions per language) |
 | `mmlu-prox-lite` | exact match (custom-extract) | `li-lab/MMLU-ProX-Lite` (pinned commit): lm-eval's `mmlu_prox_lite_<lang>_<subject>` tasks, 5-shot CoT, over the 11 Granite 4.x languages MMLU-ProX has |
+| `lm-eval` | macro mean of the tasks' primary metrics | The generic bridge: any task or group in the pinned lm-evaluation-harness (14k+ names), chosen by `options` (`tasks=hellaswag,arc_easy`). No fixed protocol — see below. |
 
 ### mmlu-prox-lite
 
@@ -54,6 +55,45 @@ breaks the same questions down by domain. With `repeats: k` the headline is
 pass@1[avg-of-k] and `details.pass_at_k` adds pass@k (an example correct in any
 repeat), both averaged over languages the same way.
 
+### lm-eval (generic bridge)
+
+`benchmark: lm-eval` runs any task or group the pinned lm-evaluation-harness knows,
+chosen by the recipe's `options` — a new task is config, not code:
+
+```yaml
+benchmark: "lm-eval"
+options: "tasks=hellaswag,arc_easy mode=auto metric=acc_norm"
+```
+
+Options: `tasks` (required, comma-separated task/group ids; unknown names fail fast
+before vLLM starts, with near-miss suggestions), `mode` (`auto` — the default —
+`chat` or `base`), `num_fewshot`, `gen_kwargs` (comma-separated `key=value` overrides
+of the tasks' generation kwargs, values percent-decoded like `stop=`), and `metric`
+(the primary metric for every task; default: each task's own, its config's first
+`metric_list` entry).
+
+`auto` picks each task's protocol from its `output_type`: generation tasks run in
+chat mode (like mmlu-prox-lite), multiple-choice and loglikelihood tasks in base mode
+(like include-44). A task list that mixes them runs as two passes over the same output
+dir and cache. A base model with no chat template needs `mode=base` spelled out:
+`auto` would hand a generation task to the chat protocol.
+
+The headline is the macro mean over the resolved tasks of each task's primary
+metric; `n` sums their sizes, `per_task` keeps each task's numbers, and
+`repeat-<k>/lm_eval_results.json` preserves the harness's full output. Groups in
+`tasks` are expanded by the harness; only leaf tasks are averaged. `limit` is
+lm-eval's own (the first N docs per task), and `repeats` runs the whole set k times
+and averages — no pass@k here, since per-example scores have no meaning for every
+metric family. `dataset`/`dataset_revision` do not apply (every task names its own
+dataset; the class pin is the harness repo at the release the image pins). One
+caveat the curated benchmarks do not have: the harness's task yamls name their
+datasets but pin no revisions, so a bridge run reads each dataset at the hub's
+current snapshot.
+
+The composed run dir is `$output_root/$run_name/lm-eval-<tasks>` (the tasks,
+commas to dashes, suffix the benchmark id so two bridge recipes scoring one model
+don't share an output dir).
+
 ## Config
 
 | Field | Default | Purpose |
@@ -63,13 +103,13 @@ repeat), both averaged over languages the same way.
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark` (the `lm-eval` bridge suffixes the tasks: `…/lm-eval-hellaswag`). |
 | `run_name` | basename of `model_path` | Run directory under `output_root`. |
-| `limit` | `""` (full set) | **Smoke knob:** first N examples. mmlu-prox-lite orders by (question_id, language), so a small N covers every language; include-44 orders by (in-task index, language), so a small N covers the first languages' tasks (LIMIT=5 sees Albanian's five). |
-| `repeats` | `""` (1) | Repeats of the whole run. mmlu-prox-lite samples afresh at temperature 1.0; include-44 reports pass@1[avg-of-k] with `details.pass_at_k`. |
+| `limit` | `""` (full set) | **Smoke knob:** first N examples. mmlu-prox-lite orders by (question_id, language), so a small N covers every language; include-44 orders by (in-task index, language), so a small N covers the first languages' tasks (LIMIT=5 sees Albanian's five); lm-eval uses the harness's own per-task first N. |
+| `repeats` | `""` (1) | Repeats of the whole run. mmlu-prox-lite samples afresh at temperature 1.0; include-44 reports pass@1[avg-of-k] with `details.pass_at_k`; lm-eval reports the mean over repeats (no pass@k). |
 | `workers` | `64` | Concurrent requests to vLLM. |
-| `dataset` / `dataset_revision` | `""` | Override the data pinned in granite-evals for the selected benchmark (`li-lab/MMLU-ProX-Lite` or `CohereLabs/include-base-44`). |
-| `options` | `""` | Space-separated `key=value` benchmark options. Both: `answers=gold`, `max_retries`, `request_timeout`, `languages`. mmlu-prox-lite: `languages` takes `ibm`, `all` or a comma list; `temperature`, `top_p`, `max_tokens`, `stop` (`task`, `none` or a comma list of up to 4 percent-encoded strings, e.g. `stop=%3C/s%3E,Q:`), `thinking=off`. include-44: `languages` takes a comma list of the language slugs. |
+| `dataset` / `dataset_revision` | `""` | Override the data pinned in granite-evals for the selected benchmark (`li-lab/MMLU-ProX-Lite` or `CohereLabs/include-base-44`). Not available on `lm-eval`: every task names its own dataset. |
+| `options` | `""` | Space-separated `key=value` benchmark options. Both: `answers=gold`, `max_retries`, `request_timeout`, `languages`. mmlu-prox-lite: `languages` takes `ibm`, `all` or a comma list; `temperature`, `top_p`, `max_tokens`, `stop` (`task`, `none` or a comma list of up to 4 percent-encoded strings, e.g. `stop=%3C/s%3E,Q:`), `thinking=off`. include-44: `languages` takes a comma list of the language slugs. `lm-eval`: `tasks` (required), `mode`, `num_fewshot`, `gen_kwargs`, `metric`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
 | `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |

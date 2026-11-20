@@ -1,0 +1,953 @@
+######
+# pretrain -- pretrain an lm-engine model FROM SCRATCH, with a fail-fast corpus
+# check ahead of the multi-node allocation.
+#
+#   gb build start -f recipes/pretrain/pretrain/build.yaml \
+#     --param-file <site.yaml> --param RUN_NAME=<name>
+#
+# Layers: this directory's parameters.yaml (the experiment), then the site file (the
+# cluster, the PVC, the image, the dataset and the tokenizer), then each --param.
+# Later layers win. NOTHING about a site is spelled in this directory.
+#
+# The graph:
+#
+#   data-check --> train --> checkpoint            (train-only: no rungs)
+#      (CPU)    (multi-node GPU)
+#
+# data-check runs the SAME step with phase: data-check on one cheap CPU pod. It
+# reads schemas only, never a table, and fails in seconds on a mis-mounted PVC, a
+# typo'd sub-dataset name or a tokenizer whose special-token ids disagree with the
+# model knobs -- before `train` asks for NUM_NODES x GPUS_PER_NODE accelerators and
+# dies building its dataloader. `train` binds it for ORDERING ONLY: no artifact
+# flows between them.
+#
+# The rungs (EXPORT_RUNGS, EVAL_RUNGS) are what make this more than a train-only
+# recipe. Each rung N is a checkpoint the trainer emits MID-RUN: the rank-0 watcher
+# prints GB_ARTIFACT_ID:checkpoint_<N> once checkpoint <N> is completely written, so
+# gbserver can dispatch work on it while training continues. `train` therefore
+# declares one checkpoint_<N> output per rung in EXPORT_RUNGS union EVAL_RUNGS, and
+# turns the watcher on exactly when that union is non-empty. With no rungs there is
+# only the final `checkpoint`, and no watcher runs.
+#
+# Two templating layers meet in this file. The CLI resolves the dollar-dollar-brace
+# values and the less-than-percent blocks before submission; gbserver resolves the
+# double-brace templates (bindings, run_metadata) per step. The CLI renders the file
+# IN FULL, comments included, so comments here name parameters bare.
+#
+# Every directory a target writes hangs off RUN_DIR = WORKDIR_ROOT/EXP/RUN_NAME, and
+# RUN_NAME is set per run. That is a correctness setting, not tidiness: gbserver
+# refuses to register an artifact URI another build already registered, the target
+# still reports SUCCESS with an EMPTY output list, and every consumer of it then
+# waits forever while the build reports SUCCESS having skipped them. train_dir is
+# deliberately OUTSIDE the per-target workdir, which target teardown deletes, so a
+# retry resumes from the checkpoints the previous attempt wrote.
+######
+<%- set RUN_DIR = (WORKDIR_ROOT | string).rstrip("/") ~ "/" ~ EXP ~ "/" ~ RUN_NAME %>
+# ── The rungs, checked once ────────────────────────────────────────────────
+# A rung the trainer never writes is not a late error but a target that never
+# dispatches, so each one must sit on the save grid and inside the run. The two
+# lists are merged, de-duplicated and sorted: a rung named by both EXPORT_RUNGS and
+# EVAL_RUNGS is still one checkpoint and one output.
+<%- set EXPORTS = [] %>
+<%- for n in (EXPORT_RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = EXPORTS.append(n | int) %>
+<%- endfor %>
+<%- set EVALS = [] %>
+<%- for n in (EVAL_RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = EVALS.append(n | int) %>
+<%- endfor %>
+<%- set FULL = [] %>
+<%- for n in (FULL_EVAL_RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = FULL.append(n | int) %>
+<%- endfor %>
+<%- set RUNGS = (EXPORTS + EVALS) | unique | sort | list %>
+<%- set END = NUM_TRAINING_STEPS | int %>
+<%- set GRID = SAVE_INTERVAL | int %>
+<%- if END <= 0 %>
+$${ NUM_TRAINING_STEPS_must_be_positive }
+<%- endif %>
+<%- if GRID <= 0 %>
+$${ SAVE_INTERVAL_must_be_positive }
+<%- endif %>
+<%- for n in RUNGS %>
+<%- if n <= 0 %>
+$${ EXPORT_RUNGS_and_EVAL_RUNGS_must_be_positive_optimizer_steps }
+<%- endif %>
+<%- if n % GRID != 0 %>
+$${ EXPORT_RUNGS_and_EVAL_RUNGS_must_be_multiples_of_SAVE_INTERVAL }
+<%- endif %>
+<%- if n > END %>
+$${ EXPORT_RUNGS_and_EVAL_RUNGS_must_not_be_past_NUM_TRAINING_STEPS }
+<%- endif %>
+<%- endfor %>
+# FULL_EVAL_RUNGS picks, among the rungs that ARE evaluated, the ones that get the
+# whole battery instead of the screening subset. A name outside EVAL_RUNGS would
+# quietly run nothing at all.
+<%- for n in FULL %>
+<%- if n not in EVALS %>
+$${ FULL_EVAL_RUNGS_must_be_a_subset_of_EVAL_RUNGS }
+<%- endif %>
+<%- endfor %>
+<%- set EVALS = EVALS | unique | sort | list %>
+# ─── catalog (shared with pretrain-eval) ───
+# ── The eval catalog, checked once ─────────────────────────────────────────
+# EVAL_CATALOG is a list of {name, benchmark, options}. Each entry becomes one eval
+# target per rung it runs on, so a name is half a target name and half a directory
+# name: only the characters legal in both are allowed, and a duplicate is REFUSED
+# rather than sanitized, because two names that sanitize alike become one YAML key
+# and the second benchmark then never runs at all. The lm-eval entries must spell
+# tasks= and mode= themselves -- a from-scratch BASE model handed to the chat
+# protocol by `mode=auto` scores numbers that look valid and mean nothing.
+<%- set CATALOG = EVAL_CATALOG | list %>
+<%- set NAMES = [] %>
+<%- set NAME_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789-" %>
+# TASKS and MODES are the tasks= and mode= values of ONE entry. They are declared
+# here, at template scope, and re-set empty per entry inside the loop: a name whose
+# only assignment is inside a loop body reads as undeclared to a static pass over
+# this file, and test_every_template_name_resolves allows no undeclared name but a
+# render-time check.
+<%- set TASKS = [] %>
+<%- set MODES = [] %>
+<%- for e in CATALOG %>
+<%- set nm = (e.get("name") or "") | string | trim %>
+<%- if not nm %>
+$${ EVAL_CATALOG_names_must_be_lowercase_letters_digits_or_dashes }
+<%- endif %>
+<%- for ch in nm if ch not in NAME_CHARS %>
+$${ EVAL_CATALOG_names_must_be_lowercase_letters_digits_or_dashes }
+<%- endfor %>
+<%- if nm in NAMES %>
+$${ EVAL_CATALOG_names_must_be_unique }
+<%- endif %>
+<%- set _ = NAMES.append(nm) %>
+<%- set bm = (e.get("benchmark") or "") | string | trim %>
+<%- if not bm %>
+$${ EVAL_CATALOG_entries_must_name_a_benchmark }
+<%- endif %>
+<%- if bm == "lm-eval" %>
+<%- set TASKS = [] %>
+<%- set MODES = [] %>
+<%- for t in ((e.get("options") or "") | string).split() %>
+<%- if t.startswith("tasks=") and t[6:] %>
+<%- set _ = TASKS.append(t[6:]) %>
+<%- endif %>
+<%- if t.startswith("mode=") and t[5:] %>
+<%- set _ = MODES.append(t[5:]) %>
+<%- endif %>
+<%- endfor %>
+<%- if not TASKS or not MODES %>
+$${ EVAL_CATALOG_lm_eval_entries_must_set_tasks_and_mode_in_options }
+<%- endif %>
+<%- if "auto" in MODES %>
+$${ EVAL_CATALOG_lm_eval_entries_must_not_score_a_base_model_in_mode_auto }
+<%- endif %>
+<%- endif %>
+<%- endfor %>
+# SCREEN_EVALS names the entries every evaluated rung gets; the rest of the catalog
+# runs on a FULL_EVAL_RUNGS rung only. A misspelled name here is not an error at the
+# step: it is a rung that scores NOTHING while the build reports SUCCESS.
+<%- set SCREEN = [] %>
+<%- for s in (SCREEN_EVALS | string | replace(" ", "")).split(",") if s %>
+<%- if s not in NAMES %>
+$${ SCREEN_EVALS_must_name_entries_of_EVAL_CATALOG }
+<%- endif %>
+<%- set _ = SCREEN.append(s) %>
+<%- endfor %>
+<%- set SCREENED = [] %>
+<%- for e in CATALOG if ((e.get("name") or "") | string | trim) in SCREEN %>
+<%- set _ = SCREENED.append(e) %>
+<%- endfor %>
+# ─── end catalog ───
+# ── The export architecture, resolved once ─────────────────────────────────
+# EXPORT_MODEL_TYPE `auto` reads the knobs the run actually trains with, because the
+# Hugging Face architecture is not a free choice: _export_llama_config ASSERTS the
+# four muP multipliers are null and refuses a muP model, _export_granite_config
+# substitutes 1 for a null one (so a muP model exported as `granite` by mistake keeps
+# a plausible-looking config), and only the granitemoehybrid config has anywhere to
+# put experts or Mamba2 layers. MoE is keyed on MLP_TYPE, the only knob
+# render_config._mlp_block consults; MAMBA_HYBRID joins it because the hybrid is the
+# same HF architecture. An explicit value overrides the resolution and is checked
+# against the three names the step accepts -- the step would refuse a fourth when
+# gbserver creates the step, but this costs no round trip at all.
+<%- set MUP = [] %>
+<%- for v in [M_WIDTH, M_EMB, M_RESIDUAL, ATTENTION_MULTIPLIER] if (v | string | trim | lower) not in ("", "null", "none") %>
+<%- set _ = MUP.append(v) %>
+<%- endfor %>
+<%- set MOE = (MLP_TYPE | string | trim) == "MoE" or (MAMBA_HYBRID | string | trim | lower) in ("true", "yes", "on", "1", "y") %>
+<%- set AUTO_MODEL_TYPE = "granitemoehybrid" if MOE else ("granite" if MUP else "llama") %>
+<%- set MODEL_TYPE = AUTO_MODEL_TYPE if (EXPORT_MODEL_TYPE | string | trim | lower) in ("", "auto") else (EXPORT_MODEL_TYPE | string | trim) %>
+<%- if MODEL_TYPE not in ("granite", "granitemoehybrid", "llama") %>
+$${ EXPORT_MODEL_TYPE_must_be_auto_granite_granitemoehybrid_or_llama }
+<%- endif %>
+# Sliding-window attention is per layer and no Hugging Face config expresses it, so
+# an export of such a model is a DIFFERENT model, which then serves and scores
+# without complaint. A SWA run is trainable here; it is only not exportable, so the
+# rungs and SLIDING_WINDOW are mutually exclusive rather than SWA being refused.
+<%- if RUNGS and (SLIDING_WINDOW | string | trim | lower) not in ("", "null", "none") %>
+$${ SLIDING_WINDOW_must_not_be_set_when_a_run_has_export_or_eval_rungs }
+<%- endif %>
+# ── The lm-engine knobs, in one place ──────────────────────────────────────
+# Every key of render_config.DEFAULT_KNOBS in the lm-engine-pretrain step, which is
+# the authority on what lm-engine accepts; the step's src/render_config.py turns this
+# mapping into lm-engine's config.yml. Both targets emit the SAME block, because
+# data-check validates the corpus against the knobs train will use -- a check against
+# a different mapping checks nothing. A knob added upstream and not here silently
+# falls back to lm-engine's own default, so a unit test holds the two key sets equal.
+<%- macro lme_knobs() %>
+            lme:
+              # ── the run ──
+              experiment: "$${EXP}"
+              # ── the corpus; dataset_path and tokenizer_name are the site's ──
+              dataset_path: "$${DATASET_PATH}"
+              sub_datasets: "$${SUB_DATASETS}"
+              weights: "$${WEIGHTS}"
+              col_name: "$${COL_NAME}"
+              file_type: "$${FILE_TYPE}"
+              vocab_size: $${VOCAB_SIZE}
+              bos_token: "$${BOS_TOKEN}"
+              eos_token: $${EOS_TOKEN}
+              drop_tokens: "$${DROP_TOKENS}"
+              logical_shards: $${LOGICAL_SHARDS}
+              num_workers: $${NUM_WORKERS}
+              seed: $${SEED}
+              sequence_length: $${SEQ_LEN}
+              enable_data_checkpoint: $${ ENABLE_DATA_CHECKPOINT | string | lower }
+              # ── COS streaming ──
+              cos_stream: $${ COS_STREAM | string | lower }
+              cos_bucket: "$${COS_BUCKET}"
+              cos_root: "$${COS_ROOT}"
+              cos_cache_dir: "$${COS_CACHE_DIR}"
+              cos_keep: $${COS_KEEP}
+              # ── the tokenizer ──
+              tokenizer_name: "$${TOKENIZER_NAME}"
+              # ── kernels ──
+              kernels: $${ KERNELS | tojson }
+              # ── architecture ──
+              hidden_size: $${HIDDEN_SIZE}
+              num_layers: $${NUM_LAYERS}
+              num_heads: $${NUM_HEADS}
+              num_kv_heads: $${NUM_KV_HEADS}
+              intermediate_size: $${INTERMEDIATE_SIZE}
+              normalization_function: "$${NORMALIZATION_FUNCTION}"
+              activation_function: "$${ACTIVATION_FUNCTION}"
+              position_embedding_type: "$${POSITION_EMBEDDING_TYPE}"
+              rope_theta: $${ROPE_THETA}
+              tie_word_embeddings: $${ TIE_WORD_EMBEDDINGS | string | lower }
+              initializer_range: "$${INITIALIZER_RANGE}"
+              bos_token_id: $${BOS_TOKEN_ID}
+              eos_token_id: $${EOS_TOKEN_ID}
+              pad_token_id: $${PAD_TOKEN_ID}
+              # ── muP: all four or none, and param_groups must agree ──
+              m_width: $${M_WIDTH}
+              m_emb: $${M_EMB}
+              m_residual: $${M_RESIDUAL}
+              attention_multiplier: $${ATTENTION_MULTIPLIER}
+              attention_multiplier_method: "$${ATTENTION_MULTIPLIER_METHOD}"
+              # ── MoE ──
+              mlp_type: "$${MLP_TYPE}"
+              moe_num_experts: "$${MOE_NUM_EXPERTS}"
+              moe_num_experts_per_tok: "$${MOE_NUM_EXPERTS_PER_TOK}"
+              moe_shared_intermediate_size: "$${MOE_SHARED_INTERMEDIATE_SIZE}"
+              moe_router_aux_loss_coef: "$${MOE_ROUTER_AUX_LOSS_COEF}"
+              moe_z_loss_coef: "$${MOE_Z_LOSS_COEF}"
+              moe_normalized_topk: $${ MOE_NORMALIZED_TOPK | string | lower }
+              # ── sliding-window attention ──
+              sliding_window: "$${SLIDING_WINDOW}"
+              full_attention_layers: $${ FULL_ATTENTION_LAYERS | tojson }
+              # ── hybrid Mamba2 ──
+              mamba_hybrid: $${ MAMBA_HYBRID | string | lower }
+              attention_layers: $${ ATTENTION_LAYERS | tojson }
+              mamba_state_size: $${MAMBA_STATE_SIZE}
+              mamba_intermediate_size: $${MAMBA_INTERMEDIATE_SIZE}
+              mamba_num_heads: $${MAMBA_NUM_HEADS}
+              mamba_conv_kernel_size: $${MAMBA_CONV_KERNEL_SIZE}
+              mamba_num_groups: $${MAMBA_NUM_GROUPS}
+              mamba_chunk_size: $${MAMBA_CHUNK_SIZE}
+              mamba_add_bias: $${ MAMBA_ADD_BIAS | string | lower }
+              mamba_use_conv_bias: $${ MAMBA_USE_CONV_BIAS | string | lower }
+              mamba_activation_function: "$${MAMBA_ACTIVATION_FUNCTION}"
+              mamba_normalization_function: "$${MAMBA_NORMALIZATION_FUNCTION}"
+              # ── training ──
+              num_training_steps: $${NUM_TRAINING_STEPS}
+              micro_batch_size: $${MICRO_BATCH_SIZE}
+              gradient_accumulation_steps: $${GRAD_ACCUM}
+              lr: "$${LR}"
+              weight_decay: "$${WEIGHT_DECAY}"
+              adam_beta1: "$${ADAM_BETA1}"
+              adam_beta2: "$${ADAM_BETA2}"
+              adam_eps: "$${ADAM_EPS}"
+              param_groups: "$${PARAM_GROUPS}"
+              lr_decay_style: "$${LR_DECAY_STYLE}"
+              warmup_steps: $${WARMUP_STEPS}
+              dtype: "$${DTYPE}"
+              save_interval: $${SAVE_INTERVAL}
+              # ── distributed ──
+              distributed_stage: $${DISTRIBUTED_STAGE}
+              fsdp_algorithm: $${FSDP_ALGORITHM}
+              gradient_checkpointing: $${ GRADIENT_CHECKPOINTING | string | lower }
+              gradient_checkpointing_method: "$${GRADIENT_CHECKPOINTING_METHOD}"
+              gradient_checkpointing_num_blocks: "$${GRADIENT_CHECKPOINTING_NUM_BLOCKS}"
+              # ── logging and W&B ──
+              log_interval: $${LOG_INTERVAL}
+              track_model_statistics: $${ TRACK_MODEL_STATISTICS | string | lower }
+              wandb_project: "$${WANDB_PROJECT}"
+              wandb_name: "$${WANDB_NAME}"
+              wandb_entity: "$${WANDB_ENTITY}"
+              wandb_group: "$${WANDB_GROUP}"
+              wandb_notes: "$${WANDB_NOTES}"
+              wandb_tags: $${ WANDB_TAGS | tojson }
+<%- endmacro %>
+# lm-engine's own tracking is configured through the knobs above; this block is what
+# the step exports into the job's environment, so the two must name one project.
+<%- macro wandb_block() %>
+            wandb:
+              project: "$${WANDB_PROJECT}"
+              mode: "$${WANDB_MODE}"
+              name: "$${WANDB_NAME}"
+              entity: "$${WANDB_ENTITY}"
+<%- endmacro %>
+granite.build:
+  name: pretrain
+  # target_reuse_enabled: a retry re-runs only the FAILED targets and reuses what
+  # succeeded, so a fault downstream does not re-train. train resumes from its own
+  # train_dir on a retry, and the step refuses an attempt that makes no optimizer
+  # progress, so a deterministic failure does not spend every retry holding the
+  # allocation.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+
+    # ─── data-check ─────────────────────────────────────────────────────────
+    # The same step, phase: data-check, on one CPU pod: dataset_path is a non-empty
+    # directory of sub-dataset subfolders, every named sub-dataset exists and holds a
+    # shard carrying col_name, the weights match the sub-datasets, and the
+    # tokenizer's bos/eos/pad ids and size agree with the model knobs. Seconds, no
+    # accelerator, every failure printed rather than just the first.
+    data-check:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      outputs:
+        # The ordering primitive for train. Nothing reads its contents; what matters
+        # is that it does not exist until the corpus has been accepted.
+        data_check:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/train/lm-engine/pretrain
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            image: "$${LME_IMAGE}"
+            phase: "data-check"
+            # Required by the step, and kept out of RUN_DIR/train so a check never
+            # leaves anything in the directory a resume reads.
+            train_dir: "$${RUN_DIR}/data-check"
+            # No optimizer runs, so there is no progress to require and no watcher
+            # to run.
+            require_progress: false
+            emit_checkpoint_artifacts: false
+$${ lme_knobs() }
+$${ wandb_block() }
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${DATA_CHECK_CPUS}
+            launcher_config:
+              resources:
+                cpus: $${DATA_CHECK_CPUS}
+                memory: $${DATA_CHECK_MEMORY}
+
+    # ─── train ──────────────────────────────────────────────────────────────
+    # Pretraining from scratch: NUM_TRAINING_STEPS optimizer steps over
+    # NUM_NODES x GPUS_PER_NODE ranks, saving every SAVE_INTERVAL.
+    train:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # ORDERING ONLY. No data flows along this edge -- the corpus and the
+        # tokenizer arrive through config.lme as paths on the shared filesystem --
+        # but a binding is the only thing that orders two targets, and the whole
+        # point of data-check is that it runs before the allocation is requested.
+        data_check:
+          binding: data-check.data_check
+      outputs:
+        # train_dir itself: the step's final artifact is the directory holding the
+        # run's checkpoints, so it always describes the run that wrote it.
+        checkpoint:
+          uri: "env://{{ binding.path }}"
+          type: model
+        # One output per rung, emitted MID-RUN by the step's rank-0 watcher as
+        # checkpoint_<N> once checkpoint <N> is completely written. binding.path is
+        # that checkpoint's directory, so each rung has a distinct URI.
+<%- for N in RUNGS %>
+        checkpoint_$${N}:
+          uri: "env://{{ binding.path }}"
+          type: model
+<%- endfor %>
+      steps:
+        - step_uri: space://steps/train/lm-engine/pretrain
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            # Half of a rung's detection latency (the watch interval is the other):
+            # the watcher's line reaches the build only when the logs are next
+            # pulled, which is why this step's monitor retrieves them periodically
+            # instead of once at terminal status.
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            image: "$${LME_IMAGE}"
+            phase: "train"
+            # Stable for the whole build and OUTSIDE the per-target workdir, which
+            # target teardown deletes and post-build cleanup reaps. A retry
+            # therefore resumes from its own highest checkpoint and re-emits the
+            # rungs it already wrote, so their consumers re-dispatch. A new build
+            # (a new RUN_NAME) gets a new directory.
+            train_dir: "$${RUN_DIR}/train"
+            # Refuse an attempt that gets no further than the last one did: a
+            # deterministic failure would otherwise spend every retry at the same
+            # step, holding NUM_NODES nodes each time. Parameterised because progress
+            # is measured in SAVED checkpoints, so a run preempted twice short of
+            # SAVE_INTERVAL fails even while advancing -- see parameters.yaml.
+            require_progress: $${ REQUIRE_PROGRESS | string | lower }
+            # A stopped run's train directory, to continue it in a new build;
+            # ignored once train_dir holds a checkpoint. See parameters.yaml.
+            resume_from_checkpoint_dir: "$${RESUME_FROM_CHECKPOINT_DIR}"
+            # What makes the rungs mid-run. Off (no rungs), the run emits only the
+            # final `checkpoint`; on with no rungs, a watcher would run with nothing
+            # to watch.
+            emit_checkpoint_artifacts: $${ "true" if RUNGS else "false" }
+            ckpt_rungs: "$${ RUNGS | join(',') }"
+            checkpoint_watch_interval_seconds: $${CKPT_WATCH_INTERVAL_SECONDS}
+            nccl_debug: "$${NCCL_DEBUG}"
+            # The cluster's own NCCL/UCX facts, verbatim, keys as the site file
+            # spells them. The step applies them only when num_nodes > 1.
+            nccl_env: $${ NCCL_ENV | tojson }
+$${ lme_knobs() }
+$${ wandb_block() }
+            compute_config:
+              num_nodes: $${NUM_NODES}
+              num_gpus_per_node: $${GPUS_PER_NODE}
+            launcher_config:
+              resources:
+                # accelerators is PER NODE. cpus and memory are per node too, and
+                # both must be STATED: where the compute_config floor is skipped, a
+                # host-memory kill presents as a cross-node NCCL hang.
+                accelerators: "$${GPU_ACCELERATOR}:$${GPUS_PER_NODE}"
+                cpus: $${TRAIN_CPUS}
+                memory: $${TRAIN_MEMORY}
+
+    # ─── exports ────────────────────────────────────────────────────────────
+    # One export-<N> per rung in EXPORT_RUNGS union EVAL_RUNGS, binding
+    # train.checkpoint_<N>: one CPU pod per rung, unsharding checkpoint <N> and
+    # rewriting it as a Hugging Face model directory WHILE TRAINING CONTINUES. The
+    # binding is what makes that possible -- checkpoint_<N> is emitted mid-run, so
+    # export-<N> dispatches as soon as rung <N> is completely written.
+<%- for N in RUNGS %>
+
+    export-$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The rung itself. The export reads the sharded tree IN PLACE, through
+        # train_dir and iteration, so this edge carries the ordering and the
+        # guarantee that checkpoint $${N} is finished -- not the data.
+        checkpoint:
+          binding: train.checkpoint_$${N}
+      outputs:
+        # One directory per rung, under this run's own RUN_DIR, so no two exports --
+        # here or in another build -- can claim one URI. A collision is silent: the
+        # second target reports SUCCESS with an EMPTY output list, and everything
+        # downstream of it then waits forever.
+        hf_model:
+          uri: "env://$${RUN_DIR}/export/ckpt_$${N}/hf"
+          type: model
+      steps:
+        - step_uri: space://steps/train/lm-engine/export
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            image: "$${LME_IMAGE}"
+            # The run's ONE training directory; the rung is `iteration`, which is
+            # what makes each export read its own global_step<N>/.
+            train_dir: "$${RUN_DIR}/train"
+            iteration: $${N}
+            # Must equal the path in the hf_model URI above.
+            output_dir: "$${RUN_DIR}/export/ckpt_$${N}/hf"
+            # The trained tokenizer, copied byte for byte -- the same directory the
+            # run trained with, so the exported model cannot segment text
+            # differently from the model that was fit.
+            tokenizer_path: "$${TOKENIZER_NAME}"
+            model_type: "$${MODEL_TYPE}"
+            parity_tolerance: $${EXPORT_PARITY_TOLERANCE}
+            # What the written config.json must still say, keyed by the pretrain
+            # step's own knob names -- src/export_checks.py maps them onto the HF
+            # field names, where sequence_length -> max_position_embeddings is the
+            # only rename. ONLY the keys present here are checked, so this block IS
+            # the config check and thinning it thins the check. rope_theta is here
+            # because a transformers release that nests it under rope_parameters
+            # drops it on export, and a granite-4 model trained at 1e7 and then
+            # served at the 1e4 default produced fluent text and scored 0.000 on a
+            # benchmark whose baseline was 0.8075.
+            expected:
+              # Checked first: an export that came out `llama` where the recipe
+              # asked for `granite` would otherwise skip every muP check below.
+              model_type: "$${MODEL_TYPE}"
+              rope_theta: $${ROPE_THETA}
+              vocab_size: $${VOCAB_SIZE}
+              tie_word_embeddings: $${ TIE_WORD_EMBEDDINGS | string | lower }
+              bos_token_id: $${BOS_TOKEN_ID}
+              eos_token_id: $${EOS_TOKEN_ID}
+              pad_token_id: $${PAD_TOKEN_ID}
+              # The HF config's max_position_embeddings.
+              sequence_length: $${SEQ_LEN}
+<%- if MUP and MODEL_TYPE != "llama" %>
+              # muP, for a muP run exported as one of the two Granite types. Both
+              # Granite exporters write `1` for a multiplier they receive as null,
+              # so a lost multiplier is a plausible number rather than an absent
+              # field and nothing but a comparison against what the run trained
+              # with catches it. Omitted for a standard-parametrization run: the
+              # llama config has no such fields (upstream asserts they are null),
+              # and a Granite config of an SP run says `1` BECAUSE it trained
+              # without them, which is faithful and not a dropped value.
+              m_emb: $${M_EMB}
+              m_residual: $${M_RESIDUAL}
+              m_width: $${M_WIDTH}
+              attention_multiplier: $${ATTENTION_MULTIPLIER}
+<%- endif %>
+            # One CPU pod: upstream's unshard is single-process and there is no
+            # torchrun. Memory, not accelerators, is the constraint -- the unsharded
+            # checkpoint and the Hugging Face copy are both held in host memory.
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${EXPORT_CPUS}
+            launcher_config:
+              resources:
+                cpus: $${EXPORT_CPUS}
+                memory: $${EXPORT_MEMORY}
+<%- endfor %>
+
+    # ─── evals (shared with pretrain-eval) ───
+    # One eval-<name>-ck<N> per (evaluated rung, catalog entry), through the generic
+    # lmeval bridge step: every entry of SCREEN_EVALS on every rung in EVAL_RUNGS,
+    # and the WHOLE catalog on a rung in FULL_EVAL_RUNGS. Each target binds
+    # export-<N>.hf_model, so it dispatches as soon as THAT rung's Hugging Face
+    # export is finished -- mid-run, while training continues -- and scores the
+    # checkpoint its own name carries. The model arrives as a path resolved from the
+    # binding, not as a path spelled twice.
+    #
+    # output_dir is EXPLICIT and carries RUN_NAME. The step's own default composes
+    # $output_root/$run_name/$benchmark from the model directory's basename, which
+    # every rung of every run of one benchmark would share. A URI two targets claim
+    # is registered ONCE: the second target still reports SUCCESS with an empty
+    # output list, its consumers never dispatch, and the results are simply absent
+    # while the build reports SUCCESS. So the path is unique per (run, rung, entry).
+<%- set EVAL_DIR = (EVAL_ROOT | string).rstrip("/") ~ "/" ~ EXP ~ "/" ~ RUN_NAME %>
+<%- for N in EVALS %>
+<%- for e in (CATALOG if N in FULL else SCREENED) %>
+<%- set nm = (e.get("name") or "") | string | trim %>
+
+    eval-$${nm}-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Rung $${N}'s exported model, and the ordering that waits for it.
+        hf_model:
+          binding: export-$${N}.hf_model
+      outputs:
+        # The scored results.json the step prints when it finishes.
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/lmeval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            # The benchmark id the bridge passes to `granite-evals run`, and that
+            # benchmark's own options, from the catalog entry verbatim.
+            benchmark: "$${ (e.get('benchmark') or '') | string | trim }"
+            options: "$${ (e.get('options') or '') | string }"
+            image: "$${LMEVAL_IMAGE}"
+            # Resolved by gbserver from the binding above: the exported Hugging Face
+            # directory of THIS rung.
+            model_path: "{{ bindings.hf_model.binding.path }}"
+            # What results.json records the model as, so a row cannot be read as
+            # another rung's.
+            served_model_name: "$${EXP}-ckpt_$${N}"
+            # Unique per (run, rung, entry) -- see above.
+            output_dir: "$${EVAL_DIR}/ckpt_$${N}/$${nm}"
+            # The context length the model was TRAINED at: a shorter one silently
+            # truncates prompts the model can read.
+            max_model_len: $${SEQ_LEN}
+            hf_home: "$${HF_CACHE}"
+            limit: "$${EVAL_LIMIT}"
+            # This family grades inside generation, so there is no CPU score phase
+            # to split off.
+            phase: "all"
+            # ONE GPU. These are small base checkpoints; a ladder's cost is the
+            # number of rungs, not the size of one job.
+            tensor_parallel_size: "1"
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              resources:
+                accelerators: "$${EVAL_ACCELERATORS}:1"
+                memory: $${EVAL_MEMORY}
+<%- endfor %>
+<%- endfor %>
+    # ── The roll-up ─────────────────────────────────────────────────────────
+    # One target over every eval that ran: summary.csv (rung x entry), per_task.csv
+    # (long form) and summary.md, written beside the results under report/. It binds
+    # EVERY eval target's granite_results, so it dispatches once the last rung is
+    # scored and never joins a half-written ladder. The pair list is built first, so
+    # the target is present exactly when an eval target is -- a roll-up with no
+    # inputs would dispatch immediately and write an empty table.
+<%- set EVAL_PAIRS = [] %>
+<%- for N in EVALS %>
+<%- for e in (CATALOG if N in FULL else SCREENED) %>
+<%- set _ = EVAL_PAIRS.append([N, (e.get("name") or "") | string | trim]) %>
+<%- endfor %>
+<%- endfor %>
+<%- if EVAL_PAIRS %>
+    #
+    # report.py is shipped INLINE, in a quoted heredoc: `gb build start` uploads
+    # build.yaml alone (ibm-granite/granite.build#628), so a recipe cannot yet ship a
+    # script beside it. The block below is recipes/pretrain/report.py verbatim -- a
+    # unit test holds the two equal, so change the file and re-render, never this
+    # block by hand. The script is standard library only and reads no repository
+    # module, which is why a bare python:3.12-slim can run it.
+    eval-combined:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<%- for N, nm in EVAL_PAIRS %>
+        results_$${ nm | replace("-", "_") }_ck$${N}:
+          binding: eval-$${nm}-ck$${N}.granite_results
+<%- endfor %>
+      outputs:
+        # The three tables. A dedicated directory, so the roll-up's own output is
+        # never confused with a rung's results, and the URI carries RUN_NAME already
+        # (EVAL_DIR does), so two runs cannot claim one URI.
+        report:
+          uri: "env://$${EVAL_DIR}/report"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            command_config:
+              image: "$${REPORT_IMAGE}"
+              # The results live on the shared filesystem the eval targets wrote
+              # them to, which is why the root is a path and not a binding: the
+              # bindings above are the ordering, and this reads the whole tree,
+              # including the rungs whose own target failed (an empty cell and a
+              # note, never an error -- see report.py).
+              command: |
+                set -euo pipefail
+                ROOT="$${EVAL_DIR}"
+                OUT="$ROOT/report"
+                mkdir -p "$OUT"
+                cat > report.py <<'GB_REPORT_PY'
+                # SPDX-License-Identifier: Apache-2.0
+
+                """Roll the pretrain recipe's eval results up into one table per rung.
+
+                Usage:
+
+                    report.py <root> [--out DIR]
+
+                <root> is the directory the eval targets write under -- EVAL_ROOT/EXP/RUN_NAME --
+                so the files joined here are:
+
+                    <root>/ckpt_<N>/<entry>/results.json
+
+                where <N> is the optimizer step the checkpoint was taken at (the rung) and <entry>
+                is the eval entry scored on it. Writes, into --out (default: <root> itself, so the
+                tables land beside the data they summarise and a hand run needs no second path):
+
+                * summary.csv -- one row per rung, one column per entry, the cell being that
+                  run's headline value. Rows are rungs because a rung is what the recipe adds over
+                  time: a later rung appends a row rather than rewriting the header, and the file
+                  reads top to bottom as training progresses. Cells are bare values or empty, so
+                  the file stays numerically parseable.
+                * per_task.csv -- long form: rung, entry, task, metric, value, n. Every entry
+                  also contributes its headline as a row with task (headline), so this file on
+                  its own carries every number and every n.
+                * summary.md -- the same headline table for people to read, plus the metric each
+                  entry is measured in and a Notes section listing every gap and oddity.
+
+                THE SCHEMA READ HERE is the one granite-evals writes for every benchmark:
+                write_results in steps/eval/src/core/granite_evals/results.py. Top level:
+                benchmark, metric (the headline metric's name), value (the headline
+                value), n, and details (per-benchmark). The headline value is therefore
+                read, never computed: value is the number the benchmark itself declares
+                headline, and metric names it.
+
+                PER-TASK DETAIL is per-benchmark, and three detail keys exist in this repo, each a
+                mapping of key to {metric: value, "n": n}: details.per_task
+                (steps/eval/nemoskills/src/nemo_skills_ruler.py, keys = RULER tasks, metric
+                accuracy) and details.per_language / details.per_subject (the lmeval
+                family, steps/eval/lmeval/src/chat_if.py summarize, metric exact_match).
+                All three are read; the language and subject keys are prefixed in the task column
+                so the two cannot be confused. n is copied from the file as it stands and is
+                never computed or inferred: in some harnesses it counts batches rather than
+                samples, and only the file knows which.
+
+                NOTHING HERE FAILS ON MISSING DATA. An eval target can report SUCCESS having
+                written no results at all, and a crashed one has been seen to leave another eval's
+                results.json behind, so a missing or unreadable file is an empty cell and a note,
+                and a record whose benchmark does not match its directory keeps its value (an
+                entry name need not be a benchmark id) but is flagged in stderr and in the notes.
+                That is also why the only argument is a plain path: when one eval fails the
+                combined target never runs, and this script still has to produce the table for the
+                rungs that did finish.
+
+                Standard library only, and no import from this repository: this file is shipped
+                inline, in a shell heredoc, into a bare python:3.12-slim container.
+                """
+
+                from __future__ import annotations
+
+                import argparse
+                import csv
+                import json
+                import os
+                import sys
+
+                RESULTS = "results.json"
+                HEADLINE = "(headline)"
+                # details key -> prefix for the task column. per_task needs none; the other two are
+                # prefixed so a language and a subject of the same name stay distinct.
+                SECTIONS = (
+                    ("per_task", ""),
+                    ("per_language", "language:"),
+                    ("per_subject", "subject:"),
+                )
+
+
+                def rung_key(name):
+                    """Sort key for a ckpt_<N> directory: numerically, so ckpt_10 follows ckpt_2."""
+                    suffix = name[len("ckpt_") :]
+                    if suffix.isdigit():
+                        return (0, int(suffix), "")
+                    return (1, 0, name)
+
+
+                def rung_label(name):
+                    suffix = name[len("ckpt_") :]
+                    return str(int(suffix)) if suffix.isdigit() else name
+
+
+                def cell(value):
+                    """A value as written, or empty. Numbers and strings are carried verbatim."""
+                    if value is None:
+                        return ""
+                    if isinstance(value, bool):
+                        return str(value)
+                    if isinstance(value, (int, float, str)):
+                        return str(value)
+                    return json.dumps(value, sort_keys=True)
+
+
+                def read_record(path):
+                    """(record, error): the parsed results.json, or None and why not."""
+                    try:
+                        with open(path, encoding="utf-8") as handle:
+                            record = json.load(handle)
+                    except FileNotFoundError:
+                        return None, "no " + RESULTS
+                    except (OSError, ValueError) as exc:
+                        return None, "unreadable " + RESULTS + ": " + str(exc)
+                    if not isinstance(record, dict):
+                        return None, "unreadable " + RESULTS + ": not a JSON object"
+                    return record, None
+
+
+                def task_rows(rung, entry, record):
+                    """The long-form rows for one record: its headline, then its per-task detail."""
+                    metric = cell(record.get("metric"))
+                    rows = [
+                        [
+                            rung,
+                            entry,
+                            HEADLINE,
+                            metric,
+                            cell(record.get("value")),
+                            cell(record.get("n")),
+                        ]
+                    ]
+                    details = record.get("details")
+                    if not isinstance(details, dict):
+                        return rows
+                    for key, prefix in SECTIONS:
+                        section = details.get(key)
+                        if not isinstance(section, dict):
+                            continue
+                        for task in sorted(section):
+                            scores = section[task]
+                            name = prefix + str(task)
+                            if not isinstance(scores, dict):
+                                # A bare number per task (no metric name of its own): the record's
+                                # own metric names it, and the file states no n for it.
+                                rows.append([rung, entry, name, metric, cell(scores), ""])
+                                continue
+                            count = cell(scores.get("n"))
+                            for inner in sorted(scores):
+                                if inner == "n":
+                                    continue
+                                value = scores[inner]
+                                if isinstance(value, (int, float, str)) and not isinstance(value, bool):
+                                    rows.append([rung, entry, name, str(inner), cell(value), count])
+                    return rows
+
+
+                def collect(root):
+                    """(rungs, entries, headline, per_task, notes) over every ckpt_<N>/<entry>."""
+                    rungs, entries, headline, rows, notes = [], set(), {}, [], []
+                    names = sorted((n for n in os.listdir(root) if n.startswith("ckpt_")), key=rung_key)
+                    for name in names:
+                        directory = os.path.join(root, name)
+                        if not os.path.isdir(directory):
+                            continue
+                        rung = rung_label(name)
+                        rungs.append(rung)
+                        children = sorted(
+                            n
+                            for n in os.listdir(directory)
+                            if os.path.isdir(os.path.join(directory, n))
+                        )
+                        if not children:
+                            notes.append((rung, "", "no eval entry directories"))
+                        for entry in children:
+                            entries.add(entry)
+                            record, error = read_record(os.path.join(directory, entry, RESULTS))
+                            if error is not None:
+                                notes.append((rung, entry, error))
+                                continue
+                            benchmark = record.get("benchmark")
+                            if benchmark and str(benchmark) != entry:
+                                notes.append(
+                                    (
+                                        rung,
+                                        entry,
+                                        "results.json reports benchmark "
+                                        + str(benchmark)
+                                        + "; value kept, check it",
+                                    )
+                                )
+                                headline[(rung, entry)] = (cell(record.get("value")), True)
+                            else:
+                                headline[(rung, entry)] = (cell(record.get("value")), False)
+                            if headline[(rung, entry)][0] == "":
+                                notes.append((rung, entry, "no value in " + RESULTS))
+                            rows.extend(task_rows(rung, entry, record))
+                    return rungs, sorted(entries), headline, rows, notes
+
+
+                def metric_names(rows):
+                    """entry -> the metric its headline rows name (the last one seen)."""
+                    names = {}
+                    for row in rows:
+                        if row[2] == HEADLINE and row[3]:
+                            names[row[1]] = row[3]
+                    return names
+
+
+                def write_csv(path, rows):
+                    with open(path, "w", newline="", encoding="utf-8") as handle:
+                        csv.writer(handle).writerows(rows)
+
+
+                def markdown(root, rungs, entries, headline, metrics, notes):
+                    lines = ["# Eval roll-up", "", "Root: " + root, ""]
+                    if not rungs:
+                        lines += ["No results: no ckpt_<N> directories under the root.", ""]
+                    else:
+                        lines.append("| rung | " + " | ".join(entries) + " |")
+                        lines.append("| ---: |" + " --- |" * len(entries))
+                        for rung in rungs:
+                            cells = []
+                            for entry in entries:
+                                value, flagged = headline.get((rung, entry), ("", False))
+                                cells.append(value + " (?)" if flagged and value else value)
+                            lines.append("| " + rung + " | " + " | ".join(cells) + " |")
+                        lines.append("")
+                        if metrics:
+                            lines.append("Metric per entry:")
+                            lines.append("")
+                            for entry in entries:
+                                lines.append("* " + entry + ": " + metrics.get(entry, "unknown"))
+                            lines.append("")
+                        lines += ['"(?)" marks a value whose note below asks for a look.', ""]
+                    lines += ["## Notes", ""]
+                    if notes:
+                        for rung, entry, note in notes:
+                            where = "ckpt_" + rung + ("/" + entry if entry else "")
+                            lines.append("* " + where + ": " + note)
+                    else:
+                        lines.append("* none")
+                    lines.append("")
+                    return "\n".join(lines)
+
+
+                def main(argv=None):
+                    parser = argparse.ArgumentParser(
+                        description="Join the eval results under <root>/ckpt_<N>/<entry>/results.json."
+                    )
+                    parser.add_argument("root", help="the run's eval root (EVAL_ROOT/EXP/RUN_NAME)")
+                    parser.add_argument(
+                        "--out", default=None, help="where to write the three files (default: <root>)"
+                    )
+                    args = parser.parse_args(argv)
+
+                    root = os.path.abspath(args.root)
+                    if not os.path.isdir(root):
+                        sys.stderr.write("report: not a directory: " + root + "\n")
+                        return 2
+                    out = os.path.abspath(args.out) if args.out else root
+                    os.makedirs(out, exist_ok=True)
+
+                    rungs, entries, headline, rows, notes = collect(root)
+                    metrics = metric_names(rows)
+
+                    summary = [["rung"] + entries]
+                    for rung in rungs:
+                        summary.append(
+                            [rung] + [headline.get((rung, entry), ("", False))[0] for entry in entries]
+                        )
+                    write_csv(os.path.join(out, "summary.csv"), summary)
+                    write_csv(
+                        os.path.join(out, "per_task.csv"),
+                        [["rung", "entry", "task", "metric", "value", "n"]] + rows,
+                    )
+                    with open(os.path.join(out, "summary.md"), "w", encoding="utf-8") as handle:
+                        handle.write(markdown(root, rungs, entries, headline, metrics, notes))
+
+                    for rung, entry, note in notes:
+                        sys.stderr.write(
+                            "report: ckpt_" + rung + ("/" + entry if entry else "") + ": " + note + "\n"
+                        )
+                    sys.stdout.write(
+                        "report: "
+                        + str(len(rungs))
+                        + " rungs, "
+                        + str(len(entries))
+                        + " entries, "
+                        + str(len(rows))
+                        + " rows, "
+                        + str(len(notes))
+                        + " notes -> "
+                        + out
+                        + "\n"
+                    )
+                    return 0
+
+
+                if __name__ == "__main__":
+                    sys.exit(main())
+                GB_REPORT_PY
+                python -I report.py "$ROOT" --out "$OUT"
+                ls -l "$OUT"
+            # One CPU pod: a few hundred small JSON files, read once.
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${REPORT_CPUS}
+            launcher_config:
+              resources:
+                cpus: $${REPORT_CPUS}
+                memory: $${REPORT_MEMORY}
+<%- endif %>
+
+    # ─── end evals ───

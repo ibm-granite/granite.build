@@ -1,0 +1,41 @@
+repo: https://github.com/open-lm-engine/lm-engine
+sha: a9c6e2b81ec33143419f82309706929195a740c0
+
+sha notes:
+  a9c6e2b8 is "[MoE] cleanup aux loss (#518)", 2026-09-25. It is also the current
+  main HEAD as of 2026-11-18 -- the repo has not moved since that commit -- and it
+  is the minimum-diff commit against /app/src of the reference image
+  us.icr.io/cil15-shared-registry/lm-engine:0.1.0-cuda-fa2cc (all 494 files that
+  the patches below do not touch are byte-identical to it).
+
+patches (applied in order with `git apply`):
+  0001 restore lm_engine/training/data/ibm.py from edd51c41^:lm_engine/data/ibm.py
+       (IBM/torchtitan scalable dataloader; added in #93 f5d44533, removed in #286
+       edd51c41), import paths fixed for the deeper module path.
+  0002 get_pretraining_dataloaders routes FSDPDataset/IBMDataset to
+       get_ibm_dataloaders.
+  0003 MoE expert_frequency cast to int64 before its NCCL all_reduce and the metrics
+       add (NCCL rejects UInt32). Was a runtime sed in gbansible
+       appwrapper_pretrain.yml.j2.
+  0004 non-reentrant activation checkpointing passes determinism_check="none"
+       (bf16-forward / fp32-recompute metadata mismatch). Was a runtime sed in
+       gbansible.
+
+deviations from the reference image:
+  0001 and 0002 reproduce the reference image's two source changes byte for byte.
+  0003 and 0004 do NOT exist in the reference image -- both files are byte-identical
+  to upstream there, because gbansible sed-patched them at job launch instead. We
+  bake them so this recipe does not depend on gbansible. The image built from this
+  pin is therefore intentionally not equivalent to :0.1.0-cuda-fa2cc.
+
+not carried:
+  the train.py git-metadata guard -- the reference image needed it because its
+  Dockerfile used `COPY .` with a .dockerignore that excludes .git. Our
+  Dockerfile.gpu clones the repo and checks out the sha above, so /app/src/.git is
+  present and the guard is unnecessary (the guard has been offered upstream).
+  docker/Dockerfile.bak -- a byte-identical backup of upstream's own Dockerfile that
+  the reference image happens to carry. Dead weight.
+
+verify:
+  scripts/check-patches.sh clones the repo at the sha above and applies every patch
+  in filename order with `git apply`. tests/test_patches.py runs it.

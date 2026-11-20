@@ -1,0 +1,41 @@
+From e55408678bdd29f564735bea8e4383020f963a2b Mon Sep 17 00:00:00 2001
+From: Constantin Adam <cmadam@us.ibm.com>
+Date: Wed, 18 Nov 2026 21:07:33 -0500
+Subject: [PATCH 4/4] Pass determinism_check="none" to non-reentrant activation
+ checkpointing
+
+Non-reentrant checkpoint_wrapper defaults to determinism_check="default",
+which compares the tensor metadata recorded in the forward pass with the
+metadata produced by the recomputation and raises on any mismatch. Under
+mixed precision the recompute can legitimately differ (bf16 forward,
+fp32 recompute of the upcast RoPE/attention path), so training aborts in
+the first checkpointed block. "none" skips that comparison and keeps the
+wrapper non-reentrant, which is what FSDP2 requires.
+
+functools.partial is already imported for the reentrant branch below.
+
+Applied as a runtime sed by gbansible
+(roles/lm_engine_pretrain_job/templates/appwrapper_pretrain.yml.j2); baked
+here so the image does not depend on the launcher patching its own
+source. Not present in the reference image
+us.icr.io/cil15-shared-registry/lm-engine:0.1.0-cuda-fa2cc.
+---
+ lm_engine/training/gradient_checkpointing/block.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lm_engine/training/gradient_checkpointing/block.py b/lm_engine/training/gradient_checkpointing/block.py
+index 6039df9..cd73e73 100644
+--- a/lm_engine/training/gradient_checkpointing/block.py
++++ b/lm_engine/training/gradient_checkpointing/block.py
+@@ -32,7 +32,7 @@ def block_checkpointing(
+                 return True
+         return False
+ 
+-    checkpoint_wrapper_function = checkpoint_wrapper
++    checkpoint_wrapper_function = partial(checkpoint_wrapper, determinism_check="none")
+     if use_reentrant:
+         checkpoint_wrapper_function = partial(checkpoint_wrapper, checkpoint_impl=CheckpointImpl.REENTRANT)
+ 
+-- 
+2.56.1
+

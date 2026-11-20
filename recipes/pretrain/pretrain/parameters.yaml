@@ -1,0 +1,347 @@
+# pretrain — the experiment's knobs, and nothing about the site.
+#
+# Every host, path, PVC, image ref, accelerator model, dataset and tokenizer comes
+# from the site file (passed as --param-file); a key here may not also be defined
+# there, or the site's value would sit behind this file's default. That is why there
+# is not a single absolute path, registry ref or cluster name below.
+#
+# THE DEFAULTS ARE THE granite-4 350M muP MODEL AT ~500B TOKENS: 120,000 optimizer
+# steps of 8 x 8192 tokens on 8 nodes x 8 GPUs (503B tokens), muP base LR 0.01 scaled
+# by 1/m_width through configs/param-groups/mup.yml. Every model knob below is a knob
+# of render_config.DEFAULT_KNOBS in the lm-engine-pretrain step, upper-cased; the
+# recipe passes them straight back as config.lme, and
+# test/unit/recipes/test_pretrain_recipe.py holds the two key sets equal.
+#
+# Values arrive from --param as STRINGS (the CLI does no YAML parsing of them), so
+# build.yaml tests flags against their string forms, not by truthiness.
+
+# ─── Run identification ───────────────────────────────────────────────
+# Set per run, with a timestamp: RUN_DIR is WORKDIR_ROOT/EXP/RUN_NAME and every
+# output path hangs off it. Two builds may not register one artifact URI — the
+# second target still reports SUCCESS with an EMPTY output list and every consumer
+# of it waits forever.
+RUN_NAME: "pretrain"
+# The experiment: lm-engine's own `experiment` name (it labels the run and the W&B
+# group) AND the directory above RUN_NAME, so every run of one experiment shares a
+# parent and runs of different experiments cannot collide.
+EXP: "nemotron-g4-350m-fused-500B"
+# Seeds the model init and the dataloader's shard assignment.
+SEED: 42
+
+# ─── The corpus ───────────────────────────────────────────────────────
+# hf_parquet tokenizes on the fly from a text column; arrow takes PRE-TOKENIZED ids
+# and then demands COL_NAME "tokens" (render_config.validate refuses anything else).
+FILE_TYPE: "hf_parquet"
+# hf_parquet: the text column. lm-engine's ParquetHandler asserts that exactly one of
+# text/content/contents is present and reads THAT column, so a name outside the set
+# would silently train on another column.
+COL_NAME: "contents"
+# Empty: discover every subfolder of DATASET_PATH at equal weight. A comma list names
+# the sub-datasets instead; a name that does not exist is a silent 0-shard iterator,
+# which the data-check target catches.
+SUB_DATASETS: ""
+# Empty: equal weights. Otherwise one positive number per sub-dataset, in order.
+WEIGHTS: ""
+# The scalable dataloader splits the corpus into this many logical shards and deals
+# them to NUM_NODES x GPUS_PER_NODE x NUM_WORKERS readers, so it must be a multiple
+# of that product (512 = 8 x 8 x 4 x 2) or the render fails the validate check.
+LOGICAL_SHARDS: 512
+NUM_WORKERS: 4
+# The packed context length. Every sequence the model sees is exactly this long.
+SEQ_LEN: 8192
+# granite-4 tiktoken vocab. The tokenizer may not be bigger than this.
+VOCAB_SIZE: 100352
+# Empty: no BOS is prepended. The ids must agree with the tokenizer's own, which
+# data-check verifies before an allocation is requested.
+BOS_TOKEN: ""
+EOS_TOKEN: 100257
+# Comma-separated token ids dropped from every document, e.g. a stray pad id.
+DROP_TOKENS: ""
+# true makes the dataloader's position resumable across a restart, at the cost of a
+# per-rank state file every save. Off: a resumed run re-reads from a seeded offset.
+ENABLE_DATA_CHECKPOINT: false
+
+# ─── COS streaming ────────────────────────────────────────────────────
+# Off: the corpus is read from DATASET_PATH on the shared filesystem. true streams
+# parquet shards from Cloud Object Storage instead, and then COS_BUCKET, COS_ROOT and
+# COS_CACHE_DIR must come from the site file — they name a bucket, not an experiment.
+COS_STREAM: false
+# Shards kept in the local cache before the oldest is evicted.
+COS_KEEP: 2
+
+# ─── The model: granite-4.0 350M ──────────────────────────────────────
+HIDDEN_SIZE: 1024
+NUM_LAYERS: 28
+NUM_HEADS: 16
+# GQA: NUM_HEADS must be a whole multiple of this.
+NUM_KV_HEADS: 4
+INTERMEDIATE_SIZE: 2048
+NORMALIZATION_FUNCTION: "rmsnorm"
+ACTIVATION_FUNCTION: "swiglu"
+POSITION_EMBEDDING_TYPE: "rope"
+# 10M, not 10k. The export step re-checks it against the written config.json: a
+# transformers release that nests rope_theta drops it on export and vLLM then serves
+# the model at the default 10k, which looks like a bad checkpoint.
+ROPE_THETA: 10000000
+TIE_WORD_EMBEDDINGS: true
+INITIALIZER_RANGE: "0.02"
+BOS_TOKEN_ID: 100257
+EOS_TOKEN_ID: 100257
+PAD_TOKEN_ID: 100256
+
+# ─── muP ──────────────────────────────────────────────────────────────
+# All four together or all four null: a partial set silently trains a different
+# model, and PARAM_GROUPS must agree with the choice (mup.yml vs normal.yml).
+# render_config.validate refuses both mistakes.
+M_WIDTH: 4
+M_EMB: 12
+M_RESIDUAL: 0.263
+ATTENTION_MULTIPLIER: 0.015625
+# Must stay empty while ATTENTION_MULTIPLIER is set: lm-engine takes an explicit
+# multiplier OR a method, never both.
+ATTENTION_MULTIPLIER_METHOD: ""
+
+# ─── MoE: off (a dense MLP on every layer) ────────────────────────────
+MLP_TYPE: "MLP"
+MOE_NUM_EXPERTS: ""
+MOE_NUM_EXPERTS_PER_TOK: ""
+MOE_SHARED_INTERMEDIATE_SIZE: ""
+MOE_ROUTER_AUX_LOSS_COEF: "0.01"
+MOE_Z_LOSS_COEF: "0.0001"
+MOE_NORMALIZED_TOPK: true
+
+# ─── Sliding-window attention: off (full attention everywhere) ────────
+# A sliding-window model has no faithful Hugging Face target, so the export step
+# refuses one: set this only for a run that is not exported.
+SLIDING_WINDOW: ""
+FULL_ATTENTION_LAYERS: []
+
+# ─── Hybrid Mamba2 (granite-4.0-h): off ───────────────────────────────
+# true makes every layer NOT in ATTENTION_LAYERS a Mamba2 SSM layer. The CUDA path
+# needs mamba-ssm and causal-conv1d in the image; without them lm-engine falls back
+# to the pure-torch scan, which is correct and much slower.
+MAMBA_HYBRID: false
+ATTENTION_LAYERS: []
+MAMBA_STATE_SIZE: 128
+MAMBA_INTERMEDIATE_SIZE: 1536
+MAMBA_NUM_HEADS: 48
+MAMBA_CONV_KERNEL_SIZE: 4
+MAMBA_NUM_GROUPS: 1
+MAMBA_CHUNK_SIZE: 256
+MAMBA_ADD_BIAS: false
+MAMBA_USE_CONV_BIAS: true
+MAMBA_ACTIVATION_FUNCTION: "silu"
+MAMBA_NORMALIZATION_FUNCTION: "rmsnorm"
+
+# ─── Training ─────────────────────────────────────────────────────────
+# 120,000 x MICRO_BATCH_SIZE x SEQ_LEN x nodes x gpus = 503B tokens at the default
+# scale. HOLD THE TOKEN PRODUCT when changing the node count: halving the nodes at
+# twice GRAD_ACCUM is the same optimization, halving them alone is a different run.
+NUM_TRAINING_STEPS: 120000
+MICRO_BATCH_SIZE: 8
+GRAD_ACCUM: 1
+# Quoted: unquoted, YAML would read 1e-10 below as a string whose repr is re-read
+# as a string again. The muP BASE lr — mup.yml scales it by 1/M_WIDTH.
+LR: "0.01"
+WEIGHT_DECAY: "0.1"
+ADAM_BETA1: "0.9"
+ADAM_BETA2: "0.95"
+# The muP value. A standard-parametrization model needs 1e-8.
+ADAM_EPS: "1e-10"
+# Inside the image. Must end in mup.yml while the muP knobs are set and normal.yml
+# while they are not; render_config.validate refuses a mismatch.
+PARAM_GROUPS: "configs/param-groups/mup.yml"
+LR_DECAY_STYLE: "cosine"
+WARMUP_STEPS: 2000
+DTYPE: "bf16"
+# The save grid. Every export and eval rung must be a multiple of it and must not be
+# past NUM_TRAINING_STEPS, or the rung is not a late error but a target that never
+# dispatches; build.yaml fails the render instead.
+SAVE_INTERVAL: 10000
+# Flash attention 2 plus the fused linear cross-entropy, which is what makes a
+# 100k-vocab 350M model fit at SEQ_LEN 8192 without an activation-memory blowup.
+KERNELS: ["flash_attention_2", "fused_linear_cross_entropy"]
+
+# ─── Scale ────────────────────────────────────────────────────────────
+# 8 x 8 = 64 ranks. LOGICAL_SHARDS must stay a multiple of NUM_NODES x
+# GPUS_PER_NODE x NUM_WORKERS, which the render checks.
+NUM_NODES: 8
+GPUS_PER_NODE: 8
+# Host memory per node, in GB, and host CPUs per node. Both must be STATED: on a
+# scheduler that skips the compute_config floor, a host-memory kill presents as a
+# cross-node NCCL hang an hour in.
+TRAIN_CPUS: 32
+TRAIN_MEMORY: 512
+# data-check reads schemas only, never a table, so it is a one-pod CPU job: the
+# whole point is that a mis-mounted PVC or a typo'd sub-dataset costs seconds here
+# instead of a multi-node GPU allocation that builds its dataloader and dies.
+DATA_CHECK_CPUS: 4
+DATA_CHECK_MEMORY: 32
+
+# ─── Distributed ──────────────────────────────────────────────────────
+# 0 is plain DDP-style sharding; empty omits lm-engine's distributed_args entirely.
+DISTRIBUTED_STAGE: 0
+FSDP_ALGORITHM: 2
+# Off: a 350M model does not need it, and it costs ~30% throughput.
+GRADIENT_CHECKPOINTING: false
+GRADIENT_CHECKPOINTING_METHOD: "block"
+# Empty checkpoints every block.
+GRADIENT_CHECKPOINTING_NUM_BLOCKS: ""
+
+# ─── The rungs ────────────────────────────────────────────────────────
+# Comma-separated optimizer steps. Each one must be a multiple of SAVE_INTERVAL and
+# at most NUM_TRAINING_STEPS. EXPORT_RUNGS gets a Hugging Face export;  EVAL_RUNGS
+# gets an export and the benchmarks; FULL_EVAL_RUNGS, a subset of EVAL_RUNGS, gets
+# the whole battery instead of the screening subset.
+#
+# FULL_EVAL_RUNGS RUNS THE WHOLE CATALOG, INCLUDING ITS CHAT-PROTOCOL ENTRIES. On a
+# from-scratch pretraining run that means mmlu-prox-lite -- 5-shot CoT in chat mode --
+# is scored against a base model with no chat template, which produces numbers that look
+# valid and mean nothing. It is the same failure the render refuses `mode=auto` to
+# prevent, but it cannot be caught the same way: a non-lm-eval entry carries its protocol
+# inside the benchmark rather than in `options`, and the catalog is held equal to
+# pretrain-eval's (where a tuned export makes that entry meaningful), so neither the
+# check nor the catalog can fix it here.
+#
+# For a pure pretraining run, leave FULL_EVAL_RUNGS EMPTY and widen SCREEN_EVALS instead
+# -- naming base-mode entries there gets the extra coverage with none of the nonsense.
+# Use FULL_EVAL_RUNGS when the checkpoints being scored are instruction-tuned.
+#
+# EMPTY BY DEFAULT, which makes this a train-only recipe: `train` then declares only
+# its final `checkpoint` output and runs without the rank-0 checkpoint watcher. The
+# union of EXPORT_RUNGS and EVAL_RUNGS is what the trainer emits MID-RUN, so a rung
+# listed here is an export dispatched while training continues.
+EXPORT_RUNGS: ""
+EVAL_RUNGS: ""
+FULL_EVAL_RUNGS: ""
+
+# ─── The export ────────────────────────────────────────────────
+# The Hugging Face architecture each rung is exported as. `auto` reads the knobs this
+# file already carries -- muP set and dense is `granite`, standard parametrization is
+# `llama` (a Granite config with attention_multiplier null is refused upstream), and
+# MLP_TYPE MoE or MAMBA_HYBRID is `granitemoehybrid` -- so it is right by
+# construction for every model this recipe can train. Set it to one of those three
+# names to override; a fourth fails the render.
+EXPORT_MODEL_TYPE: "auto"
+# ABSOLUTE bound on the export's logit parity check between the unsharded lm-engine
+# model and the exported Hugging Face model: the step compares max |delta logits|
+# against it directly, not as a ratio, so it does not carry across model sizes. This is the step's own
+# default, kept deliberately: the measured max |delta logits| of a faithful export is
+# ~7e-07, so the headroom is for a different dtype or kernel path, not for a wrong
+# model -- a wrong model is off by orders of magnitude. The config scalars are
+# compared EXACTLY and this does not loosen them.
+EXPORT_PARITY_TOLERANCE: 0.05
+# One CPU pod per rung. Memory, not accelerators, is what an export needs: upstream's
+# unshard is single-process, and it holds the unsharded checkpoint and the Hugging
+# Face copy in host memory. Raise EXPORT_MEMORY for a model much larger than 350M.
+EXPORT_CPUS: 8
+EXPORT_MEMORY: 64
+
+# ─── The evals ────────────────────────────────────────────────────────
+# The catalog is the recipe's ONE statement about what a rung is scored on. Every
+# entry becomes one target per rung it runs on, through the generic lmeval bridge
+# step: `benchmark` is the id the bridge passes to `granite-evals run` and `options`
+# is that benchmark's own space-separated key=value options, verbatim.
+#
+# A LIST OF MAPPINGS, so it can only be replaced through a --param-file (--param
+# hands values through as strings and never parses YAML). A site file or an
+# experiment overlay may replace it whole; --param EVAL_CATALOG=... cannot.
+#
+# `mode` is spelled out on every lm-eval entry because a BASE model is being scored:
+# `mode=auto` would hand a model with no chat template to the chat protocol and
+# produce numbers that look valid and mean nothing. The render refuses an lm-eval
+# entry without tasks= and mode=, and refuses mode=auto.
+EVAL_CATALOG:
+  # The cheap multiple-choice screen: likelihood scoring, no generation, minutes.
+  - name: base-core
+    benchmark: lm-eval
+    options: "tasks=hellaswag,arc_easy,arc_challenge,piqa,winogrande,lambada_openai mode=base"
+  - name: mmlu
+    benchmark: lm-eval
+    options: "tasks=mmlu mode=base num_fewshot=5"
+  # Opt-in, and NOT part of the screen: MMLU-ProX lite is 5-shot CoT in CHAT mode,
+  # which a from-scratch base model has no template for. It is in the catalog so a
+  # full rung of an instruction-tuned continuation can ask for it.
+  - name: mmlu-prox-lite
+    benchmark: mmlu-prox-lite
+    options: ""
+# The screening subset, by name: these run on EVERY rung in EVAL_RUNGS, while a rung
+# named by FULL_EVAL_RUNGS runs the whole catalog. A name outside EVAL_CATALOG fails
+# the render -- it would otherwise be a rung that scores nothing while the build
+# reports SUCCESS.
+SCREEN_EVALS: "base-core"
+# Smoke knob: score only the first N examples. Empty is the full benchmark. A handful
+# proves the plumbing of a new ladder for a few GPU-minutes.
+EVAL_LIMIT: ""
+# One eval GPU, so host memory per pod is the only scale knob here; the accelerator
+# model itself is the site's (EVAL_ACCELERATORS). vLLM's weight load plus the
+# harness's request fan-out, not the model, is what this has to hold.
+EVAL_MEMORY: 256
+# The roll-up target (eval-combined) joins every eval's results.json into
+# summary.csv, per_task.csv and summary.md. It is present whenever any eval target
+# is, waits for all of them, and runs the recipe's report.py in a bare CPU
+# container -- the script is standard library only and is shipped inline, so no
+# image has to carry it. Pinned by digest, like every other image here; a site
+# behind a mirror overrides it.
+REPORT_IMAGE: "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
+# One CPU and a modest heap: the join reads a few hundred small JSON files.
+REPORT_CPUS: 1
+REPORT_MEMORY: 8
+
+# ─── Resuming ─────────────────────────────────────────────────────────
+# Empty: a fresh run, and a retry resumes from whatever RUN_DIR/train already holds.
+# Set to another run's train directory to continue it in a new build; it is ignored
+# once this run's own train directory holds a checkpoint.
+RESUME_FROM_CHECKPOINT_DIR: ""
+
+# ─── Retries and the monitor ──────────────────────────────────────────
+# A retry re-runs only the FAILED targets, and `train` resumes from its own
+# build-stable train directory, so a fault does not re-train from step 0.
+MAX_RETRIES: 2
+# Fail an attempt whose newest checkpoint has not passed the one the PREVIOUS attempt
+# started from, before the trainer starts. It stops a deterministic crash from
+# spending every retry at the same step holding NUM_NODES nodes.
+#
+# KNOW THE INTERACTION BEFORE LEAVING THIS ON. "Progress" is measured in SAVED
+# CHECKPOINTS, because the checkpoint marker is the only progress record that exists
+# before the trainer starts -- so an attempt that trained for hours and was preempted
+# short of the next SAVE_INTERVAL counts as no progress, exactly like one that crashed
+# on startup. Two such preemptions in a row therefore fail the build even though it
+# was advancing each time, and with SAVE_INTERVAL 10000 that is a plausible afternoon
+# on a preemptable queue.
+#
+# So: leave it true where a save boundary is reached comfortably within the
+# preemption window, and set it false (or shorten SAVE_INTERVAL) where it is not. The
+# cost of false is that a deterministic failure burns MAX_RETRIES allocations.
+REQUIRE_PROGRESS: true
+# How often gbserver polls the job's status.
+POLL_INTERVAL_SECONDS: 300
+# Half of a rung's detection latency; CKPT_WATCH_INTERVAL_SECONDS is the other half.
+# The watcher's GB_ARTIFACT_ID line reaches the build only when the logs are next
+# pulled, which is why this step's monitor retrieves them periodically rather than
+# once at terminal status.
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300
+CKPT_WATCH_INTERVAL_SECONDS: 60
+# NCCL's own verbosity. INFO on the first multi-node run of a new cluster, WARN
+# after: INFO is tens of MB of log over a long run.
+NCCL_DEBUG: "WARN"
+
+# ─── Tracking ─────────────────────────────────────────────────────────
+# Empty turns tracking off entirely. WANDB_MODE "offline" needs no API key and
+# writes a local run directory that can be synced later; "online" needs a key in the
+# job's environment.
+WANDB_PROJECT: ""
+WANDB_MODE: "offline"
+# Empty: lm-engine names the run after EXP.
+WANDB_NAME: ""
+WANDB_ENTITY: ""
+WANDB_GROUP: ""
+WANDB_NOTES: ""
+WANDB_TAGS: []
+
+# ─── Logging ──────────────────────────────────────────────────────────
+# Steps between lm-engine's `step = <n>` lines, which the monitor also turns into
+# progress events so a long run is visibly alive between checkpoints.
+LOG_INTERVAL: 10
+# Per-parameter norms and gradient statistics. Off: it is a per-step all-reduce.
+TRACK_MODEL_STATISTICS: false

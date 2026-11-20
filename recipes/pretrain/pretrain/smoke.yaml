@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The smoke layer: the whole graph in GPU-minutes, on one node.
+#
+#   gb build start -f recipes/pretrain/pretrain/build.yaml \
+#     --param-file ~/.granite.build/local-env/pretrain-k8s.yaml \
+#     --param-file recipes/pretrain/pretrain/smoke.yaml \
+#     --param RUN_NAME=smoke-$(date +%Y%m%d-%H%M)
+#
+# It proves plumbing, not a model: 4 optimizer steps on a 2-GPU pod. What it does
+# prove is every piece that a long run cannot afford to discover late -- that the
+# corpus and tokenizer agree, that the trainer reaches step 4, that the checkpoint
+# watcher sees rungs 2 and 4 WHILE training continues, that the exports unshard and
+# convert, and that the parity check passes on a real checkpoint.
+#
+# It stops at export. The eval fan-out needs an lmeval image carrying the generic
+# `lm-eval` bridge (steps/eval/lmeval/src/generic.py is in this tree, but no
+# published image has it yet), and the alternative -- scoring a 4-step base model on
+# a chat-mode CoT benchmark -- would exercise the plumbing with a number that means
+# nothing. Add `--param EVAL_RUNGS=2,4 --param EVAL_LIMIT=8` once the image exists.
+#
+# LAYER OVER parameters.yaml AND THE SITE FILE, in that order: this file overrides
+# only what makes a run short. Everything else -- the architecture, the corpus, the
+# muP knobs -- stays as the recipe's own defaults, so what the smoke exercises is
+# the configuration a real run uses.
+
+# ─── The run ──────────────────────────────────────────────────────────
+# RUN_NAME is NOT set here. Two builds that share one RUN_NAME collide on every
+# artifact URI: the second target reports SUCCESS with an empty output list and its
+# consumers never dispatch. Pass a timestamped one on the command line.
+EXP: "smoke-165m"
+
+# ─── The schedule ─────────────────────────────────────────────────────
+# 4 steps, a checkpoint every 2: two rungs, and the second lands exactly at the end
+# of the run, so both the mid-run and the final rung paths are exercised.
+NUM_TRAINING_STEPS: 4
+SAVE_INTERVAL: 2
+WARMUP_STEPS: 1
+# One GPU-pod on one node: this has to fit a development queue, not a reservation.
+NUM_NODES: 1
+GPUS_PER_NODE: 2
+# 1 x 2 x 4 = 8, and 8 is a multiple of it (the dataloader deals its logical shards
+# to NUM_NODES x GPUS_PER_NODE x NUM_WORKERS readers).
+LOGICAL_SHARDS: 8
+NUM_WORKERS: 4
+# Short sequences and a single micro-batch: the step time, not the token budget, is
+# what matters here.
+SEQ_LEN: 1024
+MICRO_BATCH_SIZE: 1
+GRAD_ACCUM: 1
+
+# ─── The ladder ───────────────────────────────────────────────────────
+EXPORT_RUNGS: "2,4"
+EVAL_RUNGS: ""
+FULL_EVAL_RUNGS: ""
+
+# ─── Failing fast ─────────────────────────────────────────────────────
+# No retries: a smoke run that fails is a fault to read, not to work around, and a
+# retry would hold the allocation again for the same crash.
+MAX_RETRIES: 0
+# Seconds, not minutes: the whole build is shorter than one default poll interval,
+# and a rung the watcher reports late is a rung the export target waits for.
+POLL_INTERVAL_SECONDS: 30
+LOG_RETRIEVAL_INTERVAL_SECONDS: 30
+CKPT_WATCH_INTERVAL_SECONDS: 10
+# The first run on a new cluster is also the first NCCL rendezvous on it.
+NCCL_DEBUG: "INFO"
+
+# ─── Resources ────────────────────────────────────────────────────────
+TRAIN_CPUS: 8
+TRAIN_MEMORY: 64
+EXPORT_CPUS: 4
+EXPORT_MEMORY: 32
+
+# ─── Tracking ─────────────────────────────────────────────────────────
+# Nothing to track in 4 steps, and a smoke run should not appear in a project's
+# history as a run.
+WANDB_PROJECT: ""

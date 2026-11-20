@@ -1,0 +1,40 @@
+From 28a74bece3cebe9c0682e9f67765fb21fa41df07 Mon Sep 17 00:00:00 2001
+From: Constantin Adam <cmadam@us.ibm.com>
+Date: Wed, 18 Nov 2026 21:07:03 -0500
+Subject: [PATCH 2/4] Route FSDPDataset/IBMDataset to the restored IBM
+ dataloader
+
+get_pretraining_dataloaders dispatches to get_ibm_dataloaders when the
+configured dataset class_name is FSDPDataset or IBMDataset, so a config
+can select the dataloader restored in the previous patch. Both names are
+accepted: FSDPDataset is the name our pretraining configs use, IBMDataset
+the name used before #286 removed the loader.
+
+The import is local to the branch so the module (and its pyarrow
+dependency) is only loaded when that dataloader is actually selected.
+
+Reproduces the hunk carried by the reference image
+us.icr.io/cil15-shared-registry/lm-engine:0.1.0-cuda-fa2cc byte for byte.
+---
+ lm_engine/training/data/pretraining.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/lm_engine/training/data/pretraining.py b/lm_engine/training/data/pretraining.py
+index 27cf158..7092ba6 100644
+--- a/lm_engine/training/data/pretraining.py
++++ b/lm_engine/training/data/pretraining.py
+@@ -63,6 +63,11 @@ def get_pretraining_dataloaders(
+     args: TrainingArgs, tokenizer: TOKENIZER_TYPE, consumed_samples: int
+ ) -> tuple[ResumableDataLoader, list[ResumableDataLoader], list[ResumableDataLoader]]:
+     assert len(args.datasets) == 1
++
++    if args.datasets[0].class_name in ("FSDPDataset", "IBMDataset"):
++        from .ibm import get_ibm_dataloaders
++
++        return get_ibm_dataloaders(args, tokenizer)
+     class_args = args.datasets[0].class_args
+ 
+     assert args.datasets[0].max_input_tokens is None
+-- 
+2.56.1
+

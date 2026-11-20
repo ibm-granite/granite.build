@@ -1,0 +1,7 @@
+{
+  "bos_token": "<|end_of_text|>",
+  "eos_token": "<|end_of_text|>",
+  "pad_token": {"content": "<|pad|>", "lstrip": false, "rstrip": false},
+  "model_max_length": 8192,
+  "tokenizer_class": "PreTrainedTokenizerFast"
+}

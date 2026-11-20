@@ -1,0 +1,6 @@
+# Accepted advisories, one id per line. .trivyignore format, so scan-lock's
+# osv-gate.py and scan-image's trivy both read this file.
+#
+# Empty: every fixable CRITICAL in lock/ is fixed in lock/pyproject.toml rather
+# than accepted here. Add an entry only with the reason and the issue that removes
+# it; an entry that matches nothing is reported so it gets deleted.

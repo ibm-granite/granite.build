@@ -26,7 +26,7 @@ steps:
 
 | Field | Default | Purpose |
 |---|---|---|
-| `benchmark` | `""` (required) | The benchmark id passed to `granite-evals run`. Currently only `mmlu-prox-lite` exists in this family; see `granite-evals list`. |
+| `benchmark` | `""` (required) | The benchmark id passed to `granite-evals run`: `mmlu-prox-lite`, `include-44`, or `lm-eval` — the generic bridge to any task in the pinned harness, chosen by `options` (see USAGE.md). |
 | `image` | `""` (required) | granite-evals lmeval image, pinned by tag (`GRANITE_EVALS_IMAGE_LMEVAL`). |
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |

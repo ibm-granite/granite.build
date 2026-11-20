@@ -1,0 +1,622 @@
+######
+# pretrain-eval -- score Hugging Face exports a previous run already wrote.
+#
+#   gb build start -f recipes/pretrain/pretrain-eval/build.yaml \
+#     --param-file <site.yaml> \
+#     --param EXPORT_DIR=<run>/export --param RUNGS=10000,20000 \
+#     --param RUN_NAME=<name>
+#
+# The eval half of recipes/pretrain/pretrain, on its own. Use it to add a benchmark
+# to rungs that are already exported, to re-score a ladder after an eval failed, or
+# to score a run whose training finished before the catalog existed. It trains
+# nothing and exports nothing: EXPORT_DIR names a directory holding ckpt_<N>/hf
+# subdirectories -- exactly what the pretraining recipe's export-<N> targets write.
+#
+# The graph, one per rung in RUNGS:
+#
+#   export-<N> --> eval-<entry>-ck<N> --> eval-combined
+#     (CPU)              (1 GPU)             (CPU)
+#
+# THE EVAL AND ROLL-UP TARGETS ARE THE PRETRAINING RECIPE'S OWN TEXT, copied between
+# its markers; test/unit/recipes/test_pretrain_eval_recipe.py holds the two copies
+# byte-identical, so a change to one is a failing test until it is made to both
+# (`gb build start` uploads build.yaml alone, so a recipe cannot yet ship a shared
+# include -- ibm-granite/granite.build#628). The same holds for the catalog checks.
+#
+# WHY export-<N> EXISTS HERE. The shared block binds export-<N>.hf_model, which is
+# what makes each eval wait for its own rung and read the model through a binding
+# rather than a path spelled twice. There is nothing to export in this recipe, so
+# the target ADOPTS an existing directory: it checks the export is real (a config
+# and a weight file) and publishes a per-run symlink to it. The symlink, not the
+# original path, is what this build registers -- two builds may not register one
+# artifact URI, and re-registering the source directory would make the second build
+# report SUCCESS with an empty output list while every eval downstream waits
+# forever. A symlink also means no copy of a multi-gigabyte checkpoint.
+#
+# Two templating layers meet in this file, as in the pretraining recipe: the CLI
+# resolves the dollar-dollar-brace values and the less-than-percent blocks before
+# submission, gbserver the double-brace templates per step.
+granite.build:
+  name: pretrain-eval
+  # A retry re-runs only the FAILED targets: a preempted eval pod re-runs its own
+  # benchmark, and the rungs that already scored keep their results.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+
+# ── The rungs ──────────────────────────────────────────────────────────────
+# RUNGS is the list of exported rungs to score; FULL_EVAL_RUNGS picks, among them,
+# the ones that get the whole catalog instead of the screening subset. A rung named
+# by FULL_EVAL_RUNGS but not by RUNGS is a typo that would otherwise score nothing
+# while the build reports SUCCESS, so it fails the render.
+<%- set EVALS = [] %>
+<%- for n in (RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = EVALS.append(n | int) %>
+<%- endfor %>
+<%- set EVALS = EVALS | unique | sort | list %>
+<%- if not EVALS %>
+$${ RUNGS_must_name_at_least_one_exported_rung }
+<%- endif %>
+<%- set FULL = [] %>
+<%- for n in (FULL_EVAL_RUNGS | string | replace(" ", "")).split(",") if n %>
+<%- set _ = FULL.append(n | int) %>
+<%- endfor %>
+<%- for n in FULL if n not in EVALS %>
+$${ FULL_EVAL_RUNGS_must_name_rungs_of_RUNGS }
+<%- endfor %>
+# Where the exports are, and where this build's own symlinks and results go.
+<%- set SRC = (EXPORT_DIR | string).rstrip("/") %>
+<%- set MODEL_DIR = (EVAL_ROOT | string).rstrip("/") ~ "/" ~ EXP ~ "/" ~ RUN_NAME ~ "/models" %>
+
+# ─── catalog (shared with pretrain-eval) ───
+# ── The eval catalog, checked once ─────────────────────────────────────────
+# EVAL_CATALOG is a list of {name, benchmark, options}. Each entry becomes one eval
+# target per rung it runs on, so a name is half a target name and half a directory
+# name: only the characters legal in both are allowed, and a duplicate is REFUSED
+# rather than sanitized, because two names that sanitize alike become one YAML key
+# and the second benchmark then never runs at all. The lm-eval entries must spell
+# tasks= and mode= themselves -- a from-scratch BASE model handed to the chat
+# protocol by `mode=auto` scores numbers that look valid and mean nothing.
+<%- set CATALOG = EVAL_CATALOG | list %>
+<%- set NAMES = [] %>
+<%- set NAME_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789-" %>
+# TASKS and MODES are the tasks= and mode= values of ONE entry. They are declared
+# here, at template scope, and re-set empty per entry inside the loop: a name whose
+# only assignment is inside a loop body reads as undeclared to a static pass over
+# this file, and test_every_template_name_resolves allows no undeclared name but a
+# render-time check.
+<%- set TASKS = [] %>
+<%- set MODES = [] %>
+<%- for e in CATALOG %>
+<%- set nm = (e.get("name") or "") | string | trim %>
+<%- if not nm %>
+$${ EVAL_CATALOG_names_must_be_lowercase_letters_digits_or_dashes }
+<%- endif %>
+<%- for ch in nm if ch not in NAME_CHARS %>
+$${ EVAL_CATALOG_names_must_be_lowercase_letters_digits_or_dashes }
+<%- endfor %>
+<%- if nm in NAMES %>
+$${ EVAL_CATALOG_names_must_be_unique }
+<%- endif %>
+<%- set _ = NAMES.append(nm) %>
+<%- set bm = (e.get("benchmark") or "") | string | trim %>
+<%- if not bm %>
+$${ EVAL_CATALOG_entries_must_name_a_benchmark }
+<%- endif %>
+<%- if bm == "lm-eval" %>
+<%- set TASKS = [] %>
+<%- set MODES = [] %>
+<%- for t in ((e.get("options") or "") | string).split() %>
+<%- if t.startswith("tasks=") and t[6:] %>
+<%- set _ = TASKS.append(t[6:]) %>
+<%- endif %>
+<%- if t.startswith("mode=") and t[5:] %>
+<%- set _ = MODES.append(t[5:]) %>
+<%- endif %>
+<%- endfor %>
+<%- if not TASKS or not MODES %>
+$${ EVAL_CATALOG_lm_eval_entries_must_set_tasks_and_mode_in_options }
+<%- endif %>
+<%- if "auto" in MODES %>
+$${ EVAL_CATALOG_lm_eval_entries_must_not_score_a_base_model_in_mode_auto }
+<%- endif %>
+<%- endif %>
+<%- endfor %>
+# SCREEN_EVALS names the entries every evaluated rung gets; the rest of the catalog
+# runs on a FULL_EVAL_RUNGS rung only. A misspelled name here is not an error at the
+# step: it is a rung that scores NOTHING while the build reports SUCCESS.
+<%- set SCREEN = [] %>
+<%- for s in (SCREEN_EVALS | string | replace(" ", "")).split(",") if s %>
+<%- if s not in NAMES %>
+$${ SCREEN_EVALS_must_name_entries_of_EVAL_CATALOG }
+<%- endif %>
+<%- set _ = SCREEN.append(s) %>
+<%- endfor %>
+<%- set SCREENED = [] %>
+<%- for e in CATALOG if ((e.get("name") or "") | string | trim) in SCREEN %>
+<%- set _ = SCREENED.append(e) %>
+<%- endfor %>
+# ─── end catalog ───
+
+  targets:
+    # ─── adopted exports ────────────────────────────────────────────────────
+    # One export-<N> per rung: a cheap CPU pod that checks rung <N>'s export is
+    # really there and publishes a symlink to it under this run's own directory.
+    # The check is the point -- a missing or half-written export would otherwise
+    # surface as a vLLM load failure inside an eval pod, with the rung's name
+    # nowhere in the error.
+<%- for N in EVALS %>
+
+    export-$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      outputs:
+        # A per-run path, so this build registers a URI no other build has. The
+        # symlink points at the real export; it dangles if the source run's
+        # directory is later reaped, which is a readable failure (vLLM reports a
+        # missing path) rather than a wrong model.
+        hf_model:
+          uri: "env://$${MODEL_DIR}/ckpt_$${N}/hf"
+          type: model
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            command_config:
+              image: "$${REPORT_IMAGE}"
+              command: |
+                set -euo pipefail
+                SRC="$${SRC}/ckpt_$${N}/hf"
+                DST="$${MODEL_DIR}/ckpt_$${N}/hf"
+                test -d "$SRC" || { echo "pretrain-eval: no export at $SRC" >&2; exit 1; }
+                # A directory with a config but no weights is what a crashed export
+                # leaves behind, and it loads far away from here.
+                test -f "$SRC/config.json" || { echo "pretrain-eval: $SRC has no config.json" >&2; exit 1; }
+                ls "$SRC"/*.safetensors >/dev/null 2>&1 ||
+                  { echo "pretrain-eval: $SRC holds no .safetensors weights" >&2; exit 1; }
+                mkdir -p "$(dirname "$DST")"
+                # Idempotent: a retry of this target re-points the link rather than
+                # failing on it.
+                ln -sfn "$SRC" "$DST"
+                echo "pretrain-eval: ckpt_$${N} -> $SRC"
+                ls -l "$DST"
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${REPORT_CPUS}
+            launcher_config:
+              resources:
+                cpus: $${REPORT_CPUS}
+                memory: $${REPORT_MEMORY}
+<%- endfor %>
+
+    # ─── evals (shared with pretrain-eval) ───
+    # One eval-<name>-ck<N> per (evaluated rung, catalog entry), through the generic
+    # lmeval bridge step: every entry of SCREEN_EVALS on every rung in EVAL_RUNGS,
+    # and the WHOLE catalog on a rung in FULL_EVAL_RUNGS. Each target binds
+    # export-<N>.hf_model, so it dispatches as soon as THAT rung's Hugging Face
+    # export is finished -- mid-run, while training continues -- and scores the
+    # checkpoint its own name carries. The model arrives as a path resolved from the
+    # binding, not as a path spelled twice.
+    #
+    # output_dir is EXPLICIT and carries RUN_NAME. The step's own default composes
+    # $output_root/$run_name/$benchmark from the model directory's basename, which
+    # every rung of every run of one benchmark would share. A URI two targets claim
+    # is registered ONCE: the second target still reports SUCCESS with an empty
+    # output list, its consumers never dispatch, and the results are simply absent
+    # while the build reports SUCCESS. So the path is unique per (run, rung, entry).
+<%- set EVAL_DIR = (EVAL_ROOT | string).rstrip("/") ~ "/" ~ EXP ~ "/" ~ RUN_NAME %>
+<%- for N in EVALS %>
+<%- for e in (CATALOG if N in FULL else SCREENED) %>
+<%- set nm = (e.get("name") or "") | string | trim %>
+
+    eval-$${nm}-ck$${N}:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # Rung $${N}'s exported model, and the ordering that waits for it.
+        hf_model:
+          binding: export-$${N}.hf_model
+      outputs:
+        # The scored results.json the step prints when it finishes.
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/lmeval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            # The benchmark id the bridge passes to `granite-evals run`, and that
+            # benchmark's own options, from the catalog entry verbatim.
+            benchmark: "$${ (e.get('benchmark') or '') | string | trim }"
+            options: "$${ (e.get('options') or '') | string }"
+            image: "$${LMEVAL_IMAGE}"
+            # Resolved by gbserver from the binding above: the exported Hugging Face
+            # directory of THIS rung.
+            model_path: "{{ bindings.hf_model.binding.path }}"
+            # What results.json records the model as, so a row cannot be read as
+            # another rung's.
+            served_model_name: "$${EXP}-ckpt_$${N}"
+            # Unique per (run, rung, entry) -- see above.
+            output_dir: "$${EVAL_DIR}/ckpt_$${N}/$${nm}"
+            # The context length the model was TRAINED at: a shorter one silently
+            # truncates prompts the model can read.
+            max_model_len: $${SEQ_LEN}
+            hf_home: "$${HF_CACHE}"
+            limit: "$${EVAL_LIMIT}"
+            # This family grades inside generation, so there is no CPU score phase
+            # to split off.
+            phase: "all"
+            # ONE GPU. These are small base checkpoints; a ladder's cost is the
+            # number of rungs, not the size of one job.
+            tensor_parallel_size: "1"
+            compute_config:
+              num_nodes: 1
+              num_gpus_per_node: 1
+            launcher_config:
+              resources:
+                accelerators: "$${EVAL_ACCELERATORS}:1"
+                memory: $${EVAL_MEMORY}
+<%- endfor %>
+<%- endfor %>
+    # ── The roll-up ─────────────────────────────────────────────────────────
+    # One target over every eval that ran: summary.csv (rung x entry), per_task.csv
+    # (long form) and summary.md, written beside the results under report/. It binds
+    # EVERY eval target's granite_results, so it dispatches once the last rung is
+    # scored and never joins a half-written ladder. The pair list is built first, so
+    # the target is present exactly when an eval target is -- a roll-up with no
+    # inputs would dispatch immediately and write an empty table.
+<%- set EVAL_PAIRS = [] %>
+<%- for N in EVALS %>
+<%- for e in (CATALOG if N in FULL else SCREENED) %>
+<%- set _ = EVAL_PAIRS.append([N, (e.get("name") or "") | string | trim]) %>
+<%- endfor %>
+<%- endfor %>
+<%- if EVAL_PAIRS %>
+    #
+    # report.py is shipped INLINE, in a quoted heredoc: `gb build start` uploads
+    # build.yaml alone (ibm-granite/granite.build#628), so a recipe cannot yet ship a
+    # script beside it. The block below is recipes/pretrain/report.py verbatim -- a
+    # unit test holds the two equal, so change the file and re-render, never this
+    # block by hand. The script is standard library only and reads no repository
+    # module, which is why a bare python:3.12-slim can run it.
+    eval-combined:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+<%- for N, nm in EVAL_PAIRS %>
+        results_$${ nm | replace("-", "_") }_ck$${N}:
+          binding: eval-$${nm}-ck$${N}.granite_results
+<%- endfor %>
+      outputs:
+        # The three tables. A dedicated directory, so the roll-up's own output is
+        # never confused with a rung's results, and the URI carries RUN_NAME already
+        # (EVAL_DIR does), so two runs cannot claim one URI.
+        report:
+          uri: "env://$${EVAL_DIR}/report"
+          type: dataset
+      steps:
+        - step_uri: space://steps/command
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            command_config:
+              image: "$${REPORT_IMAGE}"
+              # The results live on the shared filesystem the eval targets wrote
+              # them to, which is why the root is a path and not a binding: the
+              # bindings above are the ordering, and this reads the whole tree,
+              # including the rungs whose own target failed (an empty cell and a
+              # note, never an error -- see report.py).
+              command: |
+                set -euo pipefail
+                ROOT="$${EVAL_DIR}"
+                OUT="$ROOT/report"
+                mkdir -p "$OUT"
+                cat > report.py <<'GB_REPORT_PY'
+                # SPDX-License-Identifier: Apache-2.0
+
+                """Roll the pretrain recipe's eval results up into one table per rung.
+
+                Usage:
+
+                    report.py <root> [--out DIR]
+
+                <root> is the directory the eval targets write under -- EVAL_ROOT/EXP/RUN_NAME --
+                so the files joined here are:
+
+                    <root>/ckpt_<N>/<entry>/results.json
+
+                where <N> is the optimizer step the checkpoint was taken at (the rung) and <entry>
+                is the eval entry scored on it. Writes, into --out (default: <root> itself, so the
+                tables land beside the data they summarise and a hand run needs no second path):
+
+                * summary.csv -- one row per rung, one column per entry, the cell being that
+                  run's headline value. Rows are rungs because a rung is what the recipe adds over
+                  time: a later rung appends a row rather than rewriting the header, and the file
+                  reads top to bottom as training progresses. Cells are bare values or empty, so
+                  the file stays numerically parseable.
+                * per_task.csv -- long form: rung, entry, task, metric, value, n. Every entry
+                  also contributes its headline as a row with task (headline), so this file on
+                  its own carries every number and every n.
+                * summary.md -- the same headline table for people to read, plus the metric each
+                  entry is measured in and a Notes section listing every gap and oddity.
+
+                THE SCHEMA READ HERE is the one granite-evals writes for every benchmark:
+                write_results in steps/eval/src/core/granite_evals/results.py. Top level:
+                benchmark, metric (the headline metric's name), value (the headline
+                value), n, and details (per-benchmark). The headline value is therefore
+                read, never computed: value is the number the benchmark itself declares
+                headline, and metric names it.
+
+                PER-TASK DETAIL is per-benchmark, and three detail keys exist in this repo, each a
+                mapping of key to {metric: value, "n": n}: details.per_task
+                (steps/eval/nemoskills/src/nemo_skills_ruler.py, keys = RULER tasks, metric
+                accuracy) and details.per_language / details.per_subject (the lmeval
+                family, steps/eval/lmeval/src/chat_if.py summarize, metric exact_match).
+                All three are read; the language and subject keys are prefixed in the task column
+                so the two cannot be confused. n is copied from the file as it stands and is
+                never computed or inferred: in some harnesses it counts batches rather than
+                samples, and only the file knows which.
+
+                NOTHING HERE FAILS ON MISSING DATA. An eval target can report SUCCESS having
+                written no results at all, and a crashed one has been seen to leave another eval's
+                results.json behind, so a missing or unreadable file is an empty cell and a note,
+                and a record whose benchmark does not match its directory keeps its value (an
+                entry name need not be a benchmark id) but is flagged in stderr and in the notes.
+                That is also why the only argument is a plain path: when one eval fails the
+                combined target never runs, and this script still has to produce the table for the
+                rungs that did finish.
+
+                Standard library only, and no import from this repository: this file is shipped
+                inline, in a shell heredoc, into a bare python:3.12-slim container.
+                """
+
+                from __future__ import annotations
+
+                import argparse
+                import csv
+                import json
+                import os
+                import sys
+
+                RESULTS = "results.json"
+                HEADLINE = "(headline)"
+                # details key -> prefix for the task column. per_task needs none; the other two are
+                # prefixed so a language and a subject of the same name stay distinct.
+                SECTIONS = (
+                    ("per_task", ""),
+                    ("per_language", "language:"),
+                    ("per_subject", "subject:"),
+                )
+
+
+                def rung_key(name):
+                    """Sort key for a ckpt_<N> directory: numerically, so ckpt_10 follows ckpt_2."""
+                    suffix = name[len("ckpt_") :]
+                    if suffix.isdigit():
+                        return (0, int(suffix), "")
+                    return (1, 0, name)
+
+
+                def rung_label(name):
+                    suffix = name[len("ckpt_") :]
+                    return str(int(suffix)) if suffix.isdigit() else name
+
+
+                def cell(value):
+                    """A value as written, or empty. Numbers and strings are carried verbatim."""
+                    if value is None:
+                        return ""
+                    if isinstance(value, bool):
+                        return str(value)
+                    if isinstance(value, (int, float, str)):
+                        return str(value)
+                    return json.dumps(value, sort_keys=True)
+
+
+                def read_record(path):
+                    """(record, error): the parsed results.json, or None and why not."""
+                    try:
+                        with open(path, encoding="utf-8") as handle:
+                            record = json.load(handle)
+                    except FileNotFoundError:
+                        return None, "no " + RESULTS
+                    except (OSError, ValueError) as exc:
+                        return None, "unreadable " + RESULTS + ": " + str(exc)
+                    if not isinstance(record, dict):
+                        return None, "unreadable " + RESULTS + ": not a JSON object"
+                    return record, None
+
+
+                def task_rows(rung, entry, record):
+                    """The long-form rows for one record: its headline, then its per-task detail."""
+                    metric = cell(record.get("metric"))
+                    rows = [
+                        [
+                            rung,
+                            entry,
+                            HEADLINE,
+                            metric,
+                            cell(record.get("value")),
+                            cell(record.get("n")),
+                        ]
+                    ]
+                    details = record.get("details")
+                    if not isinstance(details, dict):
+                        return rows
+                    for key, prefix in SECTIONS:
+                        section = details.get(key)
+                        if not isinstance(section, dict):
+                            continue
+                        for task in sorted(section):
+                            scores = section[task]
+                            name = prefix + str(task)
+                            if not isinstance(scores, dict):
+                                # A bare number per task (no metric name of its own): the record's
+                                # own metric names it, and the file states no n for it.
+                                rows.append([rung, entry, name, metric, cell(scores), ""])
+                                continue
+                            count = cell(scores.get("n"))
+                            for inner in sorted(scores):
+                                if inner == "n":
+                                    continue
+                                value = scores[inner]
+                                if isinstance(value, (int, float, str)) and not isinstance(value, bool):
+                                    rows.append([rung, entry, name, str(inner), cell(value), count])
+                    return rows
+
+
+                def collect(root):
+                    """(rungs, entries, headline, per_task, notes) over every ckpt_<N>/<entry>."""
+                    rungs, entries, headline, rows, notes = [], set(), {}, [], []
+                    names = sorted((n for n in os.listdir(root) if n.startswith("ckpt_")), key=rung_key)
+                    for name in names:
+                        directory = os.path.join(root, name)
+                        if not os.path.isdir(directory):
+                            continue
+                        rung = rung_label(name)
+                        rungs.append(rung)
+                        children = sorted(
+                            n
+                            for n in os.listdir(directory)
+                            if os.path.isdir(os.path.join(directory, n))
+                        )
+                        if not children:
+                            notes.append((rung, "", "no eval entry directories"))
+                        for entry in children:
+                            entries.add(entry)
+                            record, error = read_record(os.path.join(directory, entry, RESULTS))
+                            if error is not None:
+                                notes.append((rung, entry, error))
+                                continue
+                            benchmark = record.get("benchmark")
+                            if benchmark and str(benchmark) != entry:
+                                notes.append(
+                                    (
+                                        rung,
+                                        entry,
+                                        "results.json reports benchmark "
+                                        + str(benchmark)
+                                        + "; value kept, check it",
+                                    )
+                                )
+                                headline[(rung, entry)] = (cell(record.get("value")), True)
+                            else:
+                                headline[(rung, entry)] = (cell(record.get("value")), False)
+                            if headline[(rung, entry)][0] == "":
+                                notes.append((rung, entry, "no value in " + RESULTS))
+                            rows.extend(task_rows(rung, entry, record))
+                    return rungs, sorted(entries), headline, rows, notes
+
+
+                def metric_names(rows):
+                    """entry -> the metric its headline rows name (the last one seen)."""
+                    names = {}
+                    for row in rows:
+                        if row[2] == HEADLINE and row[3]:
+                            names[row[1]] = row[3]
+                    return names
+
+
+                def write_csv(path, rows):
+                    with open(path, "w", newline="", encoding="utf-8") as handle:
+                        csv.writer(handle).writerows(rows)
+
+
+                def markdown(root, rungs, entries, headline, metrics, notes):
+                    lines = ["# Eval roll-up", "", "Root: " + root, ""]
+                    if not rungs:
+                        lines += ["No results: no ckpt_<N> directories under the root.", ""]
+                    else:
+                        lines.append("| rung | " + " | ".join(entries) + " |")
+                        lines.append("| ---: |" + " --- |" * len(entries))
+                        for rung in rungs:
+                            cells = []
+                            for entry in entries:
+                                value, flagged = headline.get((rung, entry), ("", False))
+                                cells.append(value + " (?)" if flagged and value else value)
+                            lines.append("| " + rung + " | " + " | ".join(cells) + " |")
+                        lines.append("")
+                        if metrics:
+                            lines.append("Metric per entry:")
+                            lines.append("")
+                            for entry in entries:
+                                lines.append("* " + entry + ": " + metrics.get(entry, "unknown"))
+                            lines.append("")
+                        lines += ['"(?)" marks a value whose note below asks for a look.', ""]
+                    lines += ["## Notes", ""]
+                    if notes:
+                        for rung, entry, note in notes:
+                            where = "ckpt_" + rung + ("/" + entry if entry else "")
+                            lines.append("* " + where + ": " + note)
+                    else:
+                        lines.append("* none")
+                    lines.append("")
+                    return "\n".join(lines)
+
+
+                def main(argv=None):
+                    parser = argparse.ArgumentParser(
+                        description="Join the eval results under <root>/ckpt_<N>/<entry>/results.json."
+                    )
+                    parser.add_argument("root", help="the run's eval root (EVAL_ROOT/EXP/RUN_NAME)")
+                    parser.add_argument(
+                        "--out", default=None, help="where to write the three files (default: <root>)"
+                    )
+                    args = parser.parse_args(argv)
+
+                    root = os.path.abspath(args.root)
+                    if not os.path.isdir(root):
+                        sys.stderr.write("report: not a directory: " + root + "\n")
+                        return 2
+                    out = os.path.abspath(args.out) if args.out else root
+                    os.makedirs(out, exist_ok=True)
+
+                    rungs, entries, headline, rows, notes = collect(root)
+                    metrics = metric_names(rows)
+
+                    summary = [["rung"] + entries]
+                    for rung in rungs:
+                        summary.append(
+                            [rung] + [headline.get((rung, entry), ("", False))[0] for entry in entries]
+                        )
+                    write_csv(os.path.join(out, "summary.csv"), summary)
+                    write_csv(
+                        os.path.join(out, "per_task.csv"),
+                        [["rung", "entry", "task", "metric", "value", "n"]] + rows,
+                    )
+                    with open(os.path.join(out, "summary.md"), "w", encoding="utf-8") as handle:
+                        handle.write(markdown(root, rungs, entries, headline, metrics, notes))
+
+                    for rung, entry, note in notes:
+                        sys.stderr.write(
+                            "report: ckpt_" + rung + ("/" + entry if entry else "") + ": " + note + "\n"
+                        )
+                    sys.stdout.write(
+                        "report: "
+                        + str(len(rungs))
+                        + " rungs, "
+                        + str(len(entries))
+                        + " entries, "
+                        + str(len(rows))
+                        + " rows, "
+                        + str(len(notes))
+                        + " notes -> "
+                        + out
+                        + "\n"
+                    )
+                    return 0
+
+
+                if __name__ == "__main__":
+                    sys.exit(main())
+                GB_REPORT_PY
+                python -I report.py "$ROOT" --out "$OUT"
+                ls -l "$OUT"
+            # One CPU pod: a few hundred small JSON files, read once.
+            compute_config:
+              num_nodes: 1
+              num_cpus_per_node: $${REPORT_CPUS}
+            launcher_config:
+              resources:
+                cpus: $${REPORT_CPUS}
+                memory: $${REPORT_MEMORY}
+<%- endif %>
+
+    # ─── end evals ───

@@ -1,0 +1,350 @@
+# granite-4.0 350M muP (nemotron-g4-350m-fused-500B) -- GOLDEN FIXTURE. Do not hand-maintain.
+#
+# Captured once from gbansible's lm_engine_pretrain_job role: jinja2 (trim_blocks,
+# lstrip_blocks, plus an Ansible-compatible `bool` filter) rendering
+# templates/pretrain_config.yml.j2 over defaults/main.yml updated with
+# vars/lm_engine_pretrain/nemotron-g4-350m-fused-500B.yml, experiment=
+# nemotron-g4-350m-fused-500B and lme_output_dir=/TRAIN. See the command in
+# test_render_config.py::test_render_matches_gbansible_golden.
+#
+# Round-tripped through yaml.safe_load/safe_dump, so only the parsed VALUES are
+# the contract -- key order, quoting and the role's comments are not. Four values
+# were then edited by hand; each is marked `# EDITED` below.
+datasets:
+- class_name: FSDPDataset
+  data_name: nemotron-g4-350m-fused-500B
+  data_sampling_ratio: 1
+  class_args:
+    dataset_path: '' # EDITED: the vars file's internal path; this repo ships no such default
+    datasets: null
+    weights: null
+    col_name: contents
+    file_type: hf_parquet
+    vocab_size: 100352
+    bos_token: null
+    eos_token: 100257
+    drop_tokens: ''
+    logical_shards: 512
+    num_workers: 4
+    seed: 42
+    sequence_length: 8192
+    enable_checkpoint: false
+    checkpoint_model_weights_only: false
+    checkpoint_folder: /TRAIN/dataloader_ckpt
+tokenizer_args:
+  tokenizer_name: '' # EDITED: as dataset_path above
+kernel_args:
+  kernels:
+  - flash_attention_2
+  - fused_linear_cross_entropy
+model_args:
+  pretrained_config:
+    model_type: gpt_base
+    vocab_size: 100352
+    max_position_embeddings: 8192
+    hidden_size: 1024
+    num_layers: 28
+    normalization_function: rmsnorm
+    layer_norm_epsilon: 1.0e-05 # EDITED: the role emitted `1e-5`, which YAML 1.1 reads as a str
+    initializer_range: 0.02
+    bos_token_id: 100257
+    eos_token_id: 100257
+    pad_token_id: 100256
+    embedding_dropout: 0
+    rope_scaling: null
+    embedding_init_method: normal
+    use_depth_scaled_init: true
+    tie_word_embeddings: true
+    m_emb: 12
+    m_width: 4
+    m_residual: 0.263
+    init_method: normal
+    rope_theta: 10000000
+    rope_dim: null
+    sequence_mixer_blocks:
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    - sequence_mixer_type: softmax_attention
+      num_attention_heads: 16
+      num_key_value_heads: 4
+      add_bias: false
+      attention_multiplier: 0.015625
+      attention_multiplier_method: null
+    mlp_blocks:
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    - mlp_type: MLP
+      activation_function: swiglu
+      intermediate_size: 2048
+    position_embedding_type: rope
+tuning_args:
+  tuning_method: pretraining
+save_args:
+  save_path: /TRAIN
+  save_interval: 10000
+logging_args:
+  log_interval: 10
+training_parameters:
+  num_training_steps: 120000
+  eval_during_training: false
+  eval_interval: 120000
+  micro_batch_size: 8
+  gradient_accumulation_steps: 1
+  gradient_clipping: 1
+optimizer_args:
+  class_name: TorchAdamW
+  param_groups: configs/param-groups/mup.yml
+  class_args:
+    lr: 0.01
+    weight_decay: 0.1
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-10 # EDITED: the role emitted `1e-10`, a str for the same reason
+lr_scheduler_args:
+  lr_decay_style: cosine
+  num_warmup_steps: 2000
+mixed_precision_args:
+  dtype: bf16
+distributed_args:
+  stage: 0
+  fsdp_algorithm: 2

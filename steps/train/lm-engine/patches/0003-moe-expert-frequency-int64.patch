@@ -1,0 +1,47 @@
+From 2f6460018e92f5d930b203a31b89921decd3ef44 Mon Sep 17 00:00:00 2001
+From: Constantin Adam <cmadam@us.ibm.com>
+Date: Wed, 18 Nov 2026 21:07:23 -0500
+Subject: [PATCH 3/4] Cast MoE expert_frequency to int64 for the NCCL
+ all_reduce and metrics
+
+compute_bincount returns a UInt32 tensor. NCCL has no UInt32 datatype, so
+the data-parallel all_reduce of the expert frequencies aborts with
+"invalid data type ... UInt32", and the metrics tracker's own all_reduce
+of the logged counts fails the same way. Cast to int64 at both consumers;
+the expert-compute path (offsets, grouped GEMM) keeps the UInt32 tensor
+untouched.
+
+Applied as a runtime sed by gbansible
+(roles/lm_engine_pretrain_job/templates/appwrapper_pretrain.yml.j2); baked
+here so the image does not depend on the launcher patching its own
+source. Not present in the reference image
+us.icr.io/cil15-shared-registry/lm-engine:0.1.0-cuda-fa2cc.
+---
+ lm_engine/training/modeling_utils/mlp_blocks/moe/module.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lm_engine/training/modeling_utils/mlp_blocks/moe/module.py b/lm_engine/training/modeling_utils/mlp_blocks/moe/module.py
+index 6280061..ca89e77 100644
+--- a/lm_engine/training/modeling_utils/mlp_blocks/moe/module.py
++++ b/lm_engine/training/modeling_utils/mlp_blocks/moe/module.py
+@@ -317,7 +317,7 @@ class MoE(DTensorModule):
+         global_expert_frequency = expert_frequency
+         if ProcessGroupManager.is_initialized() and ProcessGroupManager.get_data_parallel_world_size() > 1:
+             global_expert_frequency = all_reduce(
+-                expert_frequency, reduceOp="sum", group=ProcessGroupManager.get_data_parallel_group()
++                expert_frequency.to(torch.int64), reduceOp="sum", group=ProcessGroupManager.get_data_parallel_group()
+             )
+ 
+         normalized_acc_probs = F.normalize(acc_probs, p=1, dim=0)
+@@ -343,7 +343,7 @@ class MoE(DTensorModule):
+         metrics_tracker[f"{MOE_Z_LOSS}/{self.layer_idx}"] = (moe_z_loss, self.z_loss_coefficient)
+         # log the local counts so the metrics all-reduce gives the counts per micro-batch, logging the all-reduced
+         # counts would scale them by the context parallel world size
+-        metrics_tracker[f"{MOE_EXPERT_FREQUENCY}/{self.layer_idx}"] = expert_frequency
++        metrics_tracker[f"{MOE_EXPERT_FREQUENCY}/{self.layer_idx}"] = expert_frequency.to(torch.int64)
+ 
+         return moe_aux_loss, moe_z_loss
+ 
+-- 
+2.56.1
+

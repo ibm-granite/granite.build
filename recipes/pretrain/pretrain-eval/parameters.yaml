@@ -1,0 +1,88 @@
+# pretrain-eval — which exports to score, and with what. Nothing about the site.
+#
+# The eval half of ../pretrain, pointed at exports that already exist. Every path,
+# image and accelerator model comes from the site file (--param-file); a key here
+# may not also be defined there. The eval knobs below are the pretraining recipe's
+# own, with the same names and the same meanings, so a catalog or a screen worked
+# out on a ladder transfers to a re-score unchanged.
+#
+# Values arrive from --param as STRINGS (the CLI does no YAML parsing of them).
+
+# ─── Run identification ───────────────────────────────────────────────
+# Set per run, with a timestamp. This build registers artifact URIs under
+# EVAL_ROOT/EXP/RUN_NAME, and two builds may not register one URI: the second
+# target reports SUCCESS with an EMPTY output list and its consumers wait forever.
+# A re-score of a ladder therefore needs a NEW RUN_NAME, not the training run's.
+RUN_NAME: "eval"
+# The experiment this scores, and the directory above RUN_NAME. Set it to the
+# training run's EXP so a run's scores sit together however often they are redone.
+EXP: "nemotron-g4-350m-fused-500B"
+
+# ─── What to score ────────────────────────────────────────────────────
+# The directory holding the exports, as the pretraining recipe wrote them:
+# EXPORT_DIR/ckpt_<N>/hf for each rung. That is WORKDIR_ROOT/EXP/RUN_NAME/export of
+# the run being scored — an absolute path on the shared volume, which is why it has
+# no default here.
+EXPORT_DIR: ""
+# The rungs to score, by optimizer step. Each must be a ckpt_<N>/hf under
+# EXPORT_DIR; the adopt target fails fast, naming the rung, if one is missing.
+RUNGS: ""
+# Among RUNGS, the rungs that get the WHOLE catalog instead of the screening
+# subset. A rung here that is not in RUNGS fails the render.
+FULL_EVAL_RUNGS: ""
+# The context length the exports were TRAINED at. vLLM is given this as
+# max_model_len: a larger value invents context the model never saw, a smaller one
+# silently truncates prompts it can read.
+SEQ_LEN: 8192
+
+# ─── The eval catalog ─────────────────────────────────────────────────
+# The pretraining recipe's catalog, unchanged — see ../pretrain/parameters.yaml for
+# why each entry is spelled the way it is. A list, so it can only be replaced from
+# a --param-file, never from --param.
+#
+# `mode` is spelled out on every lm-eval entry because a BASE model is being
+# scored: `mode=auto` would hand a model with no chat template to the chat protocol
+# and produce numbers that look valid and mean nothing. The render refuses an
+# lm-eval entry without tasks= and mode=, and refuses mode=auto.
+EVAL_CATALOG:
+  # The cheap multiple-choice screen: likelihood scoring, no generation, minutes.
+  - name: base-core
+    benchmark: lm-eval
+    options: "tasks=hellaswag,arc_easy,arc_challenge,piqa,winogrande,lambada_openai mode=base"
+  - name: mmlu
+    benchmark: lm-eval
+    options: "tasks=mmlu mode=base num_fewshot=5"
+  # Opt-in, and NOT part of the screen: MMLU-ProX lite is 5-shot CoT in CHAT mode,
+  # which a from-scratch base model has no template for. It is in the catalog so a
+  # full rung of an instruction-tuned continuation can ask for it.
+  - name: mmlu-prox-lite
+    benchmark: mmlu-prox-lite
+    options: ""
+# The screening subset, by name: these run on EVERY rung in RUNGS, while a rung
+# named by FULL_EVAL_RUNGS runs the whole catalog. A name outside EVAL_CATALOG
+# fails the render — it would otherwise be a rung that scores nothing while the
+# build reports SUCCESS.
+SCREEN_EVALS: "base-core"
+# Smoke knob: score only the first N examples. Empty is the full benchmark.
+EVAL_LIMIT: ""
+# One eval GPU, so host memory per pod is the only scale knob here; the accelerator
+# model itself is the site's (EVAL_ACCELERATORS).
+EVAL_MEMORY: 256
+
+# ─── The roll-up ──────────────────────────────────────────────────────
+# The same report.py as the pretraining recipe, in the same bare CPU container,
+# over this build's own eval root. Pinned by digest; a site behind a mirror
+# overrides it.
+REPORT_IMAGE: "python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
+# Also the adopt targets' resources: one CPU, enough memory to read a config.
+REPORT_CPUS: 1
+REPORT_MEMORY: 8
+
+# ─── Retries and the monitor ──────────────────────────────────────────
+# An eval pod on a preemptable queue is the expected failure here, so retries are
+# worth more than in a training run: a retry re-runs only the failed targets.
+MAX_RETRIES: 2
+# How often gbserver polls a job's status. Shorter than the training recipe's: an
+# eval is minutes to an hour, not days.
+POLL_INTERVAL_SECONDS: 60
+LOG_RETRIEVAL_INTERVAL_SECONDS: 60

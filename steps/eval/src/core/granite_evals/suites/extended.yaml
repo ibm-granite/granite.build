@@ -66,3 +66,6 @@ benchmarks:
   - {id: profbench, group: extras, name: ProfBench, metric: overall}
   - {id: pinchbench, group: extras, name: PinchBench, metric: reward}
   - {id: omniscience-hallucination, group: extras, name: Omniscience (hallucination), metric: pass@1 judge_omni_hallucination}
+  # The generic harness bridges: no fixed protocol -- the recipe's options
+  # pick the tasks (see the family module's docstring).
+  - {id: lm-eval, group: extras, name: "lm-eval (generic: any task in the pinned harness)", metric: "macro mean of the tasks' primary metrics"}

@@ -58,3 +58,29 @@ file assert all eleven steps follow the same shape). The rendered, committed for
 that `space://steps/eval/<family>` actually resolves to lives under
 `configurations/assets/environments/skypilot/steps/eval/<family>/`, produced by
 `make publish-step` from the source template — never hand-edited.
+
+## The generic bridge
+
+Every family's benchmarks are curated: one registered id per benchmark, a fixed
+protocol the module freezes (sampling, stop strings, aggregation). That is what
+makes a score comparable across models — and what costs a module per benchmark,
+which is why a family offers a fraction of what its harness can run.
+
+The generic bridge is the escape hatch: one more registered id per family
+(`lm-eval` in the lmeval family) that runs *anything* the family's pinned
+harness knows, with the recipe's `options` carrying the harness's own selection
+surface. For lm-eval that is `tasks=` (any of the 14k+ task and group names the
+pinned harness ships), plus `mode=`, `num_fewshot=`, `gen_kwargs=` and `metric=`
+— the bridge passes them to the harness instead of freezing them. A new task
+becomes a recipe's config, not a module; the curated ids stay exactly as they
+are (a recipe that wants a comparable protocol pins the curated benchmark).
+
+The shape, so other families can grow the same: the bridge reuses the family's
+own machinery (serving, adapters, resume caches, artifacts) and adds only the
+selection surface; the headline is the macro mean over the resolved tasks of
+each task's primary metric; what a curated benchmark freezes is the task's own
+default here, overridable per recipe. The registry contracts hold unchanged:
+the bridge's pin is the harness repo at the release the family's pyproject extra
+pins, and the bridge is listed in the extended suite. See
+`steps/eval/lmeval/src/generic.py` and the lmeval `USAGE.md` for the worked
+example.
