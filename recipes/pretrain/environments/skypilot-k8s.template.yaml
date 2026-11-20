@@ -25,6 +25,20 @@
 #     emptyDir makes torch's shared-memory tensors fail with a bus error that
 #     reads as a dataloader crash.
 #
+# RoCE LANDS ON EVERY POD, NOT JUST THE TRAINING ONES. pod_config is per kubernetes
+# CONTEXT and SkyPilot has no per-task override of it, so the VF request and the Multus
+# annotation below apply to every target's pod in this environment -- the CPU-only
+# data-check, each export, each eval and the roll-up included. Where every node that can
+# run a pod advertises nvidia.com/roce_gdr that is merely wasteful (one VF held per CPU
+# pod). Where the CPU nodes do NOT advertise it, those pods are unschedulable and the
+# build stalls with no error that names this file.
+#
+# Hence the ROCE_GDR guard: set ROCE_GDR to 0 in the site file and the annotation, the VF
+# request and IPC_LOCK are all left out. That costs multi-node training its RoCE fabric
+# (point 2 below) but lets a mixed cluster run. No setting here gives RoCE to the
+# training pods alone -- that needs a second environment instance behind its own
+# ENVIRONMENT_URI, which this recipe does not model.
+#
 # WHY RoCE IS HAND-WRITTEN HERE. The pinned SkyPilot has a native knob for exactly
 # this (`kubernetes.rdma.{mode,resource,networks}`, mode `sriov`: it sets the Multus
 # annotation, requests the VF extended resource, sizes the count per GPU and adds
@@ -67,12 +81,14 @@ config:
       context_configs:
         "$${KUBE_CONTEXT}":
           pod_config:
+<%- if ROCE_GDR | int > 0 %>
             metadata:
               annotations:
                 # Multus attaches one SR-IOV VF per entry, so the number of
                 # entries must match the roce_gdr count requested below -- a
                 # mismatch fails at CNI time, far from the config that caused it.
                 k8s.v1.cni.cncf.io/networks: "$${ROCE_NETWORK}"
+<%- endif %>
             spec:
               # The queue's priority class. Without it the pods land at the
               # cluster's default priority, which on a shared GPU cluster means
@@ -115,6 +131,7 @@ config:
               containers:
                 # SkyPilot's own container, patched by name.
                 - name: ray-node
+<%- if ROCE_GDR | int > 0 %>
                   resources:
                     # The VF count, on BOTH limits and requests: an extended
                     # resource that appears in only one of them is rejected by the
@@ -129,6 +146,7 @@ config:
                         # RDMA pins its queue-pair memory; without this NCCL's
                         # registration fails and it falls back to sockets.
                         - IPC_LOCK
+<%- endif %>
                   env:
                     # Which node a rank ran on, for the per-node logs the train
                     # step writes. The pod name alone does not say it.

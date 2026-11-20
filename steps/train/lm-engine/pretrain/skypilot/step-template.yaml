@@ -32,8 +32,14 @@ config:
   # would be deleted at target teardown. Required.
   train_dir: ""
   # Every lm-engine knob, as the nested mapping lm-engine's config.yml expects.
-  # src/render_config.py (a later change) renders it; its KNOBS table is the
-  # authority on which keys are accepted. {} = lm-engine's own defaults.
+  # src/render_config.py renders it; its DEFAULT_KNOBS table is the authority on which
+  # keys are accepted.
+  #
+  # THIS MUST BE COMPLETE. DEFAULT_KNOBS is a reference for recipes and tests, never
+  # merged at run time, so a partial mapping is not filled in from it: `{}` fails
+  # render_config.validate and the step exits 2 (which is the intended behaviour -- it
+  # fails before the allocation rather than deep inside lm-engine). A recipe passes
+  # every key; test_pretrain_recipe holds the recipe's key set equal to DEFAULT_KNOBS.
   lme: {}
   # Comma-separated optimizer step counts at which the run emits a checkpoint
   # artifact mid-run, e.g. "2000,4000". Each rung N needs a matching

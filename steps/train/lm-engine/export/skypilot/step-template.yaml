@@ -51,9 +51,11 @@ config:
   # same knobs it trained with; src/export_checks.py compares it against the written
   # config.json and fails the target on any divergence. {} skips the config check.
   expected: {}
-  # Relative tolerance for the logit/loss parity check between the unsharded
-  # lm-engine model and the exported Hugging Face model. Config scalars are compared
-  # exactly; this is only for the numeric parity check.
+  # ABSOLUTE bound on the parity check between the unsharded lm-engine model and the
+  # exported Hugging Face model: src/export.py compares max |logits_lm_engine -
+  # logits_hf| against this value directly, it is NOT a ratio. Logit magnitude grows
+  # with the model, so a value chosen for one size does not carry to another. Config
+  # scalars are compared exactly; this is only for the numeric parity check.
   parity_tolerance: 0.05
 outputs:
   required:

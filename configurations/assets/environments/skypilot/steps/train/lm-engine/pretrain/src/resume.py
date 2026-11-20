@@ -72,6 +72,13 @@ resume, fresh, and error -- so the next attempt compares against this one.
 A state file that is absent, empty or malformed is treated as "no baseline": a
 corrupt bookkeeping file must never stand between a preempted run and its
 checkpoints.
+
+The limit to understand: progress is measured in SAVED CHECKPOINTS, because the
+marker is the only progress record that exists before the trainer starts. An
+attempt that trained for hours and was preempted short of the next
+``save_interval`` is indistinguishable here from one that crashed on startup, so
+two such preemptions in a row fail a build that was advancing the whole time. That
+is why the recipe exposes this as a parameter rather than hard-coding it on.
 """
 
 from __future__ import annotations

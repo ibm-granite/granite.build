@@ -400,8 +400,10 @@ $${ wandb_block() }
             train_dir: "$${RUN_DIR}/train"
             # Refuse an attempt that gets no further than the last one did: a
             # deterministic failure would otherwise spend every retry at the same
-            # step, holding NUM_NODES nodes each time.
-            require_progress: true
+            # step, holding NUM_NODES nodes each time. Parameterised because progress
+            # is measured in SAVED checkpoints, so a run preempted twice short of
+            # SAVE_INTERVAL fails even while advancing -- see parameters.yaml.
+            require_progress: $${ REQUIRE_PROGRESS | string | lower }
             # A stopped run's train directory, to continue it in a new build;
             # ignored once train_dir holds a checkpoint. See parameters.yaml.
             resume_from_checkpoint_dir: "$${RESUME_FROM_CHECKPOINT_DIR}"

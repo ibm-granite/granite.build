@@ -194,6 +194,19 @@ GRADIENT_CHECKPOINTING_NUM_BLOCKS: ""
 # gets an export and the benchmarks; FULL_EVAL_RUNGS, a subset of EVAL_RUNGS, gets
 # the whole battery instead of the screening subset.
 #
+# FULL_EVAL_RUNGS RUNS THE WHOLE CATALOG, INCLUDING ITS CHAT-PROTOCOL ENTRIES. On a
+# from-scratch pretraining run that means mmlu-prox-lite -- 5-shot CoT in chat mode --
+# is scored against a base model with no chat template, which produces numbers that look
+# valid and mean nothing. It is the same failure the render refuses `mode=auto` to
+# prevent, but it cannot be caught the same way: a non-lm-eval entry carries its protocol
+# inside the benchmark rather than in `options`, and the catalog is held equal to
+# pretrain-eval's (where a tuned export makes that entry meaningful), so neither the
+# check nor the catalog can fix it here.
+#
+# For a pure pretraining run, leave FULL_EVAL_RUNGS EMPTY and widen SCREEN_EVALS instead
+# -- naming base-mode entries there gets the extra coverage with none of the nonsense.
+# Use FULL_EVAL_RUNGS when the checkpoints being scored are instruction-tuned.
+#
 # EMPTY BY DEFAULT, which makes this a train-only recipe: `train` then declares only
 # its final `checkpoint` output and runs without the rank-0 checkpoint watcher. The
 # union of EXPORT_RUNGS and EVAL_RUNGS is what the trainer emits MID-RUN, so a rung
@@ -210,8 +223,9 @@ FULL_EVAL_RUNGS: ""
 # construction for every model this recipe can train. Set it to one of those three
 # names to override; a fourth fails the render.
 EXPORT_MODEL_TYPE: "auto"
-# Relative tolerance for the export's logit parity check between the unsharded
-# lm-engine model and the exported Hugging Face model. This is the step's own
+# ABSOLUTE bound on the export's logit parity check between the unsharded lm-engine
+# model and the exported Hugging Face model: the step compares max |delta logits|
+# against it directly, not as a ratio, so it does not carry across model sizes. This is the step's own
 # default, kept deliberately: the measured max |delta logits| of a faithful export is
 # ~7e-07, so the headroom is for a different dtype or kernel path, not for a wrong
 # model -- a wrong model is off by orders of magnitude. The config scalars are
@@ -282,10 +296,24 @@ RESUME_FROM_CHECKPOINT_DIR: ""
 
 # ─── Retries and the monitor ──────────────────────────────────────────
 # A retry re-runs only the FAILED targets, and `train` resumes from its own
-# build-stable train directory, so a fault does not re-train from step 0. The step
-# refuses an attempt that makes no optimizer progress, so a deterministic failure
-# does not spend every retry holding the allocation.
+# build-stable train directory, so a fault does not re-train from step 0.
 MAX_RETRIES: 2
+# Fail an attempt whose newest checkpoint has not passed the one the PREVIOUS attempt
+# started from, before the trainer starts. It stops a deterministic crash from
+# spending every retry at the same step holding NUM_NODES nodes.
+#
+# KNOW THE INTERACTION BEFORE LEAVING THIS ON. "Progress" is measured in SAVED
+# CHECKPOINTS, because the checkpoint marker is the only progress record that exists
+# before the trainer starts -- so an attempt that trained for hours and was preempted
+# short of the next SAVE_INTERVAL counts as no progress, exactly like one that crashed
+# on startup. Two such preemptions in a row therefore fail the build even though it
+# was advancing each time, and with SAVE_INTERVAL 10000 that is a plausible afternoon
+# on a preemptable queue.
+#
+# So: leave it true where a save boundary is reached comfortably within the
+# preemption window, and set it false (or shorten SAVE_INTERVAL) where it is not. The
+# cost of false is that a deterministic failure burns MAX_RETRIES allocations.
+REQUIRE_PROGRESS: true
 # How often gbserver polls the job's status.
 POLL_INTERVAL_SECONDS: 300
 # Half of a rung's detection latency; CKPT_WATCH_INTERVAL_SECONDS is the other half.

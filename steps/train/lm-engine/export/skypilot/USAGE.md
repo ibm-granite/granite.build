@@ -23,7 +23,7 @@ step_uri: space://steps/train/lm-engine/export
 | `model_type` | `granite` | The Hugging Face architecture to export as: `granite`, `llama` or `granitemoehybrid`. See *Choosing `model_type`*. |
 | `tokenizer_path` | `""` | The directory holding the trained tokenizer files. They are copied byte for byte into `output_dir`. Required. |
 | `expected` | `{}` | The training-side values the exported config must still carry. `{}` skips the config check — don't. See *What `expected` holds*. |
-| `parity_tolerance` | `0.05` | Relative tolerance for the logit/loss parity check between the unsharded lm-engine model and the exported one. Config scalars are compared exactly; this is only the numeric parity check. Loose by four orders of magnitude on purpose — see *Compute and disk*. |
+| `parity_tolerance` | `0.05` | ABSOLUTE bound on `max \|Δ logits\|` between the unsharded lm-engine model and the exported one — compared directly, not as a ratio, so a value chosen for one model size does not carry to another. Config scalars are compared exactly; this is only the numeric parity check. Loose by four orders of magnitude on purpose — see *Compute and disk*. |
 
 ### Choosing `model_type`
 
