@@ -44,7 +44,7 @@ you name it, and the step derives the python module and the pip dependencies.
 | `dpk_version` | string | no | DPK release to install. Default `1.1.8`. Ignored when `dpk_image` is set. |
 | `dpk_image` | string | no | Container image to run in. Default `""` = the bare launcher node. See [Running in a container image](#running-in-a-container-image). |
 | `pip_index_url` | string | no | Index for the pip install. Default `https://pypi.org/simple`. |
-| `pip_constraints` | list of strings | no | Version constraints for the bare-node install, passed to `uv pip install --constraint`. Default `["pyarrow<26"]`. Setting it **replaces** the default; `[]` or `null` means none. Ignored when `dpk_image` is set. See [Dependency constraints](#dependency-constraints). |
+| `pip_constraints` | list of strings | no | Version constraints for the bare-node install, passed to `uv pip install --constraint`. Default `["pyarrow<26"]`. Setting it **replaces** the default; `[]` means none. Must be a list: anything else is refused before the install. Has no effect when `dpk_image` is set. See [Dependency constraints](#dependency-constraints). |
 | `module` | string | no | Override the derived python module. An escape hatch for a transform whose runtime is not `dpk_<name>.runtime`; the derivation holds for every transform in DPK 1.1.8. |
 
 ## Inputs
@@ -180,8 +180,9 @@ adding packages. Each entry is one requirement specifier, written to a constrain
 and passed to `uv pip install --constraint`.
 
 The default is `["pyarrow<26"]` (#653). pyarrow 26 refuses to import under NumPy 1.x
-but does not declare that requirement, and several DPK extras pin `numpy<2`
-(`pii-redactor`, `fdedup`, `docling2parquet`, among others). Without the constraint the
+but does not declare that requirement, and several DPK extras pin `numpy<2`: on
+Python < 3.13 for `pii-redactor`, `fdedup`, `docling2parquet` and others, and on every
+Python for `images`, `faces`, `nsfw` and `people`. Without the constraint the
 resolver pairs the two, and the transform fails with
 `ImportError: pyarrow requires NumPy 2.0 or newer`. The constraint applies to every
 transform: with it, every extra of DPK 1.1.7 and 1.1.8 still resolves, and pyarrow 25
@@ -198,8 +199,26 @@ dpk_config:
 ```
 
 Set `pip_constraints: []` to install with no constraints, for example on a DPK release
-that needs pyarrow 26 or later. Constraints have no effect with `dpk_image`, because
-nothing is installed.
+that needs pyarrow 26 or later. If an install fails while constraints are applied, setup
+prints them and points at this setting, because uv's "No solution found" names the
+package but not where the bound came from. Constraints have no effect with `dpk_image`,
+because nothing is installed.
+
+The value must be a **list of strings**; `[]` is the only way to say "none". The check runs
+in both phases and with `dpk_image` too, so a malformed value fails the same way
+everywhere. Setup refuses the following, before any install work:
+
+- a value that isn't a list: `null`, `""`, a bare string, a mapping or a number. A mapping
+  is the dangerous one, because iterating it would yield its keys and silently drop the
+  bounds.
+- an entry that isn't exactly one specifier: empty, multi-line, starting with `-`, `#` or
+  whitespace, or ending with `\`.
+
+The entries are written to a requirements-syntax constraints file, where those shapes
+would be read as options, comments or continuations rather than as bounds. uv honours
+`--extra-index-url`, `-c` and `-r` lines there, so such an entry would make the install
+query another index or read another file. Environment markers and inline comments are fine, for example
+`pyarrow<26; python_version < "3.13"`.
 
 The step also auto-injects the launcher's data config, so you never write it:
 

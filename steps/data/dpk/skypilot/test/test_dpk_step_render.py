@@ -571,6 +571,7 @@ class TestBothBlocksCallTheGuard:
             "--dpk-image",
             "--output",
             "--input-path",
+            "--pip-constraints-problem",
         ):
             assert opt in rendered, f"{opt} not passed in the {block} block"
 
@@ -700,10 +701,14 @@ class TestEveryConfigValueIsEscaped:
     def test_the_setup_block_is_escaped_too(self, launcher, defaults, field, tmp_path):
         """`setup` had the same gap, in the phase that runs FIRST — before the venv.
 
-        These two fields cover BOTH interpolations in the block: `pip_index_url` goes
-        straight into --index-url, and `dpk_version` is folded into the derived
-        requirement specifier. Macros are block-scoped in Jinja, so `setup` carries
-        its own copy of the escaping rule; this is what keeps the two from drifting.
+        These fields cover every config interpolation in the block's install call:
+        `pip_index_url` goes straight into --index-url, `dpk_version` is folded into
+        the derived requirement specifier, and each `pip_constraints` entry becomes a
+        --constraint. `pip_constraints` is given as a LIST, the only accepted shape
+        and the one the default and real builds use; its copies in the guard call
+        are covered in TestPipConstraints. Macros are block-scoped in Jinja, so
+        `setup` carries its own copy of the escaping rule; this is what keeps the
+        two from drifting.
 
         `transform` is deliberately NOT included, though it also reaches this block:
         it arrives through the SAME q(dpk_req) call as `dpk_version`, so it is the
@@ -717,7 +722,9 @@ class TestEveryConfigValueIsEscaped:
         tests above, which have no such rewrite.
         """
         canary = tmp_path / "canary"
-        cfg = _transform_cfg(defaults, **{field: f"x'`touch {canary}`'"})
+        payload = f"x'`touch {canary}`'"
+        value = [payload] if field == "pip_constraints" else payload
+        cfg = _transform_cfg(defaults, **{field: value})
         rendered = _render(launcher["setup"], cfg, _BINDINGS)
         assert _bash_ok(rendered), f"{field} broke the rendered setup shell"
         _script_argv(rendered, "setup")  # executes it with dpk_setup.sh stubbed
@@ -746,9 +753,15 @@ class TestPipConstraints:
     """`pip_constraints` reaches dpk_setup.sh as one --constraint per entry (#653).
 
     The default "pyarrow<26" applies to EVERY transform: pyarrow 26 refuses to import
-    under NumPy 1.x without declaring it, and several DPK extras pin numpy<2. A
+    under NumPy 1.x without declaring it, and several DPK extras pin numpy<2 (most
+    only on Python < 3.13). A
     build's own list replaces the default (step config lists are replaced on merge,
-    not concatenated), and [] or null means none.
+    not concatenated), and [] means none.
+
+    The value must be a list of strings. Only the template still sees its TYPE, so a
+    wrong shape is handed to dpk_guard.sh as --pip-constraints-problem and the
+    entries are withheld; the guard refuses it in both phases (test_dpk_guard_sh.py
+    covers that verdict). What is tested here is the hand-over.
     """
 
     @pytest.mark.parametrize(
@@ -779,17 +792,10 @@ class TestPipConstraints:
         argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
         assert _guard_opt(argv, "--constraint") == ["numpy<2", "pandas<3"]
 
-    @pytest.mark.parametrize("value", [[], None])
-    def test_empty_or_null_means_no_constraints(self, launcher, defaults, value):
-        cfg = _transform_cfg(defaults, pip_constraints=value)
+    def test_an_empty_list_means_no_constraints(self, launcher, defaults):
+        cfg = _transform_cfg(defaults, pip_constraints=[])
         argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
         assert "--constraint" not in argv
-
-    def test_a_bare_string_is_one_constraint(self, launcher, defaults):
-        """Not iterated character by character."""
-        cfg = _transform_cfg(defaults, pip_constraints="pyarrow<25")
-        argv = _script_argv(_render(launcher["setup"], cfg, _BINDINGS), "setup")
-        assert _guard_opt(argv, "--constraint") == ["pyarrow<25"]
 
     def test_a_quoted_constraint_survives_as_data(self, launcher, defaults):
         cfg = _transform_cfg(defaults, pip_constraints=["a'b", "c d"])
@@ -807,8 +813,58 @@ class TestPipConstraints:
         """Constraints only bound the bare-node install, which an image skips."""
         cfg = _transform_cfg(defaults, transform="pii_redactor", dpk_image="img:1")
         rendered = _render(launcher["setup"], cfg, _BINDINGS)
-        assert "--constraint" not in rendered
-        assert "pyarrow" not in rendered
+        assert "--constraint " not in rendered
+        assert "dpk_setup.sh" not in rendered
+
+    # ---- the hand-over to the guard ---------------------------------------------
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_a_valid_list_reaches_the_guard_entry_by_entry(
+        self, launcher, defaults, block
+    ):
+        cfg = _transform_cfg(defaults, pip_constraints=["pyarrow<26", "a'b c"])
+        argv = _guard_argv(launcher[block], cfg, _BINDINGS)
+        assert _guard_opt(argv, "--pip-constraint") == ["pyarrow<26", "a'b c"]
+        assert _guard_opt(argv, "--pip-constraints-problem") == [""]
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "value,problem",
+        [
+            (None, "is null"),
+            ("", "is a string, not a list"),
+            ("pyarrow<26", "is a string, not a list"),
+            # The silent case: iterated, a mapping yields its KEYS, so it rendered
+            # `--constraint 'pyarrow'` and the bound vanished.
+            ({"pyarrow": "<26"}, "is a mapping, not a list"),
+            # And the loud one: iterating a number failed the render outright.
+            (26, "is not a list"),
+            (True, "is not a list"),
+            (["pyarrow<26", 3], "entry 2 is not a string"),
+        ],
+    )
+    def test_a_wrong_shape_is_reported_and_no_entry_is_passed(
+        self, launcher, defaults, block, value, problem
+    ):
+        cfg = _transform_cfg(defaults, pip_constraints=value)
+        argv = _guard_argv(launcher[block], cfg, _BINDINGS)
+        assert _guard_opt(argv, "--pip-constraints-problem") == [problem]
+        assert _guard_opt(argv, "--pip-constraint") == []
+        if block == "setup":
+            setup_argv = _script_argv(
+                _render(launcher["setup"], cfg, _BINDINGS), "setup"
+            )
+            assert "--constraint" not in setup_argv
+
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    def test_the_guard_copy_is_escaped_too(self, launcher, defaults, block, tmp_path):
+        """The entries are interpolated into the guard call as well, in both phases."""
+        canary = tmp_path / "canary"
+        cfg = _transform_cfg(defaults, pip_constraints=[f"x'`touch {canary}`'"])
+        rendered = _render(launcher[block], cfg, _BINDINGS)
+        assert _bash_ok(rendered)
+        _guard_argv(launcher[block], cfg, _BINDINGS)  # executes the block
+        assert not canary.exists(), f"the {block} guard call executed a constraint"
 
 
 class TestArgsKeysReachTheGuardAsData:
