@@ -418,6 +418,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a lone `-` pass. The check lives in `validate_args` in
   `steps/train/shared/trainer_args.j2`.
 
+- **Legacy `space://steps/openinstruct-sft` on SkyPilot/AWS refuses multi-node builds
+  (#683).** The hand-authored step trains on one machine (`accelerate launch
+  --num_machines 1`), but nothing checked `num_nodes`, so with `num_nodes: 2` SkyPilot
+  provisioned 2 nodes that each trained on their own (the #609 bug, fixed for the framework
+  step in #625). It now sets `single_node: true`, and gbserver refuses any resolved
+  `num_nodes` other than 1 at step creation. The `skypilot/lsf/ibm-bluevela` copy is
+  unchanged: the pinned SkyPilot 0.14.2 has no LSF cloud, so it can't launch (LSF is being
+  retired, #631).
+
 - **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
   memory (#657).** Before, it was always dropped on SLURM, so jobs got SkyPilot's 1 GB per CPU.
   The built-in `hfpull`/`hfpush` (10Gi) were OOM-killed on BlueVela. gbserver now reads the
