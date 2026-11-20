@@ -19,8 +19,19 @@
 #   make test                                   the pin + patch tests (tests/)
 #   make print-image                            just print the ref
 #
-# publish-image needs a prior `podman login quay.io/granitebuild`, or REGISTRY_USER and
-# REGISTRY_PASSWORD in the environment.
+# publish-image PUSHES with $(DOCKER), which reads only the container auth store, so run
+# `podman login quay.io` first. REGISTRY_USER / REGISTRY_PASSWORD are read by the tag
+# CHECK (steps/scripts/registry-tag-status.sh) and NOT by the push -- set only those and
+# you get a check that cheerfully says "is a new tag" followed by a push that dies with
+# "authentication required".
+#
+# ON QUAY.IO THE REPOSITORY MUST EXIST AND BE PUBLIC BEFORE ANY RUN USES THE TAG. A push
+# creates it PRIVATE and SkyPilot pulls ANONYMOUSLY, so a private repository gives a
+# build whose pods cannot start -- and the failure names the pod, not this file. Create
+# it public in the quay UI, or flip it right after the first push. Note also that quay
+# answers an anonymous probe of a repository it will not show you with 401 either way, so
+# the tag check cannot tell "absent" from "exists but private" without credentials; it
+# reports `unknown` and publish-image refuses rather than guessing.
 #
 # BUILD A PUBLISHED IMAGE WITH --no-cache: `make image BUILD_ARGS=--no-cache`. A cached
 # build reuses an old `apt-get upgrade` layer and ships un-upgraded packages that the
