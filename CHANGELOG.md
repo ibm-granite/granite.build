@@ -261,6 +261,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Step drawer timestamps (#470).** `parseTimestamp` reads a zoneless ISO timestamp as
   UTC, so displayed times shift for users outside UTC.
 
+- **The distillation steps moved to `steps/train/distill/` and were renamed so each name
+  says what the step does.** Breaking: every `space://steps/distill/<step>` URI shipped in
+  v0.3.8 and v0.3.9 is gone. Inputs and outputs are unchanged, and config is unchanged
+  except in `logit-distill`, which:
+  - drops the retired `ce_coef`, `log_student_entropy`, `entropy_guard_drop_frac`,
+    `entropy_guard_baseline_steps`, `entropy_guard_patience` and `entropy_guard_action`
+    keys and the `GOLD_MIN_TOKENS` env (all retired with the CE-anchor patch they
+    belonged to);
+  - **refuses `loss_arm: adaptive_kld`** (the vendored implementation does not compute
+    the paper's objective; see `REJECTED_LOSS_ARMS` in `render_gold_config.py`);
+  - **refuses `lmbda > 0` with `vllm_num_servers: 0`**, which used to generate through
+    TRL's in-process path and, with `pad == eos`, masked every generated EOS out of the
+    loss.
+
+  Migrating a recipe means changing its `step_uri` to the new name below, dropping those
+  keys, switching any `adaptive_kld` arm to `jsd` or `kl_interpolation`, and giving any
+  on-policy run a vLLM server. The shipped recipes use the new URIs. Resume markers keep
+  their recorded step names, so outputs written before the move are still skipped, not
+  redone. `student-sft` and `teacher-logits` now download the pinned Mamba2 hub kernels
+  (`mamba-ssm` and `causal-conv1d`, each pinned by commit) in-job on a cold cache by
+  default (`GOLD_PREFETCH_KERNELS=1`); set it to `0` to require a pre-warmed cache
+  instead.
+
+  | Was | Now `space://steps/train/distill/…` |
+  |---|---|
+  | `distill/corpus-sources` | `data-mixture` |
+  | `distill/corpus-prep` | `data-prep` |
+  | `distill/corpus-pin-check` | `data-validate` |
+  | `distill/tokenizer-align` | `tokenizer-align` |
+  | `distill/sft` | `student-sft` |
+  | `distill/gold` | `logit-distill` (GOLD, ULD, AKL, DistiLLM-2-style objectives) |
+  | `distill/logit-precompute` | `teacher-logits` |
+  | `distill/vllm-server` | `student-rollout-generator` |
+  | `distill/eval` | `teacher-divergence` (not to be confused with the `steps/eval/` category) |
+  | `distill/gen-smoke` | `repetition-check` |
+  | `distill/probe` | `preflight-check` |
+
+  The shared Accelerate/DeepSpeed launch config moved inside the GPU image from
+  `steps/distill-gold-train/configs/` to `configs/`; recipes that set `DS_CONFIG` use
+  `configs/deepspeed/accelerate_deepspeed_zero3.yaml`.
+- **`hf-export` moved to `steps/aux/hf-export` with its own image.** Breaking:  `space://steps/distill/hf-export` is now `space://steps/aux/hf-export`. Config, inputs
+  (`train_output`, `expected_tokenizer`) and the `hf_model` output are unchanged, and an
+  export made by the old step is recognised and skipped, not redone. The step no longer runs
+  on the distillation CPU image: it has its own CPU image,
+  `quay.io/granitebuild/steps/aux/hf-export` (no torch), and
+  imports nothing from the distillation collection, so any recipe that trains with HF Trainer
+  or accelerate can use it.
+- **The eval and teardown steps moved from the LSF `ibm-bluevela` subtype override to the
+  generic skypilot tree** (`bfcl-eval`, `bfcl-export`, `sage-eval`, `sage-export`,
+  `combined-export`, `skypilot-teardown`, under
+  `configurations/assets/environments/skypilot/steps/`). They were BlueVela-only overrides
+  before; they now resolve for every skypilot subtype — **including Kubernetes**, whose
+  environments previously did not see them. Their step URIs are unchanged.
+- **The distill GPU steps refuse a GPU undercount instead of rewriting
+  `CUDA_VISIBLE_DEVICES` (#604).** `gold`, `sft`, `logit-precompute`, `eval`, `vllm-server`
+  and `gen-smoke` compare `SKYPILOT_NUM_GPUS_PER_NODE` with `nvidia-smi -L` and fail fast,
+  naming #604, when the container can access fewer GPUs than were allocated, as hf-peft-sft
+  does.
+
 - **Published steps declare named inputs and read them from bindings (#453).** Every
   `step.yaml` under `configurations/assets/` now has an `inputs:` block. A target that
   doesn't bind a required input now fails build validation before anything is queued.
@@ -391,6 +450,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git checkout ebabfa44 -- recipes/granite-switch/skypilot/lsf-bluevela`.
   The restored recipe runs only with a SkyPilot build that has the LSF cloud, such as the fork
   that tag `pre-slurm-only-2026-11-02` pins.
+- **The LSF and single-pair distillation recipes (#664).** Replaced by
+  [`recipes/distill/`](recipes/distill/README.md): one `distill` pipeline with off-policy,
+  ramp and on-policy λ modes (`LMBDA_MODE`) and a `smoke.yaml` layer, plus `distill-eval`
+  for benchmarking existing exports. LSF is being decommissioned, so the LSF recipes are
+  deleted rather than migrated. Removed, with their unit tests:
+  - `recipes/granite4-gold-distillation/` (all of it: `distill-gold`, `distill-pipeline-smoke`,
+    `distill-sft-gold`, `gold-blend-smoke`, `gold-onpolicy-smoke`, `gold-onpolicy-full-smoke`,
+    `gold-smoke`, `gold-sweep-100`, `gold-sweep-smoke`);
+  - `recipes/granite4-350m/lsf/distill-{probe,smoke,stage1,stage1-v2,onpolicy-v2,checkpoint-eval}`.
 
 ### Fixed
 

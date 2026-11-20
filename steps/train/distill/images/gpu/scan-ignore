@@ -1,0 +1,243 @@
+# Vulnerabilities `make scan-image-gpu` / `publish-image-gpu` accept on purpose.
+#
+# One advisory id per line (CVE, GHSA or PYSEC; list every alias, because osv-scanner
+# and trivy name the same advisory differently); `#` starts a comment. The same file
+# goes to images/osv-gate.py and to trivy as --ignorefile, so keep it in that format.
+# Every entry names the issue that removes it. Delete the entry when that issue lands.
+# An acceptance is temporary by construction: give it an expiry ("until YYYY-MM-DD")
+# and re-review it when the date passes -- an entry with no removal issue and no
+# expiry is a finding nobody is tracking.
+
+# vllm 0.11.0: CRITICAL, fixed in 0.14.1 / 0.22.0. vllm is pinned exactly to match torch
+# 2.8.0, trl 0.26.2 and the Mamba2 kernel cache; the upgrade is #676. Until 2027-05-31.
+# RCE in vLLM video processing. Not reachable: the student is a text-only model, served
+# through trl's vllm_serve with our own prompts.
+PYSEC-2026-565
+GHSA-4r2x-xpjr-7cvv
+CVE-2026-22778
+# Auth bypass of vLLM's OpenAI API server AuthenticationMiddleware. Accepted with
+# eyes open: the rollout server (student-rollout-generator, via run_vllm_serve.py
+# wrapping trl.scripts.vllm_serve) runs this server unauthenticated, bound to one
+# interface (--host "$ADDR") but reachable from the whole cluster network, not only
+# this allocation -- the trainer that calls it runs in a different allocation
+# (student-rollout-generator/skypilot/step-template.yaml). No credentials exist to
+# bypass and the endpoints are generate/weight-update only, but a cluster-local
+# adversary could call them. Revisit if the server is ever reachable outside the
+# cluster or if authentication is added upstream. The upgrade is #676.
+# Until 2027-05-31.
+PYSEC-2026-226
+GHSA-94f4-hr76-p5j6
+CVE-2026-48746
+
+# ---- accepted HIGH advisories blocked by the exact pins (the upgrade is #676) ----
+# Until 2027-05-31 for every entry below; delete them all when #676 lands.
+#
+# Every id in this section was taken from the advisory records' aliases (osv.dev, the
+# database osv-scanner queries), CVE + GHSA + PYSEC per advisory, so trivy (which reports
+# by CVE) and osv-scanner (GHSA/PYSEC) both match. Do not derive one id from another.
+
+# vllm 0.11.0: HIGH advisories fixed across 0.11.1-0.32.0. Pinned exactly to match
+# torch 2.8.0, trl 0.26.2 and the Mamba2 kernel cache (same pin as the two
+# CRITICAL entries above). Grouped by whether the rollout server can reach them.
+# Reachable by any caller of the rollout server (unauthenticated, cluster network):
+# trl's /generate and /chat pass a caller-supplied guided_decoding_regex to xgrammar.
+# Accepted on the same terms as the auth entry above: the exposure is cluster-local.
+CVE-2026-55574
+GHSA-rwxx-mrjm-wc2m
+PYSEC-2026-2304
+
+# Not reachable: OpenAI API server / Rust frontend only. The rollout server is trl's own
+# FastAPI app (trl.scripts.vllm_serve via run_vllm_serve.py), which serves /generate,
+# /chat and the weight-sync endpoints. It never mounts vLLM's /v1/* routes,
+# MediaConnector (media URLs), prompt embeds, mm_processor_kwargs or cache_salt.
+CVE-2026-93592
+GHSA-25q3-v2hm-8vpf
+PYSEC-2026-3997
+CVE-2026-103241
+PYSEC-2026-4186
+CVE-2026-105759
+GHSA-5fj9-pfhr-6j48
+PYSEC-2026-4325
+CVE-2026-116177
+GHSA-mm38-5g96-7j6x
+PYSEC-2026-4352
+CVE-2025-62164
+GHSA-mrw7-hf4f-83pf
+PYSEC-2026-2018
+CVE-2026-56340
+GHSA-mcmc-2m55-j8jj
+PYSEC-2026-250
+CVE-2026-24779
+GHSA-qh4c-xf7m-gxfc
+PYSEC-2026-2020
+CVE-2026-100650
+GHSA-p6g9-7v3x-m8mv
+PYSEC-2026-4184
+CVE-2026-116176
+GHSA-vfp2-c8pq-v6h6
+PYSEC-2026-4351
+CVE-2026-5497
+GHSA-wcwg-c5fc-9vrc
+PYSEC-2026-2302
+CVE-2026-114053
+GHSA-h3rc-6mm3-gc2m
+CVE-2026-114055
+GHSA-gx7p-2j49-hfq4
+CVE-2026-114054
+GHSA-rh6f-3x46-j33q
+PYSEC-2026-4362
+
+# Not reachable: multimodal models only. The student is text-only, so vLLM rejects
+# image/audio input before any processor runs (trl itself opens a caller's image with PIL
+# first; that is PIL's exposure, not these). This Dockerfile installs no Ghostscript.
+CVE-2026-22773
+GHSA-grg2-63fw-f2qr
+PYSEC-2026-143
+CVE-2025-62372
+GHSA-pmqf-x6x8-p7qw
+PYSEC-2026-2019
+CVE-2026-90553
+GHSA-3c86-2m5g-59q7
+PYSEC-2026-3985
+CVE-2026-115912
+GHSA-6757-hggm-hp2w
+PYSEC-2026-4345
+CVE-2026-34760
+GHSA-6c4r-fmh3-7rh8
+PYSEC-2026-2299
+CVE-2026-115915
+GHSA-h3rc-j82p-2c3h
+PYSEC-2026-4346
+CVE-2026-53923
+GHSA-5jv2-g5wq-cmr4
+PYSEC-2026-3403
+
+# Not reachable: disaggregated serving (NIXL connector, KV transfer, P2P ZMQ), which
+# the rollout server never configures.
+CVE-2026-94622
+PYSEC-2026-4004
+CVE-2026-94623
+PYSEC-2026-4005
+CVE-2026-94626
+PYSEC-2026-4008
+CVE-2026-94624
+GHSA-frvg-qw88-hww9
+PYSEC-2026-4006
+CVE-2026-93436
+PYSEC-2026-3996
+
+# Model loading: reachable only through a malicious checkpoint. The server loads the
+# student this build trained, from this build's own outputs.
+CVE-2026-22807
+GHSA-2pc9-4j83-qjmr
+PYSEC-2026-2010
+CVE-2026-27893
+GHSA-7972-pg2x-xr59
+PYSEC-2026-2297
+CVE-2025-66448
+GHSA-8fr4-5q9j-m8gm
+PYSEC-2026-2015
+CVE-2026-41523
+GHSA-q8gq-377p-jq3r
+PYSEC-2026-2300
+
+# Not applicable: vLLM's own Dockerfile (flashinfer-jit-cache dependency confusion).
+# This image installs from uv.lock, which has no flashinfer package.
+CVE-2026-54232
+GHSA-jrf6-vqxq-pjv2
+PYSEC-2026-227
+
+# torch 2.8.0: vllm==0.11.0 requires torch==2.8.0 exactly, so no raise is
+# satisfiable while vllm stays.
+CVE-2026-24747
+GHSA-63cw-57p8-fm3p
+PYSEC-2026-1856
+PYSEC-2026-2286
+CVE-2025-55551
+PYSEC-2025-203
+CVE-2025-55552
+PYSEC-2025-204
+
+# xgrammar 0.1.25: pinned ==0.1.25 by vllm==0.11.0.
+CVE-2026-25048
+GHSA-7rgv-gqhr-fxg3
+PYSEC-2026-2322
+
+# fsspec 2025.10.0: datasets==4.4.1 caps fsspec[http]<=2025.10.0, so the raise
+# is unsatisfiable under the datasets pin.
+CVE-2026-104851
+GHSA-27vj-qcqg-25rc
+PYSEC-2026-4217
+
+# transformers 5.8.0: pinned exactly for the 5.x properties the vendored
+# trainer depends on.
+CVE-2026-9856
+GHSA-xrqw-3rrv-vx5w
+PYSEC-2026-3929
+
+# ---- accepted HIGH advisories in transitive dependencies ----
+
+# filelock 3.32.4: the fix is 4.2.1, a major-version move. filelock 4.x changes
+# UnixFileLock's behaviour on shared lock directories (4.2.12 refuses, with
+# PermissionError, a lock file another account owns under a sticky parent), and these
+# steps share one HF cache across accounts on group-shared filesystems. That move belongs
+# in the dependency refresh (#676), tested on the cluster. Not reachable: the flaw is only
+# in ReadWriteLock / AsyncReadWriteLock (the SQLite-backed lock, added in 3.20.4), and
+# nothing in the image uses them -- datasets 4.4.1, huggingface-hub 1.14.0 and
+# polyfile-weave 0.5.9 import only FileLock / SoftFileLock / UnixFileLock; torch 2.8.0
+# and vllm 0.11.0 were released before 3.20.4; ray has no ReadWriteLock use; and the
+# distill code has none (checked 2026-11-20). Until 2027-05-31.
+CVE-2026-112940
+GHSA-v4x8-3wr5-3wq8
+
+# wandb-core, the Go binary inside the wandb 0.28.2 wheel (Go stdlib 1.26.5, grpc 1.83.0,
+# x/net 0.57.0); trivy reports these, osv-scanner cannot see inside the binary. wandb is
+# tracking-only and defaults off in every step, so the binary does not run unless a recipe
+# turns tracking on. wandb moves with trl and weave in the dependency refresh (#676).
+# Ids from trivy's report on the c1069dfd and 173af080 images. Until 2027-05-31.
+CVE-2026-111943
+CVE-2026-33818
+CVE-2026-39821
+CVE-2026-46600
+CVE-2026-56853
+CVE-2026-56858
+CVE-2026-56859
+CVE-2026-56860
+CVE-2026-56862
+CVE-2026-78661
+CVE-2026-78667
+CVE-2026-78669
+CVE-2026-84304
+CVE-2026-84445
+CVE-2026-97031
+
+# ray 2.58.0 (a vllm 0.11.0 dependency) vendors aiohttp 3.14.3 in
+# ray/_private/runtime_env/agent/thirdparty_files and Java jars (jackson 2.18.8 in
+# ray/jars/ray_dist.jar), neither reachable from these steps (no ray cluster; vLLM runs
+# via trl's vllm_serve in server mode). The upgrade is #676. Until 2027-05-31.
+CVE-2026-128132
+CVE-2026-89407
+CVE-2026-89425
+CVE-2026-91776
+CVE-2026-91777
+CVE-2026-111064
+CVE-2026-111066
+CVE-2026-123817
+CVE-2026-128124
+CVE-2026-128126
+CVE-2026-128127
+CVE-2026-128128
+CVE-2026-128129
+CVE-2026-128130
+CVE-2026-128131
+CVE-2026-102554
+CVE-2026-54399
+CVE-2026-68497
+
+# setuptools 79.0.1 vendors jaraco.context 5.3.0 and wheel 0.45.1 (setuptools/_vendor).
+# vllm 0.11.0 requires setuptools<80, so the setuptools that vendors fixed copies is out of
+# reach until #676. Both advisories are path traversals when unpacking an attacker-supplied
+# archive (jaraco.context's tarball helper, wheel's unpack); these steps unpack no
+# untrusted archives. Until 2027-05-31.
+CVE-2026-23949
+CVE-2026-24049

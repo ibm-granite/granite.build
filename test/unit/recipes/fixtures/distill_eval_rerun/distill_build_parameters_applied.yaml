@@ -1,0 +1,13 @@
+RUN_NAME: "run1"
+EXPERIMENT: ""
+RERUN_TAG: ""
+LMBDA_MODE: "on-policy"
+CKPT_LADDER: "1000,2000"
+SCREEN_EVALS: "olmes-gsm8k,salad-bench,bfcl"
+FULL_EVAL_RUNGS: "2000"
+EVAL_CATEGORIES: "safety,math,bfcl"
+SAGE_BATCH_SIZE: 10
+BFCL_TEST_CATEGORIES: "simple"
+MAX_RETRIES: 3
+WORKDIR_ROOT: "/shared/distill"
+EVAL_PARTITION: "gpu-preemptible"

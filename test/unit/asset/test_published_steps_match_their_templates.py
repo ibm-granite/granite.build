@@ -98,3 +98,61 @@ def test_the_published_asset_matches_its_template(name, env, template, asset):
         "it may well be the newer one -- port the difference into the template, then "
         f"run `make publish-step` in steps/{name}/{env}/."
     )
+
+
+# What `make publish-step` copies VERBATIM next to the rendered step.yaml (common.mk):
+# the step's src/ tree, USAGE.md as README.md, and .gbignore. The step.yaml check above
+# never looked at these, and on PR 540 they drifted two review rounds in a row (a
+# published src/ still calling a renamed function, a README missing a section) while CI
+# stayed green. Bytecode is not part of the copy.
+_SKIP_PARTS = {"__pycache__"}
+_SKIP_SUFFIXES = {".pyc"}
+
+
+def _tree(root):
+    """{relative path: bytes} for every file under root, bytecode excluded."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+        and not _SKIP_PARTS.intersection(path.relative_to(root).parts)
+        and path.suffix not in _SKIP_SUFFIXES
+    }
+
+
+def _verbatim_copies(template, asset):
+    """(label, source, published) for each verbatim copy publish-step makes."""
+    step_dir, published = template.parent, asset.parent
+    copies = []
+    src = step_dir / "src"
+    if src.is_dir() and any(src.iterdir()):
+        copies.append(("src/", src, published / "src"))
+    if (step_dir / "USAGE.md").is_file():
+        copies.append(("README.md", step_dir / "USAGE.md", published / "README.md"))
+    if (step_dir / ".gbignore").is_file():
+        copies.append((".gbignore", step_dir / ".gbignore", published / ".gbignore"))
+    return copies
+
+
+@pytest.mark.parametrize("name,env,template,asset", PAIRS)
+def test_the_published_copies_match_their_sources(name, env, template, asset):
+    stale = []
+    for label, source, published in _verbatim_copies(template, asset):
+        if source.is_dir():
+            want = _tree(source)
+            have = _tree(published) if published.is_dir() else {}
+            stale += [
+                f"{label}{rel}"
+                for rel in sorted(want.keys() | have.keys())
+                if want.get(rel) != have.get(rel)
+            ]
+        elif not published.is_file() or published.read_bytes() != source.read_bytes():
+            stale.append(label)
+
+    assert not stale, (
+        f"{name} ({env}): published copies differ from their sources: "
+        f"{', '.join(stale)}\n"
+        f"  published under: {asset.parent.relative_to(REPO_ROOT)}\n"
+        f"Run `make publish-step` in steps/{name}/{env}/ and commit the result "
+        "(`make check-published` there shows the diff)."
+    )

@@ -1,0 +1,384 @@
+{
+ "details": {
+  "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+  "name": "distill",
+  "started_at": "2026-11-01T10:00:00Z",
+  "updated_at": "2026-11-02T03:00:00Z",
+  "status": "failed",
+  "source_pr": "",
+  "description": ""
+ },
+ "targets": [
+  {
+   "target_name": "align",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000001",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "corpus",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000002",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "sources",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000003",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "train",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000004",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "export-1000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000005",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-5",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/train/checkpoints/run1_node2/checkpoint-1000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-5",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-1000"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "divergence-1000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000006",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "export-2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000007",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-7",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/train/checkpoints/run1_node2/checkpoint-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-7",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "divergence-2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000008",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "divergence-baseline",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000009",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "repetition-check",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000010",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "eval-olmes-gsm8k-ck1000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000011",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-11",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-1000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-11",
+     "uri": "env:///shared/evals/sage/run1-ckpt_1000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-salad-bench-ck1000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000012",
+   "status": "failed",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-12",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-1000"
+    }
+   ],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "eval-salad-bench-ck1000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000013",
+   "status": "success",
+   "retry_of_target_id": "00000000-0000-0000-0000-000000000012",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-13",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-1000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-13",
+     "uri": "env:///shared/evals/sage/run1-ckpt_1000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-bfcl-ck1000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000014",
+   "status": "failed",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-14",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-1000"
+    }
+   ],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "export-sage-ck1000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000015",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  },
+  {
+   "target_name": "eval-olmes-deepmind-math-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000016",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-16",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-16",
+     "uri": "env:///shared/evals/sage/run1-ckpt_2000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-olmes-gsm8k-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000017",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-17",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-17",
+     "uri": "env:///shared/evals/sage/run1-ckpt_2000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-olmes-gpqa-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000018",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-18",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-18",
+     "uri": "env:///shared/evals/sage/run1-ckpt_2000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-olmes-gsm-symbolic-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000019",
+   "status": "failed",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-19",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-19",
+     "uri": "env:///shared/evals/sage/run1-ckpt_2000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-olmes-gsm-symbolic-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000020",
+   "status": "failed",
+   "retry_of_target_id": "00000000-0000-0000-0000-000000000019",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-20",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-20",
+     "uri": "env:///shared/evals/sage/run1-ckpt_2000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-olmes-minerva-math-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000021",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-21",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-21",
+     "uri": "env:///shared/evals/sage/run1-ckpt_2000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-salad-bench-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000022",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-22",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-22",
+     "uri": "env:///shared/evals/sage/run1-ckpt_2000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "eval-bfcl-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000023",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [
+    {
+     "artifact_id": "a-in-23",
+     "uri": "env:///shared/distill/run1/5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab/export-2000"
+    }
+   ],
+   "output_artifacts": [
+    {
+     "artifact_id": "a-out-23",
+     "uri": "env:///shared/evals/sage/run1-ckpt_2000/x"
+    }
+   ],
+   "steps": []
+  },
+  {
+   "target_name": "export-bfcl-ck2000",
+   "build_id": "5f0c2d1e-7a3b-4c9d-8e6f-0123456789ab",
+   "target_id": "00000000-0000-0000-0000-000000000024",
+   "status": "success",
+   "retry_of_target_id": "",
+   "input_artifacts": [],
+   "output_artifacts": [],
+   "steps": []
+  }
+ ],
+ "build_history": []
+}

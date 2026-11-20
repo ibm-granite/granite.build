@@ -1,0 +1,35 @@
+# Accelerate + DeepSpeed ZeRO-3 plan for the GOLD trainer processes.
+#
+# Ported from an earlier exploratory checkout's configs/deepspeed/accelerate_deepspeed_zero3.yaml
+# with ONE fix: that file's line 18 reads
+#
+#     offload_param  offload_param_device: none
+#
+# which YAML parses as a single key named "offload_param  offload_param_device".
+# accelerate 1.12.0 builds DeepSpeedPlugin from the keys it recognizes and ignores
+# the rest, so `offload_param_device` was never set and the plugin default applied.
+# The default happens to be "none" too, so the recorded runs were not affected --
+# but the key was dead. Spelled correctly here so the intent is enforced rather
+# than coincidental.
+#
+# ZeRO-3 is what makes the teacher fit: the frozen teacher is sharded across the
+# trainer's data-parallel ranks rather than replicated per GPU.
+compute_environment: LOCAL_MACHINE
+distributed_type: DEEPSPEED
+mixed_precision: bf16
+downcast_bf16: "no"
+
+main_training_function: main
+rdzv_backend: static
+same_network: true
+use_cpu: false
+
+deepspeed_config:
+  zero_stage: 3
+  zero3_init_flag: true
+  zero3_save_16bit_model: true
+  gradient_clipping: 1.0
+  offload_optimizer_device: none
+  offload_param_device: none
+  train_batch_size: "auto"
+  deepspeed_multinode_launcher: standard
