@@ -595,6 +595,18 @@ class TestLossArms:
         config = _render(tmp_path, extra=["--use-liger-fused-jsd", "true"])
         assert config["use_liger_fused_jsd"] is True
 
+    @pytest.mark.parametrize("lmbda", ["0.25", "1.0"])
+    def test_lmbda_without_a_server_is_refused(self, tmp_path, lmbda):
+        """lmbda > 0 at vllm_num_servers 0 routes generation through TRL's in-process
+        generate_on_policy_outputs, which masks by token value and so drops the EOS
+        whenever pad == eos. The renderer refuses it rather than train that."""
+        result = _render(tmp_path, extra=["--lmbda", lmbda], expect_rc=2)
+        assert "vllm_num_servers is 0" in result.stderr
+        assert "pad == eos" in result.stderr
+
+    def test_lmbda_zero_without_a_server_still_renders(self, tmp_path):
+        assert _render(tmp_path, extra=["--lmbda", "0.0"])["lmbda"] == 0.0
+
     def test_sampled_opd_offline_is_refused_rather_than_dropped(self, tmp_path):
         """use_sampled_opd_loss is emitted only on the on-policy path, so an off-policy
         render would drop the arm's only switch and train plain JSD under a config that

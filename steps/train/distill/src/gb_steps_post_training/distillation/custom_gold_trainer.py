@@ -219,6 +219,22 @@ if is_bitsandbytes_available():
 from trl.experimental.gold.gold_trainer import *
 
 
+def mask_pad_labels_by_value(
+    labels: torch.Tensor, pad_token_id: int | None, eos_token_id: int | None
+) -> torch.Tensor:
+    """Set label positions holding the pad token to -100, unless pad == eos.
+
+    gold.py sets ``pad_token = eos_token`` for models without a dedicated pad token, so
+    pad == eos is the default, not an edge case. Masking by value then also masks every
+    real EOS, and the student never gets a signal for stopping. Every caller masks the
+    prompt and padding by position as well, so skipping the value mask loses nothing.
+    Edits ``labels`` in place and returns it.
+    """
+    if pad_token_id is not None and pad_token_id != eos_token_id:
+        labels[labels == pad_token_id] = -100
+    return labels
+
+
 def build_teacher_inputs_from_texts_with_eos_control(
     tokenizer: PreTrainedTokenizerBase,
     prompt_texts: list[str],
@@ -279,14 +295,10 @@ def build_teacher_inputs_from_texts_with_eos_control(
         for j in range(left_pad_count + len(prompt_ids)):
             labels[j] = -100
         labels_tensor = torch.tensor(labels, dtype=torch.long)
-        # Mask pad tokens by value only when pad != eos: gold.py sets
-        # pad_token = eos_token for models without a dedicated pad token,
-        # and masking by value then drops the appended EOS the student
-        # must learn to predict. Positional masking above already covers
-        # the prompt and left-padding; `pad()` below right-pads labels
-        # with -100.
-        if pad_token_id is not None and pad_token_id != eos_token_id:
-            labels_tensor[labels_tensor == pad_token_id] = -100
+        # Positional masking above covers the prompt and left-padding, and `pad()`
+        # below right-pads labels with -100; the value mask must not eat the
+        # appended EOS when pad == eos (see mask_pad_labels_by_value).
+        mask_pad_labels_by_value(labels_tensor, pad_token_id, eos_token_id)
         labels_list.append(labels_tensor)
 
     teacher_input_ids = pad(sequences, padding_side="right", padding_value=pad_value)
@@ -5698,33 +5710,20 @@ class CustomGOLDTrainer(GOLDTrainer):
 
             # Create properly masked student labels (fixing batch size > 1 issue)
             student_labels = inputs["labels"].clone()
-            # Mask pad tokens by value only when pad != eos: gold.py sets
-            # pad_token = eos_token for models without a dedicated pad, and
-            # masking by value then drops the EOS the student must learn
-            # to predict. Positional masking (the collator's prompt-length
-            # boundary) already covers padding.
-            if (
-                hasattr(self.processing_class, "pad_token_id")
-                and self.processing_class.pad_token_id is not None
-                and self.processing_class.pad_token_id
-                != self.processing_class.eos_token_id
-            ):
-                student_labels[student_labels == self.processing_class.pad_token_id] = (
-                    -100
-                )
-
-            # Also mask pad tokens in teacher labels for consistency
-            # (same pad != eos guard as above)
-            if (
-                hasattr(self, "teacher_tokenizer")
-                and hasattr(self.teacher_tokenizer, "pad_token_id")
-                and self.teacher_tokenizer.pad_token_id is not None
-                and self.teacher_tokenizer.pad_token_id
-                != self.teacher_tokenizer.eos_token_id
-            ):
-                teacher_labels[
-                    teacher_labels == self.teacher_tokenizer.pad_token_id
-                ] = -100
+            # Value-mask pad tokens in both label sets, except when pad == eos
+            # (see mask_pad_labels_by_value). Positional masking (the
+            # collator's prompt-length boundary) already covers padding.
+            mask_pad_labels_by_value(
+                student_labels,
+                getattr(self.processing_class, "pad_token_id", None),
+                getattr(self.processing_class, "eos_token_id", None),
+            )
+            teacher_tokenizer = getattr(self, "teacher_tokenizer", None)
+            mask_pad_labels_by_value(
+                teacher_labels,
+                getattr(teacher_tokenizer, "pad_token_id", None),
+                getattr(teacher_tokenizer, "eos_token_id", None),
+            )
 
             vllm_lp = (
                 inputs.get("vllm_logprobs")
