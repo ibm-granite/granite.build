@@ -46,13 +46,16 @@ import tempfile
 import traceback
 from pathlib import Path
 
-# Hybrid (granitemoehybrid) students resolve mamba-ssm at load time; the default
-# revision's build is incompatible with this transformers. See the shared package's
-# hub_kernel_pins.py for the measurement.
+# Hybrid (granitemoehybrid) students resolve mamba-ssm and causal-conv1d at load
+# time, and the modeling code asserts on the legacy causal_conv1d_cuda object --
+# the pins, the warm-cache pre-population, and the shim. See the shared package's
+# hub_kernel_pins.py for the measurements.
 try:
-    from gb_steps_post_training.distillation.hub_kernel_pins import pin_hub_kernels
+    from gb_steps_post_training.distillation.hub_kernel_pins import (
+        prepare_hub_kernels,
+    )
 
-    pin_hub_kernels()
+    prepare_hub_kernels()
 except ImportError:  # the shared package is not on PYTHONPATH in this test tree
     pass
 

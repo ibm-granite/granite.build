@@ -613,7 +613,17 @@ on-policy run would allocate a vLLM node and then generate locally, leaving the 
 With the optional `vllm` input bound, the server lives in another target's allocation and
 every node here trains. The trainer pushes updated student weights to the server over NCCL,
 so an external server means a NCCL process group spanning two allocations. This path has
-**run on LSF** (build `9973e766`, against `student-rollout-generator`: all 362 parameter
-tensors synced across the two allocations) and has **not yet run on SLURM**. The renderer refuses the `vllm` input with `vllm_num_servers: 0` (the run
+run on LSF (build `9973e766`) and on SLURM (on-policy smoke `9e5794c1` on BlueVela), each
+against `student-rollout-generator` with all 362 parameter tensors synced across the two
+allocations (`n_sync_params: 362`). The renderer refuses the `vllm` input with `vllm_num_servers: 0` (the run
 would train off-policy while a server sat idle) or with `lmbda: 0` (the student would never
 generate).
+
+## Running as root
+
+The shared images default to `DISTILL_UID=0` (root). On SLURM/enroot this preserves
+the validated cluster behaviour: the containers run against group-shared filesystems
+and a shared HF cache whose group membership a fixed uid cannot assume. On Kubernetes
+or plain docker, where running as root is the actual exposure, pass
+`--build-arg DISTILL_UID=1000` at image build time, or set `securityContext.runAsUser`
+in the pod spec. See each image's Dockerfile for the argument.

@@ -131,3 +131,12 @@ granite.build:
   whether transformers can fetch its kernels lazily in this image, and an offline hub
   would answer a different question.
 - **What each probe does, and why,** is in [`src/distill_probe.py`](src/distill_probe.py).
+
+## Running as root
+
+This step's image (`quay.io/granitebuild/steps/train/distill/images/gpu`) defaults to `DISTILL_UID=0` (root). On SLURM/enroot that
+preserves the validated cluster behaviour: the containers run against group-shared
+filesystems and a shared HF cache whose group membership a fixed uid cannot assume. On
+Kubernetes or plain docker, where running as root is the actual exposure, build the image
+with `--build-arg DISTILL_UID=1000` (see `steps/train/distill/images/gpu/Dockerfile`) or set `securityContext.runAsUser` in the
+pod spec.

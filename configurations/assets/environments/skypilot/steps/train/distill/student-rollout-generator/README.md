@@ -345,3 +345,12 @@ trainer that exits non-zero; one killed outright (its rank 0 never runs its exit
 still strands the server. `max_lifetime_seconds` is the backstop, not the normal path: the
 `recipes/distill/distill` sets it from `VLLM_MAX_LIFETIME_SECONDS`.
 
+
+## Running as root
+
+This step's image (`quay.io/granitebuild/steps/train/distill/images/gpu`) defaults to `DISTILL_UID=0` (root). On SLURM/enroot that
+preserves the validated cluster behaviour: the containers run against group-shared
+filesystems and a shared HF cache whose group membership a fixed uid cannot assume. On
+Kubernetes or plain docker, where running as root is the actual exposure, build the image
+with `--build-arg DISTILL_UID=1000` (see `steps/train/distill/images/gpu/Dockerfile`) or set `securityContext.runAsUser` in the
+pod spec.

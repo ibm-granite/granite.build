@@ -178,3 +178,12 @@ Unusable individual rows (invalid JSON, or neither key) are skipped and counted 
 The step needs no trainer source; its one script is baked into the shared CPU image under
 `$DISTILL_HOME` (`/opt/distill`). The sampling method, and the measurements
 behind it, are documented in `src/build_sources.py`.
+
+## Running as root
+
+This step's image (`quay.io/granitebuild/steps/train/distill/images/cpu`) defaults to `DISTILL_UID=0` (root). On SLURM/enroot that
+preserves the validated cluster behaviour: the containers run against group-shared
+filesystems and a shared HF cache whose group membership a fixed uid cannot assume. On
+Kubernetes or plain docker, where running as root is the actual exposure, build the image
+with `--build-arg DISTILL_UID=1000` (see `steps/train/distill/images/cpu/Dockerfile`) or set `securityContext.runAsUser` in the
+pod spec.

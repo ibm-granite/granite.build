@@ -545,6 +545,22 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
         }
     )
 
+    # lmbda > 0 without a vLLM server does not train off-policy: the trainer falls back to
+    # TRL's in-process generate_on_policy_outputs, which masks labels by token VALUE
+    # (labels == pad_token_id). gold.py sets pad_token = eos_token when a tokenizer has no
+    # pad, so on that path every generated EOS is masked and the student never gets a KD
+    # signal for stopping. The vLLM path here masks positionally; the in-process one is
+    # TRL's code, unvalidated in this collection, and refused rather than patched. Checked
+    # after _validate_arm so an arm's own, more specific refusal is the one reported.
+    if args.lmbda > 0 and not online:
+        raise ValueError(
+            f"lmbda is {args.lmbda} but vllm_num_servers is 0: the student would generate "
+            "through TRL's in-process path, which masks padding by token value and so "
+            "drops every generated EOS when pad == eos (gold.py's fallback for tokenizers "
+            "without a pad token). Set vllm_num_servers > 0 for on-policy, or lmbda 0 for "
+            "off-policy"
+        )
+
     if online:
         config.update(
             {

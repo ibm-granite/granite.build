@@ -298,3 +298,12 @@ The image caches `kernels-community/{mamba-ssm,causal-conv1d}` but not
 selects `flash_attention_2` for a granite student. This costs a hub fetch per run, since
 `/opt/hf-cache` does not persist; a warm shared cache (upstream's
 `scripts/bluevela/prefetch-kernels.sh` against a persistent `workload.hf_home`) avoids it.
+
+## Running as root
+
+This step's image (`quay.io/granitebuild/steps/train/distill/images/gpu`) defaults to `DISTILL_UID=0` (root). On SLURM/enroot that
+preserves the validated cluster behaviour: the containers run against group-shared
+filesystems and a shared HF cache whose group membership a fixed uid cannot assume. On
+Kubernetes or plain docker, where running as root is the actual exposure, build the image
+with `--build-arg DISTILL_UID=1000` (see `steps/train/distill/images/gpu/Dockerfile`) or set `securityContext.runAsUser` in the
+pod spec.

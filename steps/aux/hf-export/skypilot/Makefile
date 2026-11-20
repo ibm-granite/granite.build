@@ -15,7 +15,7 @@
 STEP_NAME := hf-export
 REGISTRY ?= quay.io/granitebuild
 IMAGE_NAME ?= steps/aux/hf-export
-IMAGE_VERSION ?= 38f00304
+IMAGE_VERSION ?= 7f2f77cc
 UV_LOCK ?= uvx --from uv==0.13.6 uv
 
 include ../../../common.mk

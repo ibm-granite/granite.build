@@ -60,8 +60,10 @@
 # IMAGE_VERSION defaults to the git short SHA, so a tag names the commit it was built
 # from. publish-* refuses to overwrite a tag already on the registry: a published tag
 # must keep meaning one image. Pass PUBLISH_OVERWRITE=true to replace it on purpose.
-# After publishing, repin the tag in every steps/train/distill/*/skypilot/step-template.yaml
-# and run `make publish-step` in each step directory.
+# After publishing, `make repin REGISTRY=... IMAGE_VERSION=<the published tag>` points
+# every step at the new images and re-publishes them (see the target below). Do not
+# repin with a search-and-replace on the bare tag: that also rewrites provenance notes
+# ("measured on image <tag>") that must keep naming the image they were measured on.
 
 IMAGES := gpu cpu
 
@@ -83,10 +85,10 @@ OSV_IMAGE         ?= ghcr.io/google/osv-scanner:v2.7.1@sha256:a70ffffc2bfd334829
 
 image_ref = $(REGISTRY)/$(IMAGE_PREFIX)/$(1):$(IMAGE_VERSION)
 
-.PHONY: help images publish-images scan-images scan-locks fix-locks $(addprefix fix-lock-,$(IMAGES)) $(addprefix image-,$(IMAGES)) $(addprefix publish-image-,$(IMAGES)) $(addprefix scan-image-,$(IMAGES)) $(addprefix scan-lock-,$(IMAGES))
+.PHONY: repin help images publish-images scan-images scan-locks fix-locks $(addprefix fix-lock-,$(IMAGES)) $(addprefix image-,$(IMAGES)) $(addprefix publish-image-,$(IMAGES)) $(addprefix scan-image-,$(IMAGES)) $(addprefix scan-lock-,$(IMAGES))
 
 help:
-	@echo "Targets: images, scan-locks, fix-locks, scan-images, publish-images, image-<x>, scan-lock-<x>, fix-lock-<x>, scan-image-<x>, publish-image-<x> (x: $(IMAGES))"
+	@echo "Targets: images, scan-locks, fix-locks, scan-images, publish-images, repin, image-<x>, scan-lock-<x>, fix-lock-<x>, scan-image-<x>, publish-image-<x> (x: $(IMAGES))"
 	@echo "Set REGISTRY (e.g. quay.io/granitebuild); IMAGE_VERSION defaults to the git short SHA ($(IMAGE_VERSION))."
 
 define require_registry
@@ -98,6 +100,23 @@ publish-images: $(addprefix publish-image-,$(IMAGES))
 scan-images: $(addprefix scan-image-,$(IMAGES))
 scan-locks: $(addprefix scan-lock-,$(IMAGES))
 fix-locks: $(addprefix fix-lock-,$(IMAGES))
+
+# repin -- point every distill step at the published $(IMAGE_VERSION) images.
+# Refuses unless every image is present on the registry, then rewrites only FULL image
+# references ($(REGISTRY)/$(IMAGE_PREFIX)/<gpu|cpu>:<tag>) in the step templates and USAGE
+# docs, so a bare tag in prose is never touched. Re-publishes each step and fails if
+# any published copy still differs from its source.
+repin:
+	$(require_registry)
+	@for i in $(IMAGES); do \
+		ref="$(REGISTRY)/$(IMAGE_PREFIX)/$$i:$(IMAGE_VERSION)"; status=$$($(TAG_STATUS) "$$ref"); \
+		[ "$$status" = present ] || { echo "repin: refusing, $$ref is $$status on the registry; publish it first" >&2; exit 1; }; \
+	done
+	@files=$$(ls */skypilot/step-template.yaml */skypilot/USAGE.md); \
+	sed -i.repin-bak -E 's#($(subst .,\.,$(REGISTRY))/$(IMAGE_PREFIX)/(gpu|cpu)):[0-9a-f]{7,40}#\1:$(IMAGE_VERSION)#g' $$files; \
+	rc=$$?; for f in $$files; do rm -f "$$f.repin-bak"; done; [ $$rc -eq 0 ] || exit $$rc
+	@for d in */skypilot; do $(MAKE) -s -C $$d publish-step check-published || exit 1; done
+	@echo "repin: every step now pins $(REGISTRY)/$(IMAGE_PREFIX)/<gpu|cpu>:$(IMAGE_VERSION); review 'git diff' and commit."
 
 $(addprefix image-,$(IMAGES)): image-%:
 	$(require_registry)

@@ -11,8 +11,8 @@
 # crashed with ZeroDivisionError after the full lockstep pass.
 #
 # It imports gb_steps_post_training.distillation at module scope, which is delivered at
-# RUN time from the checkout named by code_config (see step-template.yaml). That is why
-# the tests for this file are gated on GB_DISTILL_CODE_DIR — see test/conftest.py.
+# RUN time from the image (the trainer package is baked in; see
+# steps/train/distill/images/ for the build).
 #
 """Merge K sharded prep_corpus runs into one corpus, byte-identically.
 
