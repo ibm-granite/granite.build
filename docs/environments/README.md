@@ -396,7 +396,7 @@ for a worked example.
 ## See also
 
 - [Setup guides](setup/) — provisioning the backends (SkyPilot Kubernetes/SLURM, RunPod) and build-time secret scripts
-- [build.yaml reference](../builds/build-yaml-specification.md)
+- [build.yaml specification](../builds/build-yaml-specification.md)
 - [Steps](../steps/README.md) — built-in steps and step.yaml structure
 - [architecture/environment-classes.md](../architecture/environment-classes.md) — the `Environment` base class internals
 - [Troubleshooting](../help/troubleshooting.md)

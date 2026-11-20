@@ -181,4 +181,4 @@ and translates it to Docker container limits:
 - [Environments overview](README.md)
 - [bash environment](bash.md) — the non-containerized local backend
 - [Bring your own image](../steps/bring-your-own-image.md)
-- [build.yaml reference](../builds/build-yaml-specification.md)
+- [build.yaml specification](../builds/build-yaml-specification.md)

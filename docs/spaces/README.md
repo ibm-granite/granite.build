@@ -2,7 +2,7 @@
 
 > **Audience:** operators setting up a space, and anyone who needs to understand how `space://` URIs,
 > secrets, and template variables are configured. For how a build references a space see the
-> [build.yaml reference](../builds/build-yaml-specification.md); for how `space://steps/<name>` resolves to
+> [build.yaml specification](../builds/build-yaml-specification.md); for how `space://steps/<name>` resolves to
 > an implementation see [step-resolution.md](../environments/step-resolution.md).
 
 ## What is a space?
@@ -109,7 +109,7 @@ consumed.
 
 `variables` are space-scoped template values available to every build in the space. A `build.yaml`
 references them as `${variables.<key>}` / `space.variables.<key>` (see the
-[build.yaml reference](../builds/build-yaml-specification.md)). A common use is `DEFAULT_ENVIRONMENT` and
+[build.yaml specification](../builds/build-yaml-specification.md)). A common use is `DEFAULT_ENVIRONMENT` and
 deployment-specific bucket URIs, so builds stay portable across spaces.
 
 ## Creating a space
@@ -171,5 +171,5 @@ The name is also what the IBM Cloud secret manager matches against and what appe
 - [Secrets](../secrets/README.md) — the `secret_manager` backends and how secrets are resolved
 - [Step resolution](../environments/step-resolution.md) — how `space://` URIs route via `base_uris`
 - [Environments overview](../environments/README.md) — the environments a space provides
-- [build.yaml reference](../builds/build-yaml-specification.md) — referencing a space and its variables
+- [build.yaml specification](../builds/build-yaml-specification.md) — referencing a space and its variables
 - [Glossary](../glossary.md)
