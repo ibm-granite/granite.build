@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """The AWS sage-eval steps must report a failed eval as a failure (#488).
 
 Each test cuts a block out of a step.yaml and runs it in bash with a stub eval.
@@ -197,11 +199,16 @@ def test_the_fallback_ignores_a_file_older_than_the_eval(step, tmp_path):
 
 
 def _failure_branch(step: str) -> str:
-    """A grouped step's ``if bash <eval> | tee ...; then ... else ... fi`` block,
-    under the step's own shell options."""
+    """A grouped step's eval call and the ``if`` that reports its status, under the
+    step's own shell options.
+
+    The block runs from ``if bash <eval> | tee ...`` to the ``fi`` of the
+    ``if [[ $rc -eq 0 ]]`` block after it.
+    """
     script = _run_script(step)
     lines = script.splitlines()
-    start, end = _if_block(lines, 0, f"if bash {SCRIPTS_DIR}")
+    start, call_end = _if_block(lines, 0, f"if bash {SCRIPTS_DIR}")
+    _, end = _if_block(lines, call_end + 1, "if [[ $rc -eq 0 ]]")
     block = "\n".join(lines[start : end + 1])
     return f"{shell_options(script)}\n{block}"
 
@@ -269,19 +276,38 @@ def test_a_passing_bcb_eval_emits_its_output(step, tmp_path):
     )
 
 
-@pytest.mark.parametrize("step", GROUPED_STEPS)
-def test_a_grouped_step_prints_the_evals_exit_code(step, tmp_path):
-    """A failed eval in a group is reported with its own exit code, counted as a
-    failure, and gets no .done marker."""
+def _run_grouped(
+    step: str, tmp_path: Path, eval_rc: int, tee_fails: bool = False
+) -> tuple[subprocess.CompletedProcess, Path]:
+    """Run a grouped step's eval-and-report block for one eval, ``ifeval``.
+
+    Args:
+        step: The grouped step.
+        tmp_path: The test's scratch directory.
+        eval_rc: The exit status of the stub eval.
+        tee_fails: Put a ``tee`` on PATH that reads its input and exits 1, as a
+            failed write to the S3 mount would.
+
+    Returns:
+        The finished process, and the step's OUTPUT_PATH.
+    """
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    (scripts / "stub.sh").write_text("exit 7\n")
+    (scripts / "stub.sh").write_text(f"echo eval output\nexit {eval_rc}\n")
+    path = os.environ["PATH"]
+    if tee_fails:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        tee = bin_dir / "tee"
+        tee.write_text("#!/bin/sh\ncat >/dev/null\nexit 1\n")
+        tee.chmod(0o755)
+        path = f"{bin_dir}:{path}"
     output = tmp_path / "out"
     output.mkdir()
     block = _failure_branch(step).replace(SCRIPTS_DIR, f"{scripts}/")
     prelude = 'FAIL_COUNT=0\nFAILED_NAMES=""\neval_name=ifeval\ngb_script=stub.sh\n'
     epilogue = 'echo "count=${FAIL_COUNT} names=${FAILED_NAMES}"\n'
-    env = {"PATH": os.environ["PATH"], "OUTPUT_PATH": str(output)}
+    env = {"PATH": path, "OUTPUT_PATH": str(output)}
     result = subprocess.run(
         ["bash", "-c", f"{prelude}{block}\n{epilogue}"],
         env=env,
@@ -289,7 +315,36 @@ def test_a_grouped_step_prints_the_evals_exit_code(step, tmp_path):
         text=True,
         check=False,
     )
+    return result, output
+
+
+@pytest.mark.parametrize("step", GROUPED_STEPS)
+def test_a_grouped_step_prints_the_evals_exit_code(step, tmp_path):
+    """A failed eval in a group is reported with its own exit code, counted as a
+    failure, and gets no .done marker."""
+    result, output = _run_grouped(step, tmp_path, eval_rc=7)
     assert result.returncode == 0, result.stderr
     assert "FAILED: ifeval (exit code: 7)" in result.stdout
     assert "count=1 names= ifeval" in result.stdout
     assert not (output / "ifeval.done").exists()
+
+
+@pytest.mark.parametrize("step", GROUPED_STEPS)
+def test_a_failed_log_write_does_not_hide_the_evals_exit_code(step, tmp_path):
+    """Under pipefail the pipeline's status is tee's when both fail; the step
+    reports the eval's."""
+    result, output = _run_grouped(step, tmp_path, eval_rc=7, tee_fails=True)
+    assert result.returncode == 0, result.stderr
+    assert "FAILED: ifeval (exit code: 7)" in result.stdout
+    assert "count=1 names= ifeval" in result.stdout
+    assert not (output / "ifeval.done").exists()
+
+
+@pytest.mark.parametrize("step", GROUPED_STEPS)
+def test_a_failed_log_write_does_not_fail_a_passing_eval(step, tmp_path):
+    """A passing eval whose log write to the mount fails is still DONE."""
+    result, output = _run_grouped(step, tmp_path, eval_rc=0, tee_fails=True)
+    assert result.returncode == 0, result.stderr
+    assert "DONE: ifeval" in result.stdout
+    assert "count=0 names=" in result.stdout
+    assert (output / "ifeval.done").exists()

@@ -128,6 +128,9 @@ environment_configs:
             # Standard vars consumed by sage gb_scripts
             export MODEL_PATH="{{ config.sage_eval_config.model_path }}"
             export EXPERIMENT="{{ config.sage_eval_config.experiment }}"
+            # The results search below is anchored at /${EXPERIMENT}/; an empty value
+            # would match nothing and fail only after a full eval.
+            [ -n "$EXPERIMENT" ] || { echo "ERROR: sage_eval_config.experiment is empty"; exit 1; }
             export OUTPUT_BASE_PATH="{{ config.sage_eval_config.output_dir }}"
             export NUM_GPUS={{ config.sage_eval_config.num_gpus }}
             export BATCH_SIZE={{ config.sage_eval_config.batch_size }}
@@ -166,10 +169,13 @@ environment_configs:
             # from the script stops the step here.
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} 2>&1 | tee /tmp/sage-eval.log
 
-            # Emit artifact for gbserver
-            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
+            # Emit artifact for gbserver. Both searches are anchored at /${EXPERIMENT}/
+            # so exp-ckpt_1000 cannot match exp-ckpt_10000 in the shared bucket.
+            # base_set-result.json is SALAD-Bench's result (#482). '|| true': a find
+            # error must reach the ERROR below, not abort the step under set -e.
+            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*-result.json' \) -print -quit || true)
             if [ -z "$RESULT_FILE" ]; then
-              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer "$EVAL_START_MARKER" -print -quit 2>/dev/null || true)
+              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*-result.json' -o -name '*.csv' \) -newer "$EVAL_START_MARKER" -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
               echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"

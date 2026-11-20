@@ -108,7 +108,9 @@ environment_configs:
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} \
               2>&1 | tee /tmp/${EVAL_NAME}-generate.log
             # The pipeline's own status is tee's; fail the step with the eval's, so a
-            # predictions file left by an earlier run does not pass the check below.
+            # failed generation does not pass the check below on a predictions file
+            # left by an earlier run. A run that exits 0 without writing one can still
+            # pass on such a file.
             rc=${PIPESTATUS[0]}
             if [[ $rc -ne 0 ]]; then
               echo "[$(date)] FAILED: ${EVAL_NAME} generation (exit code: ${rc})"

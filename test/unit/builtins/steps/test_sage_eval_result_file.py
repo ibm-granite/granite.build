@@ -24,9 +24,9 @@ from .sage_eval_steps import one_script
 REPO_ROOT = Path(__file__).resolve().parents[4]
 ENVS = REPO_ROOT / "configurations/assets/environments/skypilot"
 
-# The steps under test, and the variable each roots its search at. aws/sage-eval
-# carries the same search but is not changed until it can be tested on AWS.
+# The steps under test, and the variable each roots its search at.
 STEPS = {
+    "aws/steps/sage-eval": "OUTPUT_BASE_PATH",
     "steps/sage-eval": "OUTPUT_BASE_PATH",
 }
 
@@ -57,11 +57,15 @@ def _emitted(step: str, root: Path, tmp_path: Path) -> str | None:
     log = tmp_path / "sage-eval.log"
     log.write_text("")
     os.utime(log, (LOG_MTIME, LOG_MTIME))
-    # The fallback search compares against the eval's log; point it at a private copy.
+    # The fallback search compares against a file touched before the eval: the
+    # eval's log on LSF, a start marker on AWS. Point either at a private copy.
     block = _search_block(step)
-    assert "/tmp/sage-eval.log" in block
-    block = block.replace("/tmp/sage-eval.log", str(log))
     env = {**os.environ, STEPS[step]: str(root), "EXPERIMENT": EXPERIMENT}
+    if "/tmp/sage-eval.log" in block:
+        block = block.replace("/tmp/sage-eval.log", str(log))
+    else:
+        assert '-newer "$EVAL_START_MARKER"' in block
+        env["EVAL_START_MARKER"] = str(log)
     # -e as in the step's run script. check=False: an empty tree is meant to exit 1;
     # the emitted line is what counts.
     out = subprocess.run(
@@ -126,6 +130,27 @@ def test_the_fallback_ignores_a_sibling_rungs_new_result(step, tmp_path):
     _touch(root, "summary.csv", experiment="exp-ckpt_2000", mtime=NEW)
     (root / EXPERIMENT / "logs-dir").mkdir(parents=True)
     assert _emitted(step, root, tmp_path) is None
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_an_empty_experiment_fails_before_the_eval(step):
+    """An empty experiment makes the anchored search match nothing; refuse it early."""
+    run = one_script(ENVS / step / "step.yaml", "GB_ARTIFACT_ID:sage_eval_results")
+    check = next(l for l in run.splitlines() if '[ -n "$EXPERIMENT" ]' in l)
+    eval_line = next(
+        i for i, l in enumerate(run.splitlines()) if "/sage/cluster/gb/scripts/" in l
+    )
+    assert run.splitlines().index(check) < eval_line
+    env = {**os.environ, "EXPERIMENT": ""}
+    r = subprocess.run(
+        ["bash", "-ec", f"{check}\necho REACHED"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode == 1 and "REACHED" not in r.stdout
+    assert "experiment is empty" in r.stdout
 
 
 @pytest.mark.parametrize("step", STEPS)

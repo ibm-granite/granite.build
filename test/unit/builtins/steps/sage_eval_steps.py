@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Helpers shared by the sage-eval step tests.
 
 Find a script in a step.yaml by its content, and read its shell options.
