@@ -39,15 +39,23 @@ ARG DEBIAN_FRONTEND=noninteractive
 # specific one.
 ARG UV_PYTHON=3.12
 
+# Security updates from the Ubuntu archive: the base image is a snapshot, and its Ubuntu
+# packages (kernel headers, openssl, apt) fall behind the archive's fixes. The upgrade
+# reads /etc/apt/sources.list only (SourceParts=-), so a vendor repository in
+# sources.list.d is never consulted and its packages keep the base image's versions.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl wget ca-certificates \
+    && apt-get upgrade -y --no-install-recommends -o Dir::Etc::SourceParts=- \
     && rm -rf /var/lib/apt/lists/*
 
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_NO_CACHE=1
 COPY --from=uv /uv /usr/local/bin/uv
+# pip is removed from the uv-managed interpreter: nothing runs it (uv builds and owns the
+# venv), and its vendored copies (msgpack, setuptools, urllib3) carry advisories of their own.
 RUN uv python install ${UV_PYTHON} \
-    && uv python pin ${UV_PYTHON} --no-workspace
+    && uv python pin ${UV_PYTHON} --no-workspace \
+    && "$(uv python find ${UV_PYTHON})" -m pip uninstall -y --break-system-packages --root-user-action=ignore pip
 
 # Everything the CPU steps run lives under DISTILL_HOME, baked in at build time
 # (see steps/train/distill/images/gpu/Dockerfile for the layout); nothing is cloned or mounted

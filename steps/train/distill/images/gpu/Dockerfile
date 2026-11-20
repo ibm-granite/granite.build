@@ -51,16 +51,27 @@ ARG DEBIAN_FRONTEND=noninteractive
 # pin, not a preference -- see that file's own header comment).
 ARG UV_PYTHON=3.12
 
+# Security updates from the Ubuntu archive: the base image is a snapshot, and its Ubuntu
+# packages (kernel headers, openssl, apt) fall behind the archive's fixes. The upgrade
+# reads /etc/apt/sources.list only (SourceParts=-), so a vendor repository in
+# sources.list.d is never consulted and its packages keep the base image's versions.
+# That keeps NVIDIA's CUDA, cuDNN and NCCL packages exactly as the pinned base ships them.
+# nsight-compute (the CUDA profiler) is removed: no step runs it, and its plugins are Go
+# binaries with advisories of their own.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl wget ca-certificates build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get upgrade -y --no-install-recommends -o Dir::Etc::SourceParts=- \
+    && rm -rf /var/lib/apt/lists/* /opt/nvidia/nsight-compute
 
 # UV_NO_CACHE: keep uv's download cache out of the image layers.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_NO_CACHE=1
 COPY --from=uv /uv /usr/local/bin/uv
+# pip is removed from the uv-managed interpreter: nothing runs it (uv builds and owns the
+# venv), and its vendored copies (msgpack, setuptools, urllib3) carry advisories of their own.
 RUN uv python install ${UV_PYTHON} \
-    && uv python pin ${UV_PYTHON} --no-workspace
+    && uv python pin ${UV_PYTHON} --no-workspace \
+    && "$(uv python find ${UV_PYTHON})" -m pip uninstall -y --break-system-packages --root-user-action=ignore pip
 
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH="${CUDA_HOME}/bin:${PATH}"
