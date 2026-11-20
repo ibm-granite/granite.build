@@ -40,13 +40,13 @@ Granite.Build turns model-development work into **declarative, reproducible buil
 preparation, synthetic data generation, fine-tuning, distillation, merging, evaluation, and serving
 are often run as one-off scripts on a single cluster. Granite.Build has four goals for this work:
 
-- **One declarative file.** A single `build.yaml` describes what to produce, from what, and how,
+- **One declarative file:** A single `build.yaml` describes what to produce, from what, and how,
   so the work can be reviewed, versioned, parameterized and rerun.
-- **Portability across compute.** The same build logic runs on a laptop, a Kubernetes cluster, an
+- **Portability across compute:** The same build logic runs on a laptop, a Kubernetes cluster, an
   HPC scheduler (SLURM or LSF), or a public cloud. Only the build's environment reference changes.
-- **Tracked artifacts.** Every model, dataset and result a build consumes or produces is an
+- **Tracked artifacts:** Every model, dataset and result a build consumes or produces is an
   addressable artifact, recorded with its URI and checksum and linked into lineage.
-- **Reuse.** Steps are shared, versioned units of computation, so a team packages a trainer or an
+- **Reuse:** Steps are shared, versioned units of computation, so a team packages a trainer or an
   evaluator once and every build in the space uses it.
 
 ### I.1 Granite.Build architecture
@@ -83,19 +83,19 @@ Asset stores
 
 #### Capabilities
 
-- **Multiple backends.** Each target picks its compute environment. One build can prepare data on
+- **Multiple backends:** Each target picks its compute environment. One build can prepare data on
   a CPU queue, train on a GPU cluster and evaluate on another backend. See
   [II.2 Environments](#ii2-environments) and [III. SkyPilot environment
   specifics](#iii-skypilot-environment-specifics).
-- **Artifact stores.** HuggingFace, S3/COS, Git, local files, worker-local paths and in-memory
+- **Artifact stores:** HuggingFace, S3/COS, Git, local files, worker-local paths and in-memory
   values are all addressed by URI. See [Supported URIs](#supported-uris).
-- **Retry and reuse.** Builds retry automatically. Retries can reuse the outputs of targets that
+- **Retry and reuse:** Builds retry automatically. Retries can reuse the outputs of targets that
   already succeeded, and individual steps can retry as well. See [II.7 Retries](#ii7-retries).
-- **Events and lineage.** Build events feed notifications and the web UI. Lineage records which
+- **Events and lineage:** Build events feed notifications and the web UI. Lineage records which
   artifacts produced which. See
   [Lineage](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/lineage.md) and
   [Event notifications](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/event-notifications.md).
-- **Parameterization.** `$${PARAM}` placeholders and Jinja templates let one `build.yaml` serve
+- **Parameterization:** `$${PARAM}` placeholders and Jinja templates let one `build.yaml` serve
   many runs. See [II.6 Parameters and Jinja templating](#ii6-parameters-and-jinja-templating).
 
 #### Build orchestration within a space
@@ -109,7 +109,7 @@ Moving a build to a new team or cluster usually means running it in a different 
 rewriting it. A build contains executable components called targets and steps (contained within target).
 Targets are then executed within an environment defined within the space.
 
-**Space.** A space is a directory with a `space.yaml` at its root. That file names the space,
+**Space:** A space is a directory with a `space.yaml` at its root. That file names the space,
 selects its secret manager, lists `base_uris` (the search path used to resolve `space://` URIs),
 and defines `variables` that builds can reference as `space.variables.<key>`. The space's own
 directory is searched first, then each base URI in order, then the built-in assets bundled with
@@ -119,7 +119,7 @@ builds refer to them by that name. For the full `space.yaml` schema, `space://` 
 how to create and register a space, see
 [Spaces and `space.yaml`](https://github.com/ibm-granite/granite.build/blob/main/docs/spaces/README.md).
 
-**Secret managers.** Assets never contain credentials. They name secrets such as `HF_TOKEN`,
+**Secret managers:** Assets never contain credentials. They name secrets such as `HF_TOKEN`,
 `COS_ACCESS_KEY_ID` or an SSH key, and the space's secret manager resolves the values at build
 time. Four backends are available:
 
@@ -132,7 +132,7 @@ On most environments, steps receive only the secrets they explicitly declare (le
 as environment variables. The exception is Bash, which loads every space secret into the step's
 environment (see [II.4](#ii4-steps)).
 
-**Environments.** An environment is a compute backend definition such as an an instance of 
+**Environments:** An environment is a compute backend definition such as an an instance of 
 AWS, Slurm, or LSF.  It is defined by an `environment.yaml`
 that gives the environment `type` (the Python class that drives it), an optional
 `subtype`, a type-specific `config` block, and the list of asset stores (see below) reachable 
@@ -141,7 +141,7 @@ The environment owns and executes the target lifecycle:
 setup, launch, monitor and cleanup. It also owns the movement of artifacts to/from 
 the available asset stores and the compute.
 
-**Asset stores.** An asset store, defined by a `store.yaml`, describes where artifacts of one URI
+**Asset stores:** An asset store, defined by a `store.yaml`, describes where artifacts of one URI
 family live and how to reach them. It does not move data itself. It covers which URIs it handles,
 what endpoint to use, and which secret names hold the credentials. An environment's
 `assetstores` block maps each store to its pull (input) and push (output) behavior. The actual
@@ -149,25 +149,25 @@ transfer is done by the environment, often by inserting a built-in transfer step
 or `s3push`. Two stores are implicit everywhere: `env://` (a path already visible to the worker)
 and `mem://` (a value passed between targets through the build's shared memory).
 
-**Targets.** Targets are elements of `build.yaml` that define the computation requested
+**Targets:** Targets are elements of `build.yaml` that define the computation requested
 in the compute environment.  It can define input artifacts that are consumed by one or more
 steps defined within the target.  The step(s) is then responsible for creating the
 results that will be assigned to an output artifact.  Multiple targets may be defined
 in a `build.yaml` file. 
 
-**Input artifacts.** An input artifact is a named model, dataset, fileset or value that a target
+**Input artifacts:** An input artifact is a named model, dataset, fileset or value that a target
 step consumes. A target declares each input either by URI, for an artifact outside the build such as
 `hf:///ibm-granite/granite-4.0-350m`, or by binding to an upstream target's output.
 The URI's scheme identifies the asset store, so the target's environment must
 be able to reach that store. Targets then refer to each input by name (see
 [Referencing inputs within the target](#referencing-inputs-within-the-target)).
 
-**Output artifacts.** An output artifact is a named result that a target step produces. Its URI
+**Output artifacts:** An output artifact is a named result that a target step produces. Its URI
 identifies the asset store to receive the output content, for example a HuggingFace repository.
 Steps are responsible for assigning the output value (see
 [Outputs and how steps produce them](#outputs-and-how-steps-produce-them)).
 
-**Steps.** A step is a reusable unit of computation, defined by a `step.yaml`. A step declares
+**Steps:** A step is a reusable unit of computation, defined by a `step.yaml`. A step declares
 its default configuration, the inputs it accepts, and, per environment class, the **launcher**
 that starts it and the **monitors** that watch its logs for status and artifact events. Steps
 are resolved relative to the active environment, so `space://steps/command` can mean a bash
@@ -209,7 +209,7 @@ that artifact. Targets with no path between them run concurrently. A build can a
 selected targets (`gb build start -f build.yaml evaluate`), and the runner works out which
 upstream targets are needed.
 
-**Inputs, outputs and asset stores.** An artifact is identified by a URI, and the URI scheme
+**Inputs, outputs and asset stores:** An artifact is identified by a URI, and the URI scheme
 selects an asset store: `hf://` selects the HuggingFace store, `s3://` the S3/COS store, and so
 on. A target can use an artifact only if its environment can reach the artifact's store. Before a
 target's steps run, the environment **pulls** each input. On SkyPilot, for instance, an `hf://`
@@ -595,12 +595,12 @@ steps:
 | `config` | Configuration merged over the step's defaults (see below and [II.5](#ii5-overrides)). |
 | `retry_enabled`, `retry_transparently` | Step-level retry behavior. |
 
-**Using the target's inputs.** A step accesses the target's inputs in one of two ways, depending
+**Using the target's inputs:** A step accesses the target's inputs in one of two ways, depending
 on the step implementation. It can take them through its `config`, with the bound paths or values
 templated into its own fields. Alternatively, the step may expect inputs of a specific name and
 reference the bindings inside the step implementation.
 
-**Step-specific and step-independent configuration.** A step's `config` mixes two kinds of block:
+**Step-specific and step-independent configuration:** A step's `config` mixes two kinds of block:
 
 - **Step-specific** keys and blocks are defined by the step's author and documented in the
   step's `USAGE.md`. Examples: `command_config.command`, `hf_peft_sft_config.lora.r`, and
@@ -611,7 +611,7 @@ reference the bindings inside the step implementation.
   - monitor settings such as `poll_interval_seconds`;
   - secret declarations (`config.<env>.secrets`).
 
-**Compute resources.** A step sizes its compute through `config.compute_config`, the
+**Compute resources:** A step sizes its compute through `config.compute_config`, the
 environment-neutral resource request. Each environment reads the fields that make sense for it.
 
 | Field | Read by | Meaning |
@@ -629,7 +629,7 @@ Environments with richer resource models, such as SkyPilot, accept additional ba
 settings through the step's `launcher_config` (see
 [III.2](#iii2-step-execution-environment-variables-and-compute-resources)).
 
-**Environment variables from secrets.** On Docker, K8s, LSF and SkyPilot, secrets are never passed
+**Environment variables from secrets:** On Docker, K8s, LSF and SkyPilot, secrets are never passed
 in bulk. A step declares by name each secret it needs as an environment variable, under an
 environment-specific `config` block (`config.docker`, `config.k8s`, `config.lsf` or
 `config.skypilot`). The space's secret manager supplies the value. Bash is the exception: it
@@ -664,7 +664,7 @@ See [Environments — Secrets as environment
 variables](https://github.com/ibm-granite/granite.build/blob/main/docs/environments/README.md#secrets-as-environment-variables)
 for how each environment delivers the value.
 
-**Non-secret environment variables.** Non-secret environment variables such as tuning knobs, log
+**Non-secret environment variables:** Non-secret environment variables such as tuning knobs, log
 levels and feature flags can be set in the step's `config`, through a key specific to the target's
 environment type:
 
@@ -814,7 +814,7 @@ substitutes parameters everywhere in the file before gbserver reads it.
 | `unique_hash` | In an output `uri` only: a hash of the artifact event that triggers the push. It changes with each push, including a workload step's retry. A push step's retry keeps it, and a build retry that reuses the target keeps the old URI. It may start with a digit, so keep a prefix, as in `eval_{{ unique_hash }}`. |
 | `step.name` | The name of the step being configured. |
 
-**Unknown variables.** URIs are rendered strictly, so a misspelled or unavailable variable fails
+**Unknown variables:** URIs are rendered strictly, so a misspelled or unavailable variable fails
 the build with a template error. Step `config` values are rendered leniently: an unknown name is
 left in the value as the literal text `{{ name }}`, and the step receives that text. Check a
 `config` value that uses `bindings` against the target's input names, because a misspelled
@@ -852,7 +852,7 @@ targets:
               --run {{ run_metadata.build_id }}
 ```
 
-**Mixing with shell syntax.** `{{ … }}` is processed before a command reaches the shell, so
+**Mixing with shell syntax:** `{{ … }}` is processed before a command reaches the shell, so
 shell variables such as `$HOME` or `${MAX_TOKENS}` pass through untouched. Two character pairs
 are special to Jinja, though:
 
@@ -864,11 +864,11 @@ Wrap any such text in `{% raw %}…{% endraw %}` to pass it through unchanged.
 
 ### II.7 Retries
 
-**Build retry.** `retries.max_retries` restarts a failed build automatically. With
+**Build retry:** `retries.max_retries` restarts a failed build automatically. With
 `target_reuse_enabled: true` (the default), targets that already succeeded are skipped and their
 outputs reused. `gb build restart <id>` does the same on demand.
 
-**Step retry.** `retry_enabled` on a step overrides the step's own retry setting. Step retry as a
+**Step retry:** `retry_enabled` on a step overrides the step's own retry setting. Step retry as a
 whole is controlled server-side by `GBSERVER_ENABLE_STEP_RETRY` (default `true`).
 `retry_transparently` controls artifact events across retry attempts:
 
@@ -912,18 +912,18 @@ cluster with `sky.launch()`, runs the step's `run` script, retrieves the job log
 and tears the cluster down on cleanup. The backend is chosen by `config.default_cloud`. In the
 standard assets, each backend is a separate environment with a matching `subtype`.
 
-- **SLURM (`default_cloud: slurm`).** SkyPilot provisions over SSH to the SLURM login node, with
+- **SLURM (`default_cloud: slurm`):** SkyPilot provisions over SSH to the SLURM login node, with
   reachability described inline under `cluster_ssh_configs`. Each step is a separate allocation,
   often on a different node, so a **shared filesystem** (`shared_workdir`) is essential for
   passing files between steps. Partitions are selected with `cluster`/`zone` or
   `resources.infra`. `#SBATCH` directives can be passed with `sbatch_options`. Container images
   (`image_id`) require the cluster's Pyxis plugin. On bare-host SLURM, omit the image.
   Examples: `space://environments/skypilot/slurm/bluevela` and `…/slurm/local`.
-- **Kubernetes (`default_cloud: kubernetes`).** Each step runs as a pod on an existing cluster,
+- **Kubernetes (`default_cloud: kubernetes`):** Each step runs as a pod on an existing cluster,
   using the kube context from `~/.kube/config` on the gbserver host. There is no SSH
   configuration. `image_id` is the pod image. Kubernetes-specific tuning goes in `cloud_config`.
   Examples: `…/skypilot/kubernetes` and `…/skypilot/kubernetes/local`.
-- **AWS (`default_cloud: aws`).** SkyPilot provisions EC2 instances per step, using the
+- **AWS (`default_cloud: aws`):** SkyPilot provisions EC2 instances per step, using the
   credential profiles declared under `aws_credentials` (secret names, written to
   `~/.aws/credentials` at launch). GPU instances are chosen with `accelerators` or
   `instance_type`. Images run under Docker on the host. Example: `…/skypilot/aws`.
@@ -963,7 +963,7 @@ push step and to later steps.
 
 ### III.2 Step execution: environment variables and compute resources
 
-**Environment variables.** A SkyPilot task's environment is assembled in this order, later
+**Environment variables:** A SkyPilot task's environment is assembled in this order, later
 entries winning:
 
 1. the secrets the step declares under `config.skypilot.secrets.secret_names_to_use_as_env_variable`
@@ -992,7 +992,7 @@ config:
     envs: { NCCL_DEBUG: INFO }
 ```
 
-**Compute resources.** SkyPilot reads `compute_config.num_cpus_per_node` and
+**Compute resources:** SkyPilot reads `compute_config.num_cpus_per_node` and
 `total_memory_per_node` as a low-priority floor. `num_nodes` becomes `sky.Task(num_nodes=…)`.
 Everything else comes from `launcher_config.resources`, which maps onto `sky.Resources`:
 
@@ -1014,16 +1014,16 @@ GPUs are requested **only** through `accelerators` or `instance_type`, not `num_
 gbserver warns when that combination looks wrong. Don't put `num_nodes` under `resources`:
 SkyPilot ignores it there and the run stays single-node.
 
-**Execution.** `setup` runs once at cluster bring-up. `run` is the job itself. Both are
+**Execution:** `setup` runs once at cluster bring-up. `run` is the job itself. Both are
 Jinja-templated against the step config, run under `set -eu`, and start in the same working
 directory, which is the per-run workdir when `shared_workdir` is set. `image_id`
 (`docker:<image>`) selects a container. An empty value runs on the bare node.
 
 ### III.3 Artifacts on SkyPilot
 
-- **`hf://`.** Input is pulled by the built-in `hfpull` step into `cache_path`, which defaults to
+- **`hf://`:** Input is pulled by the built-in `hfpull` step into `cache_path`, which defaults to
   `{shared_workdir}/hf_cache`. Output is pushed by `hfpush`.
-- **`s3://` and `cos://`.** These use `s3pull` and `s3push`, built on the AWS CLI. The store
+- **`s3://` and `cos://`:** These use `s3pull` and `s3push`, built on the AWS CLI. The store
   **must** set `cos_endpoint`. Pulls go into a shared cache, by default
   `{shared_workdir}/cos_cache`, and the cache has these properties:
   - pulls of the same URI are serialized by a per-URI lock;
@@ -1031,7 +1031,7 @@ directory, which is the per-run workdir when `shared_workdir` is set. `image_id`
   - each run reads a pinned version through its own `.gb_inputs/<hash>` link;
   - leases protect versions still in use, and stale entries are evicted after
     `cache_max_age_days`.
-- **`env://` and `mem://`.** These work as described in [`env://`](#env-worker-local-filesystem) and
+- **`env://` and `mem://`:** These work as described in [`env://`](#env-worker-local-filesystem) and
   [`mem://`](#mem-in-memory-value). The SkyPilot monitor recognizes
   both `GB_ARTIFACT_PATH` and `GB_ARTIFACT_STATE`.
 - **On SLURM, write outputs to relative paths.** Each step may run on a different node, so a
