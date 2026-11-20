@@ -53,14 +53,23 @@ Python under `GB_SHARED_WORKDIR`. Setting `mk_image` skips the install.
 - **Staging:** MergeKit writes into `<output parent>/.mergekit-stage.*/<output name>`,
   which is renamed onto the output only once every check passes. MergeKit therefore sees
   the real output name, which it uses as the title of the model card it writes.
-- **Retries:** gbserver's step retry (`RetryHandler` → `retry_workload`) relaunches the
-  same step run with the already-rendered launcher config, so the same `output_path` and
-  `--run-id` (`run_metadata.targetsteprun_id`). A build-level retry creates new step
-  runs, so it still gets the "already exists" refusal. Before the move, `run.sh` writes
-  `.<output name>.mergekit-done` beside the output (not in it, so a push of the model
-  doesn't carry it) with the step run's id and the markers. A retry of that run that
-  finds the output re-emits them instead of failing on the existing output; any other
-  run still refuses it.
+- **Retries:** a retry of the step finds the output an earlier attempt already moved
+  into place, which `run.sh` would otherwise refuse as existing. The usual one is the
+  in-place build retry (`retries.max_retries`, and `gb build restart`): it keeps the
+  build id, skips targets that succeeded (with target reuse on, the default), and
+  re-runs a failed target with new target and step runs. gbserver's step-level retry
+  (`retry_enabled`, off for this step by default) relaunches the same step run. So the
+  step passes `--retry-key` `<build id>/<target>/<step index>`, the same on both, rather
+  than a run id. Before the move, `run.sh` writes `.<output name>.mergekit-done` beside
+  the output (not in it, so a push of the model doesn't carry it) with that key, a hash
+  of the merge's inputs (which MergeKit, from `--mergekit`: `mk_image` or
+  `mergekit_version`; the recipe, `args`, flags, input and output paths; not the inputs'
+  contents) and the markers. Without a key (no build id or target name, or no step index of 0
+  or more) nothing is hashed or recorded. A retry with the same key and hash re-emits the markers,
+  plus `reused_earlier_attempt: true`; anything else (another build or step, or a
+  changed recipe or MergeKit) still gets the "already exists" refusal. `test/slurm-retry`
+  runs an in-place build retry end to end. The build tests write to fixed `/shared`
+  paths, so each clears its own directory there first and can be re-run.
 - **Caches:** the uv cache, the managed Python and MergeKit's Hub download cache
   (`.mergekit-hf-cache`) are under `${GB_SHARED_WORKDIR:-$PWD}`, so a shared workdir
   downloads each once per cluster. They are created at the first user's umask and never
@@ -147,6 +156,7 @@ output must also have a `config.json` and more than 0 tensors.
 | `test/test_mergekit_setup_sh.py` | `setup.sh` with stub `pip`/`uv`, including a second run in the same workdir (a SkyPilot retry), plus one real-`uv` run |
 | `test/slurm/`, `test-data/slurm/` | Build test on the local Docker SLURM cluster (`make test-setup`) |
 | `test/kube/`, `test-data/kube/` | Build test on the local kind cluster (`make test-setup-kube`) |
+| `test/slurm-retry/`, `test-data/slurm-retry/` | An in-place build retry on local SLURM: a step after the merge fails once, and the retried merge reuses its output |
 
 ## Running
 
@@ -176,8 +186,10 @@ chat-template options × inputs with and without a template. For each, it checks
 MergeKit's output independently, and asserts the step registers exactly the good merges.
 
 **Re-running a build test:** the fixtures write to a fixed path, and `run.sh` refuses to
-overwrite a non-empty output, so one build can't overwrite another's model. Clear the
-previous output first:
+overwrite a non-empty output, so one build can't overwrite another's model. Each build
+test therefore clears its own `/shared/mergekit-test/<test>/` directory before it runs
+(`remove_from_shared`, for SLURM and kind), so it can simply be run again. To clear them
+by hand (after an interrupted run, say):
 
 ```bash
 docker exec slurm-c2 rm -rf /shared/mergekit-test                                 # local SLURM

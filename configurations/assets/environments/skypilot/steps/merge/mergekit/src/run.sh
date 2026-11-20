@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 # SPDX-License-Identifier: Apache-2.0
-
-# SPDX-License-Identifier: Apache-2.0
 #
 # Run one mergekit-yaml merge and register the merged model. Invoked from the
 # generated step.yaml's `run:` block and shipped to the node by
@@ -20,13 +18,21 @@
 #          --merge-config-json <json> --args-json <json> \
 #          --copy-tokenizer true|false --lazy-unpickle true|false \
 #          --allow-crimes true|false --trust-remote-code true|false \
-#          --output-model <path> [--run-id <id>]
+#          --output-model <path> [--retry-key <key>] [--mergekit <id>]
 #
 #   --venv       ./venv from setup.sh, or "" when mk_image provides mergekit-yaml.
 #   --input-*    staged path of a bound input, "" when that input is not bound.
-#   --run-id     the target step run's id, the same on every retry of it (optional):
-#                lets a retry register an output an earlier attempt of the same run
-#                already moved into place, instead of refusing it as existing.
+#   --retry-key  <build id>/<target>/<step index> (optional). It is the same on every
+#                retry of this step in this build: gbserver's step retry and its
+#                in-place build retry alike (a build retry keeps the build id, but
+#                creates new step runs, so a step run id would not do). Lets a retry
+#                register an output an earlier attempt already moved into place,
+#                instead of refusing it as existing.
+#   --mergekit   which MergeKit runs the merge: "image:<mk_image>" or
+#                "mergekit==<mergekit_version>" (optional). Part of the retry hash, so a
+#                retry after mk_image or mergekit_version changed is refused (the
+#                output is there already) instead of reusing the other MergeKit's
+#                output.
 #   Every other option is required; the step-template passes all of them.
 set -euo pipefail
 
@@ -47,7 +53,8 @@ lazy_unpickle=""
 allow_crimes=""
 trust_remote_code=""
 output=""
-run_id=""
+retry_key=""
+mergekit_impl=""
 inputs=()   # pairs: name path
 
 while [ "$#" -gt 0 ]; do
@@ -61,7 +68,8 @@ while [ "$#" -gt 0 ]; do
     --allow-crimes)       allow_crimes="$2";       shift 2 ;;
     --trust-remote-code)  trust_remote_code="$2";  shift 2 ;;
     --output-model)       output="$2";             shift 2 ;;
-    --run-id)             run_id="$2";             shift 2 ;;
+    --retry-key)          retry_key="$2";          shift 2 ;;
+    --mergekit)           mergekit_impl="$2";      shift 2 ;;
     *) fail "unknown argument '$1'." ;;
   esac
 done
@@ -134,16 +142,31 @@ done
 # staged model INTO the link's target while the marker named the link itself.
 [ ! -L "$output" ] || fail "output path is a symlink: '$output'." \
   "set output_path to a real directory, or to a path that does not exist yet."
-# A retry of a run whose earlier attempt finished the merge and moved it into place (the
-# job was then lost, e.g. its node went away before the markers were read): register
-# that output again rather than refuse it. The record is written beside the output, not
-# in it (a push of the model dir must not carry it), before the output is moved into
-# place, and names this run; any other run still gets the "already exists" refusal.
+# A retry of a step whose earlier attempt finished the merge and moved it into place
+# (then failed or was lost: a later step in the target failed, or the node went away
+# before the markers were read): register that output again rather than refuse it.
+# The record is written beside the output, not in it (a push of the model dir must not
+# carry it), before the output is moved into place. It holds the retry key and a hash
+# of everything this merge was given, so it matches only a retry of this step in this
+# build with the same MergeKit, recipe, args, flags, inputs and output; anything else
+# still gets the "already exists" refusal. Only with a retry key: without one there is
+# no record to match or write, so nothing is hashed.
 done_record="$(dirname "$output")/.$(basename "$output").mergekit-done"
-if [ -n "$run_id" ] && [ -f "$output/config.json" ] && [ -f "$done_record" ] \
-   && [ "$(head -n 1 "$done_record")" = "run $run_id" ]; then
-  echo "mergekit: '$output' was written by an earlier attempt of this run; registering it."
-  tail -n +2 "$done_record"
+fingerprint=""
+record_head=""
+if [ -n "$retry_key" ]; then
+  fingerprint="$("$py" -c 'import hashlib, json, sys; print(hashlib.sha256(json.dumps(sys.argv[1:]).encode()).hexdigest())' \
+    "$mergekit_impl" "$merge_config_json" "$args_json" "$copy_tokenizer" "$lazy_unpickle" \
+    "$allow_crimes" "$trust_remote_code" "$output" "${prepare_inputs[@]}")" \
+    || fail "could not hash the merge's inputs."
+  # The record's first two lines: what a retry must match, and what is written.
+  record_head="$(printf 'run %s\nconfig %s' "$retry_key" "$fingerprint")"
+fi
+if [ -n "$retry_key" ] && [ -f "$output/config.json" ] && [ -f "$done_record" ] \
+   && [ "$(head -n 2 "$done_record")" = "$record_head" ]; then
+  echo "mergekit: '$output' was written by an earlier attempt of this step; registering it."
+  echo "GB_STEP_METADATA_KEY:reused_earlier_attempt GB_STEP_METADATA_VALUE:true"
+  tail -n +3 "$done_record"
   exit 0
 fi
 if [ -e "$output" ]; then
@@ -298,8 +321,8 @@ GB_ARTIFACT_ID:model GB_ARTIFACT_PATH:$output"
 if [ -d "$output" ]; then rmdir "$output" 2>/dev/null || fail "could not replace the empty output dir: '$output'."; fi
 # The record for a retry (above), just before the move: if the job dies between the two,
 # the retry finds no output and merges again.
-if [ -n "$run_id" ]; then
-  printf 'run %s\n%s\n' "$run_id" "$markers" > "$done_record" \
+if [ -n "$retry_key" ]; then
+  printf '%s\n%s\n' "$record_head" "$markers" > "$done_record" \
     || fail "could not write '$done_record'."
 fi
 mv "$stage" "$output"
