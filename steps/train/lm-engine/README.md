@@ -147,8 +147,13 @@ transitive packages. Three outcomes are possible, and all three occur here:
 - **fixable by override** — a base pin, e.g. `gitpython`, `datasets`; a divergence from
   upstream, so bound it to the pinned minor and cite the advisory;
 - **not fixable** — either a transitive pin rules the fix out (`filelock>=4.2.1` is
-  refused: `multi-storage-client==0.51.0` requires `filelock<4`), or the bump is too large
-  to take (`transformers` 5.x, `torch` 2.13). Those go in `scan-ignore`.
+  refused: `multi-storage-client==0.51.0` requires `filelock<4`), or the bump invalidates
+  another pin (`torch` 2.13 would break the flash-attn wheel, whose ABI tag names
+  `torch2.10` exactly). Those go in `scan-ignore`.
+
+Note what is *not* on that list: "it is a major version". A major bump is a reason to
+verify by running, not a reason to accept an advisory. `transformers` was accepted here
+once on that argument and it was wrong — the bump resolves cleanly.
 
 To change the block: edit `lock/pyproject.toml`, run `make relock`, review `git diff
 lock/`, then `make scan-lock`. `relock` extracts the **pinned** uv and runs it inside a
@@ -170,22 +175,50 @@ reported, so stale ones get deleted.
 ### State at `UPSTREAM` sha `a9c6e2b8`
 
 Upstream's own resolution reports **91 advisory groups (5 CRITICAL, 56 HIGH), 5 fixable at
-CRITICAL** — the gate fails. The vendored block fixes four and ignores the fifth:
+CRITICAL** — the gate fails. The vendored block fixes all five:
 
 | package | upstream | vendored | how |
 | --- | --- | --- | --- |
 | `gitpython` | 3.1.50 | 3.1.62 | override, bounded `<3.2` (9.8, 9.3) |
-| `datasets` | 5.0.0 | 5.0.1 | override (9.1-class) |
+| `transformers` | 4.57.3 | 5.23.0 | override, bounded `<6` (9.6) |
+| `datasets` | 5.0.0 | 5.0.1 | override |
 | `anyio` | 4.14.1 | 4.16.0 | constraint (9.3) |
 | `certifi` | 2026.6.17 | 2026.10.23 | constraint (9.1) |
-| `transformers` | 4.57.3 | 4.57.3 | **`scan-ignore`** — 5.x is a major break |
 
-Four packages move; nothing is added or removed. `make scan-lock` then reports **60
-advisory groups, 0 fixable at CRITICAL, 1 ignored** and passes.
+`make scan-lock` then reports **54 advisory groups, 0 CRITICAL** — not merely none
+fixable, none at all — and `scan-ignore` holds no entries.
 
-The HIGH findings are deliberately left: 35 groups remain, including `gitpython` advisories
-fixed only in 3.2.x (the `<3.2` bound keeps about seven of them), the unsatisfiable
-`filelock`, and `torch`/`transformers`. Clearing them is a larger exercise, partly
+Eight packages move and seven are added (112 → 119); nothing is removed. Most of that is
+the transformers override pulling its own stack along:
+
+```
+transformers 4.57.3 -> 5.23.0     huggingface-hub 0.36.2 -> 1.33.0
+tokenizers   0.22.2 -> 0.23.3     hf-xet 1.5.1 -> 1.8.0
+added: typer, rich, pygments, markdown-it-py, mdurl, shellingham, annotated-doc
+```
+
+**This is the one change here that is not verified by a passing gate.** It crosses a
+transformers major with no upstream-tested lm-engine behind it (upstream still pins
+`==4.57.3` at its current main HEAD) and takes `huggingface-hub` across its own major.
+lm-engine touches transformers in 13 files, four of them through private symbols that are
+exactly what such a jump moves:
+
+```
+transformers.utils        SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, cached_file
+transformers.utils.hub    get_checkpoint_shard_files
+transformers.modeling_utils     SAFE_WEIGHTS_INDEX_NAME
+transformers.modeling_outputs   CausalLMOutputWithPast
+```
+
+So `make check-image` is necessary but not sufficient: it proves the imports resolve, not
+that training and conversion still behave. Before publishing a tag, run
+`recipes/pretrain/pretrain/smoke.yaml` — four optimizer steps, two exported rungs, and the
+export's logit-parity check, which is the test that would catch a silent conversion
+change. If it fails, the override is the first thing to suspect.
+
+The HIGH findings are deliberately left: 30 groups remain, including `gitpython`
+advisories fixed only in 3.2.x (the `<3.2` bound keeps about seven of them), the
+unsatisfiable `filelock`, and `torch`. Clearing them is a larger exercise, partly
 impossible, and wants `scan-ignore` entries rather than pins.
 
 ### After the push

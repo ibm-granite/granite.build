@@ -93,6 +93,29 @@ override-dependencies = [
     "gitpython>=3.1.59,<3.2",
     # PYSEC-2026-3716 / GHSA-379c-qx7v-6h59. Upstream pins ==5.0.0; patch bump.
     "datasets>=5.0.1",
+    # PYSEC-2026-2290 / GHSA-fgcw-684q-jj6r / CVE-2026-5241 (9.6): LightGlue's
+    # config propagates an untrusted `trust_remote_code` from config.json into a
+    # nested AutoConfig.from_pretrained, so a hostile model repo runs code even with
+    # trust_remote_code=False. 4.57.3 IS affected -- the pattern is in
+    # models/lightglue/configuration_lightglue.py at v4.57.3.
+    #
+    # THIS IS THE BIG ONE. Upstream pins ==4.57.3 at its current main HEAD, so this
+    # crosses a major version with no upstream-tested lm-engine behind it, and drags
+    # huggingface-hub across its own major (0.36 -> 1.x). lm-engine touches
+    # transformers in 13 files including four private symbols that are exactly what
+    # moves in such a jump: transformers.utils.{SAFE_WEIGHTS_INDEX_NAME,
+    # SAFE_WEIGHTS_NAME, cached_file}, transformers.utils.hub.
+    # get_checkpoint_shard_files, transformers.modeling_utils.
+    # SAFE_WEIGHTS_INDEX_NAME and transformers.modeling_outputs.
+    # CausalLMOutputWithPast.
+    #
+    # Bounded to <6 so a later major cannot arrive unnoticed; the newest 5.x is taken
+    # deliberately, as it carries the most subsequent fixes.
+    #
+    # VERIFY BY RUNNING, not by reading: recipes/pretrain/pretrain/smoke.yaml trains
+    # four steps and exports two rungs, and the export's logit-parity check is what
+    # would catch a silent conversion change. Do that before publishing a tag.
+    "transformers>=5.5.0,<6",
 ]
 # Transitive packages: a constraint is enough.
 constraint-dependencies = [

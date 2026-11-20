@@ -109,9 +109,11 @@ RUN set -e; cd src; for p in /tmp/patches/*.patch; do git apply --check "$p"; gi
 # The VENDORED dependency metadata, copied over the clone's own. lock/pyproject.toml is
 # upstream's at LME_SHA with ONE appended [tool.uv] block that raises the packages
 # `make scan-lock` reports fixable CRITICAL advisories against; lock/uv.lock is what
-# `uv lock` resolved from it (regenerate with `make relock`). Four packages move against
-# upstream's resolution -- gitpython, datasets, anyio, certifi -- and nothing is added or
-# removed. See README.md "Scanning".
+# `uv lock` resolved from it (regenerate with `make relock`). Against upstream's
+# resolution eight packages move and seven are added (112 -> 119); nothing is removed.
+# The transformers override is the consequential one -- it crosses a major version and
+# takes huggingface-hub across its own -- so the image MUST be smoke-run before a tag is
+# published, not just built. See README.md "Scanning".
 #
 # This is also what makes the pre-build scan honest: `uv sync --locked` installs exactly
 # what lock/uv.lock pins, so the set `make scan-lock` scans and the set the image
