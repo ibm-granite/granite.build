@@ -6,7 +6,7 @@ The pin exists because transformers 5.8.0's default mapping resolves mamba-ssm a
 ``GreedySearchDecoderOnlyOutput``, a symbol transformers 5.x renamed. Every fresh
 hybrid (granitemoehybrid) model load dies on that import mid-load (measured
 2026-11-13 on BlueVela, image b6310378: teacher-divergence failed its build,
-preflight-check's probe reported ``loaded=NONE``). ``v0.0.3`` is the newest
+preflight-check's probe reported ``loaded=NONE``). ``v0.0.4`` is the
 compatible revision. See ``hub_kernel_pins.py`` for the full measurement.
 
 The mapping tests run against an injected stand-in module so they cover the pin's
@@ -82,7 +82,7 @@ def test_pin_covers_the_falcon_variant_of_the_same_repo(fake_mapping):
     pin_hub_kernels()
 
     entry = fake_mapping["falcon_mamba-ssm"]
-    assert entry["revision"] == "v0.0.3"
+    assert entry["revision"] == "v0.0.4"
     assert "version" not in entry
 
 
@@ -135,7 +135,7 @@ def test_pin_against_the_real_transformers():
     try:
         pin_hub_kernels()
         entry = hub_kernels._HUB_KERNEL_MAPPING["mamba-ssm"]
-        assert entry.get("revision") == "v0.0.3"
+        assert entry.get("revision") == "v0.0.4"
         assert "version" not in entry
     finally:
         hub_kernels._HUB_KERNEL_MAPPING.clear()
@@ -143,7 +143,7 @@ def test_pin_against_the_real_transformers():
 
 
 def test_pinned_revision_helper():
-    assert pinned_revision("kernels-community/mamba-ssm") == "v0.0.3"
+    assert pinned_revision("kernels-community/mamba-ssm") == "v0.0.4"
     # Unlisted repos keep their default resolution.
     assert pinned_revision("kernels-community/causal-conv1d") == "main"
     assert pinned_revision("kernels-community/flash-attn2") == "main"

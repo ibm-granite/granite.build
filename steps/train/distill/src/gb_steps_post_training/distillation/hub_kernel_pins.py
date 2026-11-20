@@ -2,25 +2,28 @@
 
 """Pin hub-resolved kernels to revisions compatible with this image's transformers.
 
-WHY THIS EXISTS (measured 2026-11-13, BlueVela, image b6310378). transformers 5.8.0's
-``_HUB_KERNEL_MAPPING`` resolves ``mamba-ssm`` with ``version=1``, which is the
-kernels-community repo's ``v1`` branch (768416ab, 2026-05-05). That build's
-``utils/generation.py`` hard-imports ``GreedySearchDecoderOnlyOutput`` from
-``transformers.generation`` -- a symbol transformers 5.x renamed to
-``GenerateDecoderOnlyOutput`` -- so every fresh load of a hybrid (granitemoehybrid)
-model dies with an ImportError after the model load has started. A build-test run of
-teacher-divergence hit it directly, and preflight-check's load-student probe reported
-``PROBE VERDICT loaded=NONE`` for the same reason.
+WHY THIS EXISTS (measured 2026-11-20, BlueVela, image 91cb624c, teacher-divergence
+build test). transformers 5.8.0's ``_HUB_KERNEL_MAPPING`` resolves ``mamba-ssm`` with
+``version=1``, the kernels-community repo's v1 branch. Every revision up to and
+including v0.0.3 ships a build whose ``mamba_ssm/utils/generation.py`` hard-imports
+``GreedySearchDecoderOnlyOutput`` from ``transformers.generation`` -- a symbol
+transformers 5.x renamed to ``GenerateDecoderOnlyOutput`` -- so every fresh load of
+a hybrid (granitemoehybrid) model dies with an ImportError after the model load has
+started. The teacher-divergence build test hit it directly; the e2e smokes did not,
+because they used dense students that never reach the mamba path.
 
-``v0.0.3`` (916c2f7aeccb, 2025-10-14) is the newest revision whose
-``torch28-cxx11-cu128-x86_64-linux`` build predates that import. ``v0.0.4``
-(2025-12-11, "Fix for Falcon") has it, as does ``main``.
+``v0.0.4`` (8ce5a492, "Fix for Falcon") restructured the build: the top level
+is now the actual module (verified in the GPU image -- ``_import_from_path``
+loads it, ``MambaLMHeadModel`` is available, no transformers.generation import),
+and ``mamba_ssm/`` inside the build is a compatibility shim. This is the newest
+revision whose cu128 build loads cleanly under transformers 5.8.0. It also ships
+``metadata.json`` at the variant root, which v0.0.3 lacked.
 
-This is a pin, not a fix. When kernels-community/mamba-ssm ships a build that imports
-cleanly under transformers 5.x again, or the image moves past the rename, delete the
-entry here, the call sites, and the matching probe in gold-kernels.sh (which reads
-``pinned_revision`` from this module -- keep the two in sync by construction, not by
-discipline).
+This is a pin, not a fix. When kernels-community/mamba-ssm ships a build that
+imports cleanly under transformers 5.x on the default branch, or the image moves
+past the rename, delete the entry here, the call sites, and the matching probe
+in gold-kernels.sh (which reads ``pinned_revision`` from this module -- keep the
+two in sync by construction, not by discipline).
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from __future__ import annotations
 # repo_id -> revision. Unlisted repos resolve their default (transformers passes
 # version=1, the kernels package resolves the repo's v1 branch).
 PINNED_KERNEL_REVISIONS: dict[str, str] = {
-    "kernels-community/mamba-ssm": "v0.0.3",
+    "kernels-community/mamba-ssm": "v0.0.4",
 }
 
 # The transformers mapping keys whose repo is mamba-ssm. "falcon_mamba-ssm" shares
@@ -58,17 +61,17 @@ def pin_hub_kernels() -> None:
     ``version=1``.
     """
     try:
-        from transformers.integrations import hub_kernels
-    except ImportError:  # transformers absent (CPU-only entrypoints): nothing to pin
+        from transformers.integrations.hub_kernels import _HUB_KERNEL_MAPPING
+    except ImportError:
         return
     for name in _PINNED_KERNEL_NAMES:
-        entry = hub_kernels._HUB_KERNEL_MAPPING.get(name)
-        if not isinstance(entry, dict):
+        entry = _HUB_KERNEL_MAPPING.get(name)
+        if entry is None:
             continue
-        revision = PINNED_KERNEL_REVISIONS.get(entry.get("repo_id", ""))
-        if revision is None:
+        repo_id = entry.get("repo_id", "")
+        if repo_id not in PINNED_KERNEL_REVISIONS:
             continue
         entry.pop("version", None)
         # setdefault, not assignment: a future transformers that pins its own
         # revision has done the work, and its pin deserves the benefit of the doubt.
-        entry.setdefault("revision", revision)
+        entry.setdefault("revision", PINNED_KERNEL_REVISIONS[repo_id])
