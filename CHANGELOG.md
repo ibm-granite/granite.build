@@ -376,6 +376,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sft_config.model_path` is **not** deprecated: it is the Hugging Face id the trainer
   downloads when `model` is not bound, so it stays as a real default with no warning.
 
+### Removed
+
+- **The granite-switch LSF answerability-sr recipe (#725).** It shipped in v0.3.9 as
+  `recipes/granite-switch/lsf/answerability-sr` and moved to
+  `recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr` in #639. It ran on SkyPilot
+  LSF, and since #617 the SkyPilot release `pyproject.toml` pins has no LSF cloud (see
+  `docs/environments/skypilot-lsf.md`); #631 tracks retiring LSF from the docs.
+  `skypilot/aws/answerability-sr` builds the same kind of Shadow Residual adapter, with the same
+  training config, from data you bring. The last version of the recipe (`README.md`,
+  `build.yaml`, `parameters.yaml`) is at commit `ebabfa44`. From the repo root, read a file with
+  `git show ebabfa44:recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr/<file>`, or
+  restore the directory with
+  `git checkout ebabfa44 -- recipes/granite-switch/skypilot/lsf-bluevela`.
+  The restored recipe runs only with a SkyPilot build that has the LSF cloud, such as the fork
+  that tag `pre-slurm-only-2026-11-02` pins.
+
 ### Fixed
 
 - **openinstruct-sft, hf-peft-sft: an `args` value that starts with `-` is refused at step
