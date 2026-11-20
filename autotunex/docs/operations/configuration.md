@@ -49,6 +49,9 @@ Misconfiguration is caught at startup, not at request time. The service refuses 
   below the HS256 key floor, even when the rest of the session set is present.
 - **A wildcard CORS origin.** `AUTOTUNEX_CORS_ALLOW_ORIGINS` must never contain `"*"`, in
   any configuration.
+- **A CORS entry that is not a bare origin.** Each `AUTOTUNEX_CORS_ALLOW_ORIGINS` entry
+  must be `http(s)://host[:port]` as a browser sends it: lowercase host, no default port,
+  no path or trailing slash.
 - **`same_site=none` without an allowlist.** `AUTOTUNEX_SESSION_COOKIE_SAME_SITE=none`
   requires a non-empty `AUTOTUNEX_CORS_ALLOW_ORIGINS`.
 - **A partial LLM configuration.** `AUTOTUNEX_LLM_BASE_URL`, `AUTOTUNEX_LLM_API_KEY`, and
