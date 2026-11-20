@@ -93,101 +93,14 @@ def pin_hub_kernels() -> None:
         entry.setdefault("revision", PINNED_KERNEL_REVISIONS[repo_id])
 
 
-# The kernels the preamble pre-loads from the local cache: (transformers mapping key, repo).
-_PRELOAD_KERNELS = (
-    ("causal-conv1d", "kernels-community/causal-conv1d"),
-    ("mamba-ssm", "kernels-community/mamba-ssm"),
-)
-
-
-def _validated_import(import_from_path, package_name, variant_path):
-    """``import_from_path``, after parsing the variant's metadata.json when it has one.
-
-    A structurally broken metadata.json (a doubled-JSON write from a parallel-download
-    race) then aborts with a JSONDecodeError here, instead of surfacing later as a
-    confusing ``ImportError: FlashAttention3 has been toggled on``. v0.0.3-era builds
-    ship no metadata.json, so its absence is not an error.
-    """
-    import json
-    from pathlib import Path
-
-    meta_path = Path(variant_path) / "metadata.json"
-    if meta_path.exists():
-        json.loads(meta_path.read_text())
-    return import_from_path(package_name, variant_path)
-
-
-def preload_cached_kernels(
-    *,
-    install_kernel,
-    import_from_path,
-    hub_mapping,
-    module_mapping,
-    kernels=_PRELOAD_KERNELS,
-    log=print,
-) -> dict:
-    """Load each kernel from the local HF cache at its PINNED revision, if it is there.
-
-    Putting the module into transformers' ``_KERNEL_MODULE_MAPPING`` makes
-    ``lazy_load_kernel`` short-circuit (transformers/integrations/hub_kernels.py:368-369)
-    without ``HfApi().list_repo_refs`` (needed for ``version=``-style entries) or a
-    ``snapshot_download`` that races across ranks on NFS. A cache read with
-    ``local_files_only=True`` only follows existing symlinks, so it is rank-safe.
-
-    The revision goes to ``install_kernel`` as pinned. kernels 0.12.3 hands it straight
-    to ``snapshot_download(local_files_only=True)``, which resolves a tag through
-    ``refs/<tag>`` and a full commit SHA through ``snapshots/<sha>`` -- the same lookup
-    gold-kernels.sh's probe makes. (The earlier version read ``refs/<pin>`` itself;
-    huggingface_hub never writes a refs file for a SHA, so a SHA pin made that read fail
-    every time.) The pin is never "main", so this cannot bypass it.
-
-    Each kernel has its own ``try``: a cold cache for one must not skip the other.
-    OSError (which includes huggingface_hub's LocalEntryNotFoundError) and ImportError
-    mean "not usable from the cache" and fall through to the online path. ValueError,
-    including JSONDecodeError, is deliberately NOT caught: a corrupt cache must fail
-    hard so the launcher's pre-download cleanup runs.
-
-    Returns ``{kernel name: outcome}`` for logging and tests.
-    """
-    from types import ModuleType
-
-    outcomes = {}
-    for name, repo_id in kernels:
-        if name not in hub_mapping:
-            outcomes[name] = "not mapped"
-            continue
-        if isinstance(module_mapping.get(name), ModuleType):
-            outcomes[name] = "already loaded"
-            continue
-        revision = pinned_revision(repo_id)
-        try:
-            package_name, variant_path = install_kernel(
-                repo_id, revision=revision, local_files_only=True
-            )
-            module_mapping[name] = _validated_import(
-                import_from_path, package_name, variant_path
-            )
-        except (OSError, ImportError) as err:
-            outcomes[name] = f"skipped: {type(err).__name__}: {err}"
-            log(
-                f"[kernel preamble] {name}@{revision} not pre-loaded from the cache "
-                f"({type(err).__name__}: {err}); the online lazy-load path takes over"
-            )
-        else:
-            outcomes[name] = "loaded"
-    return outcomes
-
-
 def prepare_hub_kernels() -> None:
     """Everything a hybrid-model entrypoint needs before its first model load.
 
-    Three stages, each a no-op where its dependencies are absent:
+    Two stages, each a no-op where its dependencies are absent:
 
     1. ``pin_hub_kernels`` -- rewrite transformers' hub-kernel mapping onto the
        pinned revisions (see the module docstring for why each repo is pinned).
-    2. Pre-populate transformers' kernel module mapping from the warm local
-       cache, so ``lazy_load_kernel`` short-circuits without hub calls.
-    3. Register the hub causal-conv1d build under its legacy import name and
+    2. Register the hub causal-conv1d build under its legacy import name and
        shim the legacy ``causal_conv1d_cuda`` object onto it: the modeling code
        asserts on that object (``causal_conv1d_cuda is not available. Please
        install causal-conv1d.``), but the hub build only exposes the new
@@ -198,6 +111,18 @@ def prepare_hub_kernels() -> None:
     it while sft.py, run_divergence.py and distill_probe.py died on the
     legacy-name assert (measured 2026-11-20, image 2990684b, student-sft build
     test). Requires transformers 5.x hub_kernels; skips on older versions.
+
+    NO CACHE PRE-LOAD, on purpose. An earlier version also loaded both kernels from
+    the local cache straight into transformers' ``_KERNEL_MODULE_MAPPING`` before
+    stage 2. That never ran on any validated image (it read ``refs/<pin>``, which
+    huggingface_hub does not write for a commit pin), and the first image where it
+    did run (173af080) broke every hybrid load: the mamba-ssm build imports
+    ``causal_conv1d`` at module load, so loading it before stage 2 registers that
+    name binds ``causal_conv1d_cuda = None`` for good (student-sft build test,
+    BlueVela, 2026-11-20: ``AssertionError: causal_conv1d_cuda is not available``).
+    The kernels now load only through ``lazy_load_kernel``, which resolves the pinned
+    revision from the warm cache that gold-kernels.sh's preflight fills. Anything
+    that loads mamba-ssm must come after stage 2.
     """
     import sys
 
@@ -210,29 +135,7 @@ def prepare_hub_kernels() -> None:
     except (ImportError, ModuleNotFoundError):
         _lazy_load_kernel = None
 
-    # Stage 2: see preload_cached_kernels for why and how.
-    try:
-        from kernels.utils import _import_from_path
-        from kernels.utils import install_kernel as _install_kernel
-        from transformers.integrations.hub_kernels import (
-            _HUB_KERNEL_MAPPING,
-            _KERNEL_MODULE_MAPPING,
-        )
-    except ImportError as _kernel_import_err:
-        # kernels or transformers' hub_kernels absent or renamed: nothing to pre-load.
-        # The online `lazy_load_kernel` path below (if importable) takes over.
-        print(
-            "[kernel preamble] kernel pre-population skipped: "
-            f"{type(_kernel_import_err).__name__}: {_kernel_import_err}"
-        )
-    else:
-        preload_cached_kernels(
-            install_kernel=_install_kernel,
-            import_from_path=_import_from_path,
-            hub_mapping=_HUB_KERNEL_MAPPING,
-            module_mapping=_KERNEL_MODULE_MAPPING,
-        )
-
+    # Stage 2: causal-conv1d first and alone -- see the docstring's NO CACHE PRE-LOAD.
     if _lazy_load_kernel is not None:
         _cc1d = _lazy_load_kernel("causal-conv1d")
         if _cc1d is not None and "causal_conv1d" not in sys.modules:

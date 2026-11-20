@@ -31,6 +31,7 @@ from gb_steps_post_training.distillation.hub_kernel_pins import (
     PINNED_KERNEL_REVISIONS,
     pin_hub_kernels,
     pinned_revision,
+    prepare_hub_kernels,
 )
 
 _SRC = Path(__file__).resolve().parents[3]  # steps/train/distill/
@@ -200,18 +201,87 @@ def test_every_hybrid_model_entrypoint_calls_the_pin(path):
     )
 
 
-def test_prepare_hub_kernels_registers_the_legacy_causal_conv1d_names():
-    """The modeling code asserts on the legacy causal_conv1d_cuda object.
+@pytest.fixture()
+def fake_lazy_loader(fake_mapping, monkeypatch):
+    """A stand-in lazy_load_kernel on the stand-in hub_kernels module.
 
-    The shared preamble must register sys.modules["causal_conv1d"] and attach
-    the causal_conv1d_cuda shim, or every non-gold entrypoint dies mid-load
-    (measured 2026-11-20, image 2990684b, student-sft build test).
+    Records which kernels prepare_hub_kernels asks for, and returns a fake hub
+    causal-conv1d build exposing the new cpp_functions-style interface.
     """
-    source = (
-        _SRC / "src" / "gb_steps_post_training" / "distillation" / "hub_kernel_pins.py"
-    ).read_text(encoding="utf-8")
-    assert 'sys.modules["causal_conv1d"]' in source
-    assert "causal_conv1d_cuda = " in source
+    loaded = []
+    iface = types.ModuleType("causal_conv1d_interface")
+    iface.causal_conv1d_fwd_function = lambda *a: "fwd"
+    iface.causal_conv1d_bwd_function = lambda *a: "bwd"
+    cc1d = types.ModuleType("hub_causal_conv1d_abc123")
+    cc1d.causal_conv1d_interface = iface
+
+    def lazy_load_kernel(name):
+        loaded.append(name)
+        return cc1d if name == "causal-conv1d" else types.ModuleType(name)
+
+    # A stand-in kernels package too: the 173af080 pre-load bypassed
+    # lazy_load_kernel and went through kernels.utils.install_kernel directly.
+    def install_kernel(repo_id, **kw):
+        loaded.append(f"install_kernel:{repo_id}")
+        return repo_id.split("/")[-1], f"/cache/{repo_id}"
+
+    def _import_from_path(package_name, variant_path):
+        loaded.append(f"import_from_path:{package_name}")
+        return types.ModuleType(package_name)
+
+    kernels_pkg = types.ModuleType("kernels")
+    kernels_utils = types.ModuleType("kernels.utils")
+    kernels_utils.install_kernel = install_kernel
+    kernels_utils._import_from_path = _import_from_path
+    kernels_pkg.utils = kernels_utils
+    monkeypatch.setitem(sys.modules, "kernels", kernels_pkg)
+    monkeypatch.setitem(sys.modules, "kernels.utils", kernels_utils)
+
+    hub_kernels = sys.modules["transformers.integrations.hub_kernels"]
+    hub_kernels._KERNEL_MODULE_MAPPING = {}
+    monkeypatch.setattr(
+        hub_kernels, "lazy_load_kernel", lazy_load_kernel, raising=False
+    )
+    monkeypatch.delitem(sys.modules, "causal_conv1d", raising=False)
+    monkeypatch.delitem(
+        sys.modules, "causal_conv1d.causal_conv1d_interface", raising=False
+    )
+    return loaded, cc1d, iface
+
+
+def test_prepare_hub_kernels_loads_nothing_but_causal_conv1d(fake_lazy_loader):
+    """The regression this pins: mamba-ssm's build imports causal_conv1d at module
+    load, so anything that loads mamba-ssm before the legacy names exist binds
+    causal_conv1d_cuda = None for good. On the 173af080 image a cache pre-load did
+    exactly that and every hybrid load died (student-sft build test, BlueVela,
+    2026-11-20). prepare_hub_kernels must load causal-conv1d and nothing else."""
+    loaded, _, _ = fake_lazy_loader
+
+    prepare_hub_kernels()
+
+    assert loaded == ["causal-conv1d"], (
+        "prepare_hub_kernels loaded more than causal-conv1d's lazy load: "
+        f"{loaded}. Loading mamba-ssm before the legacy names exist breaks every "
+        "hybrid load; see the NO CACHE PRE-LOAD note in hub_kernel_pins.py."
+    )
+    hub_kernels = sys.modules["transformers.integrations.hub_kernels"]
+    assert hub_kernels._KERNEL_MODULE_MAPPING == {}
+
+
+def test_prepare_hub_kernels_registers_the_legacy_causal_conv1d_names(
+    fake_lazy_loader,
+):
+    """The modeling code asserts on the legacy causal_conv1d_cuda object; the hub
+    build only has the new interface (measured 2026-11-20, image 2990684b, student-sft
+    build test)."""
+    _, cc1d, iface = fake_lazy_loader
+
+    prepare_hub_kernels()
+
+    assert sys.modules["causal_conv1d"] is cc1d
+    assert sys.modules["causal_conv1d.causal_conv1d_interface"] is iface
+    assert iface.causal_conv1d_cuda.causal_conv1d_fwd() == "fwd"
+    assert iface.causal_conv1d_cuda.causal_conv1d_bwd() == "bwd"
 
 
 def test_the_shell_preflight_reads_the_same_pin():

@@ -3,9 +3,9 @@
 # Sourced by the GOLD launchers. Defines require_hub_kernels.
 #
 # THE PROBLEM THIS SOLVES. hub_kernel_pins.prepare_hub_kernels (called by gold.py and
-# the other hybrid-model entrypoints) pre-loads the hub kernels from the local cache
-# with local_files_only=True and, on a cache miss, deliberately falls through to the
-# ONLINE lazy_load_kernel path. The recorded scripts satisfied that with an
+# the other hybrid-model entrypoints) resolves the pinned hub kernels through
+# transformers' lazy_load_kernel, which reads the local cache and, on a miss, goes
+# ONLINE -- and the GPU steps run with HF_HUB_OFFLINE=1. The recorded scripts satisfied that with an
 # unconditional Hub download inside every GPU allocation. An earlier version of this
 # file made the download opt-in (GOLD_PREFETCH_KERNELS), which removed the download
 # and, unnoticed, the invariant with it; the download is the default again

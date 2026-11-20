@@ -48,7 +48,7 @@ from pathlib import Path
 
 # Hybrid (granitemoehybrid) students resolve mamba-ssm and causal-conv1d at load
 # time, and the modeling code asserts on the legacy causal_conv1d_cuda object --
-# the pins, the warm-cache pre-population, and the shim. See the shared package's
+# the pins and the shim. See the shared package's
 # hub_kernel_pins.py for the measurements.
 try:
     from gb_steps_post_training.distillation.hub_kernel_pins import (

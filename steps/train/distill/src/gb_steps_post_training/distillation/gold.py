@@ -122,8 +122,7 @@ activate_swa_arm()
 
 import sys as _sys
 
-# Hybrid-model kernel compatibility -- the mamba-ssm/causal-conv1d pins, the
-# warm-cache pre-population of transformers' kernel module mapping, and the
+# Hybrid-model kernel compatibility -- the mamba-ssm/causal-conv1d pins and the
 # legacy causal_conv1d / causal_conv1d_cuda shim the modeling code asserts on.
 # The machinery lives in hub_kernel_pins.py (prepare_hub_kernels) so every
 # hybrid-model entrypoint -- gold, sft, divergence, the preflight probe -- gets
