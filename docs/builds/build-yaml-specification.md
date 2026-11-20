@@ -93,8 +93,8 @@ Asset stores
   already succeeded, and individual steps can retry as well. See [II.7 Retries](#ii7-retries).
 - **Events and lineage:** Build events feed notifications and the web UI. Lineage records which
   artifacts produced which. See
-  [Lineage](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/lineage.md) and
-  [Event notifications](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/event-notifications.md).
+  [Lineage](lineage.md) and
+  [Event notifications](event-notifications.md).
 - **Parameterization:** `$${PARAM}` placeholders and Jinja templates let one `build.yaml` serve
   many runs. See [II.6 Parameters and Jinja templating](#ii6-parameters-and-jinja-templating).
 
@@ -103,8 +103,8 @@ Asset stores
 Every build runs **in a space**. A space is a named, self-contained context that supplies
 everything a build references but does not define inline. A `build.yaml` therefore stays short
 and portable with references into the space, for example
-[`space://environments/skypilot/slurm/bluevela`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) or
-[`space://steps/eval/lmeval`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/lmeval/README.md).
+[`space://environments/skypilot/slurm/bluevela`](../../configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) or
+[`space://steps/eval/lmeval`](../../configurations/assets/environments/skypilot/steps/eval/lmeval/README.md).
 The space decides what those names mean, what credentials they use, and where the data lives.
 Moving a build to a new team or cluster usually means running it in a different space, not
 rewriting it. A build contains executable components called targets and steps (contained within target).
@@ -118,7 +118,7 @@ gbserver. A space can therefore override any shared environment, step or asset s
 its own copy. Spaces are registered in gbserver by name (`public`, for example), and the CLI and
 builds refer to them by that name. For the full `space.yaml` schema, `space://` resolution, and
 how to create and register a space, see
-[Spaces and `space.yaml`](https://github.com/ibm-granite/granite.build/blob/main/docs/spaces/README.md).
+[Spaces and `space.yaml`](../spaces/README.md).
 
 **Secret managers:** Assets never contain credentials. They name secrets such as `HF_TOKEN`,
 `COS_ACCESS_KEY_ID` or an SSH key, and the space's secret manager resolves the values at build
@@ -256,7 +256,7 @@ The `gb` CLI uses the file in three ways:
 Parameters (`--param`, `--param-file`) are applied by the CLI before submission. Templates
 (`{{ … }}`) are evaluated by gbserver when each target runs.
 For a more detailed discussion of the `gb` CLI, see the
-[`gb` CLI reference](https://github.com/ibm-granite/granite.build/blob/main/docs/cli/gb-cli-reference.md).
+[`gb` CLI reference](../cli/gb-cli-reference.md).
 
 This section is **environment-neutral**: everything here applies to every environment type.
 SkyPilot-specific configuration is collected in [section III](#iii-skypilot-environment-specifics).
@@ -279,18 +279,18 @@ The parts in brief:
   `publish`. Each has one environment, its inputs and outputs, and an ordered list of steps
   (usually just one). See [II.1 Targets](#ii1-targets).
 - **Environments** are referenced, not defined, in the build:
-  `environment_uri:` [`space://environments/bash`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/bash/environment.yaml), [`…/docker`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/docker/environment.yaml),
-  [`…/skypilot/kubernetes`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/kubernetes/environment.yaml), [`…/skypilot/slurm/bluevela`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) or
-  [`…/skypilot/aws`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/aws/environment.yaml). The definitions live in the space. See
+  `environment_uri:` [`space://environments/bash`](../../configurations/assets/environments/bash/environment.yaml), [`…/docker`](../../configurations/assets/environments/docker/environment.yaml),
+  [`…/skypilot/kubernetes`](../../configurations/assets/environments/skypilot/kubernetes/environment.yaml), [`…/skypilot/slurm/bluevela`](../../configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) or
+  [`…/skypilot/aws`](../../configurations/assets/environments/skypilot/aws/environment.yaml). The definitions live in the space. See
   [II.2 Environments](#ii2-environments).
 - **Input and output artifacts** are named, URI-addressed data, for example an input
   `base_model: {uri: hf:///ibm-granite/granite-4.0-350m}`, an input
   `checkpoint: {binding: train.checkpoint}` or an output
   `results: {uri: s3://my-bucket/evals/run1}`. See
   [II.3 Input and output artifacts](#ii3-input-and-output-artifacts).
-- **Steps** are the reusable computations a target runs, for example [`space://steps/command`](https://github.com/ibm-granite/granite.build/blob/main/docs/steps/command.md),
-  [`space://steps/train/hf-peft-sft`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/hf-peft-sft/README.md) or
-  [`space://steps/eval/lmeval`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/lmeval/README.md). They are configured through
+- **Steps** are the reusable computations a target runs, for example [`space://steps/command`](../steps/command.md),
+  [`space://steps/train/hf-peft-sft`](../../configurations/assets/environments/skypilot/steps/train/hf-peft-sft/README.md) or
+  [`space://steps/eval/lmeval`](../../configurations/assets/environments/skypilot/steps/eval/lmeval/README.md). They are configured through
   their `config` block. See [II.4 Steps](#ii4-steps).
 - **Overrides** let a build change a step's or environment's defaults without editing either one,
   for example `config.launcher_config.resources.accelerators: "H100:8"`. See
@@ -385,7 +385,7 @@ The value can use a build parameter
 
 For the full `environment.yaml` schema, per-step-type defaults, asset-store declarations, and
 links to each environment type's own page, see the
-[Environments overview](https://github.com/ibm-granite/granite.build/blob/main/docs/environments/README.md).
+[Environments overview](../environments/README.md).
 
 ### II.3 Input and output artifacts
 
@@ -445,7 +445,7 @@ steps:
 
 A step implementation can also refer to inputs through `bindings` in its own `step.yaml`,
 so a build only has to declare target inputs with the names the step expects. See
-[Steps — Declaring inputs](https://github.com/ibm-granite/granite.build/blob/main/docs/steps/README.md#declaring-inputs).
+[Steps — Declaring inputs](../steps/README.md#declaring-inputs).
 Which input names a step expects, and how it passes them to its workload, differ from step to
 step. Check the step's own documentation (its `README.md`) or its `step.yaml` before
 wiring up a target's inputs.
@@ -467,7 +467,7 @@ outputs:
 ```
 
 A step reports each output it produces by name. How it does so is described in
-[Steps — Producing outputs](https://github.com/ibm-granite/granite.build/blob/main/docs/steps/README.md#producing-outputs).
+[Steps — Producing outputs](../steps/README.md#producing-outputs).
 The output's `uri` then decides where the environment pushes the artifact.
 
 | Field | Type | Required | Default | Meaning |
@@ -488,7 +488,7 @@ reads it, and you rarely need it: an `hf://` URI alone pushes to the right repos
 - `store_push.mode` is rarely needed, because the store is inferred from the URI's scheme. Only
   K8s honors it; elsewhere it is ignored with a deprecation warning.
 
-See [HuggingFace push](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/hf-push.md)
+See [HuggingFace push](hf-push.md)
 for resource-group resolution and Enterprise organizations.
 
 #### Supported URIs
@@ -664,7 +664,7 @@ steps:
   secret manager.
 
 See [Environments — Secrets as environment
-variables](https://github.com/ibm-granite/granite.build/blob/main/docs/environments/README.md#secrets-as-environment-variables)
+variables](../environments/README.md#secrets-as-environment-variables)
 for how each environment delivers the value.
 
 **Non-secret environment variables:** Non-secret environment variables such as tuning knobs, log
@@ -880,11 +880,11 @@ whole is controlled server-side by `GBSERVER_ENABLE_STEP_RETRY` (default `true`)
 - `false` passes every event from every attempt through.
 
 For the full mechanism, see
-[Retry overview](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/retry.md),
-[Build retry](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/build-retry.md),
-[Target reuse](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/target-reuse.md)
+[Retry overview](retry.md),
+[Build retry](build-retry.md),
+[Target reuse](target-reuse.md)
 and
-[Step retry configuration](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/step-retry-configuration.md).
+[Step retry configuration](step-retry-configuration.md).
 
 ### II.8 Validation
 
@@ -921,18 +921,18 @@ standard assets, each backend is a separate environment with a matching `subtype
   passing files between steps. Partitions are selected with `cluster`/`zone` or
   `resources.infra`. `#SBATCH` directives can be passed with `sbatch_options`. Container images
   (`image_id`) require the cluster's Pyxis plugin. On bare-host SLURM, omit the image.
-  Examples: [`space://environments/skypilot/slurm/bluevela`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) and
-  [`…/slurm/local`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/slurm/local/environment.yaml).
+  Examples: [`space://environments/skypilot/slurm/bluevela`](../../configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) and
+  [`…/slurm/local`](../../configurations/assets/environments/skypilot/slurm/local/environment.yaml).
 - **Kubernetes (`default_cloud: kubernetes`):** Each step runs as a pod on an existing cluster,
   using the kube context from `~/.kube/config` on the gbserver host. There is no SSH
   configuration. `image_id` is the pod image. Kubernetes-specific tuning goes in `cloud_config`.
-  Examples: [`…/skypilot/kubernetes`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/kubernetes/environment.yaml) and
-  [`…/skypilot/kubernetes/local`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/kubernetes/local/environment.yaml).
+  Examples: [`…/skypilot/kubernetes`](../../configurations/assets/environments/skypilot/kubernetes/environment.yaml) and
+  [`…/skypilot/kubernetes/local`](../../configurations/assets/environments/skypilot/kubernetes/local/environment.yaml).
 - **AWS (`default_cloud: aws`):** SkyPilot provisions EC2 instances per step, using the
   credential profiles declared under `aws_credentials` (secret names, written to
   `~/.aws/credentials` at launch). GPU instances are chosen with `accelerators` or
   `instance_type`. Images run under Docker on the host. Example:
-  [`…/skypilot/aws`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/aws/environment.yaml).
+  [`…/skypilot/aws`](../../configurations/assets/environments/skypilot/aws/environment.yaml).
 
 ### III.1 `environment.yaml` configuration
 
@@ -1047,7 +1047,7 @@ directory, which is the per-run workdir when `shared_workdir` is set. `image_id`
 ### III.4 Steps available for SkyPilot
 
 The tables below list the documented steps published under
-[`configurations/assets/environments/skypilot/steps`](https://github.com/ibm-granite/granite.build/tree/main/configurations/assets/environments/skypilot/steps).
+[`configurations/assets/environments/skypilot/steps`](../../configurations/assets/environments/skypilot/steps).
 Each step's `README.md`, published from its `USAGE.md`, documents its configuration. A step
 marked *SLURM only*, and every distillation step, declares a single SkyPilot subtype and
 resolves on no other SkyPilot backend. The built-in `command`, `hfpull`/`hfpush` and
@@ -1061,7 +1061,7 @@ code from a public git repository, without writing a step.
 
 | Step (`space://steps/…`) | Function | Documentation |
 |--------------------------|----------|---------------|
-| `aux/byoc` | Bring-your-own-code: clones a public git repository and runs it. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/aux/byoc/README.md) |
+| `aux/byoc` | Bring-your-own-code: clones a public git repository and runs it. | [README](../../configurations/assets/environments/skypilot/steps/aux/byoc/README.md) |
 
 #### Data
 
@@ -1070,8 +1070,8 @@ feed training and evaluation targets.
 
 | Step (`space://steps/…`) | Function | Documentation |
 |--------------------------|----------|---------------|
-| `data/data-designer` | Generates synthetic datasets with NeMo Data Designer. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/data/data-designer/README.md) |
-| `data/dpk` | Runs a Data Prep Kit transform. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/data/dpk/README.md) |
+| `data/data-designer` | Generates synthetic datasets with NeMo Data Designer. | [README](../../configurations/assets/environments/skypilot/steps/data/data-designer/README.md) |
+| `data/dpk` | Runs a Data Prep Kit transform. | [README](../../configurations/assets/environments/skypilot/steps/data/dpk/README.md) |
 
 #### Training
 
@@ -1080,11 +1080,11 @@ output. They differ in the training library they wrap and the methods it support
 
 | Step (`space://steps/…`) | Function | Documentation |
 |--------------------------|----------|---------------|
-| `train/hf-peft-sft` | LoRA, QLoRA and aLoRA SFT with HF PEFT and TRL. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/hf-peft-sft/README.md) |
-| `train/fms-hf-tuning` | Fine-tunes a causal LM with fms-hf-tuning. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/fms-hf-tuning/README.md) |
-| `train/openinstruct-sft` | SFT with upstream Open-Instruct. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/openinstruct-sft/README.md) |
-| `train/nemo-rl` | Single-node, multi-GPU NeMo-RL training. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/nemo-rl/README.md) |
-| `train/fm-tune` | SFT, LoRA-family and RL tuning (DPO, KTO, PPO, GRPO, DAPO) with fm-tune, optionally with hyperparameter autotuning. *SLURM only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/fm-tune/README.md) |
+| `train/hf-peft-sft` | LoRA, QLoRA and aLoRA SFT with HF PEFT and TRL. | [README](../../configurations/assets/environments/skypilot/steps/train/hf-peft-sft/README.md) |
+| `train/fms-hf-tuning` | Fine-tunes a causal LM with fms-hf-tuning. | [README](../../configurations/assets/environments/skypilot/steps/train/fms-hf-tuning/README.md) |
+| `train/openinstruct-sft` | SFT with upstream Open-Instruct. | [README](../../configurations/assets/environments/skypilot/steps/train/openinstruct-sft/README.md) |
+| `train/nemo-rl` | Single-node, multi-GPU NeMo-RL training. | [README](../../configurations/assets/environments/skypilot/steps/train/nemo-rl/README.md) |
+| `train/fm-tune` | SFT, LoRA-family and RL tuning (DPO, KTO, PPO, GRPO, DAPO) with fm-tune, optionally with hyperparameter autotuning. *SLURM only.* | [README](../../configurations/assets/environments/skypilot/steps/train/fm-tune/README.md) |
 
 #### Merge
 
@@ -1092,7 +1092,7 @@ Steps that combine existing models into a new one without further training.
 
 | Step (`space://steps/…`) | Function | Documentation |
 |--------------------------|----------|---------------|
-| `merge/mergekit` | Merges two or more models with MergeKit. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/merge/mergekit/README.md) |
+| `merge/mergekit` | Merges two or more models with MergeKit. | [README](../../configurations/assets/environments/skypilot/steps/merge/mergekit/README.md) |
 
 #### Distillation
 
@@ -1101,18 +1101,18 @@ from corpus preparation through export. All of them run only on SkyPilot's LSF b
 
 | Step (`space://steps/…`) | Function | Documentation |
 |--------------------------|----------|---------------|
-| `distill/corpus-sources` | Combines several raw SFT splits into one `train.jsonl` for corpus prep. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-sources/README.md) |
-| `distill/corpus-prep` | Turns a conversation dataset into the GOLD training corpus. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-prep/README.md) |
-| `distill/corpus-pin-check` | Checks that a reused, pinned corpus was built the way this build would build it. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-pin-check/README.md) |
-| `distill/tokenizer-align` | Teaches a base student the teacher's chat format and emits the tokenizer artifacts later steps read. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/tokenizer-align/README.md) |
-| `distill/logit-precompute` | Runs the teacher once and stores its top-K logits per assistant token. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/logit-precompute/README.md) |
-| `distill/gold` | Distills a student from a teacher with the GOLD trainer, multi-node. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/gold/README.md) |
-| `distill/sft` | Teacher-free SFT baseline on the distillation corpus. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/sft/README.md) |
-| `distill/eval` | Measures how far the student's next-token distribution is from the teacher's. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/eval/README.md) |
-| `distill/probe` | Runs a quick check on a checkpoint before committing to a full run. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/probe/README.md) |
-| `distill/gen-smoke` | Greedy-decodes fixed prompts from each checkpoint to confirm it still writes usable text. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/gen-smoke/README.md) |
-| `distill/hf-export` | Packages one checkpoint as a self-contained HuggingFace model directory. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/hf-export/README.md) |
-| `distill/vllm-server` | Serves a model under vLLM as a service target and publishes its URL as a `mem://` output. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/vllm-server/README.md) |
+| `distill/corpus-sources` | Combines several raw SFT splits into one `train.jsonl` for corpus prep. | [README](../../configurations/assets/environments/skypilot/steps/distill/corpus-sources/README.md) |
+| `distill/corpus-prep` | Turns a conversation dataset into the GOLD training corpus. | [README](../../configurations/assets/environments/skypilot/steps/distill/corpus-prep/README.md) |
+| `distill/corpus-pin-check` | Checks that a reused, pinned corpus was built the way this build would build it. | [README](../../configurations/assets/environments/skypilot/steps/distill/corpus-pin-check/README.md) |
+| `distill/tokenizer-align` | Teaches a base student the teacher's chat format and emits the tokenizer artifacts later steps read. | [README](../../configurations/assets/environments/skypilot/steps/distill/tokenizer-align/README.md) |
+| `distill/logit-precompute` | Runs the teacher once and stores its top-K logits per assistant token. | [README](../../configurations/assets/environments/skypilot/steps/distill/logit-precompute/README.md) |
+| `distill/gold` | Distills a student from a teacher with the GOLD trainer, multi-node. | [README](../../configurations/assets/environments/skypilot/steps/distill/gold/README.md) |
+| `distill/sft` | Teacher-free SFT baseline on the distillation corpus. | [README](../../configurations/assets/environments/skypilot/steps/distill/sft/README.md) |
+| `distill/eval` | Measures how far the student's next-token distribution is from the teacher's. | [README](../../configurations/assets/environments/skypilot/steps/distill/eval/README.md) |
+| `distill/probe` | Runs a quick check on a checkpoint before committing to a full run. | [README](../../configurations/assets/environments/skypilot/steps/distill/probe/README.md) |
+| `distill/gen-smoke` | Greedy-decodes fixed prompts from each checkpoint to confirm it still writes usable text. | [README](../../configurations/assets/environments/skypilot/steps/distill/gen-smoke/README.md) |
+| `distill/hf-export` | Packages one checkpoint as a self-contained HuggingFace model directory. | [README](../../configurations/assets/environments/skypilot/steps/distill/hf-export/README.md) |
+| `distill/vllm-server` | Serves a model under vLLM as a service target and publishes its URL as a `mem://` output. | [README](../../configurations/assets/environments/skypilot/steps/distill/vllm-server/README.md) |
 
 #### Evaluation
 
@@ -1121,16 +1121,16 @@ benchmark family from granite-evals.
 
 | Step (`space://steps/…`) | Function | Documentation |
 |--------------------------|----------|---------------|
-| `eval/lmeval` | MMLU-ProX lite through granite-evals and lm-eval. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/lmeval/README.md) |
-| `eval/bfcl` | BFCL v4 function calling. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/bfcl/README.md) |
-| `eval/bird` | BIRD text-to-SQL. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/bird/README.md) |
-| `eval/ifbench` | IFBench instruction following. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/ifbench/README.md) |
-| `eval/tbench` | Terminal-Bench 2.1. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/tbench/README.md) |
-| `eval/swebench` | granite-evals SWE-bench family, run with mini-swe-agent in enroot sandboxes. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/swebench/README.md) |
-| `eval/tau` | granite-evals τ-bench family, run through tau2-bench. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/tau/README.md) |
-| `eval/nemoskills` | granite-evals NeMo-Skills family, run through NeMo-Skills' own pipeline. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/nemoskills/README.md) |
-| `eval/judged` | granite-evals LLM-judged benchmark family. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/judged/README.md) |
-| `eval/unitxt` | Evaluation with unitxt. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/unitxt/README.md) |
+| `eval/lmeval` | MMLU-ProX lite through granite-evals and lm-eval. | [README](../../configurations/assets/environments/skypilot/steps/eval/lmeval/README.md) |
+| `eval/bfcl` | BFCL v4 function calling. | [README](../../configurations/assets/environments/skypilot/steps/eval/bfcl/README.md) |
+| `eval/bird` | BIRD text-to-SQL. | [README](../../configurations/assets/environments/skypilot/steps/eval/bird/README.md) |
+| `eval/ifbench` | IFBench instruction following. | [README](../../configurations/assets/environments/skypilot/steps/eval/ifbench/README.md) |
+| `eval/tbench` | Terminal-Bench 2.1. | [README](../../configurations/assets/environments/skypilot/steps/eval/tbench/README.md) |
+| `eval/swebench` | granite-evals SWE-bench family, run with mini-swe-agent in enroot sandboxes. | [README](../../configurations/assets/environments/skypilot/steps/eval/swebench/README.md) |
+| `eval/tau` | granite-evals τ-bench family, run through tau2-bench. | [README](../../configurations/assets/environments/skypilot/steps/eval/tau/README.md) |
+| `eval/nemoskills` | granite-evals NeMo-Skills family, run through NeMo-Skills' own pipeline. | [README](../../configurations/assets/environments/skypilot/steps/eval/nemoskills/README.md) |
+| `eval/judged` | granite-evals LLM-judged benchmark family. | [README](../../configurations/assets/environments/skypilot/steps/eval/judged/README.md) |
+| `eval/unitxt` | Evaluation with unitxt. | [README](../../configurations/assets/environments/skypilot/steps/eval/unitxt/README.md) |
 
 ### III.5 SkyPilot overrides
 
@@ -1436,11 +1436,11 @@ A downstream target could now bind to `hello.greeting` and read
 
 **Example builds in the repository**
 
-- [`samples/standalone/standalone-quickstart`](https://github.com/ibm-granite/granite.build/tree/main/samples/standalone/standalone-quickstart):
+- [`samples/standalone/standalone-quickstart`](../../samples/standalone/standalone-quickstart):
   a single target with several environment options and a basic `compute_config`.
-- [`samples/templates/local_multi_stage`](https://github.com/ibm-granite/granite.build/tree/main/samples/templates/local_multi_stage):
+- [`samples/templates/local_multi_stage`](../../samples/templates/local_multi_stage):
   four targets chained by bindings.
-- [`test-data/integration/standalone/buildrunner/bash/retry`](https://github.com/ibm-granite/granite.build/tree/main/test-data/integration/standalone/buildrunner/bash/retry):
+- [`test-data/integration/standalone/buildrunner/bash/retry`](../../test-data/integration/standalone/buildrunner/bash/retry):
   a top-level `retries` block with `max_retries`.
 
 **Reference documentation**
