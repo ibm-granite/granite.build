@@ -1040,46 +1040,91 @@ directory, which is the per-run workdir when `shared_workdir` is set. `image_id`
 
 ### III.4 Steps available for SkyPilot
 
-The table lists the documented steps published under
+The tables below list the documented steps published under
 [`configurations/assets/environments/skypilot/steps`](https://github.com/ibm-granite/granite.build/tree/main/configurations/assets/environments/skypilot/steps).
 Each step's `README.md`, published from its `USAGE.md`, documents its configuration. A step
-marked *LSF only* or *SLURM only* declares that subtype and resolves on no other SkyPilot
-backend. The built-in `command`, `hfpull`/`hfpush` and `s3pull`/`s3push` steps are bundled with
-gbserver rather than published here, and the transfer steps are inserted automatically.
+marked *SLURM only*, and every distillation step, declares a single SkyPilot subtype and
+resolves on no other SkyPilot backend. The built-in `command`, `hfpull`/`hfpush` and
+`s3pull`/`s3push` steps are bundled with gbserver rather than published here, and the transfer
+steps are inserted automatically.
 
-| Category | Step (`space://steps/…`) | Function | Documentation |
-|----------|--------------------------|----------|---------------|
-| Auxiliary | `aux/byoc` | Bring-your-own-code: clones a public git repository and runs it. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/aux/byoc/README.md) |
-| Data | `data/data-designer` | Generates synthetic datasets with NeMo Data Designer. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/data/data-designer/README.md) |
-| Data | `data/dpk` | Runs a Data Prep Kit transform. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/data/dpk/README.md) |
-| Training | `train/hf-peft-sft` | LoRA, QLoRA and aLoRA SFT with HF PEFT and TRL. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/hf-peft-sft/README.md) |
-| Training | `train/fms-hf-tuning` | Fine-tunes a causal LM with fms-hf-tuning. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/fms-hf-tuning/README.md) |
-| Training | `train/openinstruct-sft` | SFT with upstream Open-Instruct. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/openinstruct-sft/README.md) |
-| Training | `train/nemo-rl` | Single-node, multi-GPU NeMo-RL training. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/nemo-rl/README.md) |
-| Tuning | `tune/fm-tune` | Foundation-model tuning. *SLURM only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/tune/fm-tune/README.md) |
-| Merge | `merge/mergekit` | Merges two or more models with MergeKit. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/merge/mergekit/README.md) |
-| Distillation | `distill/corpus-sources` | Combines several raw SFT splits into one `train.jsonl` for corpus prep. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-sources/README.md) |
-| Distillation | `distill/corpus-prep` | Turns a conversation dataset into the GOLD training corpus. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-prep/README.md) |
-| Distillation | `distill/corpus-pin-check` | Checks that a reused, pinned corpus was built the way this build would build it. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-pin-check/README.md) |
-| Distillation | `distill/tokenizer-align` | Teaches a base student the teacher's chat format and emits the tokenizer artifacts later steps read. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/tokenizer-align/README.md) |
-| Distillation | `distill/logit-precompute` | Runs the teacher once and stores its top-K logits per assistant token. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/logit-precompute/README.md) |
-| Distillation | `distill/gold` | Distills a student from a teacher with the GOLD trainer, multi-node. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/gold/README.md) |
-| Distillation | `distill/sft` | Teacher-free SFT baseline on the distillation corpus. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/sft/README.md) |
-| Distillation | `distill/eval` | Measures how far the student's next-token distribution is from the teacher's. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/eval/README.md) |
-| Distillation | `distill/probe` | Runs a quick check on a checkpoint before committing to a full run. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/probe/README.md) |
-| Distillation | `distill/gen-smoke` | Greedy-decodes fixed prompts from each checkpoint to confirm it still writes usable text. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/gen-smoke/README.md) |
-| Distillation | `distill/hf-export` | Packages one checkpoint as a self-contained HuggingFace model directory. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/hf-export/README.md) |
-| Distillation | `distill/vllm-server` | Serves a model under vLLM as a service target and publishes its URL as a `mem://` output. *LSF only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/vllm-server/README.md) |
-| Evaluation | `eval/lmeval` | MMLU-ProX lite through granite-evals and lm-eval. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/lmeval/README.md) |
-| Evaluation | `eval/bfcl` | BFCL v4 function calling. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/bfcl/README.md) |
-| Evaluation | `eval/bird` | BIRD text-to-SQL. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/bird/README.md) |
-| Evaluation | `eval/ifbench` | IFBench instruction following. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/ifbench/README.md) |
-| Evaluation | `eval/tbench` | Terminal-Bench 2.1. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/tbench/README.md) |
-| Evaluation | `eval/swebench` | granite-evals SWE-bench family, run with mini-swe-agent in enroot sandboxes. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/swebench/README.md) |
-| Evaluation | `eval/tau` | granite-evals τ-bench family, run through tau2-bench. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/tau/README.md) |
-| Evaluation | `eval/nemoskills` | granite-evals NeMo-Skills family, run through NeMo-Skills' own pipeline. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/nemoskills/README.md) |
-| Evaluation | `eval/judged` | granite-evals LLM-judged benchmark family. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/judged/README.md) |
-| Evaluation | `eval/unitxt` | Evaluation with unitxt. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/unitxt/README.md) |
+#### Auxiliary
+
+General-purpose steps that aren't tied to one stage of model development. `aux/byoc` runs your own
+code from a public git repository, without writing a step.
+
+| Step (`space://steps/…`) | Function | Documentation |
+|--------------------------|----------|---------------|
+| `aux/byoc` | Bring-your-own-code: clones a public git repository and runs it. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/aux/byoc/README.md) |
+
+#### Data
+
+Steps that generate or transform datasets, usually in the first targets of a build. Their outputs
+feed training and evaluation targets.
+
+| Step (`space://steps/…`) | Function | Documentation |
+|--------------------------|----------|---------------|
+| `data/data-designer` | Generates synthetic datasets with NeMo Data Designer. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/data/data-designer/README.md) |
+| `data/dpk` | Runs a Data Prep Kit transform. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/data/dpk/README.md) |
+
+#### Training
+
+Steps that fine-tune a base model on a dataset and register the resulting model or adapter as an
+output. They differ in the training library they wrap and the methods it supports.
+
+| Step (`space://steps/…`) | Function | Documentation |
+|--------------------------|----------|---------------|
+| `train/hf-peft-sft` | LoRA, QLoRA and aLoRA SFT with HF PEFT and TRL. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/hf-peft-sft/README.md) |
+| `train/fms-hf-tuning` | Fine-tunes a causal LM with fms-hf-tuning. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/fms-hf-tuning/README.md) |
+| `train/openinstruct-sft` | SFT with upstream Open-Instruct. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/openinstruct-sft/README.md) |
+| `train/nemo-rl` | Single-node, multi-GPU NeMo-RL training. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/nemo-rl/README.md) |
+| `train/fm-tune` | SFT, LoRA-family and RL tuning (DPO, KTO, PPO, GRPO, DAPO) with fm-tune, optionally with hyperparameter autotuning. *SLURM only.* | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/fm-tune/README.md) |
+
+#### Merge
+
+Steps that combine existing models into a new one without further training.
+
+| Step (`space://steps/…`) | Function | Documentation |
+|--------------------------|----------|---------------|
+| `merge/mergekit` | Merges two or more models with MergeKit. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/merge/mergekit/README.md) |
+
+#### Distillation
+
+Steps that together distill a small student model from a larger teacher with the GOLD trainer,
+from corpus preparation through export. All of them run only on SkyPilot's LSF backend.
+
+| Step (`space://steps/…`) | Function | Documentation |
+|--------------------------|----------|---------------|
+| `distill/corpus-sources` | Combines several raw SFT splits into one `train.jsonl` for corpus prep. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-sources/README.md) |
+| `distill/corpus-prep` | Turns a conversation dataset into the GOLD training corpus. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-prep/README.md) |
+| `distill/corpus-pin-check` | Checks that a reused, pinned corpus was built the way this build would build it. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/corpus-pin-check/README.md) |
+| `distill/tokenizer-align` | Teaches a base student the teacher's chat format and emits the tokenizer artifacts later steps read. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/tokenizer-align/README.md) |
+| `distill/logit-precompute` | Runs the teacher once and stores its top-K logits per assistant token. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/logit-precompute/README.md) |
+| `distill/gold` | Distills a student from a teacher with the GOLD trainer, multi-node. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/gold/README.md) |
+| `distill/sft` | Teacher-free SFT baseline on the distillation corpus. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/sft/README.md) |
+| `distill/eval` | Measures how far the student's next-token distribution is from the teacher's. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/eval/README.md) |
+| `distill/probe` | Runs a quick check on a checkpoint before committing to a full run. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/probe/README.md) |
+| `distill/gen-smoke` | Greedy-decodes fixed prompts from each checkpoint to confirm it still writes usable text. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/gen-smoke/README.md) |
+| `distill/hf-export` | Packages one checkpoint as a self-contained HuggingFace model directory. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/hf-export/README.md) |
+| `distill/vllm-server` | Serves a model under vLLM as a service target and publishes its URL as a `mem://` output. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/distill/vllm-server/README.md) |
+
+#### Evaluation
+
+Steps that score a model on a benchmark and register the results as an output. Most run a
+benchmark family from granite-evals.
+
+| Step (`space://steps/…`) | Function | Documentation |
+|--------------------------|----------|---------------|
+| `eval/lmeval` | MMLU-ProX lite through granite-evals and lm-eval. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/lmeval/README.md) |
+| `eval/bfcl` | BFCL v4 function calling. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/bfcl/README.md) |
+| `eval/bird` | BIRD text-to-SQL. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/bird/README.md) |
+| `eval/ifbench` | IFBench instruction following. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/ifbench/README.md) |
+| `eval/tbench` | Terminal-Bench 2.1. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/tbench/README.md) |
+| `eval/swebench` | granite-evals SWE-bench family, run with mini-swe-agent in enroot sandboxes. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/swebench/README.md) |
+| `eval/tau` | granite-evals τ-bench family, run through tau2-bench. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/tau/README.md) |
+| `eval/nemoskills` | granite-evals NeMo-Skills family, run through NeMo-Skills' own pipeline. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/nemoskills/README.md) |
+| `eval/judged` | granite-evals LLM-judged benchmark family. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/judged/README.md) |
+| `eval/unitxt` | Evaluation with unitxt. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/unitxt/README.md) |
 
 ### III.5 SkyPilot overrides
 
