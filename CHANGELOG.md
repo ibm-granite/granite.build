@@ -85,6 +85,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
   time (#460).
 
+- **lm-engine pretraining (#745)** — pretrain a model from scratch, export its checkpoints to
+  Hugging Face format while the run continues, and score them, as one recipe. A new step family
+  `steps/train/lm-engine/` (an in-repo image with every input pinned and a vendored dependency
+  lock, `space://steps/train/lm-engine/pretrain` and `.../export`) and the recipe
+  `recipes/pretrain/`. The pretraining step's rank-0 watcher announces each saved checkpoint as
+  an artifact, so gbserver dispatches that rung's export and evals while training continues;
+  the export ends in a logit-parity check against the trainer's own forward pass. `phase:
+  data-check` reads the corpus and tokenizer schemas on one CPU pod first, so a mis-mounted
+  volume or a tokenizer that disagrees with the model knobs fails in seconds rather than after
+  the accelerators are held. Defaults are the granite-4 350M muP model; `pretrain/smoke.yaml`
+  runs the whole graph in GPU-minutes on one 2-GPU pod, and `pretrain-eval/` scores exports a
+  previous run wrote. The cluster side is a template (`environments/skypilot-k8s.template.yaml`
+  + `site.example.yaml`), with a test holding the site keys and the recipe parameters disjoint.
+  `make scan-lock` (osv-scanner over the vendored lock, no build needed) and `make scan-image`
+  (trivy) gate `publish-image`.
+
+- **`lm-eval` generic benchmark bridge (#745)** — `benchmark: lm-eval` in the `lmeval` family
+  runs any task or group the pinned lm-evaluation-harness knows, chosen by the recipe's
+  `options` (`tasks=hellaswag,arc_easy mode=auto metric=acc_norm`), so a new task is config
+  rather than code. `mode=auto` picks each task's protocol from its `output_type`: generation
+  tasks in chat mode, multiple-choice and loglikelihood tasks in base mode. Unknown task names
+  fail before vLLM starts, with near-miss suggestions. No dependency or lock change.
+
 - **`single_node` step flag (#651)** — `environment_configs.Skypilot.single_node: true` makes
   gbserver resolve `num_nodes` from every layer the launch reads (`compute_config`, the step's
   launcher config, the build's `launcher_config`) and fail the step at creation unless it is 1.
