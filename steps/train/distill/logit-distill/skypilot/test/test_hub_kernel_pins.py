@@ -4,10 +4,10 @@
 mamba-ssm is pinned because transformers 5.8.0's default mapping resolves it at
 ``version=1`` -- the kernels-community repo's v1 branch -- whose build imports
 ``GreedySearchDecoderOnlyOutput``, a symbol transformers 5.x renamed. Every fresh
-hybrid (granitemoehybrid) model load dies on that import mid-load (measured
-2026-11-13 on BlueVela, image b6310378: teacher-divergence failed its build,
-preflight-check's probe reported ``loaded=NONE``). ``v0.0.4`` is the
-compatible revision.
+hybrid (granitemoehybrid) model load dies on that import mid-load. Every revision
+up to and including v0.0.3 has it (measured 2026-11-20 on BlueVela, image 91cb624c,
+teacher-divergence build test; an earlier reading that v0.0.3 was clean was wrong,
+see c6f3a799). ``v0.0.4`` is the compatible revision, pinned by its commit SHA.
 
 causal-conv1d is pinned for revision AGREEMENT: transformers resolves it at the
 v1 branch while the preflight's unpinned fallback is ``main``, and under
@@ -90,7 +90,7 @@ def test_pin_covers_the_falcon_variant_of_the_same_repo(fake_mapping):
     pin_hub_kernels()
 
     entry = fake_mapping["falcon_mamba-ssm"]
-    assert entry["revision"] == "v0.0.4"
+    assert entry["revision"] == PINNED_KERNEL_REVISIONS["kernels-community/mamba-ssm"]
     assert "version" not in entry
 
 
@@ -153,7 +153,10 @@ def test_pin_against_the_real_transformers():
     try:
         pin_hub_kernels()
         entry = hub_kernels._HUB_KERNEL_MAPPING["mamba-ssm"]
-        assert entry.get("revision") == "v0.0.4"
+        assert (
+            entry.get("revision")
+            == PINNED_KERNEL_REVISIONS["kernels-community/mamba-ssm"]
+        )
         assert "version" not in entry
         entry = hub_kernels._HUB_KERNEL_MAPPING["causal-conv1d"]
         assert (
@@ -167,7 +170,11 @@ def test_pin_against_the_real_transformers():
 
 
 def test_pinned_revision_helper():
-    assert pinned_revision("kernels-community/mamba-ssm") == "v0.0.4"
+    # Both pinned by commit SHA: a tag can move. mamba-ssm's is the v0.0.4 tag's commit.
+    assert (
+        pinned_revision("kernels-community/mamba-ssm")
+        == "8ce5a4921b3a09bdae509d7143b88eab9e4f21f3"
+    )
     assert (
         pinned_revision("kernels-community/causal-conv1d")
         == "6e9a58272220a363dc50e59cba737abcedd7b59f"

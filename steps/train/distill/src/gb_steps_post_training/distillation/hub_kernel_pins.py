@@ -12,7 +12,8 @@ a hybrid (granitemoehybrid) model dies with an ImportError after the model load 
 started. The teacher-divergence build test hit it directly; the e2e smokes did not,
 because they used dense students that never reach the mamba path.
 
-``v0.0.4`` (8ce5a492, "Fix for Falcon") restructured the build: the top level
+``v0.0.4`` (8ce5a492, "Fix for Falcon"; pinned by that commit's SHA, since a tag
+can move) restructured the build: the top level
 is now the actual module (verified in the GPU image -- ``_import_from_path``
 loads it, ``MambaLMHeadModel`` is available, no transformers.generation import),
 and ``mamba_ssm/`` inside the build is a compatibility shim. This is the newest
@@ -44,7 +45,8 @@ from __future__ import annotations
 # version=1, the kernels package resolves the repo's v1 branch) -- which the
 # preflight cannot satisfy offline, so a hybrid model's kernels belong here.
 PINNED_KERNEL_REVISIONS: dict[str, str] = {
-    "kernels-community/mamba-ssm": "v0.0.4",
+    # The v0.0.4 tag's commit. A tag can be moved; a commit SHA cannot.
+    "kernels-community/mamba-ssm": "8ce5a4921b3a09bdae509d7143b88eab9e4f21f3",
     "kernels-community/causal-conv1d": "6e9a58272220a363dc50e59cba737abcedd7b59f",
 }
 
@@ -91,6 +93,91 @@ def pin_hub_kernels() -> None:
         entry.setdefault("revision", PINNED_KERNEL_REVISIONS[repo_id])
 
 
+# The kernels the preamble pre-loads from the local cache: (transformers mapping key, repo).
+_PRELOAD_KERNELS = (
+    ("causal-conv1d", "kernels-community/causal-conv1d"),
+    ("mamba-ssm", "kernels-community/mamba-ssm"),
+)
+
+
+def _validated_import(import_from_path, package_name, variant_path):
+    """``import_from_path``, after parsing the variant's metadata.json when it has one.
+
+    A structurally broken metadata.json (a doubled-JSON write from a parallel-download
+    race) then aborts with a JSONDecodeError here, instead of surfacing later as a
+    confusing ``ImportError: FlashAttention3 has been toggled on``. v0.0.3-era builds
+    ship no metadata.json, so its absence is not an error.
+    """
+    import json
+    from pathlib import Path
+
+    meta_path = Path(variant_path) / "metadata.json"
+    if meta_path.exists():
+        json.loads(meta_path.read_text())
+    return import_from_path(package_name, variant_path)
+
+
+def preload_cached_kernels(
+    *,
+    install_kernel,
+    import_from_path,
+    hub_mapping,
+    module_mapping,
+    kernels=_PRELOAD_KERNELS,
+    log=print,
+) -> dict:
+    """Load each kernel from the local HF cache at its PINNED revision, if it is there.
+
+    Putting the module into transformers' ``_KERNEL_MODULE_MAPPING`` makes
+    ``lazy_load_kernel`` short-circuit (transformers/integrations/hub_kernels.py:368-369)
+    without ``HfApi().list_repo_refs`` (needed for ``version=``-style entries) or a
+    ``snapshot_download`` that races across ranks on NFS. A cache read with
+    ``local_files_only=True`` only follows existing symlinks, so it is rank-safe.
+
+    The revision goes to ``install_kernel`` as pinned. kernels 0.12.3 hands it straight
+    to ``snapshot_download(local_files_only=True)``, which resolves a tag through
+    ``refs/<tag>`` and a full commit SHA through ``snapshots/<sha>`` -- the same lookup
+    gold-kernels.sh's probe makes. (The earlier version read ``refs/<pin>`` itself;
+    huggingface_hub never writes a refs file for a SHA, so a SHA pin made that read fail
+    every time.) The pin is never "main", so this cannot bypass it.
+
+    Each kernel has its own ``try``: a cold cache for one must not skip the other.
+    OSError (which includes huggingface_hub's LocalEntryNotFoundError) and ImportError
+    mean "not usable from the cache" and fall through to the online path. ValueError,
+    including JSONDecodeError, is deliberately NOT caught: a corrupt cache must fail
+    hard so the launcher's pre-download cleanup runs.
+
+    Returns ``{kernel name: outcome}`` for logging and tests.
+    """
+    from types import ModuleType
+
+    outcomes = {}
+    for name, repo_id in kernels:
+        if name not in hub_mapping:
+            outcomes[name] = "not mapped"
+            continue
+        if isinstance(module_mapping.get(name), ModuleType):
+            outcomes[name] = "already loaded"
+            continue
+        revision = pinned_revision(repo_id)
+        try:
+            package_name, variant_path = install_kernel(
+                repo_id, revision=revision, local_files_only=True
+            )
+            module_mapping[name] = _validated_import(
+                import_from_path, package_name, variant_path
+            )
+        except (OSError, ImportError) as err:
+            outcomes[name] = f"skipped: {type(err).__name__}: {err}"
+            log(
+                f"[kernel preamble] {name}@{revision} not pre-loaded from the cache "
+                f"({type(err).__name__}: {err}); the online lazy-load path takes over"
+            )
+        else:
+            outcomes[name] = "loaded"
+    return outcomes
+
+
 def prepare_hub_kernels() -> None:
     """Everything a hybrid-model entrypoint needs before its first model load.
 
@@ -123,95 +210,27 @@ def prepare_hub_kernels() -> None:
     except (ImportError, ModuleNotFoundError):
         _lazy_load_kernel = None
 
-    # Pre-populate transformers' kernel module mapping from the warm local cache so that
-    # `lazy_load_kernel` short-circuits without ever calling `HfApi().list_repo_refs`
-    # (which would happen for `version=`-style entries in `_HUB_KERNEL_MAPPING`) or
-    # `snapshot_download` (which races across ranks on NFS). This is the supported
-    # short-circuit at transformers/integrations/hub_kernels.py:368-369. Pure cache
-    # reads via `install_kernel(..., revision=<sha>, local_files_only=True)` only
-    # perform `os.readlink` on existing symlinks and are rank-safe.
+    # Stage 2: see preload_cached_kernels for why and how.
     try:
-        from pathlib import Path as _Path
-
-        from huggingface_hub.constants import HF_HUB_CACHE as _HF_HUB_CACHE
         from kernels.utils import _import_from_path
         from kernels.utils import install_kernel as _install_kernel
         from transformers.integrations.hub_kernels import (
             _HUB_KERNEL_MAPPING,
             _KERNEL_MODULE_MAPPING,
         )
-
-        def _read_cached_sha(_repo_id):
-            # The current `kernels` package writes the standard HF hub layout
-            # (`models--<repo>/...`) via `snapshot_download`, not the legacy
-            # `kernels--<repo>/...` prefix. See kernels/utils.py:194-203.
-            #
-            # The ref is the PINNED revision (hub_kernel_pins.py), not "main":
-            # reading "main" here would install the main build directly into
-            # _KERNEL_MODULE_MAPPING, bypassing the pin the rest of this
-            # collection goes through. On a cache warmed by the preflight or
-            # the prefetch (which both download at the pinned revision) the
-            # ref file exists; on a cold cache it does not, the FileNotFoundError
-            # is caught below, and the online lazy-load path -- which does
-            # respect the pin -- takes over.
-            _ref_path = (
-                _Path(_HF_HUB_CACHE)
-                / f"models--{_repo_id.replace('/', '--')}"
-                / "refs"
-                / pinned_revision(_repo_id)
-            )
-            return _ref_path.read_text().strip()
-
-        def _validated_import_from_path(_package_name, _variant_path):
-            # `_import_from_path` will raise on a structurally-broken metadata.json
-            # only when the loader actually parses it; pre-validate so a corrupt
-            # cache aborts the preamble loudly with a JSONDecodeError instead of
-            # later showing up as a hard-to-diagnose ImportError under the FA3
-            # dispatcher.
-            import json as _json
-
-            _meta_path = _Path(_variant_path) / "metadata.json"
-            if _meta_path.exists():
-                _json.loads(_meta_path.read_text())
-            return _import_from_path(_package_name, _variant_path)
-
-        def _preload_kernel_into_mapping(_kernel_name, _repo_id):
-            from types import ModuleType as _ModuleType
-
-            _existing = _KERNEL_MODULE_MAPPING.get(_kernel_name)
-            if isinstance(_existing, _ModuleType):
-                return
-            _sha = _read_cached_sha(_repo_id)
-            _package_name, _variant_path = _install_kernel(
-                _repo_id, revision=_sha, local_files_only=True
-            )
-            _module = _validated_import_from_path(_package_name, _variant_path)
-            _KERNEL_MODULE_MAPPING[_kernel_name] = _module
-            return _module
-
-        for _kname, _kspec in (
-            ("causal-conv1d", "kernels-community/causal-conv1d"),
-            ("mamba-ssm", "kernels-community/mamba-ssm"),
-        ):
-            if _kname in _HUB_KERNEL_MAPPING:
-                _preload_kernel_into_mapping(_kname, _kspec)
-
-    except (
-        FileNotFoundError,
-        OSError,
-        ImportError,
-        ModuleNotFoundError,
-    ) as _kernel_preload_err:
-        # Fresh node / kernels API change / missing cache. Fall through to the
-        # online `lazy_load_kernel` path below; preflight will repopulate the cache.
-        # Note: ValueError (incl. JSONDecodeError) is intentionally NOT caught here.
-        # A corrupt cache (e.g. doubled-JSON metadata.json from a parallel-write race)
-        # must surface as a hard failure so the launcher's pre-download cleanup runs,
-        # rather than fall through to the racing kernel-hub fallback path that would
-        # produce a confusing downstream `ImportError: FlashAttention3 has been toggled on`.
+    except ImportError as _kernel_import_err:
+        # kernels or transformers' hub_kernels absent or renamed: nothing to pre-load.
+        # The online `lazy_load_kernel` path below (if importable) takes over.
         print(
-            f"[kernel preamble] kernel pre-population skipped: "
-            f"{type(_kernel_preload_err).__name__}: {_kernel_preload_err}"
+            "[kernel preamble] kernel pre-population skipped: "
+            f"{type(_kernel_import_err).__name__}: {_kernel_import_err}"
+        )
+    else:
+        preload_cached_kernels(
+            install_kernel=_install_kernel,
+            import_from_path=_import_from_path,
+            hub_mapping=_HUB_KERNEL_MAPPING,
+            module_mapping=_KERNEL_MODULE_MAPPING,
         )
 
     if _lazy_load_kernel is not None:
