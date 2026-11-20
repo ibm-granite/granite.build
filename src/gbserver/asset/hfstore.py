@@ -5,7 +5,6 @@
 """Access assets in HuffingFace Hub."""
 
 import os
-from pathlib import Path
 from typing import Dict, List, Optional, Self, Union
 
 from huggingface_hub import create_repo, upload_file, upload_folder
@@ -37,17 +36,6 @@ class Hfstore(Assetstore):
     @classmethod
     def get_supported_uri_classes(self):
         return [HfURI]
-
-    def get_relpath(self, uri: URI) -> str:
-        """
-        Return a relative path for container volume binding.
-        Uses owner/repo/revision; buckets have empty revision so the
-        trailing segment is naturally omitted.
-        """
-        hf_uri = uri if isinstance(uri, HfURI) else HfURI.parse(uri)  # type: ignore[arg-type]
-        p = hf_uri._parts()
-        rel_path = Path(p.owner) / p.repo / p.revision
-        return str(rel_path)
 
     def get_metadata(self, uri: URI) -> Dict:
         """
@@ -97,6 +85,19 @@ class Hfstore(Assetstore):
     def get_asset_type(self, uri: URI) -> ArtifactType:
         assert isinstance(uri, HfURI)
         return uri.get_artifact_type()
+
+    def uri_exists(self, uri: URI) -> bool:
+        """Check that ``uri`` exists on the Hub with this store's token.
+
+        Resolves the token through the store (:meth:`resolve_token`, honoring
+        ``token_secretname``) rather than the URI's fixed ``HF_TOKEN`` lookup, so
+        existence checks use the same credential as pull/push.
+
+        :param uri: an HfURI this store handles.
+        :returns: whether it exists (True when HF is mocked).
+        """
+        assert isinstance(uri, HfURI), f"expected HfURI, got {type(uri)}"
+        return uri.exists(token=self.resolve_token(uri))
 
     def resolve_token(self, uri) -> Optional[str]:
         metadata = self.get_metadata(uri)

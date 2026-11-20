@@ -46,6 +46,10 @@ exit 0
 EOF
 chmod 755 /opt/ns-sandbox/bin/pip
 uv pip freeze --python /opt/ns-sandbox/bin/python > /opt/ns-sandbox/granite-freeze.txt
+# The uv-managed CPython's own pip vendors a certifi the image scan flags
+# (GHSA-6q48-6c7w-9gw2). Nothing uses that pip -- uv built and populated the
+# venv, and the venv's pip is the no-op stub below -- so it leaves the image.
+rm -rf /opt/uv-python/*/lib/python3.10/site-packages/pip /opt/uv-python/*/lib/python3.10/site-packages/pip-*.dist-info
 chmod -R a+rX /opt/uv-python /opt/ns-sandbox
 
 # SciCode's test targets, where ns's evaluator reads them. The Google Drive file ns's

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+from typing import Optional
 
 from requests.exceptions import ConnectionError
 
@@ -9,7 +10,7 @@ from gbcli.utils.gbconstants import (
     RITS_LIST_URL,
     VPN_TUNNELALL_CONNECTION_ERROR_MESSAGE,
 )
-from gbcli.utils.gbcredentials import GBCredentials
+from gbcli.utils.gbcredentials import SSO_PROVIDER, SSO_SECTION, GBCredentials
 from gbcli.utils.gbserver import gbserver_get, make_gbserver_call
 from gbcli.utils.gh_auth import *
 from gbcli.utils.spaceutil import resolve_space
@@ -104,33 +105,42 @@ def gbserver_login(api_user: str, api_key: str) -> str:
     return api_user
 
 
-def ibmid_login(open_browser=None) -> str:
-    """Authenticate via IBMid OIDC through gbserver proxy and store credentials."""
-    from gbcli.utils.ibmid_auth import IBMidOIDCClient
+def sso_login(
+    open_browser=None,
+    remote: bool = False,
+    read_code=None,
+    redirect_port: Optional[int] = None,
+) -> str:
+    """Log in via SSO through gbserver and store credentials. With *remote*,
+    *open_browser* only shows the URL and *read_code* returns the paste."""
+    from gbcli.utils.sso_auth import SSOLoginClient
 
-    client = IBMidOIDCClient()
-    result = client.start_auth_code_flow(open_browser=open_browser)
+    client = SSOLoginClient()
+    if remote:
+        result = client.login_remote(show_url=open_browser, read_code=read_code)
+    else:
+        result = client.login_loopback(open_browser=open_browser, port=redirect_port)
 
     credentials = GBCredentials()
-    credentials.set("access_token", result.access_token, section="user.ibmid")
-    credentials.set("id_token", result.id_token, section="user.ibmid")
+    credentials.set("access_token", result.access_token, section=SSO_SECTION)
+    credentials.set("id_token", result.id_token, section=SSO_SECTION)
     if result.refresh_token:
-        credentials.set("refresh_token", result.refresh_token, section="user.ibmid")
+        credentials.set("refresh_token", result.refresh_token, section=SSO_SECTION)
     if result.expires_in:
         import time as _time
 
         credentials.set(
-            "expires_at", int(_time.time()) + result.expires_in, section="user.ibmid"
+            "expires_at", int(_time.time()) + result.expires_in, section=SSO_SECTION
         )
     login_name = (
         result.user_info.preferred_username
         or result.user_info.email
         or result.user_info.sub
     )
-    credentials.set("login", login_name, section="user.ibmid")
-    credentials.set("email", result.user_info.email, section="user.ibmid")
-    credentials.set("name", result.user_info.name, section="user.ibmid")
-    credentials.set("default_provider", "ibmid", section="user")
+    credentials.set("login", login_name, section=SSO_SECTION)
+    credentials.set("email", result.user_info.email, section=SSO_SECTION)
+    credentials.set("name", result.user_info.name, section=SSO_SECTION)
+    credentials.set("default_provider", SSO_PROVIDER, section="user")
     credentials.save()
 
     return login_name

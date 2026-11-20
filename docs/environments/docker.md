@@ -108,7 +108,7 @@ config:
   docker:
     secrets:
       secret_names_to_use_as_env_variable:
-        - env_name: GRANITE_EVALS_JUDGE_API_KEY   # secret_name defaults to this
+        - env_name: EVAL_JUDGE_API_KEY   # secret_name defaults to this
 ```
 
 The value is visible to anyone who can `docker inspect` the container.
@@ -128,9 +128,18 @@ and translates it to Docker container limits:
 
 - **Inputs.** Unlike [bash](bash.md), the Docker environment does **not** auto-export input paths as
   env vars. Wire a resolved binding into the container explicitly, e.g. via `launcher_config.env` using
-  `{{ bindings.<name>.binding.path }}`. HuggingFace inputs loaded via the `hf` asset store are
-  bind-mounted read-only under `/gb-hf-models/...` (the whole `models--org--repo` dir is mounted so HF
-  cache symlinks resolve), and the in-container path is supplied as the binding. `env://` inputs (a
+  `{{ bindings.<name>.binding.path }}`. For HuggingFace inputs loaded via the `hf` asset store, what
+  the input names is bind-mounted read-only, and the binding is the in-container path: the pull dir,
+  or the file or directory a URI's path in the repo names inside it, at the same path under
+  `/gb-hf-models` as under the cache dir. A model's pull dir is `<owner>/<repo>/<revision>`
+  (e.g. `/gb-hf-models/<owner>/<repo>/<revision>/<path>`); a dataset's or space's is the same under
+  `datasets/` or `spaces/`; each bucket input has its own, `buckets/<owner>/<bucket>/<hash>` (the
+  hash names its path in the bucket, whose contents are synced there); and content on a host other
+  than huggingface.co sits under `@<host>/` (a port's `:` becomes `_`). Inputs naming different
+  content therefore get their own mounts. The same content
+  pulled through two `cache_path` values would need two mounts at one container path, so the second
+  input is refused before it is pulled (unless both name one directory, e.g. through a symlink).
+  Mounts are passed to Docker as structured bind mounts, so a `:` in a path is fine. `env://` inputs (a
   path another target left on this host) are bind-mounted read-only under `/gb-env-inputs/<n>` (a
   file's parent directory, or the directory itself), and the binding is the in-container path. The
   mount goes only into the containers of the target that takes the input. The mount source is

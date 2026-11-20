@@ -10,10 +10,10 @@ from requests.exceptions import ConnectionError
 
 from gbcli.client import GBClient
 from gbcli.utils.click_utils import FileOrStringParamType
-from gbcli.utils.gbconstants import PROJECT_NAME
-from gbcli.utils.gbcredentials import GBCredentials
+from gbcli.utils.gbconstants import PROJECT_NAME, SSO_REDIRECT_PORT
+from gbcli.utils.gbcredentials import SSO_PROVIDER, SSO_SECTION, GBCredentials
 from gbcli.utils.gbserver_errors import GBServerHTTPError
-from gbcli.utils.utils import check_runnable_browser
+from gbcli.utils.utils import check_runnable_browser, local_browser_unavailable_reason
 from gbcommon.types.constants import get_gh_credentials_section
 from gbcommon.types.gbenvconfig import is_standalone
 
@@ -21,13 +21,13 @@ from gbcommon.types.gbenvconfig import is_standalone
 # Multiple synonyms may map to the same internal value.
 _PROVIDER_TO_INTERNAL = {
     "github": "github",
-    "sso": "ibmid",
-    "ibmid": "ibmid",
+    "sso": SSO_PROVIDER,
+    "ibmid": SSO_PROVIDER,
     "gbserver": "apikey",
     "apikey": "apikey",
 }
 # Canonical display name for each internal value.
-_INTERNAL_TO_DISPLAY = {"github": "github", "ibmid": "sso", "apikey": "apikey"}
+_INTERNAL_TO_DISPLAY = {"github": "github", SSO_PROVIDER: "sso", "apikey": "apikey"}
 
 
 def str_exc_chain(exc) -> str:
@@ -99,10 +99,24 @@ def cli(ctx):
     flag_value="ibm",
     type=click.Choice(["ibm"], case_sensitive=False),
     default=None,
-    help="Login via SSO provider (default: ibm). Use 'ibm' for IBMid OIDC authentication.",
+    help="Login via an SSO provider (default: ibm).",
+)
+@click.option(
+    "--remote",
+    is_flag=True,
+    default=False,
+    help="With --sso, when the CLI can't receive the browser redirect (e.g. over SSH): "
+    "sign in on any device and paste the verification code.",
+)
+@click.option(
+    "--redirect-port",
+    type=click.IntRange(1, 65535),
+    default=None,
+    help=f"With --sso: local port for the browser redirect (default: {SSO_REDIRECT_PORT}); "
+    "must match the SSO provider's registration.",
 )
 @click.pass_context
-def login(ctx, token, gbserver, sso):
+def login(ctx, token, gbserver, sso, remote, redirect_port):
     """Login"""
     # Validate mutually exclusive options
     selected = sum([bool(token), gbserver, bool(sso)])
@@ -113,30 +127,71 @@ def login(ctx, token, gbserver, sso):
         )
         ctx.exit(1)
         return
+    if (remote or redirect_port is not None) and not sso:
+        click.echo("Error: --remote and --redirect-port require --sso.", err=True)
+        ctx.exit(1)
+        return
+    if remote and redirect_port is not None:
+        click.echo("Error: --redirect-port does not apply with --remote.", err=True)
+        ctx.exit(1)
+        return
 
     auth_client = GBClient.Auth()
 
-    # ---- IBMid SSO flow ----
+    # ---- SSO flow ----
     if sso == "ibm":
-        click.echo(f"🔒 {PROJECT_NAME} IBMid SSO login")
+        click.echo(f"🔒 {PROJECT_NAME} SSO login")
+        if not remote:
+            reason = local_browser_unavailable_reason()
+            if reason:
+                click.echo(
+                    f"Error: can't receive the login redirect here ({reason}). "
+                    "Use 'gb auth login --sso --remote', or set BROWSER if the "
+                    "redirect can reach this machine (e.g. SSH port forwarding).",
+                    err=True,
+                )
+                ctx.exit(1)
+                return
         try:
-            runnable_browser = check_runnable_browser()
+            if remote:
 
-            def _open_browser(url):
-                if runnable_browser and click.confirm(
-                    "Open the browser?", default=True
-                ):
-                    webbrowser.open(url)
-                else:
-                    click.echo(f"Open this link in the browser: {url}")
-                click.echo("Waiting for IBMid authentication...")
+                def _show_url(url):
+                    click.echo("Open this link in a browser on any device:")
+                    click.echo(f"\n{url}\n")
 
-            user_login = auth_client.login_ibmid(open_browser=_open_browser)
+                def _read_code():
+                    # Hidden like `gb secret` values: the code signs you in.
+                    return click.prompt(
+                        "Paste the verification code shown after sign-in",
+                        type=str,
+                        hide_input=True,
+                    )
+
+                user_login = auth_client.login_sso(
+                    open_browser=_show_url, remote=True, read_code=_read_code
+                )
+            else:
+
+                def _open_browser(url):
+                    if click.confirm("Open the browser?", default=True):
+                        webbrowser.open(url)
+                    else:
+                        click.echo(f"Open this link in the browser: {url}")
+                    click.echo(
+                        "Waiting for SSO authentication... "
+                        "(if the browser runs on another machine, use --remote)"
+                    )
+
+                user_login = auth_client.login_sso(
+                    open_browser=_open_browser, redirect_port=redirect_port
+                )
             click.echo(f"Logged in as " + click.style(user_login, bold=True))
-            click.echo("✅ IBMid authentication is successful!")
+            click.echo("✅ SSO authentication is successful!")
+        except click.exceptions.Abort:
+            raise  # Ctrl-C/EOF at a prompt: click prints "Aborted!"
         except Exception as e:
             click.echo(f"\n{str_exc_chain(e)}", err=True)
-            click.echo("❌ IBMid authentication failed!", err=True)
+            click.echo("❌ SSO authentication failed!", err=True)
             ctx.exit(1)
         return
 
@@ -226,7 +281,7 @@ def login(ctx, token, gbserver, sso):
         ["github", "sso", "ibmid", "gbserver", "apikey"], case_sensitive=False
     ),
     default=None,
-    help="Set the default authentication provider (sso/ibmid for IBMid, gbserver/apikey for API key).",
+    help="Set the default authentication provider (sso/ibmid for SSO, gbserver/apikey for API key).",
 )
 @click.pass_context
 def provider(ctx, set_provider):
@@ -250,9 +305,9 @@ def provider(ctx, set_provider):
     internal = _PROVIDER_TO_INTERNAL[set_provider.lower()]
 
     # Verify credentials exist for the target provider
-    if internal == "ibmid" and not creds.check_ibmid_values():
+    if internal == SSO_PROVIDER and not creds.check_sso_values():
         click.echo(
-            "Error: No IBMid credentials found. Run 'auth login --sso' first.",
+            "Error: No SSO credentials found. Run 'auth login --sso' first.",
             err=True,
         )
         ctx.exit(1)
@@ -280,8 +335,8 @@ def provider(ctx, set_provider):
 
 def _get_provider_login(creds: GBCredentials, internal_provider: str) -> str:
     """Return the login name for the given internal provider, or empty string."""
-    if internal_provider == "ibmid":
-        return creds.get("login", section="user.ibmid") or ""
+    if internal_provider == SSO_PROVIDER:
+        return creds.get("login", section=SSO_SECTION) or ""
     if internal_provider == "github":
         return creds.get("login", section=get_gh_credentials_section()) or ""
     if internal_provider == "apikey":

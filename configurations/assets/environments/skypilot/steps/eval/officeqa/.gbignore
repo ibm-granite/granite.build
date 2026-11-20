@@ -1,0 +1,4 @@
+# The following allows the docs to contain {{ ... }} but be ignored by the g.b build process.
+**/*.md
+# Ship the src/ tree verbatim — do not jinja-process step scripts/helpers.
+src/**

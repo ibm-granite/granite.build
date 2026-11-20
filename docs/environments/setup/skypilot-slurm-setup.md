@@ -194,6 +194,50 @@ These tests are excluded from the default test run (`make py-test`) and CI test 
 > **Note:** If the infrastructure is not running, tests marked `skypilot_integration` should skip
 > gracefully (e.g., via a fixture that checks connectivity).
 
+### s3:// tests
+
+`test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_s3.py` runs an
+`s3://` input through `s3pull`, a command step, and `s3push` to an `s3://` output. Both
+URIs go through the `s3-local` assetstore that the `slurm/local` environment lists. Its
+`s3://local/` URIs are an alias for the `gb-checkpoints` bucket.
+
+It needs `make slurm-setup` and `make s3-setup`. It seeds the input, checks that the pushed
+object round-trips, and deletes its per-run prefix. It skips if the cluster, the store, or the
+store's credentials are missing.
+
+The test always uses real S3. The store is local infrastructure like the cluster, so unlike
+`hf://` there's no external service to mock. The test pins `GBTEST_MOCK_COS=false` for its run,
+so a session-wide mock setting can't reduce the round trip to a no-op. `GBTEST_MOCK_COS` (defaulted
+on under `GBTEST_MODE=mock`, like `GBTEST_MOCK_HF`) remains for tests against non-local S3
+endpoints.
+
+The credentials are the secrets the `s3-local` store.yaml names, `S3_LOCAL_ACCESS_KEY_ID` and
+`S3_LOCAL_SECRET_ACCESS_KEY`. `make s3-setup` registers them, with the keys it gave the container,
+in the local space's secrets at `~/.granite.build/space_secrets/public/s3-local.yaml` (under
+`$GB_HOME_DIR` if set). It writes the file directly, so no gbserver needs to be running. The file
+is owner-only. If it already exists it is kept; `teardown-s3.sh --remove-data` removes it. Both
+gbserver and the test resolve the secrets the same way: from the local space's secret manager
+first, then from env vars of the same name. They use names separate from the generic `s3://`
+store's `COS_*` secrets, so real cloud keys in the same space don't collide with them.
+
+```bash
+make slurm-setup && make s3-setup
+GB_ENVIRONMENT=STANDALONE GBTEST_MODE=live \
+  pytest -m extended test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_s3.py
+```
+
+To see or release the reader leases that `s3pull` keeps in the cluster's cache, run the lease
+script inside a cluster container, where `/shared` is mounted:
+
+```bash
+docker exec -i slurm-c1 bash -s -- list --cache /shared/cos_cache < scripts/s3/s3pull-leases.sh
+docker exec -i slurm-c1 bash -s -- release --cache /shared/cos_cache <targetrun_id> < scripts/s3/s3pull-leases.sh
+```
+
+The test also takes the endpoint (`cos_gbserver_endpoint`) and the bucket (`cos_bucket_name`)
+from the same store.yaml.
+
+
 ## Teardown
 
 ```bash

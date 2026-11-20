@@ -1,0 +1,14 @@
+# YAML-driven spec for test/integration/standalone/buildrunner/skypilot_slurm/test_skypilot_s3.py.
+targets:
+  - s3-run
+target_expectations:
+  - target_name: s3-run
+    # 1 s3pull (one s3:// input) + 1 command + 1 s3push (one emitted artifact).
+    step_count: 3
+    input_artifact_count: 1
+    output_artifact_count: 1
+# Shared standalone space; its base_uris resolve space:// into configurations/assets.
+space_uri: ../../../../../../configurations/spaces/local
+timeout_minutes: 15
+tests:
+  - runner

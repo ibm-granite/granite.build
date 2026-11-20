@@ -4,6 +4,7 @@
 
 """URI referring to models/datasets/spaces/etc. in HuggingFace Hub"""
 
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Self, Tuple
+from typing import Any, Iterator, List, Optional, Self, Tuple, Union
 
 from huggingface_hub import (
     HfApi,
@@ -860,7 +861,7 @@ class HfURI(URI):
         )
         return self.parts
 
-    def exists(self: Self, force: bool = False) -> bool:
+    def exists(self: Self, force: bool = False, token: Optional[str] = None) -> bool:
         """Check whether the HF repo/bucket (and revision) actually exists on the Hub.
 
         Returns ``False`` on any error, but logs the failure with a severity
@@ -869,6 +870,11 @@ class HfURI(URI):
         server (``5xx``), or auth (``401``/``403``) error logs at WARNING/ERROR.
         The latter are dangerous here: the resource may actually exist but we
         would still report it missing, so they must be visible in logs.
+
+        :param force: unused (kept for the URI interface).
+        :param token: an HF token to use instead of the URI's own lookup
+            (``HF_TOKEN`` in its secrets, then the env); see ``Hfstore.uri_exists``.
+        :returns: whether the repo/bucket (and revision) exists.
         """
         if is_hf_mocked():
             return True
@@ -876,7 +882,9 @@ class HfURI(URI):
         try:
             p = self._parts()
             repo_id = f"{p.owner}/{p.repo}"
-            token = self._resolve_token()
+            # A store-resolved token (Hfstore.uri_exists, honoring the store's
+            # token_secretname) wins over the URI's own HF_TOKEN lookup.
+            token = token or self._resolve_token()
 
             if p.hf_type == HfType.BUCKET:
                 endpoint = f"https://{p.host}" if p.host != HF_HOST else None
@@ -1016,6 +1024,50 @@ class HfURI(URI):
         if not path or self.get_hf_type() == HfType.BUCKET:
             return Path(dest)
         return Path(dest) / path
+
+    def pull_dest(self, cache_dir: Union[str, Path]) -> Path:
+        """The directory under *cache_dir* that this URI is pulled into.
+
+        Used by the Bash, Docker and Skypilot environments (K8s and LSF key
+        their pull dirs on :meth:`hash` instead). A model, dataset, space or
+        bucket of the same name, or on another host, never shares a directory:
+
+        - a model: ``<owner>/<repo>/<revision>``, the layout these caches have
+          always had, so existing model caches stay valid;
+        - a dataset or space: the same, under ``datasets/`` or ``spaces/``;
+        - a bucket: ``buckets/<owner>/<bucket>/<hash>``, where the hash names
+          the path in the bucket. A bucket pull syncs that path's contents into
+          the directory, so each bucket input gets one of its own, and no two
+          nest: a whole bucket and a path in it never share a download lock or
+          write the same files;
+        - any of these on a host other than huggingface.co: under ``@<host>``,
+          with a port's ``:`` as ``_``, keeping ``:`` out of the cache's
+          directory names (``docker run -v`` and similar ``src:dst`` specs read
+          it as a separator; a host has no ``_`` of its own).
+
+        Every path of one repo revision shares its directory, behind one
+        download lock, and lands at its own path there (:meth:`local_path`).
+        No owner directory can collide with these: ``datasets``, ``spaces`` and
+        ``buckets`` are Hub URL routes (``huggingface.co/datasets``), and
+        huggingface_hub's ``validate_repo_id`` refuses an owner starting with
+        ``@``.
+
+        :param cache_dir: The HF cache directory.
+        :returns: The pull destination.
+        """
+        p = self._parts()
+        parts = []
+        if p.host != HF_HOST:
+            parts.append("@" + p.host.replace(":", "_"))
+        if p.hf_type not in (None, HfType.MODEL):
+            parts.append(_HF_TYPE_TO_SEGMENT[p.hf_type])
+        parts += [p.owner, p.repo]
+        if p.hf_type == HfType.BUCKET:
+            path = p.path_in_repo.strip("/")
+            parts.append(hashlib.sha256(path.encode()).hexdigest()[:16])
+        else:
+            parts.append(p.revision)
+        return Path(cache_dir).joinpath(*parts)
 
     def _verify_path_in_repo_pulled(self, dest: Path) -> bool:
         """Whether a pull into *dest* found this URI's path in the repo.
@@ -1212,7 +1264,12 @@ class HfURI(URI):
         pull rather than binding an empty directory.
 
         Returns ``True`` immediately without network calls when HF mocking is
-        enabled via ``GBTEST_MOCK_HF``.
+        enabled via ``GBTEST_MOCK_HF``. A path in the repo is then created as
+        an empty directory, unless something is already there, so the input is
+        still bound at a path that exists. A mocked and a live run should not
+        share a cache: a live pull cannot put a file where that directory is,
+        and a live pull of a path that matches nothing finds that directory
+        and does not fail.
 
         Token is resolved from ``self.secrets['HF_TOKEN']`` or the ``HF_TOKEN``
         environment variable.  For non-default hosts the ``endpoint`` kwarg is
@@ -1227,6 +1284,15 @@ class HfURI(URI):
             True if the download succeeded, False on any error.
         """
         if is_hf_mocked():
+            bound = self.local_path(dest)
+            if bound != Path(dest) and not bound.exists():
+                try:
+                    bound.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    logger.error(
+                        "mocked HF pull of %s: cannot create %s: %s", self, bound, e
+                    )
+                    return False
             return True
         try:
             # Normalize so the lock-path derivation below tolerates a str dest,

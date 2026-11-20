@@ -36,7 +36,7 @@ The judge is a paid OpenAI-compatible endpoint, set by `options`: `judge_base_ur
 (default IBM LiteLLM), `judge_model` (default `aws/claude-sonnet-5`; FORTRESS's paper
 panel and the per-benchmark upstream judge prompts are not all reproduced — see each
 benchmark's own prompt in granite-evals), `judge_api_key_env` (default
-`GRANITE_EVALS_JUDGE_API_KEY`: the job needs the key in that variable). `judge_model=self`
+`EVAL_JUDGE_API_KEY`: the job needs the key in that variable). `judge_model=self`
 judges with the served model instead where the benchmark supports it (no key; smoke
 runs only; results say `judge_is_self: true`).
 
@@ -63,6 +63,10 @@ has `details.judge_usage` (tokens, cache hits, estimated cost) and `details.api_
 | `options` | Space-separated `key=value` benchmark options — see each benchmark's own granite-evals docs; `judge_model=self` works across the family where supported. |
 | `phase` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json`. |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | vLLM. |
+| `tool_call_parser` / `reasoning_parser` | vLLM parsers (default `auto`: detected from the checkpoint; `""` disables one). |
+| `vllm_args` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `base_url` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
+| `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Shared squashfs cache. Set it (recipes do, per benchmark) only for the sandboxed benchmarks in the table above; leave empty for the rest. |
 | `hf_home` | Overrides `HF_HOME`. |
 

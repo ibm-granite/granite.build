@@ -37,6 +37,8 @@ def mock_hfuri():
     uri.get_revision.return_value = "main"
     uri.get_hf_type.return_value = "model"
     uri.get_host.return_value = "huggingface.co"
+    # A model's pull dir, as HfURI.pull_dest lays it out.
+    uri.pull_dest.side_effect = lambda cache_dir: Path(cache_dir) / "myorg/myrepo/main"
     # No path in the repo: the content is bound at the download root.
     uri.local_path.side_effect = lambda dest: dest
     uri.__str__ = lambda self: "hf://models/myorg/myrepo"
@@ -114,23 +116,40 @@ class TestPullassetHfstore:
         assert envs["HF_TOKEN"] == "my-secret-token"
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_default_cache_dir_when_no_cache_path(
+    async def test_no_cache_path_and_no_shared_workdir_fails_fast(
         self, skypilot_env, mock_hfuri
     ):
-        """No cache_path -> uses get_hf_cache_dir default (~/.cache/gbserver/hf)."""
-        assetstore = _hfstore_mock()
+        """Neither set: refuse, rather than send the worker a gbserver-host
+        ~/.cache path (a macOS server would point a Linux node at /Users/...)."""
         storeload_config = MagicMock()
         storeload_config.mode = "default"
         storeload_config.config = {}
+        with pytest.raises(
+            ValueError, match="shared_workdir or the store's pull config cache_path"
+        ):
+            await skypilot_env.pullasset_hfstore(
+                uri=mock_hfuri,
+                assetstore=_hfstore_mock(),
+                storeload_config=storeload_config,
+            )
 
+    @pytest.mark.asyncio
+    async def test_no_cache_path_uses_the_shared_workdir(
+        self, skypilot_env, mock_hfuri
+    ):
+        """No cache_path: the cache lives under shared_workdir on the workers."""
+        skypilot_env.config.config["shared_workdir"] = "/shared"
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {}
         binding_config, _ = await skypilot_env.pullasset_hfstore(
             uri=mock_hfuri,
-            assetstore=assetstore,
+            assetstore=_hfstore_mock(),
             storeload_config=storeload_config,
         )
-
-        path = binding_config["binding"]["path"]
-        assert path.endswith(str(Path(".cache/gbserver/hf/myorg/myrepo/main")))
+        assert binding_config["binding"]["path"] == str(
+            Path("/shared/hf_cache/myorg/myrepo/main")
+        )
 
     @pytest.mark.asyncio
     async def test_step_uri_override(self, skypilot_env, mock_hfuri):
@@ -169,6 +188,51 @@ class TestPullassetHfstore:
         )
 
         assert step_config.step_uri == "space://steps/hfpull"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inline", [False, True])
+    async def test_pulls_a_dataset_apart_from_a_same_named_model(
+        self, skypilot_env, inline
+    ):
+        """A dataset is pulled under ``datasets/``, so it can't share a pull dir
+        with a model of the same owner/repo, by the hfpull step and inline."""
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {"cache_path": "/data/cache", "inline": inline}
+
+        binding_config, step_config = await skypilot_env.pullasset_hfstore(
+            uri=HfURI.parse("hf:///datasets/myorg/myrepo/main/data"),
+            assetstore=_hfstore_mock(),
+            storeload_config=storeload_config,
+        )
+
+        dest = "/data/cache/datasets/myorg/myrepo/main"
+        assert binding_config["binding"]["path"] == f"{dest}/data"
+        if inline:
+            assert binding_config["_hfpull"]["path"] == dest
+        else:
+            assert step_config.config["hfpull_config"]["path"] == dest
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inline", [False, True])
+    async def test_refuses_a_bucket_input(self, skypilot_env, inline):
+        """`hf download` has no bucket repo type, so a bucket input is refused
+        before anything is launched, by the hfpull step and inline alike."""
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {"cache_path": "/data/cache", "inline": inline}
+        uri = HfURI.parse("hf:///buckets/myorg/mybucket/some/dir")
+
+        with pytest.raises(ValueError) as exc_info:
+            await skypilot_env.pullasset_hfstore(
+                uri=uri,
+                assetstore=_hfstore_mock(),
+                storeload_config=storeload_config,
+            )
+        message = str(exc_info.value)
+        assert str(uri) in message
+        assert "aren't supported on the skypilot environment, because" in message
+        assert "K8s, Bash or Docker environment" in message
 
     @pytest.mark.asyncio
     async def test_rejects_wrong_assetstore_type(self, skypilot_env, mock_hfuri):

@@ -374,6 +374,34 @@ themselves (URI schemes, secrets, configuration), see [Asset stores](../asset-st
 
 ---
 
+## `Skypilot` — asset stores
+
+The `Skypilot` environment ([`skypilot.py`](../../src/gbserver/environment/skypilot.py)) implements
+these `pullasset_*`/`pushasset_*` methods. Each one queues a built-in step from
+`builtins/steps/skypilot/` that runs as its own SkyPilot task. Those steps exchange data with the
+main step through `shared_workdir`. See [SkyPilot](../environments/skypilot.md) for the
+`environment.yaml` config.
+
+| Method | Store type | Behavior |
+|--------|-----------|----------|
+| `pullasset_hfstore` | HuggingFace | Injects an `hfpull` step (or, with `inline: true`, downloads in the main step's setup) |
+| `pushasset_hfstore` | HuggingFace | Injects an `hfpush` step |
+| `pullasset_cosstore` | S3 / COS | Injects an `s3pull` step (AWS CLI) bound at `<cache>/<uri hash>`, a locked, versioned cache shared across builds; each consuming target run is bound to its own `<run workdir>/.gb_inputs/<uri hash>` link to the version it takes a reader lease on (`_caches_pulled_binding` is off for s3/cos, so every target pulls), and entries downloaded more than `cache_max_age_days` ago are evicted under their lock unless leased |
+| `pushasset_cosstore` | S3 / COS | Injects an `s3push` step (file → exact key, directory → prefix sync) |
+
+For S3 / COS, the endpoint, region and credential secret names come from the dispatched store
+(helpers in [`_skypilot_cos.py`](../../src/gbserver/environment/_skypilot_cos.py)). An environment
+can therefore list one store per endpoint. Credentials are resolved by
+`Cosstore.resolve_credentials` (space secrets, then the same-named env var, as hf's
+`resolve_token` does) and passed to the step as `AWS_*` launcher envs. Setting
+Build validation checks `s3://` / `cos://` inputs through the target environment's
+`input_exists`. It uses the same store routing as pull and push, then calls
+`Cosstore.uri_exists`. It never uses the process-wide assetstore registry, which can be empty on
+the validating thread or hold another environment's store for the same prefix.
+`GBTEST_MOCK_COS` short-circuits both steps and the existence check.
+
+---
+
 ## Adding a New Environment
 
 1. Create `src/gbserver/environment/myenv.py` with a class named `Myenv(Environment)`.

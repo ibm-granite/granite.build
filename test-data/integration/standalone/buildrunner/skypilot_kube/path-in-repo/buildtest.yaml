@@ -1,0 +1,21 @@
+# YAML-driven spec for test/integration/standalone/buildrunner/skypilot_kube/test_skypilot_kube_path_in_repo.py.
+targets:
+  - pod-run
+target_expectations:
+  - target_name: pod-run
+    # step_count = 3: one hfpull step per hf:// input (each a separate pod
+    # writing to the shared volume) + the command step. No outputs, so no
+    # hfpush steps.
+    step_count: 3
+    input_artifact_count: 2    # hf_config, hf_generation_config
+    output_artifact_count: 0
+# Shared standalone space, as skypilot_kube/1step uses, so the SHIPPED
+# configurations/assets/environments/skypilot/kubernetes/local/environment.yaml is
+# the env under test.
+space_uri: ../../../../../../configurations/spaces/local
+# The hfpull retry path (teardown -> relaunch) is covered by skypilot_kube/1step;
+# this test is about where a path in the repo lands and is bound.
+simulate_step_failure: false
+# Pod scheduling + SkyPilot runtime setup on first launch (image pull) + two
+# hfpull steps. Generous for a laptop kind cluster.
+timeout_minutes: 20

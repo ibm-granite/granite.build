@@ -1,15 +1,68 @@
 name: s3pull
 version: 1.0.0
 type: upload
+# Hidden step queued by Skypilot.pullasset_cosstore for an s3:// / cos:// input.
+# Pulls an object (copied in under its basename) or a prefix (synced) with the
+# AWS CLI into a cache shared across builds:
+#
+#   local_path                    -> symlink to the current complete version
+#   .<name>.versions/<version>/   the downloaded data, never modified once live
+#   .<name>.lock/                 mkdir lock serializing pulls of this URI
+#
+# Each pull builds a new version under the lock (a prefix is synced with
+# --delete into a hard-linked copy of the current version, so objects deleted
+# upstream disappear and unchanged ones aren't re-downloaded), then swaps the
+# symlink atomically: a reader sees the old or the new version, never a
+# half-written one. The previous version is kept for readers that resolved the
+# old path; older ones are removed. For a single object, each version records
+# the object's ETag/size/LastModified in <version>.sig; a re-pull of an
+# unchanged object keeps the live version (no download, no swap) unless it is
+# older than cache_max_age_days.
+#
+# Leases: under the lock, each pull records that its target run reads the live
+# version, in .<name>.leases/<GB_TARGETRUN_ID> (run dir, pinned version, time),
+# and points run_link -- the run's own binding, <run workdir>/.gb_inputs/<name>
+# -- at that version. The run's steps read through run_link, so they keep
+# reading the version they leased even when another build's pull re-points
+# local_path meanwhile.
+# A lease is live while its run dir ($GB_BUILD_WORKDIR, removed at build end)
+# exists -- so a crashed build's lease stays live -- unless lease_max_age_days
+# (default 0 = never) has passed. Pruning keeps every leased version, and
+# eviction skips any entry with a live lease. Dead leases are removed by
+# whichever finds them. scripts/s3/s3pull-leases.sh lists and releases leases.
+#
+# Eviction: after each pull, entries of this cache (names that are URI hashes)
+# whose live data was downloaded more than cache_max_age_days ago (default 30;
+# 0 disables) and that hold no live lease are deleted under their own lock,
+# taken without waiting: an entry being pulled is skipped. Credentials arrive as
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in launcher_config.envs, resolved by
+# Cosstore.resolve_credentials from the secrets the store.yaml names
+# (cos_*_secret_name), as HF_TOKEN reaches hfpull.
 config:
   retry_enabled_default: true
   retry_transparently_default: true
   gb:
     step_contents_in_env: false
+  workload:
+    cwd: .
   s3pull_config:
+    # The artifact URI as written in the build, and the bucket-resolved s3://
+    # URI the AWS CLI reads from.
+    uri: <uri>
     s3_uri: <s3://bucket/path>
     local_path: <destination>
     endpoint_url: ''
+    region: ''
+    # Evict cache entries downloaded more than this many days ago; 0 disables.
+    # Set per store with the storeload config key cache_max_age_days.
+    cache_max_age_days: 30
+    # Treat a reader lease older than this many days as dead; 0 (default) means
+    # a lease lasts as long as its run dir. Storeload key: lease_max_age_days.
+    lease_max_age_days: 0
+    # The run's binding, set by Skypilot.pullasset_cosstore when the run has a
+    # workdir; s3pull points it at the version this run leases. '' = consumers
+    # read local_path (the shared cache entry) directly.
+    run_link: ''
   compute_config:
     num_cpus_per_node: 2
     num_gpus_per_node: 0
@@ -23,27 +76,452 @@ environment_configs:
         monitors:
         - skypilot_monitor
         config:
-          image_id: docker:amazon/aws-cli:latest
           # The cpus floor lives in compute_config.num_cpus_per_node, not here.
           # The engine turns it into the form each cloud accepts (_cpus_floor):
           # a "{n}+" minimum on cloud catalogs, a bare int on slurm/lsf, whose
           # SkyPilot cloud crashes on float("{n}+"). A literal "{n}+" in
           # resources is passed through verbatim and broke this step on LSF.
           resources: {}
+          # No container image: the AWS CLI is pip-installed so the step runs on
+          # every SkyPilot cloud (incl. SLURM without Pyxis, and LSF), as hfpull
+          # does. Skipped when mocked or when `aws` is already on PATH.
+          setup: |
+            case "${GBTEST_MOCK_COS:-}" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) exit 0 ;; esac
+            command -v aws >/dev/null 2>&1 || pip install --no-cache-dir awscli
           run: |
             set -euo pipefail
             trap 'EC=$?; echo "s3pull failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
             echo 's3pull start'
+            # Values are base64-encoded at render time so no URI/path character
+            # can break out of shell quoting.
+            S3_URI="$(printf %s '{{ config.s3pull_config.s3_uri | b64encode }}' | base64 -d)"
+            LOCAL_PATH="$(printf %s '{{ config.s3pull_config.local_path | b64encode }}' | base64 -d)"
+            ENDPOINT_URL="$(printf %s '{{ config.s3pull_config.endpoint_url | default("") | b64encode }}' | base64 -d)"
+            REGION="$(printf %s '{{ config.s3pull_config.region | default("") | b64encode }}' | base64 -d)"
+            CACHE_MAX_AGE_DAYS="$(printf %s '{{ config.s3pull_config.cache_max_age_days | default(30) | string | b64encode }}' | base64 -d)"
+            if ! [[ "${CACHE_MAX_AGE_DAYS}" =~ ^[0-9]+$ ]]; then
+              echo "s3pull: invalid cache_max_age_days '${CACHE_MAX_AGE_DAYS}'; using 30" >&2
+              CACHE_MAX_AGE_DAYS=30
+            fi
+            LEASE_MAX_AGE_DAYS="$(printf %s '{{ config.s3pull_config.lease_max_age_days | default(0) | string | b64encode }}' | base64 -d)"
+            if ! [[ "${LEASE_MAX_AGE_DAYS}" =~ ^[0-9]+$ ]]; then
+              echo "s3pull: invalid lease_max_age_days '${LEASE_MAX_AGE_DAYS}'; using 0" >&2
+              LEASE_MAX_AGE_DAYS=0
+            fi
+            RUN_LINK="$(printf %s '{{ config.s3pull_config.run_link | default("") | b64encode }}' | base64 -d)"
+            # The path consumers are bound to.
+            BINDING_PATH="${RUN_LINK:-${LOCAL_PATH}}"
+            MOCK_MARKER=".gbtest_mock_s3pull"
+
+            # Mocked when GBTEST_MOCK_COS is truthy, matching
+            # gbcommon.types.testing.is_cos_mocked (getenv_boolean). Keep identical
+            # to the copy in the skypilot s3push step.
+            cos_mocked() {
+                case "${GBTEST_MOCK_COS:-}" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;; *) return 1 ;; esac
+            }
+            if cos_mocked; then
+                echo "[GBTEST_MOCK_COS] mocking s3pull - skipping real download"
+                mkdir -p "${BINDING_PATH}"
+                echo mock > "${BINDING_PATH}/${MOCK_MARKER}"
+                echo "Pulled S3 URI: ${S3_URI} to path ${BINDING_PATH}"
+                echo 's3pull end'
+                exit 0
+            fi
+
             if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-              echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set (inject via K8s secret in pod_config)" >&2
+              echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set (from the store's cos_*_secret_name secrets)" >&2
               exit 1
             fi
-            mkdir -p "{{ config.s3pull_config.local_path }}"
-            {% if config.s3pull_config.endpoint_url %}
-            aws s3 sync "{{ config.s3pull_config.s3_uri }}" "{{ config.s3pull_config.local_path }}" --endpoint-url "{{ config.s3pull_config.endpoint_url }}"
-            {% else %}
-            aws s3 sync "{{ config.s3pull_config.s3_uri }}" "{{ config.s3pull_config.local_path }}"
-            {% endif %}
+            AWS_ARGS=()
+            if [ -n "${ENDPOINT_URL}" ]; then AWS_ARGS+=(--endpoint-url "${ENDPOINT_URL}"); fi
+            if [ -n "${REGION}" ]; then export AWS_DEFAULT_REGION="${REGION}"; fi
+
+            S3_REST="${S3_URI#s3://}"
+            S3_BUCKET="${S3_REST%%/*}"
+            S3_KEY=""
+            if [[ "${S3_REST}" == */* ]]; then S3_KEY="${S3_REST#*/}"; fi
+
+            # ── Shared cache layout (see the header comment) ──
+            DEST="${LOCAL_PATH%/}"
+            DEST_DIR="$(dirname "${DEST}")"
+            DEST_NAME="$(basename "${DEST}")"
+            VERSIONS_NAME=".${DEST_NAME}.versions"
+            VERSIONS="${DEST_DIR}/${VERSIONS_NAME}"
+            LOCK="${DEST_DIR}/.${DEST_NAME}.lock"
+            # A holder refreshes the lock every 30s; one untouched for the TTL is
+            # a dead holder and is reclaimed. Waiting longer than the wait limit
+            # fails the step (it retries) rather than hanging.
+            LOCK_TTL_SECONDS="${GB_S3PULL_LOCK_TTL_SECONDS:-600}"
+            LOCK_WAIT_SECONDS="${GB_S3PULL_LOCK_WAIT_SECONDS:-7200}"
+            HEARTBEAT_SECONDS="${GB_S3PULL_HEARTBEAT_SECONDS:-30}"
+            OWNER="host:$(hostname)|pid:$$|$(date +%s)"
+            HEARTBEAT_PID=""
+            NEW_VERSION=""
+
+            # Release our lock (only if we still own it), stop the heartbeat, and
+            # drop a version that never went live.
+            s3pull_cleanup() {
+                if [ -n "${HEARTBEAT_PID}" ]; then
+                    pkill -P "${HEARTBEAT_PID}" 2>/dev/null || true
+                    kill "${HEARTBEAT_PID}" 2>/dev/null || true
+                fi
+                if [ -n "${NEW_VERSION}" ] && [ -d "${NEW_VERSION}" ]; then rm -rf "${NEW_VERSION}"; fi
+                if [ "$(cat "${LOCK}/owner" 2>/dev/null || true)" = "${OWNER}" ]; then rm -rf "${LOCK}"; fi
+            }
+            trap s3pull_cleanup EXIT
+
+            # Print the mtime (epoch) of path $1 without following a symlink.
+            s3pull_mtime() {
+                stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+            }
+
+            # True if lock dir $1 (default LOCK) was not refreshed within the TTL.
+            s3pull_lock_stale() {
+                local now mtime
+                now="$(date +%s)"
+                mtime="$(s3pull_mtime "${1:-${LOCK}}")" || mtime="${now}"
+                [ $(( now - mtime )) -ge "${LOCK_TTL_SECONDS}" ]
+            }
+
+            # Remove LOCK, judged stale while it named owner $1. Checking then
+            # moving is racy: another waiter may have reclaimed it and taken a
+            # fresh lock in between. So move it aside, then confirm the moved lock
+            # is still the stale one (same owner and still stale; a lock created
+            # a moment ago may have no owner yet, so the owner alone isn't proof).
+            # If it isn't, it is someone's live lock: put it back if the path is
+            # still free, and in any case never delete it.
+            s3pull_reclaim_stale_lock() {
+                local seen="$1" grave="${LOCK}.stale.$$.${RANDOM}"
+                # Test-only seam to run something between the check and the move.
+                if [ -n "${GBTEST_S3PULL_AFTER_STALE_CHECK:-}" ]; then
+                    "${GBTEST_S3PULL_AFTER_STALE_CHECK}" "${LOCK}" || true
+                fi
+                mv "${LOCK}" "${grave}" 2>/dev/null || return 0  # someone moved it first
+                if [ "$(cat "${grave}/owner" 2>/dev/null || true)" = "${seen}" ] \
+                   && s3pull_lock_stale "${grave}"; then
+                    echo "s3pull: reclaimed stale lock ${LOCK} (owner ${seen:-unknown})" >&2
+                    rm -rf "${grave}"
+                    return 0
+                fi
+                if [ ! -e "${LOCK}" ] && python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' \
+                       "${grave}" "${LOCK}" 2>/dev/null; then
+                    echo "s3pull: ${LOCK} was re-taken during reclaim; put it back" >&2
+                else
+                    echo "WARNING: ${LOCK} was re-taken during reclaim and could not be put back; leaving it at ${grave}" >&2
+                fi
+            }
+
+            # Take the per-URI lock, reclaiming a dead holder's; then keep it fresh.
+            s3pull_acquire_lock() {
+                local waited=0
+                mkdir -p "${DEST_DIR}"
+                until mkdir "${LOCK}" 2>/dev/null; do
+                    if s3pull_lock_stale; then
+                        s3pull_reclaim_stale_lock "$(cat "${LOCK}/owner" 2>/dev/null || true)"
+                        continue
+                    fi
+                    if [ "${waited}" -ge "${LOCK_WAIT_SECONDS}" ]; then
+                        echo "ERROR: timed out after ${waited}s waiting for ${LOCK} (held by $(cat "${LOCK}/owner" 2>/dev/null || echo unknown))" >&2
+                        return 1
+                    fi
+                    sleep 2
+                    waited=$(( waited + 2 ))
+                done
+                echo "${OWNER}" > "${LOCK}/owner"
+                # Keep the lock fresh while we still own it. touch -c never creates
+                # the path: once the lock dir is gone (reclaimed), a plain touch
+                # would leave a regular file named like the lock, blocking every
+                # other pull's mkdir until it went stale. Checking the owner first
+                # also stops us refreshing a lock someone else took since, which
+                # would keep their lock looking alive after they died.
+                # Detached from our stdio so a sleeping heartbeat never holds the
+                # step's output open after it exits.
+                (
+                    while sleep "${HEARTBEAT_SECONDS}"; do
+                        [ "$(cat "${LOCK}/owner" 2>/dev/null || true)" = "${OWNER}" ] || exit 0
+                        touch -c "${LOCK}" 2>/dev/null || exit 0
+                    done
+                ) </dev/null >/dev/null 2>&1 &
+                HEARTBEAT_PID=$!
+            }
+
+            # Atomically make link $2 point at $1 (a new link renamed over it), so a
+            # reader resolving $2 sees the old target or the new one, never none.
+            s3pull_replace_link() {
+                local tmp="$2.swap.$$"
+                ln -sfn "$1" "${tmp}"
+                python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "${tmp}" "$2" 2>/dev/null \
+                    || mv -Tf "${tmp}" "$2"
+            }
+
+            # Atomically point DEST at version directory $1 (relative link target).
+            s3pull_swap_to() {
+                s3pull_replace_link "${VERSIONS_NAME}/$1" "${DEST}"
+            }
+
+            # A real directory at DEST (the pre-versioning layout) becomes a version.
+            s3pull_adopt_legacy_dir() {
+                if [ -d "${DEST}" ] && [ ! -L "${DEST}" ]; then
+                    mkdir -p "${VERSIONS}"
+                    mv "${DEST}" "${VERSIONS}/legacy-$$"
+                    s3pull_swap_to "legacy-$$"
+                fi
+            }
+
+            # ── Reader leases (see the header comment) ──
+            # This run's lease: its id and the run dir whose existence keeps it live.
+            LEASE_ID="${GB_TARGETRUN_ID:-unknown-$(hostname)-$$}"
+            LEASE_RUN_DIR="${GB_BUILD_WORKDIR:--}"
+
+            # True if lease file $1 is live: its run dir (line 1) exists or is "-"
+            # (unknown, e.g. written by hand, so assumed live), and it is not older than
+            # LEASE_MAX_AGE_DAYS (0 = never too old).
+            s3pull_lease_live() {
+                local file="$1" run_dir created
+                run_dir="$(sed -n 1p "${file}" 2>/dev/null)" || return 1
+                [ -n "${run_dir}" ] || return 1
+                if [ "${LEASE_MAX_AGE_DAYS}" -gt 0 ]; then
+                    created="$(sed -n 3p "${file}")"
+                    [[ "${created}" =~ ^[0-9]+$ ]] || created="$(s3pull_mtime "${file}")" || created=0
+                    [ "${created}" -ge $(( $(date +%s) - LEASE_MAX_AGE_DAYS * 86400 )) ] || return 1
+                fi
+                [ "${run_dir}" = "-" ] || [ -d "${run_dir}" ]
+            }
+
+            # For entry <hash> $1, whose lock the caller holds: print one
+            # "<targetrun> <run dir> <version>" line per live lease, and delete
+            # dead ones.
+            s3pull_live_leases() {
+                local leases="${DEST_DIR}/.$1.leases" f
+                [ -d "${leases}" ] || return 0
+                for f in "${leases}"/*; do
+                    [ -f "${f}" ] || continue
+                    if s3pull_lease_live "${f}"; then
+                        echo "$(basename "${f}") $(sed -n 1p "${f}") $(sed -n 2p "${f}")"
+                    else
+                        rm -f "${f}"
+                    fi
+                done
+                rmdir "${leases}" 2>/dev/null || true
+            }
+
+            # Record (lock held) that this target run reads DEST's live version.
+            # Written via a temp file and rename, so a reader of the lease never
+            # sees it half-written; a later pull by the same run re-pins it.
+            # Without GB_BUILD_WORKDIR (no shared_workdir) there is no run lifetime
+            # to tie a lease to, so none is taken: a lease that could never be
+            # released would pin every version forever.
+            s3pull_take_lease() {
+                local leases="${DEST_DIR}/.${DEST_NAME}.leases" version tmp
+                if [ "${LEASE_RUN_DIR}" = "-" ]; then
+                    echo "s3pull: no reader lease taken: GB_BUILD_WORKDIR is not set (no shared_workdir)"
+                    return 0
+                fi
+                version="$(basename "$(readlink "${DEST}" 2>/dev/null || true)")"
+                mkdir -p "${leases}"
+                tmp="${leases}/.${LEASE_ID}.$$"
+                printf '%s\n%s\n%s\n' "${LEASE_RUN_DIR}" "${version}" "$(date +%s)" > "${tmp}"
+                mv -f "${tmp}" "${leases}/${LEASE_ID}"
+                echo "s3pull: lease ${LEASE_ID} on ${version} (run dir ${LEASE_RUN_DIR})"
+            }
+
+            # Point the run's binding (RUN_LINK) at DEST's live version -- the one
+            # this run just leased -- by its absolute path, so the run's steps keep
+            # reading it after other builds re-point DEST. No-op without RUN_LINK.
+            s3pull_link_run() {
+                [ -n "${RUN_LINK}" ] || return 0
+                local version target
+                version="$(basename "$(readlink "${DEST}")")"
+                target="$(cd "${VERSIONS}/${version}" && pwd -P)"
+                mkdir -p "$(dirname "${RUN_LINK}")"
+                s3pull_replace_link "${target}" "${RUN_LINK}"
+                echo "s3pull: ${RUN_LINK} -> ${target}"
+            }
+
+            # Keep the live version ($1), the one it replaced ($2), and every
+            # version a live lease pins, with their .sig files; remove the rest.
+            s3pull_prune_versions() {
+                local keep_new="$1" keep_prev="$2" v base name pinned
+                pinned=" $(s3pull_live_leases "${DEST_NAME}" | awk '{print $3}' | tr '\n' ' ') "
+                for v in "${VERSIONS}"/*; do
+                    [ -e "${v}" ] || continue
+                    base="$(basename "${v}")"
+                    name="${base%.sig}"
+                    case "${name}" in "${keep_new}"|"${keep_prev}") continue ;; esac
+                    if [[ "${pinned}" == *" ${name} "* ]]; then
+                        [ "${base}" = "${name}" ] && echo "s3pull: keeping version ${name}: it is leased"
+                        continue
+                    fi
+                    rm -rf "${v}"
+                done
+            }
+
+            # Print when cache entry $1 (a path in DEST_DIR) was downloaded: the epoch
+            # in its live version's name (v<epoch>-...), else the mtime of that
+            # version or of an old-layout directory. Fails if the entry is gone.
+            s3pull_entry_epoch() {
+                local entry="$1" target name
+                if [ -L "${entry}" ]; then
+                    target="$(readlink "${entry}")" || return 1
+                    name="$(basename "${target}")"
+                    if [[ "${name}" =~ ^v([0-9]+)- ]]; then
+                        echo "${BASH_REMATCH[1]}"
+                        return 0
+                    fi
+                    s3pull_mtime "$(dirname "${entry}")/${target}"
+                    return
+                fi
+                [ -e "${entry}" ] || return 1
+                s3pull_mtime "${entry}"
+            }
+
+            # True if epoch $1 is more than CACHE_MAX_AGE_DAYS ago (never when 0).
+            s3pull_too_old() {
+                [ "${CACHE_MAX_AGE_DAYS}" -gt 0 ] \
+                    && [ "$1" -lt $(( $(date +%s) - CACHE_MAX_AGE_DAYS * 86400 )) ]
+            }
+
+            # Evict cache entry <hash> $1: its symlink (or old-layout directory)
+            # and its .versions, if under its lock it is still too old. The lock is
+            # tried without waiting; a held lock means that URI is being pulled.
+            s3pull_evict_entry() {
+                local name="$1" epoch holders
+                local entry="${DEST_DIR}/$1" versions="${DEST_DIR}/.$1.versions"
+                local lock="${DEST_DIR}/.$1.lock"
+                if ! mkdir "${lock}" 2>/dev/null; then
+                    echo "s3pull: not evicting cache entry ${name}: it is locked"
+                    return 0
+                fi
+                echo "${OWNER}" > "${lock}/owner"
+                epoch="$(s3pull_entry_epoch "${entry}")" \
+                    || epoch="$(s3pull_mtime "${versions}")" || epoch=""
+                if [ -n "${epoch}" ] && s3pull_too_old "${epoch}"; then
+                    holders="$(s3pull_live_leases "${name}")"
+                    if [ -n "${holders}" ]; then
+                        echo "s3pull: not evicting cache entry ${name}: leased by (targetrun run-dir version):"
+                        printf '%s\n' "${holders}" | sed 's/^/  /'
+                    else
+                        # The symlink goes first, so new readers stop resolving it.
+                        if [ -L "${entry}" ]; then rm -f "${entry}"; else rm -rf "${entry}"; fi
+                        rm -rf "${versions}" "${DEST_DIR}/.$1.leases"
+                        echo "s3pull: evicted cache entry ${name} (downloaded $(( ($(date +%s) - epoch) / 86400 )) days ago)"
+                    fi
+                fi
+                rm -rf "${lock}"
+            }
+
+            # Evict this cache's entries downloaded more than CACHE_MAX_AGE_DAYS
+            # ago. Only names that are URI hashes (64 hex chars) and their
+            # .<hash>.versions are considered; this pull's own entry never is.
+            # Best effort: a failure is logged and never fails the pull.
+            s3pull_evict_old_entries() {
+                [ "${CACHE_MAX_AGE_DAYS}" -gt 0 ] || return 0
+                local path name epoch
+                for path in "${DEST_DIR}"/* "${DEST_DIR}"/.*.versions; do
+                    [ -e "${path}" ] || [ -L "${path}" ] || continue
+                    name="$(basename "${path}")"
+                    name="${name#.}"
+                    name="${name%.versions}"
+                    [[ "${name}" =~ ^[0-9a-f]{64}$ ]] || continue
+                    [ "${name}" != "${DEST_NAME}" ] || continue
+                    epoch="$(s3pull_entry_epoch "${DEST_DIR}/${name}")" \
+                        || epoch="$(s3pull_mtime "${DEST_DIR}/.${name}.versions")" || continue
+                    s3pull_too_old "${epoch}" || continue
+                    s3pull_evict_entry "${name}" || echo "s3pull: could not evict cache entry ${name}" >&2
+                done
+            }
+
+            # Print "ETag|size|LastModified" of the object at S3_KEY.
+            # Returns 1 (printing nothing) only when S3_KEY is not an object --
+            # a key ending in "/" or a genuine not-found (404) -- so the caller
+            # treats the URI as a prefix. Any other head-object failure (403
+            # access denied, bad credentials, an unreachable endpoint) is reported
+            # with the CLI's own message and returns 2: falling through to a
+            # prefix sync would hide it behind "no objects found". (Without
+            # s3:ListBucket, S3 answers 403 even for a missing key; a prefix sync
+            # couldn't list either, so failing loudly is right there too.)
+            s3pull_object_signature() {
+                local out err rc=0 errfile
+                [ -n "${S3_KEY}" ] && [[ "${S3_KEY}" != */ ]] || return 1
+                errfile="$(mktemp)"
+                out="$(aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3api head-object --bucket "${S3_BUCKET}" \
+                    --key "${S3_KEY}" --output json 2>"${errfile}")" || rc=$?
+                err="$(cat "${errfile}")"
+                rm -f "${errfile}"
+                if [ "${rc}" -ne 0 ]; then
+                    case "${err}" in
+                        *"(404)"*|*"Not Found"*|*"NoSuchKey"*) return 1 ;;
+                    esac
+                    echo "ERROR: cannot read s3://${S3_BUCKET}/${S3_KEY} (head-object exit ${rc}): ${err:-no error output}" >&2
+                    return 2
+                fi
+                printf '%s' "${out}" \
+                  | python3 -c 'import json, sys; d = json.load(sys.stdin); print("%s|%s|%s" % (d.get("ETag", ""), d.get("ContentLength", ""), d.get("LastModified", "")))' \
+                  || { echo "ERROR: unexpected head-object output for s3://${S3_BUCKET}/${S3_KEY}" >&2; return 2; }
+            }
+
+            s3pull_acquire_lock
+            s3pull_adopt_legacy_dir
+            PREV_VERSION="$(basename "$(readlink "${DEST}" 2>/dev/null || true)")"
+            # 0: an object (signature in OBJECT_SIG); 1: not an object, so a prefix;
+            # 2: head-object failed for another reason (already reported) -- stop.
+            SIG_RC=0
+            OBJECT_SIG="$(s3pull_object_signature)" || SIG_RC=$?
+            if [ "${SIG_RC}" -eq 1 ]; then
+              OBJECT_SIG=""
+            elif [ "${SIG_RC}" -ne 0 ]; then
+              exit 1
+            fi
+
+            # An unchanged object: the live version already holds it, so keep it --
+            # unless that copy is older than CACHE_MAX_AGE_DAYS, which downloads it
+            # again (the same age rule eviction applies).
+            LIVE_EPOCH="$(s3pull_entry_epoch "${DEST}")" || LIVE_EPOCH=""
+            if [ -n "${OBJECT_SIG}" ] && [ -n "${PREV_VERSION}" ] \
+               && [ "$(cat "${VERSIONS}/${PREV_VERSION}.sig" 2>/dev/null || true)" = "${OBJECT_SIG}" ] \
+               && [ -f "${VERSIONS}/${PREV_VERSION}/$(basename "${S3_KEY}")" ] \
+               && [ -n "${LIVE_EPOCH}" ] && ! s3pull_too_old "${LIVE_EPOCH}"; then
+              echo "s3pull: ${S3_URI} is unchanged; keeping the cached copy"
+              s3pull_take_lease
+              s3pull_link_run
+              s3pull_evict_old_entries || true
+              echo "Pulled S3 URI: ${S3_URI} to path ${BINDING_PATH}"
+              echo 's3pull end'
+              exit 0
+            fi
+
+            VERSION_NAME="v$(date +%s)-$$-${RANDOM}"
+            NEW_VERSION="${VERSIONS}/${VERSION_NAME}"
+            mkdir -p "${NEW_VERSION}"
+
+            # An exact object -> copy it in under its basename; otherwise treat the
+            # URI as a prefix and sync it (rclone-copy semantics, as on K8s/LSF),
+            # starting from a hard-linked copy of the live version so only changed
+            # objects download. --delete drops objects removed upstream.
+            if [ -n "${OBJECT_SIG}" ]; then
+              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 cp --only-show-errors "${S3_URI}" "${NEW_VERSION}/$(basename "${S3_KEY}")"
+              printf '%s\n' "${OBJECT_SIG}" > "${VERSIONS}/${VERSION_NAME}.sig"
+            else
+              if [ -n "${PREV_VERSION}" ] && [ -d "${VERSIONS}/${PREV_VERSION}" ]; then
+                cp -al "${VERSIONS}/${PREV_VERSION}/." "${NEW_VERSION}/" 2>/dev/null \
+                  || { rm -rf "${NEW_VERSION}"; mkdir -p "${NEW_VERSION}"; }
+              fi
+              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 sync --delete --only-show-errors "${S3_URI%/}/" "${NEW_VERSION}/"
+            fi
+
+            # An empty/missing prefix is an error, not a silently empty input; the
+            # live version is left as it was.
+            if [ -z "$(find "${NEW_VERSION}" -type f -print -quit)" ]; then
+              echo "ERROR: no objects found at ${S3_URI}" >&2
+              exit 1
+            fi
+            s3pull_swap_to "${VERSION_NAME}"
+            NEW_VERSION=""
+            s3pull_take_lease
+            s3pull_link_run
+            s3pull_prune_versions "${VERSION_NAME}" "${PREV_VERSION}"
+            s3pull_evict_old_entries || true
+            echo "Pulled S3 URI: ${S3_URI} to path ${BINDING_PATH}"
             echo 's3pull end'
     monitors:
       skypilot_monitor:

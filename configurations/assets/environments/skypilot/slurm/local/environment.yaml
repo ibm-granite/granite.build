@@ -73,6 +73,15 @@ config:
         slurm-docker:
           workdir: /shared
 assetstores:
+  # s3://local/... -> the local SeaweedFS (`make s3-setup`), bucket gb-checkpoints. Pulls cache
+  # to ${shared_workdir}/cos_cache (/shared, visible to every node).
+  - store_uri: space://assetstores/s3-local/
+    pull:
+      - mode: default
+        config: {}
+    push:
+      - mode: default
+        config: {}
   - store_uri: space://assetstores/hf
     pull:
       - mode: default

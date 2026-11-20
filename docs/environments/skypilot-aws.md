@@ -292,7 +292,7 @@ that space's `environment.yaml`:
 - **Not yet supported: hidden pull/push steps.** buildrunner auto-queues hidden
   steps for non-environment inputs/outputs (e.g. `hf://` → hfpull/hfpush,
   `s3://` → s3pull/s3push). These run on images without `mount.efs` (the bare
-  default image, or `amazon/aws-cli`), so with an access point on the workdir
+  default image; s3pull/s3push pip-install the AWS CLI on it), so with an access point on the workdir
   mount they fail fast. Until that is addressed
   ([#458](https://github.com/ibm-granite/granite.build/issues/458)), use access
   points only for builds whose steps all run in an image that bundles
@@ -346,6 +346,14 @@ EFS bounds latency and cost.
 When `shared_filesystem` is enabled, drop `cache_path: /tmp/hf_cache` and `inline: true` from the hf
 assetstore (use `config: {}`, as above), so `hfpull` runs as its own step and caches to
 `${mount_point}/hf_cache` — otherwise it caches instance-locally and the model never reaches EFS.
+
+### s3 / cos inputs and outputs
+
+`s3://` / `cos://` inputs and outputs run as separate `s3pull` / `s3push` steps. They
+have no inline mode yet, so they only work with `shared_filesystem` enabled. A pull caches
+to `${shared_workdir}/cos_cache` unless the store's pull config sets `cache_path`. Without a
+shared filesystem the step on the next instance can't see the pulled data, and `s3push`
+can't see the main step's outputs.
 
 ### Cleanup-zone pinning (`efs.cleanup_zone`)
 

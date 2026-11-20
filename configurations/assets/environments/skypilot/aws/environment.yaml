@@ -58,6 +58,10 @@ config:
   # and caches to ${shared_workdir}/hf_cache (otherwise it caches instance-locally and
   # the model never reaches EFS). i.e. replace the hf pull config with `config: {}`.
 assetstores:
+  # s3:// pulls run as a separate s3pull step and need a cache directory every
+  # worker can see: until shared_filesystem/shared_workdir is enabled above (or
+  # a cache_path on a shared mount is set here), an s3:// input fails at build
+  # planning rather than caching on a path the consumer can't read.
   - store_uri: space://assetstores/s3/
     pull:
       - mode: default

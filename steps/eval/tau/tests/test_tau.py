@@ -189,15 +189,15 @@ def test_self_endpoints_use_the_served_model(tmp_path):
 
 
 def test_paid_endpoint_needs_its_key(tmp_path, monkeypatch):
-    monkeypatch.delenv("GRANITE_EVALS_USER_API_KEY", raising=False)
+    monkeypatch.delenv("EVAL_USER_API_KEY", raising=False)
     b = _bench("tau3-airline", tmp_path)
-    with pytest.raises(SystemExit, match="GRANITE_EVALS_USER_API_KEY"):
+    with pytest.raises(SystemExit, match="EVAL_USER_API_KEY"):
         b.llm_endpoint("user", "http://vllm/v1", "granite", temperature=0.0)
 
 
 def test_default_gateway_goes_through_the_meter(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_USER_API_KEY", "k")
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_USER_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     b = _bench("tau3-retail", tmp_path)
     with meter.Meters(b.config.options, {}) as meters:
         u = b.llm_endpoint("user", "http://vllm/v1", "granite", temperature=0.0)
@@ -211,7 +211,7 @@ def test_default_gateway_goes_through_the_meter(tmp_path, monkeypatch):
 
 
 def test_given_base_url_is_metered_once(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_USER_API_KEY", "k")
+    monkeypatch.setenv("EVAL_USER_API_KEY", "k")
     b = _bench("tau3-airline", tmp_path, options={"user_base_url": "https://gw.example/v1"})
     with meter.Meters(b.config.options, {}) as meters:
         u = b.llm_endpoint("user", "http://vllm/v1", "granite", temperature=0.0)
@@ -282,7 +282,7 @@ def _saved(tmp_path, domain="retail"):
 
 
 def test_generate_saves_ungraded_simulations_without_a_judge(tmp_path, monkeypatch):
-    monkeypatch.delenv("GRANITE_EVALS_JUDGE_API_KEY", raising=False)
+    monkeypatch.delenv("EVAL_JUDGE_API_KEY", raising=False)
     b, calls = _phase_bench(tmp_path, monkeypatch, "generate", user_model="self")
     out = b.run("http://vllm/v1", "served")
     assert "value" not in out and out["n"] == 10 and out["simulations_generated"] == 20
@@ -300,8 +300,8 @@ def test_score_grades_saved_simulations_without_the_model(tmp_path, monkeypatch)
     b, _ = _phase_bench(tmp_path, monkeypatch, "generate", user_model="self")
     b.run("http://vllm/v1", "served")
     # the user simulator's key is not needed to score; the judge's is
-    monkeypatch.delenv("GRANITE_EVALS_USER_API_KEY", raising=False)
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.delenv("EVAL_USER_API_KEY", raising=False)
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     b, calls = _phase_bench(tmp_path, monkeypatch, "score")
     out = b.run("", "served")
     assert not calls["simulate"] and len(calls["grade"]) == 20
@@ -316,7 +316,7 @@ def test_score_grades_saved_simulations_without_the_model(tmp_path, monkeypatch)
 
 
 def test_score_and_all_agree(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     b, _ = _phase_bench(tmp_path / "all", monkeypatch, "all", user_model="self")
     whole = b.run("http://vllm/v1", "served")
     b, _ = _phase_bench(tmp_path / "split", monkeypatch, "generate", user_model="self")
@@ -330,7 +330,7 @@ def test_score_counts_a_missing_simulation_as_failed(tmp_path, monkeypatch):
     b, _ = _phase_bench(tmp_path, monkeypatch, "generate", user_model="self")
     b.run("http://vllm/v1", "served")
     next((tmp_path / "retail" / "trial-1").glob("*.json")).unlink()
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     b, calls = _phase_bench(tmp_path, monkeypatch, "score")
     out = b.run("", "served")  # 1/20 missing: at the default max_failed_frac 0.05
     assert not calls["simulate"] and len(calls["grade"]) == 19
@@ -344,7 +344,7 @@ def test_score_counts_a_missing_simulation_as_failed(tmp_path, monkeypatch):
 def test_a_grading_error_keeps_the_generation(tmp_path, monkeypatch):
     b, _ = _phase_bench(tmp_path, monkeypatch, "generate", user_model="self")
     b.run("http://vllm/v1", "served")
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     b, _ = _phase_bench(tmp_path, monkeypatch, "score", max_failed_frac="1")
     monkeypatch.setattr(b, "_grade", lambda d, t, s: 1 / 0 if t.id == "3" else _RI(1.0))
     out = b.run("", "served")
@@ -357,14 +357,14 @@ def test_a_grading_error_keeps_the_generation(tmp_path, monkeypatch):
 def test_all_grades_a_generated_simulation_without_simulating_it(tmp_path, monkeypatch):
     b, _ = _phase_bench(tmp_path, monkeypatch, "generate", user_model="self")
     b.run("http://vllm/v1", "served")
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     b, calls = _phase_bench(tmp_path, monkeypatch, "all", user_model="self")
     assert b.run("http://vllm/v1", "served")["value"] == 0.5
     assert not calls["simulate"] and len(calls["grade"]) == 20
 
 
 def test_all_is_graded_in_the_run(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "k")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "k")
     b, calls = _phase_bench(tmp_path, monkeypatch, "all", user_model="self")
     out = b.run("http://vllm/v1", "served")
     assert out["value"] == 0.5 and len(calls["simulate"]) == 20 and not calls["grade"]
@@ -466,7 +466,7 @@ def fake_llm():
 
 @harness
 def test_airline_end_to_end_metered_and_resumable(tmp_path, fake_llm, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_USER_API_KEY", "user-key")
+    monkeypatch.setenv("EVAL_USER_API_KEY", "user-key")
     monkeypatch.setenv("GRANITE_EVALS_SPEND_LEDGER", str(tmp_path / "ledger.jsonl"))
     opts = {"user_base_url": fake_llm, "user_model": "aws/claude-sonnet-5", "max_retries": "0"}
     b = _bench("tau3-airline", tmp_path / "run", limit=1, repeats=1, dataset=str(_data_dir()), options=dict(opts))
@@ -498,8 +498,8 @@ def test_airline_end_to_end_metered_and_resumable(tmp_path, fake_llm, monkeypatc
 
 @harness
 def test_retail_nl_assertions_use_the_configured_judge(tmp_path, fake_llm, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "judge-key")
-    monkeypatch.setenv("GRANITE_EVALS_USER_API_KEY", "user-key")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "judge-key")
+    monkeypatch.setenv("EVAL_USER_API_KEY", "user-key")
     opts = {"user_base_url": fake_llm, "user_model": "user-model", "judge_base_url": fake_llm,
             "judge_model": "judge-model", "max_retries": "0"}
     # the judge runs only for tasks graded on NL assertions: pick the first one
@@ -520,7 +520,7 @@ def test_retail_nl_assertions_use_the_configured_judge(tmp_path, fake_llm, monke
 
 @harness
 def test_budget_exhausted_stops_paid_calls(tmp_path, fake_llm, monkeypatch):
-    monkeypatch.setenv("GRANITE_EVALS_USER_API_KEY", "k")
+    monkeypatch.setenv("EVAL_USER_API_KEY", "k")
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(json.dumps({"cost_usd": 100.0}) + "\n")
     monkeypatch.setenv("GRANITE_EVALS_SPEND_LEDGER", str(ledger))
@@ -545,8 +545,8 @@ def test_generate_then_score_matches_all(tmp_path, fake_llm, monkeypatch):
     """The live grading and the after-the-fact grading of the same kind of
     conversation (the fake is deterministic) give the same reward_info; the
     judge is called only when scoring."""
-    monkeypatch.setenv("GRANITE_EVALS_JUDGE_API_KEY", "judge-key")
-    monkeypatch.setenv("GRANITE_EVALS_USER_API_KEY", "user-key")
+    monkeypatch.setenv("EVAL_JUDGE_API_KEY", "judge-key")
+    monkeypatch.setenv("EVAL_USER_API_KEY", "user-key")
     opts = {"user_base_url": fake_llm, "user_model": "user-model", "judge_base_url": fake_llm,
             "judge_model": "judge-model", "max_retries": "0"}
     everything = _bench("tau3-retail", tmp_path, dataset=str(_data_dir()), options=dict(opts)).load_tasks()[0]

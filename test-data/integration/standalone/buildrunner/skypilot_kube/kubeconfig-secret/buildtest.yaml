@@ -1,0 +1,14 @@
+# YAML-driven spec for test/integration/standalone/buildrunner/skypilot_kube/test_skypilot_kube_kubeconfig_secret.py.
+targets:
+  - pod-run
+target_expectations:
+  - target_name: pod-run
+    step_count: 1
+    input_artifact_count: 0
+    output_artifact_count: 0
+    jobstats_count: 1
+space_uri: space
+tests:
+  - runner
+simulate_step_failure: false
+timeout_minutes: 15

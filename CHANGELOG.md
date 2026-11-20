@@ -98,9 +98,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to count as one node) is now refused, and a malformed count fails at step creation, with an
   error that names the key it came from (`compute_config.num_nodes`,
   `launchers.<name>.config.num_nodes` or `launcher_config.num_nodes`).
+- **Stateless SSO login for the CLI (#723).** `gb auth login --sso` receives the provider's
+  browser redirect on a local listener, `http://127.0.0.1:48731/callback` (`--redirect-port`
+  overrides the port). `gb auth login --sso --remote` is for a CLI that can't receive that
+  redirect, e.g. over SSH: sign in on any device and paste the verification code shown. Both use
+  new gbserver endpoints, `/api/v1/auth/oidc/{authorize,token,remote-callback}`, which keep no
+  login state, so any worker or replica can serve them. **Operators:** register
+  `http://127.0.0.1:48731/callback` and `https://<gbserver-host>/api/v1/auth/oidc/remote-callback`
+  as redirect URIs with the SSO provider, and deploy the server before the CLI: the new CLI
+  can't log in to an older gbserver, and says so before opening the browser. An older CLI
+  still works with a new gbserver, through the legacy endpoints, which still need a single
+  rest-server worker.
 
 ### Changed
 
+- **The fm-tune step moves from the `tune` category to `train` (#677).** Its URI changes from
+  `space://steps/tune/fm-tune` to `space://steps/train/fm-tune`. The source is now
+  `steps/train/fm-tune/`, and the published copies are
+  `configurations/assets/environments/{bash,skypilot}/steps/train/fm-tune/`. The build tests,
+  docs and unit tests are updated. **Breaking:** a build.yaml outside this repo that uses
+  `space://steps/tune/fm-tune` must switch to the new URI. The old one is not kept as an alias.
 - **The `misc` step category is now `aux` (#671).** The byoc step moves from
   `space://steps/misc/byoc` to `space://steps/aux/byoc`; its source is now `steps/aux/byoc/` and
   its published copy is `configurations/assets/environments/skypilot/steps/aux/byoc/`. The
@@ -374,6 +391,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch-time error — add the secret to `secret_names_to_use_as_env_variable` to restore
   it. (Builds whose secret bag contained a non-identifier name were already failing to
   launch on SkyPilot before this change; see Fixed.)
+- **SSO settings are now `GBSERVER_OIDC_*` (#723):** `CLIENT_ID`, `CLIENT_SECRET`,
+  `CALLBACK_URL`, `REMOTE_CALLBACK_URL`, `ISSUER`, `JWKS_URI`, `AUTHORIZE_URL`, `TOKEN_URL`,
+  `USERINFO_URL`. The legacy `GBSERVER_IBMID_*` names are still accepted; the new name wins if
+  both are set, and an empty value counts as unset.
+- **Plain `gb auth login --sso` exits right away when a local browser can't take the redirect
+  (#723)**: in an SSH session, or with no display or browser. It points to `--remote`. Set
+  `BROWSER` to skip the check, e.g. for VS Code Remote-SSH or SSH port forwarding.
 
 ### Deprecated
 
@@ -403,6 +427,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **The granite-switch LSF answerability-sr recipe (#725).** It shipped in v0.3.9 as
+  `recipes/granite-switch/lsf/answerability-sr` and moved to
+  `recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr` in #639. It ran on SkyPilot
+  LSF, and since #617 the SkyPilot release `pyproject.toml` pins has no LSF cloud (see
+  `docs/environments/skypilot-lsf.md`); #631 tracks retiring LSF from the docs.
+  `skypilot/aws/answerability-sr` builds the same kind of Shadow Residual adapter, with the same
+  training config, from data you bring. The last version of the recipe (`README.md`,
+  `build.yaml`, `parameters.yaml`) is at commit `ebabfa44`. From the repo root, read a file with
+  `git show ebabfa44:recipes/granite-switch/skypilot/lsf-bluevela/answerability-sr/<file>`, or
+  restore the directory with
+  `git checkout ebabfa44 -- recipes/granite-switch/skypilot/lsf-bluevela`.
+  The restored recipe runs only with a SkyPilot build that has the LSF cloud, such as the fork
+  that tag `pre-slurm-only-2026-11-02` pins.
 - **The LSF and single-pair distillation recipes (#664).** Replaced by
   [`recipes/distill/`](recipes/distill/README.md): one `distill` pipeline with off-policy,
   ramp and on-policy λ modes (`LMBDA_MODE`) and a `smoke.yaml` layer, plus `distill-eval`
@@ -414,6 +451,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `recipes/granite4-350m/lsf/distill-{probe,smoke,stage1,stage1-v2,onpolicy-v2,checkpoint-eval}`.
 
 ### Fixed
+
+- **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
+  longer share a pull dir (#715).** `<cache>/<owner>/<repo>/<revision>` ignored all three, so a
+  model and a same-named dataset overwrote each other's files, two paths of one bucket synced into
+  one dir, and on Docker both were mounted at one container path. A dataset or space is now pulled
+  under `datasets/` or `spaces/`, each bucket input under `buckets/<owner>/<bucket>/<hash of its
+  path>`, and content on another host under `@<host>/`; models on huggingface.co keep their dirs,
+  so their caches stay valid. Docker refuses an input whose content another `cache_path` already
+  mounted, instead of failing every later container on a duplicate mount point, and passes mounts
+  as structured bind mounts, so a `:` in a path in a repo no longer breaks the volume spec. K8s
+  and LSF are unchanged. **Behavior change:** cached datasets, spaces and buckets are downloaded
+  once more into their new dirs. A dataset or space pulled before this change still sits in the
+  model layout, so if one shared an owner/repo with a model you use, delete
+  `<cache>/<owner>/<repo>/<revision>` once, or the model pull adds to its files. The cache is the
+  store's `cache_path`, else `~/.cache/gbserver/hf` (Bash, Docker) or `<shared_workdir>/hf_cache`
+  (SkyPilot).
+- **openinstruct-sft, hf-peft-sft: an `args` value that starts with `-` is refused at step
+  creation (#613).** Each value is its own argv word after the step's flags, so a value
+  such as `--output_dir=/x`, or a list item `--output_dir`, was read by the trainer's
+  argparse as a flag and could override a step-owned one (`output_dir`, `report_to`,
+  `push_to_hub`). A value or list item that starts with `-` followed by anything but a
+  digit or `.` (`-x`, `--x`, `--`) is now refused; negative numbers (`-1`, `-0.5`, `-.5`)
+  and a lone `-` pass. The check lives in `validate_args` in
+  `steps/train/shared/trainer_args.j2`.
+
+- **Legacy `space://steps/openinstruct-sft` on SkyPilot/AWS refuses multi-node builds
+  (#683).** The hand-authored step trains on one machine (`accelerate launch
+  --num_machines 1`), but nothing checked `num_nodes`, so with `num_nodes: 2` SkyPilot
+  provisioned 2 nodes that each trained on their own (the #609 bug, fixed for the framework
+  step in #625). It now sets `single_node: true`, and gbserver refuses any resolved
+  `num_nodes` other than 1 at step creation. The `skypilot/lsf/ibm-bluevela` copy is
+  unchanged: the pinned SkyPilot 0.14.2 has no LSF cloud, so it can't launch (LSF is being
+  retired, #631).
 
 - **SkyPilot SLURM: a step's `total_memory_per_node` is sent as `--mem` on clusters that track
   memory (#657).** Before, it was always dropped on SLURM, so jobs got SkyPilot's 1 GB per CPU.
@@ -458,3 +528,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   violated SkyPilot's env-key naming rules and failed the launch. Declared secrets are
   mapped to valid env-var names via `secret_names_to_use_as_env_variable`, so hyphenated
   (and otherwise non-identifier) secret names no longer break SkyPilot launches.
+- **SSO login with several rest-server workers (#723).** Pending logins lived in one worker's
+  memory, so the browser could show "Session not found or expired" or the CLI could poll
+  `/status` without end. The new CLI uses the stateless `/oidc/*` endpoints instead.
+
+### Security
+
+- **Reflected XSS on the legacy SSO `/api/v1/auth/callback` page (#723).** The provider's
+  `error_description` was put into the HTML unescaped; it is now escaped.

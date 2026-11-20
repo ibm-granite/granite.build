@@ -1,15 +1,27 @@
 name: s3push
 version: 1.0.0
 type: upload
+# Hidden step queued by Skypilot.pushasset_cosstore for an s3:// / cos:// output.
+# A file is copied to the exact object key; a directory is synced under the URI
+# as a prefix. Credentials arrive as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in
+# launcher_config.envs, resolved by Cosstore.resolve_credentials from the secrets
+# the store.yaml names (cos_*_secret_name), as HF_TOKEN reaches hfpush.
 config:
   retry_enabled_default: true
   retry_transparently_default: true
   gb:
     step_contents_in_env: false
+  workload:
+    cwd: .
   s3push_config:
+    # The artifact URI as written in the build (echoed back on success), and
+    # the bucket-resolved s3:// URI the AWS CLI writes to.
+    uri: <uri>
+    binding_id: <binding_id>
     local_path: <source>
     s3_uri: <s3://bucket/path>
     endpoint_url: ''
+    region: ''
   compute_config:
     num_cpus_per_node: 2
     num_gpus_per_node: 0
@@ -23,29 +35,76 @@ environment_configs:
         monitors:
         - skypilot_monitor
         config:
-          image_id: docker:amazon/aws-cli:latest
           # The cpus floor lives in compute_config.num_cpus_per_node, not here.
           # The engine turns it into the form each cloud accepts (_cpus_floor):
           # a "{n}+" minimum on cloud catalogs, a bare int on slurm/lsf, whose
           # SkyPilot cloud crashes on float("{n}+"). A literal "{n}+" in
           # resources is passed through verbatim and broke this step on LSF.
           resources: {}
+          # No container image: the AWS CLI is pip-installed so the step runs on
+          # every SkyPilot cloud (incl. SLURM without Pyxis, and LSF), as hfpush
+          # does. Skipped when mocked or when `aws` is already on PATH.
+          setup: |
+            case "${GBTEST_MOCK_COS:-}" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) exit 0 ;; esac
+            command -v aws >/dev/null 2>&1 || pip install --no-cache-dir awscli
           run: |
             set -euo pipefail
             trap 'EC=$?; echo "s3push failed at line $LINENO, exit code: $EC" >&2; exit $EC' ERR
             echo 's3push start'
-            if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-              echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set (inject via K8s secret in pod_config)" >&2
+            # Values are base64-encoded at render time so no URI/path character
+            # can break out of shell quoting.
+            S3_URI="$(printf %s '{{ config.s3push_config.s3_uri | b64encode }}' | base64 -d)"
+            LOCAL_PATH="$(printf %s '{{ config.s3push_config.local_path | b64encode }}' | base64 -d)"
+            ENDPOINT_URL="$(printf %s '{{ config.s3push_config.endpoint_url | default("") | b64encode }}' | base64 -d)"
+            REGION="$(printf %s '{{ config.s3push_config.region | default("") | b64encode }}' | base64 -d)"
+            ARTIFACT_URI="$(printf %s '{{ config.s3push_config.uri | default("") | b64encode }}' | base64 -d)"
+            BINDING_ID="$(printf %s '{{ config.s3push_config.binding_id | default("") | b64encode }}' | base64 -d)"
+
+            if [ ! -e "${LOCAL_PATH}" ]; then
+              echo "ERROR: ${LOCAL_PATH} does not exist" >&2
               exit 1
             fi
-            {% if config.s3push_config.endpoint_url %}
-            aws s3 sync "{{ config.s3push_config.local_path }}" "{{ config.s3push_config.s3_uri }}" --endpoint-url "{{ config.s3push_config.endpoint_url }}"
-            {% else %}
-            aws s3 sync "{{ config.s3push_config.local_path }}" "{{ config.s3push_config.s3_uri }}"
-            {% endif %}
+
+            # Mocked when GBTEST_MOCK_COS is truthy, matching
+            # gbcommon.types.testing.is_cos_mocked (getenv_boolean). Keep identical
+            # to the copy in the skypilot s3pull step.
+            cos_mocked() {
+                case "${GBTEST_MOCK_COS:-}" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) return 0 ;; *) return 1 ;; esac
+            }
+            if cos_mocked; then
+                echo "[GBTEST_MOCK_COS] mocking s3push - skipping real upload"
+                echo "Pushed S3 URI: ${ARTIFACT_URI} for binding ${BINDING_ID}"
+                echo 's3push end'
+                exit 0
+            fi
+
+            if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+              echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set (from the store's cos_*_secret_name secrets)" >&2
+              exit 1
+            fi
+            AWS_ARGS=()
+            if [ -n "${ENDPOINT_URL}" ]; then AWS_ARGS+=(--endpoint-url "${ENDPOINT_URL}"); fi
+            if [ -n "${REGION}" ]; then export AWS_DEFAULT_REGION="${REGION}"; fi
+
+            if [ -d "${LOCAL_PATH}" ]; then
+              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 sync --only-show-errors "${LOCAL_PATH%/}/" "${S3_URI%/}/"
+            else
+              aws ${AWS_ARGS[@]+"${AWS_ARGS[@]}"} s3 cp --only-show-errors "${LOCAL_PATH}" "${S3_URI}"
+            fi
+            # Parsed by the monitor below into ARTIFACT_PUSHED_EVENT (as hfpush does).
+            echo "Pushed S3 URI: ${ARTIFACT_URI} for binding ${BINDING_ID}"
             echo 's3push end'
     monitors:
       skypilot_monitor:
         type: skypilot_monitor
         config:
           poll_interval_seconds: 15
+          event_configs:
+          - event_type: ARTIFACT_PUSHED_EVENT
+            line_regex: Pushed S3 URI:\s.+
+            is_json: false
+            event_fields:
+            - field_name: uri
+              field_regex: (?:s3|cos)://[^\s]+
+            - field_name: binding_id
+              field_regex: (?<=binding\s)[^\s]+

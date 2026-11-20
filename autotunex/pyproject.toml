@@ -67,14 +67,10 @@ mysql = ["asyncmy==0.2.15", "cryptography==50.0.1"]
 # verified to leave the fastapi/starlette/pydantic pins above untouched (see
 # api/mcp.py).
 mcp = ["fastmcp>=2.3,<4"]
-# A git dependency, so it cannot take an exact PyPI pin; pinned to the upstream
-# `stable` tag instead. `stable` moves with each release; use `@vX.Y.Z` for an
-# immutable ref. Requires `allow-direct-references` below.
 # autotune (fm-tune) is not listed: it is vendored at src/fm-tune and installed from
 # that path (`make install` for the slim catalog, `make install-training` for the rest).
-granite-build = [
-  "granite.build @ git+https://github.com/ibm-granite/granite.build.git@stable",
-]
+# granite.build is not listed either: install it from this checkout's root
+# (`uv pip install -e ..`) so the llmb CLI matches the gbserver beside it.
 dev = [
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
@@ -94,11 +90,6 @@ path = "src/autotunex/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/autotunex"]
-
-# Required by the granite-build extra's git reference. Without it, hatchling refuses
-# to generate metadata for every install, not just that extra.
-[tool.hatch.metadata]
-allow-direct-references = true
 
 # ---------------------------------------------------------------------------
 # Lint + format (ruff replaces black, isort, flake8)

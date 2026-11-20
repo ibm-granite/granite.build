@@ -83,14 +83,19 @@ async def _resolve_lsf_config(environment_uri: str) -> tuple[List[str], str, str
     Raises 400 if the environment is not type "Lsf"; 503 if any required
     field is missing from environment.yaml.
     """
+    from gbserver.spaces.db_space import local_uri
+
     try:
-        # Offloaded: load_environment_config syncs the environment Asset, which
-        # may hit git/HTTP. The DB calls elsewhere in this module run inline
-        # (matching the rest of the api/ package) — only the network-bound
-        # work goes through to_thread.
-        env_config, _asset = await asyncio.to_thread(
-            Environment.load_environment_config, environment_uri
-        )
+        # Offloaded: syncing the environment Asset may hit git/HTTP, and
+        # local_uri may read and unpack a snapshot. The DB calls elsewhere in
+        # this module run inline, as in the rest of the api/ package.
+        def load():
+            # The sync copies the environment out, so the unpacked snapshot is
+            # only needed for this call.
+            with local_uri(environment_uri) as uri:
+                return Environment.load_environment_config(uri)
+
+        env_config, _asset = await asyncio.to_thread(load)
     except Exception as e:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,

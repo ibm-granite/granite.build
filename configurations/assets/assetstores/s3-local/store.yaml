@@ -1,0 +1,30 @@
+# Local S3-compatible store: the SeaweedFS container from `make s3-setup`
+# (scripts/s3/setup-s3.sh). Listed by the local SLURM environment
+# (environments/skypilot/slurm/local).
+#
+# Builds address it as s3://local/<key>: "local" is an alias, and
+# cos_bucket_name maps it to the real bucket setup-s3.sh creates, so
+# s3://local/a/b reads and writes gb-checkpoints/a/b. The prefix is longer than
+# the generic s3:// store's, so s3://local/... routes here (longest base_uri
+# match) while other s3:// URIs still go to AWS.
+#
+# Secrets (same pattern as hf's token_secretname): the names below are looked
+# up in the space secrets, then in same-named environment variables.
+# `make s3-setup` registers them in the local space's secrets
+# (<GB_HOME_DIR>/space_secrets/public/s3-local.yaml) with the keys it gave the
+# container. They are distinct from the generic s3 store's COS_* names so real
+# AWS / IBM COS credentials in the same space never collide with them.
+#
+# Plain http:// is accepted only because both hosts are private: gb-s3 is a
+# single-label name on the slurm-net container network, and localhost is
+# loopback. Any routable endpoint must use https://.
+base_uri: "s3://local/"
+config:
+  cos_bucket_name: gb-checkpoints
+  cos_access_key_id_secret_name: S3_LOCAL_ACCESS_KEY_ID
+  cos_secret_access_key_secret_name: S3_LOCAL_SECRET_ACCESS_KEY
+  # Endpoint the SLURM jobs (s3pull/s3push steps) use, inside slurm-net.
+  cos_endpoint: "http://gb-s3:9000"
+  # Endpoint gbserver (on the host) uses, e.g. for input existence checks.
+  cos_gbserver_endpoint: "http://localhost:9000"
+  cos_region: "us-east-1"
