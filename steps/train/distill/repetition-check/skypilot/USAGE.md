@@ -157,3 +157,12 @@ all of them.
   torch and transformers), on SkyPilot's LSF backend only (`subtypes: [lsf]`).
 - One run covers the whole ladder rather than one per rung: for a 350m model, loading
   several checkpoints serially on one GPU is still minutes.
+
+## Running as root
+
+This step's image (`quay.io/granitebuild/steps/train/distill/images/gpu`) defaults to `DISTILL_UID=0` (root). On SLURM/enroot that
+preserves the validated cluster behaviour: the containers run against group-shared
+filesystems and a shared HF cache whose group membership a fixed uid cannot assume. On
+Kubernetes or plain docker, where running as root is the actual exposure, build the image
+with `--build-arg DISTILL_UID=1000` (see `steps/train/distill/images/gpu/Dockerfile`) or set `securityContext.runAsUser` in the
+pod spec.

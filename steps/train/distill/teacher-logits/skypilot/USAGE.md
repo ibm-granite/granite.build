@@ -251,3 +251,12 @@ retagged student are the same tokenizer.
 to 40000 specifically to force several, and 25,964 teacher rows did not reach it — so the
 multi-shard write, and the `index_part_*` merge across more than one part, remain untested here.
 Forcing them needs a larger corpus or a far smaller `shard_target_tokens`.
+
+## Running as root
+
+This step's image (`quay.io/granitebuild/steps/train/distill/images/gpu`) defaults to `DISTILL_UID=0` (root). On SLURM/enroot that
+preserves the validated cluster behaviour: the containers run against group-shared
+filesystems and a shared HF cache whose group membership a fixed uid cannot assume. On
+Kubernetes or plain docker, where running as root is the actual exposure, build the image
+with `--build-arg DISTILL_UID=1000` (see `steps/train/distill/images/gpu/Dockerfile`) or set `securityContext.runAsUser` in the
+pod spec.

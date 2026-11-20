@@ -263,16 +263,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The distillation steps moved to `steps/train/distill/` and were renamed so each name
   says what the step does.** Breaking: every `space://steps/distill/<step>` URI shipped in
-  v0.3.8 is gone. Inputs and outputs are unchanged, and config is unchanged except in
-  `logit-distill`, which drops the retired `ce_coef`, `log_student_entropy`,
-  `entropy_guard_drop_frac`, `entropy_guard_baseline_steps`, `entropy_guard_patience`
-  and `entropy_guard_action` keys and the `GOLD_MIN_TOKENS` env (all retired with the
-  CE-anchor patch they belonged to), and **refuses `loss_arm: adaptive_kld`** (the
-  vendored implementation does not compute the paper's objective; see
-  `REJECTED_LOSS_ARMS` in `render_gold_config.py`); migrating a recipe means
-  changing its `step_uri` to the new name below, dropping those keys, and switching
-  any `adaptive_kld` arm to `jsd` or `kl_interpolation`; the shipped recipes use the new URIs. Resume markers keep
-  their recorded step names, so outputs written before the move are still skipped, not redone.
+  v0.3.8 and v0.3.9 is gone. Inputs and outputs are unchanged, and config is unchanged
+  except in `logit-distill`, which:
+  - drops the retired `ce_coef`, `log_student_entropy`, `entropy_guard_drop_frac`,
+    `entropy_guard_baseline_steps`, `entropy_guard_patience` and `entropy_guard_action`
+    keys and the `GOLD_MIN_TOKENS` env (all retired with the CE-anchor patch they
+    belonged to);
+  - **refuses `loss_arm: adaptive_kld`** (the vendored implementation does not compute
+    the paper's objective; see `REJECTED_LOSS_ARMS` in `render_gold_config.py`);
+  - **refuses `lmbda > 0` with `vllm_num_servers: 0`**, which used to generate through
+    TRL's in-process path and, with `pad == eos`, masked every generated EOS out of the
+    loss.
+
+  Migrating a recipe means changing its `step_uri` to the new name below, dropping those
+  keys, switching any `adaptive_kld` arm to `jsd` or `kl_interpolation`, and giving any
+  on-policy run a vLLM server. The shipped recipes use the new URIs. Resume markers keep
+  their recorded step names, so outputs written before the move are still skipped, not
+  redone. `student-sft` and `teacher-logits` now download the pinned Mamba2 hub kernels
+  (`mamba-ssm` and `causal-conv1d`, each pinned by commit) in-job on a cold cache by
+  default (`GOLD_PREFETCH_KERNELS=1`); set it to `0` to require a pre-warmed cache
+  instead.
 
   | Was | Now `space://steps/train/distill/…` |
   |---|---|

@@ -232,3 +232,12 @@ deliberately, delete the marker file the "already built" message names.
 
 - **No GPU.** Rendering and counting tokens is CPU work; the launcher requests no accelerators.
 - **Offline hub.** The launcher sets `HF_HUB_OFFLINE=1` and `HF_HOME=/opt/hf-cache`.
+
+## Running as root
+
+This step's image (`quay.io/granitebuild/steps/train/distill/images/cpu`) defaults to `DISTILL_UID=0` (root). On SLURM/enroot that
+preserves the validated cluster behaviour: the containers run against group-shared
+filesystems and a shared HF cache whose group membership a fixed uid cannot assume. On
+Kubernetes or plain docker, where running as root is the actual exposure, build the image
+with `--build-arg DISTILL_UID=1000` (see `steps/train/distill/images/cpu/Dockerfile`) or set `securityContext.runAsUser` in the
+pod spec.

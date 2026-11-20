@@ -2,13 +2,14 @@
 
 # Sourced by the GOLD launchers. Defines require_hub_kernels.
 #
-# THE PROBLEM THIS SOLVES. gold.py pre-populates transformers' hub-kernel mapping at
-# module scope with local_files_only=True and, on a cache miss, deliberately falls
-# through to the ONLINE lazy_load_kernel path -- its own comment says "preflight will
-# repopulate the cache". The recorded scripts satisfied that with an unconditional Hub
-# download inside every GPU allocation. This repo made the download opt-in
-# (GOLD_PREFETCH_KERNELS), which removed the download and, unnoticed, the invariant with
-# it. A direct measurement therefore reached the GPU, started vLLM, fanned out to the trainer, and
+# THE PROBLEM THIS SOLVES. hub_kernel_pins.prepare_hub_kernels (called by gold.py and
+# the other hybrid-model entrypoints) pre-loads the hub kernels from the local cache
+# with local_files_only=True and, on a cache miss, deliberately falls through to the
+# ONLINE lazy_load_kernel path. The recorded scripts satisfied that with an
+# unconditional Hub download inside every GPU allocation. An earlier version of this
+# file made the download opt-in (GOLD_PREFETCH_KERNELS), which removed the download
+# and, unnoticed, the invariant with it; the download is the default again
+# (GOLD_PREFETCH_KERNELS=1). A direct measurement therefore reached the GPU, started vLLM, fanned out to the trainer, and
 # only then died ~90s in with a 40-line traceback ending:
 #
 #   huggingface_hub.errors.OfflineModeIsEnabled: Cannot reach
@@ -198,9 +199,9 @@ FATAL: required hub kernels are not in this account's HF cache:
 
     KERNEL_REPOS=kernels-community/flash-attn2 bash prefetch-kernels.sh
 
-  Or set GOLD_PREFETCH_KERNELS=0 to enforce a pre-warmed cache (this FATAL)
-  instead of downloading in-job. The download is the default because it
-  costs ~2 seconds; enforcing a warm cache is an operational choice.
+  You see this FATAL because GOLD_PREFETCH_KERNELS=0 enforces a pre-warmed cache.
+  Unset it (the default is 1) to download in-job instead: that costs ~2 seconds
+  and needs egress to huggingface.co.
 MSG
   return 1
 }
