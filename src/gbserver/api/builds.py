@@ -30,9 +30,10 @@ from gbserver.api.utils import (
     get_row_filter,
     is_space_admin,
     is_super_admin,
+    parse_name_filter,
     scope_space_name_filter,
     split_tags,
-    wildcard_to_like,
+    translate_remote_file_errors,
 )
 from gbserver.buildrunner.validation import BuildValidation
 from gbserver.buildwatcher.buildwatcher import BuildWatcher
@@ -41,7 +42,6 @@ from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.build_storage import IStoredBuildStorage
 from gbserver.storage.singleton_storage import SingletonAdminStorage, get_admin_storage
 from gbserver.storage.space_storage import IStoredSpaceStorage
-from gbserver.storage.storage import Like
 from gbserver.storage.stored_build import StoredBuild, reopen_finished_build
 from gbserver.storage.stored_event import StoredEvent
 from gbserver.storage.stored_step_run import StoredStepRun
@@ -52,6 +52,7 @@ from gbserver.types.status import Status
 from gbserver.types.validation import GBValidationErrors
 from gbserver.utils.archive import check_zip_safe
 from gbserver.utils.logger import get_logger
+from gbserver.utils.remote_files_ops import reject_pattern_control_chars
 
 logger = get_logger(__name__)
 
@@ -198,16 +199,18 @@ class CancelBuildResponse(BaseModel):
 NAME_FILTER_DESCRIPTION = (
     "Build name. An exact match, unless it contains `*`: then a case-insensitive "
     "wildcard match, where `*` matches any run of characters and `\\*` / `\\\\` "
-    "match a literal `*` / `\\` (e.g. `*sft*` for names containing `sft`)."
+    "match a literal `*` / `\\` (e.g. `*sft*` for names containing `sft`). "
+    "On SQLite, case-insensitivity covers ASCII letters only."
 )
-NameFilter = Annotated[str, Query(description=NAME_FILTER_DESCRIPTION)]
+NameFilter = Annotated[str, Query(description=NAME_FILTER_DESCRIPTION, max_length=256)]
 
 
 def _apply_name_wildcard(row_filter: dict) -> None:
-    """Turn a ``name`` filter containing ``*`` into a case-insensitive ``Like``."""
-    pattern = wildcard_to_like(row_filter.get("name", ""))
-    if pattern is not None:
-        row_filter["name"] = Like(pattern)
+    """Parse ``name`` into an exact literal, or a ``Like`` if it has a ``*``."""
+    if "name" in row_filter:
+        with translate_remote_file_errors():  # NUL/newline -> 400, not a DB 500
+            reject_pattern_control_chars(row_filter["name"])
+        row_filter["name"] = parse_name_filter(row_filter["name"])
 
 
 # Needed to list all

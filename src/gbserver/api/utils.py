@@ -11,7 +11,13 @@ from pydantic import BaseModel
 
 from gbserver.spaces.space_access_manager import get_space_access_manager
 from gbserver.spaces.user_spaces_list import space_access_check, space_admin_check
-from gbserver.storage.storage import Pagination, QueryControl, SortOrder, TaggedItem
+from gbserver.storage.storage import (
+    Like,
+    Pagination,
+    QueryControl,
+    SortOrder,
+    TaggedItem,
+)
 from gbserver.types.constants import PUBLIC_SPACE_NAME, SYSTEM_TAG_PREFIX
 from gbserver.utils.remote_files_ops import (
     RemoteFileBadRequest,
@@ -66,18 +72,18 @@ def translate_remote_file_errors() -> Iterator[None]:
         ) from e
 
 
-def wildcard_to_like(value: str) -> Optional[str]:
-    """Translate a ``*`` wildcard filter value into a ``LIKE`` pattern for ``Like``.
+def parse_name_filter(value: str) -> Union[str, Like]:
+    """Parse a ``*`` wildcard filter value into an exact literal or a ``Like``.
 
     ``*`` matches any run of characters (AIP-160's string wildcard); ``\\*`` and
-    ``\\\\`` are a literal ``*`` and ``\\``. ``%``, ``_`` and any other ``\\`` are
-    literal. Returns None if ``value`` has no unescaped ``*``: the caller then keeps
-    an exact match on ``value`` as given, so values without a ``*`` mean what they
-    always did.
+    ``\\\\`` are a literal ``*`` and ``\\`` in either case. ``%``, ``_`` and any
+    other ``\\`` are literal. Without an unescaped ``*``, returns the value with
+    those escapes resolved, for an exact match.
 
-    Example: ``wildcard_to_like("*sft*") == "%sft%"``.
+    Example: ``parse_name_filter("*sft*") == Like("%sft%")``,
+    ``parse_name_filter("a\\*b") == "a*b"``.
     """
-    out = []
+    out, literal = [], []
     wildcard = False
     i = 0
     while i < len(value):
@@ -85,6 +91,7 @@ def wildcard_to_like(value: str) -> Optional[str]:
         if char == "\\" and value[i + 1 : i + 2] in ("*", "\\"):
             # "*" isn't special in LIKE; "\\" is its escape character.
             out.append("*" if value[i + 1] == "*" else "\\\\")
+            literal.append(value[i + 1])
             i += 2
             continue
         if char == "*":
@@ -94,8 +101,9 @@ def wildcard_to_like(value: str) -> Optional[str]:
             out.append("\\" + char)
         else:
             out.append(char)
+        literal.append(char)
         i += 1
-    return "".join(out) if wildcard else None
+    return Like("".join(out)) if wildcard else "".join(literal)
 
 
 def get_row_filter(**kwargs):

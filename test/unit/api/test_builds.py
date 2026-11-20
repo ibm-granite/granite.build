@@ -862,6 +862,16 @@ def test_name_without_wildcard_stays_exact():
     ):
         req = _fake_request("admin_x", "admin_x@example.com")
         list_builds(req, name="granite-sft")
-        count_builds(req, name="a\\*b")  # an escaped star alone is no wildcard
+        count_builds(req, name="a\\*b")  # an escaped star: exact match on "a*b"
         list_builds(req)
-    assert [w.get("name") for w in seen] == ["granite-sft", "a\\*b", None]
+    assert [w.get("name") for w in seen] == ["granite-sft", "a*b", None]
+
+
+def test_name_with_control_characters_is_a_400():
+    with (
+        _recording_storage([]),
+        patch("gbserver.api.utils.is_super_admin", return_value=True),
+        pytest.raises(HTTPException) as exc,
+    ):
+        list_builds(_fake_request("admin_x", "admin_x@example.com"), name="a\x00b")
+    assert exc.value.status_code == 400

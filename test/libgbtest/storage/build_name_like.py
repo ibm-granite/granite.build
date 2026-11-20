@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Shared checks for ``Like`` where-values on a build table, run against each SQL
-backend. Patterns come from ``*`` wildcards via ``wildcard_to_like``, as the
+backend. Patterns come from ``*`` wildcards via ``parse_name_filter``, as the
 ``/builds/`` ``name`` filter builds them, so the escaping is checked against each
 dialect: matches are case-insensitive, ``%``/``_``/``\\`` are literal, and
 ``count`` agrees with ``get_by_where`` so paginated totals stay right."""
 
 import pytest
 
-from gbserver.api.utils import wildcard_to_like
+from gbserver.api.utils import parse_name_filter
 from gbserver.storage.storage import Like
 from gbserver.storage.stored_build import StoredBuild
 from gbserver.types.status import Status
@@ -59,9 +59,9 @@ def names(storage, where) -> list[str]:
 
 
 def check_wildcard(storage, wildcard, expected) -> None:
-    pattern = wildcard_to_like(wildcard)
-    assert pattern is not None, wildcard
-    where = {"name": Like(pattern)}
+    like = parse_name_filter(wildcard)
+    assert isinstance(like, Like), wildcard
+    where = {"name": like}
     assert names(storage, where) == expected
     assert storage.count(where) == len(expected)
 
@@ -78,6 +78,8 @@ def check_plain_string_is_still_exact(storage) -> None:
     assert names(storage, {"name": "sft"}) == []
     assert names(storage, {"name": "sft_lora"}) == ["sft_lora"]
     assert names(storage, {"name": "star*name"}) == ["star*name"]
+    # The reviewer's case: an escaped star is an exact match on the literal name.
+    assert names(storage, {"name": parse_name_filter("star\\*name")}) == ["star*name"]
 
 
 def check_non_string_column_fails_fast(storage) -> None:

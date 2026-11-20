@@ -33,10 +33,11 @@ from gbserver.api.builds import count_builds, list_builds
 from gbserver.api.spaces import list_spaces
 from gbserver.api.utils import (
     NO_ACCESSIBLE_SPACE,
+    parse_name_filter,
     scope_space_name_filter,
-    wildcard_to_like,
 )
 from gbserver.spaces.space_access_manager import SpaceAccessInfo
+from gbserver.storage.storage import Like
 from gbserver.storage.stored_space import StoredSpace
 
 SPACE_A = "space-A"
@@ -188,18 +189,21 @@ def test_all_scoped_routes_short_circuit_on_no_accessible_space(
 @pytest.mark.parametrize(
     "value, expected",
     [
-        ("*sft*", "%sft%"),
-        ("sft*", "sft%"),
-        ("*", "%"),
-        ("*100%*", "%100\\%%"),  # % and _ are literal
-        ("*t_l*", "%t\\_l%"),
-        ("*a\\*b*", "%a*b%"),  # \* is a literal star
-        ("*a\\\\b*", "%a\\\\b%"),  # \\ is a literal backslash
-        ("*k\\s*", "%k\\\\s%"),  # any other backslash is literal too
-        ("sft", None),  # no unescaped star: stays an exact match
-        ("a\\*b", None),
-        ("", None),
+        ("*sft*", Like("%sft%")),
+        ("sft*", Like("sft%")),
+        ("*", Like("%")),
+        ("*100%*", Like("%100\\%%")),  # % and _ are literal
+        ("*t_l*", Like("%t\\_l%")),
+        ("*a\\*b*", Like("%a*b%")),  # \* is a literal star
+        ("*a\\\\b*", Like("%a\\\\b%")),  # \\ is a literal backslash
+        ("*k\\s*", Like("%k\\\\s%")),  # any other backslash is literal too
+        # No unescaped star: an exact literal, with the same escapes resolved.
+        ("sft", "sft"),
+        ("a\\*b", "a*b"),
+        ("a\\\\b", "a\\b"),
+        ("100%_x", "100%_x"),
+        ("", ""),
     ],
 )
-def test_wildcard_to_like(value, expected):
-    assert wildcard_to_like(value) == expected
+def test_parse_name_filter(value, expected):
+    assert parse_name_filter(value) == expected
