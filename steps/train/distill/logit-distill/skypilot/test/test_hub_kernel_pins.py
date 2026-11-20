@@ -100,7 +100,9 @@ def test_pin_rewrites_causal_conv1d_onto_the_pinned_revision(fake_mapping):
     pin_hub_kernels()
 
     entry = fake_mapping["causal-conv1d"]
-    assert entry["revision"] == PINNED_KERNEL_REVISIONS["kernels-community/causal-conv1d"]
+    assert (
+        entry["revision"] == PINNED_KERNEL_REVISIONS["kernels-community/causal-conv1d"]
+    )
     # version must be GONE for the same reason as mamba-ssm: get_kernel refuses
     # a call that passes both revision and version.
     assert "version" not in entry
@@ -154,9 +156,10 @@ def test_pin_against_the_real_transformers():
         assert entry.get("revision") == "v0.0.4"
         assert "version" not in entry
         entry = hub_kernels._HUB_KERNEL_MAPPING["causal-conv1d"]
-        assert entry.get("revision") == PINNED_KERNEL_REVISIONS[
-            "kernels-community/causal-conv1d"
-        ]
+        assert (
+            entry.get("revision")
+            == PINNED_KERNEL_REVISIONS["kernels-community/causal-conv1d"]
+        )
         assert "version" not in entry
     finally:
         hub_kernels._HUB_KERNEL_MAPPING.clear()
@@ -175,7 +178,8 @@ def test_pinned_revision_helper():
 
 @pytest.mark.parametrize("path", _ENTRYPOINTS, ids=lambda p: p.name)
 def test_every_hybrid_model_entrypoint_calls_the_pin(path):
-    """The pin only helps if it runs before the first model load.
+    """The pin (and the legacy-name shim around it) only helps if it runs before
+    the first model load.
 
     These four entrypoints instantiate hybrid (granitemoehybrid) models; the
     teacher-logits step loads only the dense teacher, and vLLM resolves its own
@@ -183,10 +187,24 @@ def test_every_hybrid_model_entrypoint_calls_the_pin(path):
     importing every entrypoint here would drag torch and trl into this suite.
     """
     src = path.read_text(encoding="utf-8")
-    assert "pin_hub_kernels()" in src, (
-        f"{path.name} loads hybrid models but never pins the mamba-ssm kernel; "
-        "add the pin_hub_kernels() call (see hub_kernel_pins.py)"
+    assert "prepare_hub_kernels()" in src, (
+        f"{path.name} loads hybrid models but never prepares the hub kernels; "
+        "add the prepare_hub_kernels() call (see hub_kernel_pins.py)"
     )
+
+
+def test_prepare_hub_kernels_registers_the_legacy_causal_conv1d_names():
+    """The modeling code asserts on the legacy causal_conv1d_cuda object.
+
+    The shared preamble must register sys.modules["causal_conv1d"] and attach
+    the causal_conv1d_cuda shim, or every non-gold entrypoint dies mid-load
+    (measured 2026-11-20, image 2990684b, student-sft build test).
+    """
+    source = (
+        _SRC / "src" / "gb_steps_post_training" / "distillation" / "hub_kernel_pins.py"
+    ).read_text(encoding="utf-8")
+    assert 'sys.modules["causal_conv1d"]' in source
+    assert "causal_conv1d_cuda = " in source
 
 
 def test_the_shell_preflight_reads_the_same_pin():

@@ -120,149 +120,17 @@ from gb_steps_post_training.distillation._swa_arm import (
 
 activate_swa_arm()
 
-# Workaround: The kernels-community/mamba-ssm HF Hub kernel internally does
-# `from causal_conv1d.causal_conv1d_interface import causal_conv1d_cuda`.
-# Two problems: (1) the `kernels` package registers modules with hash-based names
-# so `causal_conv1d` is never directly importable, and (2) the HF Hub version of
-# causal-conv1d doesn't expose the legacy `causal_conv1d_cuda` object.
-# Fix: Pre-load the kernel, register it under the expected name in sys.modules,
-# and provide a shim for causal_conv1d_cuda wrapping the new cpp_functions API.
-# This requires transformers 5.x hub_kernels module; skip on older versions.
 import sys as _sys
 
-# BEFORE any kernel resolves: mamba-ssm's default (version=1 -> the v1 branch)
-# build imports symbols transformers 5.x renamed, and causal-conv1d's default
-# resolves a ref the offline cache never holds -- so a fresh hybrid-model load
-# dies mid-load. The pin below rewrites the mapping onto revisions that load
-# cleanly AND match the preflight's download. See hub_kernel_pins.py for the
-# measurements.
-from gb_steps_post_training.distillation.hub_kernel_pins import pin_hub_kernels
+# Hybrid-model kernel compatibility -- the mamba-ssm/causal-conv1d pins, the
+# warm-cache pre-population of transformers' kernel module mapping, and the
+# legacy causal_conv1d / causal_conv1d_cuda shim the modeling code asserts on.
+# The machinery lives in hub_kernel_pins.py (prepare_hub_kernels) so every
+# hybrid-model entrypoint -- gold, sft, divergence, the preflight probe -- gets
+# the same treatment.
+from gb_steps_post_training.distillation.hub_kernel_pins import prepare_hub_kernels
 
-pin_hub_kernels()
-
-try:
-    from transformers.integrations.hub_kernels import (
-        lazy_load_kernel as _lazy_load_kernel,
-    )
-except (ImportError, ModuleNotFoundError):
-    _lazy_load_kernel = None
-
-# Pre-populate transformers' kernel module mapping from the warm local cache so that
-# `lazy_load_kernel` short-circuits without ever calling `HfApi().list_repo_refs`
-# (which would happen for `version=`-style entries in `_HUB_KERNEL_MAPPING`) or
-# `snapshot_download` (which races across ranks on NFS). This is the supported
-# short-circuit at transformers/integrations/hub_kernels.py:368-369. Pure cache
-# reads via `install_kernel(..., revision=<sha>, local_files_only=True)` only
-# perform `os.readlink` on existing symlinks and are rank-safe.
-try:
-    from pathlib import Path as _Path
-
-    from huggingface_hub.constants import HF_HUB_CACHE as _HF_HUB_CACHE
-    from kernels.utils import _import_from_path
-    from kernels.utils import install_kernel as _install_kernel
-    from transformers.integrations.hub_kernels import (
-        _HUB_KERNEL_MAPPING,
-        _KERNEL_MODULE_MAPPING,
-    )
-
-    def _read_cached_sha(_repo_id):
-        # The current `kernels` package writes the standard HF hub layout
-        # (`models--<repo>/...`) via `snapshot_download`, not the legacy
-        # `kernels--<repo>/...` prefix. See kernels/utils.py:194-203.
-        #
-        # The ref is the PINNED revision (hub_kernel_pins.py), not "main":
-        # reading "main" here would install the main build directly into
-        # _KERNEL_MODULE_MAPPING, bypassing the pin the rest of this
-        # collection goes through. On a cache warmed by the preflight or
-        # the prefetch (which both download at the pinned revision) the
-        # ref file exists; on a cold cache it does not, the FileNotFoundError
-        # is caught below, and the online lazy-load path -- which does
-        # respect the pin -- takes over.
-        from gb_steps_post_training.distillation.hub_kernel_pins import pinned_revision
-
-        _ref_path = (
-            _Path(_HF_HUB_CACHE)
-            / f"models--{_repo_id.replace('/', '--')}"
-            / "refs"
-            / pinned_revision(_repo_id)
-        )
-        return _ref_path.read_text().strip()
-
-    def _validated_import_from_path(_package_name, _variant_path):
-        # `_import_from_path` will raise on a structurally-broken metadata.json
-        # only when the loader actually parses it; pre-validate so a corrupt
-        # cache aborts the preamble loudly with a JSONDecodeError instead of
-        # later showing up as a hard-to-diagnose ImportError under the FA3
-        # dispatcher.
-        import json as _json
-
-        _meta_path = _Path(_variant_path) / "metadata.json"
-        if _meta_path.exists():
-            _json.loads(_meta_path.read_text())
-        return _import_from_path(_package_name, _variant_path)
-
-    def _preload_kernel_into_mapping(_kernel_name, _repo_id):
-        from types import ModuleType as _ModuleType
-
-        _existing = _KERNEL_MODULE_MAPPING.get(_kernel_name)
-        if isinstance(_existing, _ModuleType):
-            return
-        _sha = _read_cached_sha(_repo_id)
-        _package_name, _variant_path = _install_kernel(
-            _repo_id, revision=_sha, local_files_only=True
-        )
-        _module = _validated_import_from_path(_package_name, _variant_path)
-        _KERNEL_MODULE_MAPPING[_kernel_name] = _module
-        return _module
-
-    for _kname, _kspec in (
-        ("causal-conv1d", "kernels-community/causal-conv1d"),
-        ("mamba-ssm", "kernels-community/mamba-ssm"),
-    ):
-        if _kname in _HUB_KERNEL_MAPPING:
-            _preload_kernel_into_mapping(_kname, _kspec)
-
-    del _kname, _kspec, _Path, _HF_HUB_CACHE, _install_kernel, _import_from_path
-    del _KERNEL_MODULE_MAPPING, _HUB_KERNEL_MAPPING
-    del _read_cached_sha, _preload_kernel_into_mapping, _validated_import_from_path
-except (
-    FileNotFoundError,
-    OSError,
-    ImportError,
-    ModuleNotFoundError,
-) as _kernel_preload_err:
-    # Fresh node / kernels API change / missing cache. Fall through to the
-    # online `lazy_load_kernel` path below; preflight will repopulate the cache.
-    # Note: ValueError (incl. JSONDecodeError) is intentionally NOT caught here.
-    # A corrupt cache (e.g. doubled-JSON metadata.json from a parallel-write race)
-    # must surface as a hard failure so the launcher's pre-download cleanup runs,
-    # rather than fall through to the racing kernel-hub fallback path that would
-    # produce a confusing downstream `ImportError: FlashAttention3 has been toggled on`.
-    print(
-        f"[gold preamble] kernel pre-population skipped: {type(_kernel_preload_err).__name__}: {_kernel_preload_err}"
-    )
-    del _kernel_preload_err
-
-if _lazy_load_kernel is not None:
-    _cc1d = _lazy_load_kernel("causal-conv1d")
-    if _cc1d is not None and "causal_conv1d" not in _sys.modules:
-        _sys.modules["causal_conv1d"] = _cc1d
-
-        _cc1d_iface = getattr(_cc1d, "causal_conv1d_interface", None)
-        if _cc1d_iface is not None:
-            _fwd = getattr(_cc1d_iface, "causal_conv1d_fwd_function", None)
-            _bwd = getattr(_cc1d_iface, "causal_conv1d_bwd_function", None)
-
-            if _fwd is not None and _bwd is not None:
-
-                class _CausalConv1dCudaShim:
-                    causal_conv1d_fwd = staticmethod(_fwd)
-                    causal_conv1d_bwd = staticmethod(_bwd)
-
-                _cc1d_iface.causal_conv1d_cuda = _CausalConv1dCudaShim()
-
-            _sys.modules["causal_conv1d.causal_conv1d_interface"] = _cc1d_iface
-    del _cc1d, _lazy_load_kernel
+prepare_hub_kernels()
 
 # `granite_swa` Auto*-API registration, and the matching vLLM ModelRegistry entry
 # that `vllm_mode: colocate` needs (the colocate path instantiates vllm.LLM inside

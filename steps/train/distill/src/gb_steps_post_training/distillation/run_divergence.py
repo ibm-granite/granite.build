@@ -24,11 +24,12 @@ import sys
 from pathlib import Path
 
 from gb_steps_post_training.distillation import divergence as dv
-from gb_steps_post_training.distillation.hub_kernel_pins import pin_hub_kernels
+from gb_steps_post_training.distillation.hub_kernel_pins import prepare_hub_kernels
 
-# Hybrid (granitemoehybrid) students resolve mamba-ssm at load time; the default
-# revision's build is incompatible with this transformers. See hub_kernel_pins.py.
-pin_hub_kernels()
+# Hybrid (granitemoehybrid) students resolve mamba-ssm and causal-conv1d at load
+# time, and the modeling code asserts on the legacy causal_conv1d_cuda object --
+# the pins, the warm-cache pre-population, and the shim. See hub_kernel_pins.py.
+prepare_hub_kernels()
 from gb_steps_post_training.distillation import fast_tokenizer
 
 
