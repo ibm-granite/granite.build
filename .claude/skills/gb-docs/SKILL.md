@@ -30,7 +30,7 @@ Everything is in **`references/`** next to this `SKILL.md` (the index below list
 ## Index — pick by topic
 
 **Authoring builds**
-- `references/builds/build-yaml-reference.md` — **authoritative `build.yaml` schema** (targets, steps, inputs/outputs, URIs, all fields/options).
+- `references/builds/build-yaml-specification.md` — **authoritative `build.yaml` reference**: the model behind the file, and every field of targets, inputs/outputs, URIs, steps, overrides, parameters and Jinja templating, with examples.
 - `references/builds/README.md` — build features overview; `references/builds/hf-push.md` — push artifacts to HuggingFace; `references/builds/event-notifications.md`.
 - `references/steps/bring-your-own-step.md`, `references/steps/custom-code-steps.md`, `references/steps/bring-your-own-image.md` — author/use custom steps (examples lean k8s/docker; the `commands`/`files_to_create` features are k8s/LSF only). `references/steps/README.md` — steps overview.
 

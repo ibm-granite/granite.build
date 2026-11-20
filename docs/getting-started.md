@@ -97,7 +97,7 @@ For the longer version of this story, see
 
 ## Where to next
 
-- Build something real → [`builds/build-yaml-reference.md`](builds/build-yaml-reference.md) for the full schema
+- Build something real → [`builds/build-yaml-specification.md`](builds/build-yaml-specification.md) for the full schema
 - Use a different backend → [`environments/README.md`](environments/README.md)
 - Push artifacts to HuggingFace → [`builds/hf-push.md`](builds/hf-push.md)
 - Validate a build with assertions → [`cli/gbtest-cli-reference.md`](cli/gbtest-cli-reference.md)

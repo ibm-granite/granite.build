@@ -1,0 +1,80 @@
+# Entity relationships among a space and what it provides to a build.
+# Render: d2 --layout elk docs/images/space-entities.d2 docs/images/space-entities.svg
+# Crow's-foot ends: one-required = exactly one, many = zero or more,
+# many-required = one or more, one = zero or one.
+
+direction: down
+
+classes: {
+  entity: {
+    style: {fill: "#ffffff"; stroke: "#2f5597"; stroke-width: 2; font-size: 22; bold: true}
+  }
+  core: {
+    style: {fill: "#eef3fb"; stroke: "#2f5597"; stroke-width: 2; font-size: 22; bold: true}
+  }
+  rel: {
+    style: {font-size: 18; stroke: "#5b6b7f"}
+  }
+  one_one: {
+    style: {font-size: 18; stroke: "#5b6b7f"}
+    source-arrowhead.shape: cf-one-required
+    target-arrowhead.shape: cf-one-required
+  }
+  one_many: {
+    style: {font-size: 18; stroke: "#5b6b7f"}
+    source-arrowhead.shape: cf-one-required
+    target-arrowhead.shape: cf-many
+  }
+  one_manyreq: {
+    style: {font-size: 18; stroke: "#5b6b7f"}
+    source-arrowhead.shape: cf-one-required
+    target-arrowhead.shape: cf-many-required
+  }
+  many_one: {
+    style: {font-size: 18; stroke: "#5b6b7f"}
+    source-arrowhead.shape: cf-many
+    target-arrowhead.shape: cf-one-required
+  }
+  many_manyreq: {
+    style: {font-size: 18; stroke: "#5b6b7f"}
+    source-arrowhead.shape: cf-many
+    target-arrowhead.shape: cf-many-required
+  }
+  many_optone: {
+    style: {font-size: 18; stroke: "#5b6b7f"}
+    source-arrowhead.shape: cf-many
+    target-arrowhead.shape: cf-one
+  }
+  many_many: {
+    style: {font-size: 18; stroke: "#5b6b7f"}
+    source-arrowhead.shape: cf-many
+    target-arrowhead.shape: cf-many
+  }
+}
+
+space: "Space" {class: core}
+secret_manager: "Secret manager" {class: entity}
+build: "Build" {class: core}
+target: "Target" {class: core}
+environment: "Environment" {class: entity}
+step: "Step" {class: entity}
+asset_store: "Asset store" {class: entity}
+input: "Input artifact" {class: entity}
+output: "Output artifact" {class: entity}
+
+space <-> secret_manager: "resolves secrets via" {class: one_one}
+space <-> environment: "provides" {class: one_many}
+space <-> step: "provides" {class: one_many}
+space <-> asset_store: "provides" {class: one_many}
+space <-> build: "runs" {class: one_many}
+build <-> target: "contains" {class: one_manyreq}
+target <-> environment: "runs in" {class: many_one}
+target <-> step: "executes in order" {class: many_manyreq}
+target <-> input: "consumes" {class: one_many}
+target <-> output: "produces" {class: one_many}
+input <-> output: "binds to (upstream)" {class: many_optone}
+environment <-> asset_store: "can pull/push via" {class: one_many}
+input <-> asset_store: "located by URI in" {class: many_one}
+output <-> asset_store: "located by URI in" {class: many_one}
+environment <-> secret_manager: "names secrets in" {class: many_many}
+step <-> secret_manager: "declares secrets from" {class: many_many}

@@ -43,7 +43,7 @@ class DashboardToolError(RuntimeError):
 DOC_TOPICS: dict[str, str] = {
     "getting_started": "getting-started.md",
     "builds_overview": "builds/README.md",
-    "build_yaml_reference": "builds/build-yaml-reference.md",
+    "build_yaml_reference": "builds/build-yaml-specification.md",
     "gb_cli_reference": "cli/gb-cli-reference.md",
     "templates": "templates/README.md",
     "steps": "steps/README.md",

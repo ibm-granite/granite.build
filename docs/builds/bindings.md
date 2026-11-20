@@ -2,7 +2,7 @@
 
 How data moves between targets in a build, and how a step declares and reads it. This page
 puts the build.yaml side and the step.yaml side together in one place. The field-by-field
-schemas stay in the [`build.yaml` reference](build-yaml-reference.md#inputs) and the
+schemas stay in the [`build.yaml` specification](build-yaml-specification.md#inputs-direct-or-bound) and the
 [steps overview](../steps/README.md#key-fields).
 
 > **Audience:** anyone writing a `build.yaml` that chains targets, or a `step.yaml` that
@@ -74,10 +74,10 @@ A `mem://` value is passed verbatim, with no copy and no path normalisation, so 
 normalisation turns `http://host:8000` into `/http:/host:8000`. A `mem://` output takes no
 `type` and no `store_push`. Output URIs can be Jinja-templated (for example
 `{{ run_metadata.targetsteprun_id | short_hash }}` or `{{ unique_hash }}`); see
-[Jinja templating](build-yaml-reference.md#jinja-templating).
+[Jinja templating](build-yaml-specification.md#ii6-parameters-and-jinja-templating).
 
-Full output schema (`public`, `store_push`, `event_selectors`):
-[`build.yaml` reference — Outputs](build-yaml-reference.md#outputs).
+Full output schema (`public`, `store_push`):
+[`build.yaml` specification — Outputs](build-yaml-specification.md#outputs-and-how-steps-produce-them).
 
 ### Inputs
 
@@ -98,9 +98,8 @@ targets:
 | `uri` | Direct artifact URI. It is checked to exist when the build is validated. |
 | `binding` | `<target-name>.<output-name>`. The target and output must both exist in this build. |
 | `wait_for_push` | `true`: don't start until the upstream output's `store_push` has finished, not just until it was produced. |
-| `event` | Event-driven trigger (for example `evalresults.success`), paired with the producer output's `event_selectors`. |
 
-Full input schema: [`build.yaml` reference — Inputs](build-yaml-reference.md#inputs).
+Full input schema: [`build.yaml` specification — Inputs](build-yaml-specification.md#inputs-direct-or-bound).
 
 ### Chaining targets
 
@@ -281,7 +280,7 @@ targets:
 
 ## See also
 
-- [`build.yaml` reference](build-yaml-reference.md): full input/output schema and Jinja variables
+- [`build.yaml` specification](build-yaml-specification.md): full input/output schema and Jinja variables
 - [Builds overview](README.md#bindings-chaining-targets)
 - [Steps overview](../steps/README.md#declaring-inputs): step.yaml structure and declaring inputs
 - [Monitoring and artifact events](../steps/monitoring-and-artifact-events.md): how outputs are registered

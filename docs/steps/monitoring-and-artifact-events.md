@@ -319,4 +319,4 @@ reassigns `log_line` to the matched substring after the first matching rule. In 
 - [Steps overview](README.md) — step.yaml structure and built-in steps
 - [`environment.yaml` reference — `event_configs`](../environments/README.md#event_configs--log-line-parsing-rules) — the full field schema
 - [Asset stores](../asset-stores/README.md) — how `mem://`, `env://`, `file://` and other URI schemes are resolved
-- [`build.yaml` reference](../builds/build-yaml-reference.md) — declaring target inputs and outputs
+- [`build.yaml` specification](../builds/build-yaml-specification.md) — declaring target inputs and outputs

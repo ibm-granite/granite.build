@@ -3,7 +3,7 @@
 Common questions about writing and running Granite.Build builds.
 
 > For CLI usage, see [`cli-reference.md`](../cli/gb-cli-reference.md). For the full
-> build.yaml schema, see [`build-yaml-reference.md`](../builds/build-yaml-reference.md).
+> build.yaml schema, see [`build-yaml-specification.md`](../builds/build-yaml-specification.md).
 
 ## Build.yaml authoring
 
@@ -169,7 +169,7 @@ Valid: `my-first-build`, `sft_full_run_01`
 
 - [Help](README.md) — the FAQ + troubleshooting section
 - [Troubleshooting](troubleshooting.md) — concrete failure modes and where to look
-- [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema
+- [`build.yaml` specification](../builds/build-yaml-specification.md) — full schema
 - [CLI reference](../cli/gb-cli-reference.md) — all `gb` commands
 - [Bring Your Own Step](../steps/bring-your-own-step.md) — custom code steps
 - [Glossary](../glossary.md) — term definitions

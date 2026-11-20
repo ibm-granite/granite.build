@@ -1,0 +1,90 @@
+# How a target turns input artifacts into output artifacts inside its execution environment.
+# Render: d2 --layout elk docs/images/build-target-flow.d2 docs/images/build-target-flow.svg
+# Laid out as a single top-to-bottom column so the text stays large in narrow viewers.
+# The Target is outermost, matching the containment diagram (a target names its environment).
+
+grid-columns: 1
+grid-gap: 160
+
+classes: {
+  store: {
+    shape: cylinder
+    width: 120
+    style: {fill: "#ffffff"; stroke: "#5b6b7f"; font-size: 22}
+  }
+  artifact: {
+    width: 600
+    style: {fill: "#ffffff"; stroke: "#5b6b7f"; border-radius: 4; font-size: 22; multiple: true}
+  }
+  step: {
+    width: 600
+    style: {fill: "#fff3f0"; stroke: "#d84315"; font-size: 22}
+  }
+  ref: {
+    style: {fill: "#f5f5f5"; stroke: "#9e9e9e"; stroke-dash: 4; font-size: 22}
+  }
+  edge: {
+    style: {font-size: 20; stroke: "#5b6b7f"}
+  }
+}
+
+sources: "" {
+  grid-columns: 2
+  grid-gap: 40
+  style: {fill: transparent; stroke: transparent}
+
+  upstream: "Upstream\ntarget output" {class: ref}
+
+  stores: "Asset stores" {
+    grid-columns: 4
+    grid-gap: 20
+    style: {fill: "#f3f6fa"; stroke: "#5b6b7f"; font-size: 22}
+    hf: "hf://" {class: store}
+    s3: "s3://" {class: store}
+    env: "env://" {class: store}
+    mem: "mem://" {class: store}
+  }
+}
+
+target: "Target" {
+  style: {fill: "#fffaf0"; stroke: "#b58900"; stroke-width: 2; font-size: 24; bold: true}
+
+  env: "Execution environment" {
+    grid-columns: 1
+    grid-gap: 40
+    style: {fill: "#e8f5e9"; stroke: "#2e7d32"; font-size: 22}
+
+    inputs: "Input artifacts" {class: artifact}
+    s1: "Step 1" {class: step}
+    s2: "Step 2" {class: step}
+    sn: "Step n" {class: step}
+    outputs: "Output artifacts" {class: artifact}
+  }
+}
+
+sinks: "" {
+  grid-columns: 2
+  grid-gap: 40
+  style: {fill: transparent; stroke: transparent}
+
+  stores: "Asset stores" {
+    grid-columns: 4
+    grid-gap: 20
+    style: {fill: "#f3f6fa"; stroke: "#5b6b7f"; font-size: 22}
+    hf: "hf://" {class: store}
+    s3: "s3://" {class: store}
+    env: "env://" {class: store}
+    mem: "mem://" {class: store}
+  }
+
+  downstream: "Downstream\ntarget input" {class: ref}
+}
+
+sources.stores -> target.env.inputs: "pull" {class: edge}
+sources.upstream -> target.env.inputs: "binding" {class: edge}
+target.env.inputs -> target.env.s1: "bound path or value" {class: edge}
+target.env.s1 -> target.env.s2 {class: edge}
+target.env.s2 -> target.env.sn {class: edge}
+target.env.sn -> target.env.outputs: "GB_ARTIFACT_* markers" {class: edge}
+target.env.outputs -> sinks.stores: "push" {class: edge}
+target.env.outputs -> sinks.downstream: "binding" {class: edge}
