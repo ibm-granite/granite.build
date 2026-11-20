@@ -141,6 +141,8 @@ from that compute. A `build.yaml` execution block (i.e. target) selects an envir
 The environment owns and executes the target lifecycle: 
 setup, launch, monitor and cleanup. It also owns the movement of artifacts to/from 
 the available asset stores and the compute.
+For the full `environment.yaml` schema, 
+see [Environments](../environments/README.md).
 
 **Asset stores:** An asset store, defined by a `store.yaml`, describes where artifacts of one URI
 family live and how to reach them. It does not move data itself. It covers which URIs it handles,
@@ -149,6 +151,8 @@ what endpoint to use, and which secret names hold the credentials. An environmen
 transfer is done by the environment, often by inserting a built-in transfer step such as `hfpull`
 or `s3push`. Two stores are implicit everywhere: `env://` (a path already visible to the worker)
 and `mem://` (a value passed between targets through the build's shared memory).
+For the full `store.yaml` schema, 
+see [Asset Stores](../asset-stores/README.md).
 
 **Targets:** Targets are elements of `build.yaml` that define the computation requested
 in the compute environment.  It can define input artifacts that are consumed by one or more
