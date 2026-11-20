@@ -194,7 +194,8 @@ GHSA-v4x8-3wr5-3wq8
 # x/net 0.57.0); trivy reports these, osv-scanner cannot see inside the binary. wandb is
 # tracking-only and defaults off in every step, so the binary does not run unless a recipe
 # turns tracking on. wandb moves with trl and weave in the dependency refresh (#676).
-# Ids from trivy's report on the c1069dfd image. Until 2027-05-31.
+# Ids from trivy's report on the c1069dfd and 173af080 images. Until 2027-05-31.
+CVE-2026-111943
 CVE-2026-33818
 CVE-2026-39821
 CVE-2026-46600
@@ -203,6 +204,7 @@ CVE-2026-56858
 CVE-2026-56859
 CVE-2026-56860
 CVE-2026-56862
+CVE-2026-78661
 CVE-2026-78667
 CVE-2026-78669
 CVE-2026-84304
