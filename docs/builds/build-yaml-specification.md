@@ -175,8 +175,10 @@ script on one backend and a SkyPilot task on another.
 
 The diagram below shows how these entities relate.
 
+<p align="center">
 <img src="../images/space-entities.svg" width="480"
   alt="Entity relationships: a space provides environments, steps and asset stores, resolves secrets through one secret manager, and runs builds; a build contains targets; each target runs in one environment, executes steps, consumes input artifacts and produces output artifacts, which are located in asset stores">
+</p>
 
 Line ends use crow's-foot notation: a double bar means exactly one, a circle with a bar means zero
 or one, a circle with a fork means zero or more, and a bar with a fork means one or more.
@@ -227,8 +229,10 @@ Two stores need no configuration and transfer nothing:
 Every environment supports both. Every other store type is supported per environment, as
 declared in its `environment.yaml`.
 
+<p align="center">
 <img src="../images/build-target-flow.svg" width="400"
   alt="A target containing its execution environment: input artifacts arrive by pull from asset stores or by binding from an upstream target, the steps run in order within the environment, and output artifacts are pushed to asset stores or bound to a downstream target">
+</p>
 
 <!-- Diagram source: docs/images/build-target-flow.d2. Regenerate with:
      d2 --layout elk docs/images/build-target-flow.d2 docs/images/build-target-flow.svg -->
@@ -256,8 +260,10 @@ For a more detailed discussion of the `gb` CLI, see the
 This section is **environment-neutral**: everything here applies to every environment type.
 SkyPilot-specific configuration is collected in [section III](#iii-skypilot-environment-specifics).
 
+<p align="center">
 <img src="../images/build-yaml-containment.svg" width="600"
   alt="Containment of the parts of a build.yaml: the build holds build settings and a stack of targets; each target holds its environment, inputs, a stack of steps, and outputs; each step holds step-specific and step-independent configuration">
+</p>
 
 A build has one or more targets, and a target has one or more steps and zero or more inputs and
 outputs. Each target names its own environment through `environment_uri`, so a single build can
