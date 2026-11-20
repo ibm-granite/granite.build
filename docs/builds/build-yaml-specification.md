@@ -56,7 +56,7 @@ optionally validates the build, and posts it to **gbserver**'s REST API. Inside 
 **BuildWatcher** picks up pending builds and hands each to a **BuildRunner**. The BuildRunner
 walks the build's graph of targets. For each target it asks the target's **Environment** to pull
 the inputs, launch and monitor each step, and push the outputs. Environments are pluggable
-classes, one per compute backend: Bash, Docker, K8s, Lsf, Runpod and Skypilot. Build, target and
+classes, one per compute backend: Bash, Docker, K8s, Lsf and Skypilot. Build, target and
 step state is persisted (SQLite in standalone mode, PostgreSQL in shared deployments), and build
 events are published on an event bus for notifications and the web UI.
 
@@ -74,7 +74,7 @@ BuildRunner
     │  walks the target graph
     ▼
 Environment
-(bash, docker, k8s, lsf, runpod, skypilot)
+(bash, docker, k8s, lsf, skypilot)
     │  pull inputs · run steps · push outputs
     ▼
 Asset stores
@@ -129,8 +129,8 @@ time. Four backends are available:
 - `hybrid`: chains several managers in priority order.
 
 On most environments, steps receive only the secrets they explicitly declare (least privilege),
-as environment variables. The exceptions are Bash, which loads every space secret into the step's
-environment, and RunPod, which has no support for declared secrets (see [II.4](#ii4-steps)).
+as environment variables. The exception is Bash, which loads every space secret into the step's
+environment (see [II.4](#ii4-steps)).
 
 **Environments.** An environment is a compute backend definition such as an an instance of 
 AWS, Slurm, or LSF.  It is defined by an `environment.yaml`
@@ -372,7 +372,6 @@ The value can use a build parameter
 | `Docker` | Local container (Docker/Podman) | Containerized local runs. |
 | `K8s` | Kubernetes/OpenShift via Helm + AppWrapper | Native cluster runs with streamed events. |
 | `Lsf` | IBM LSF via `bsub` over SSH | HPC clusters with shared filesystems. |
-| `Runpod` | RunPod GPU pods | On-demand GPUs. |
 | `Skypilot` | SkyPilot: SLURM, Kubernetes, AWS, … | One launcher shape across many clouds ([III](#iii-skypilot-environment-specifics)). |
 
 For the full `environment.yaml` schema, per-step-type defaults, asset-store declarations, and
@@ -495,7 +494,6 @@ the store's pull and push and declare the store in its `assetstores`.
 | Docker | ✓ | — | outputs only | ✓ | ✓ |
 | K8s | ✓ | ✓ | — | ✓ | ✓ |
 | Lsf | ✓ | ✓ | — | ✓ | ✓ |
-| Runpod | — | — | — | ✓ | ✓ |
 | Skypilot | ✓ | ✓ | — | ✓ | ✓ |
 
 ##### `hf://` (HuggingFace)
@@ -612,8 +610,8 @@ environment-neutral resource request. Each environment reads the fields that mak
 
 | Field | Read by | Meaning |
 |-------|---------|---------|
-| `num_nodes` | K8s, LSF, RunPod, SkyPilot | Number of nodes. |
-| `num_gpus_per_node` | K8s, LSF, RunPod | GPUs per node. |
+| `num_nodes` | K8s, LSF, SkyPilot | Number of nodes. |
+| `num_gpus_per_node` | K8s, LSF | GPUs per node. |
 | `num_cpus_per_node` | Docker, K8s, SkyPilot | CPU cores per node. |
 | `total_memory_per_node` | Docker, K8s, SkyPilot | Memory per node, e.g. `"32Gi"`. |
 
@@ -628,11 +626,8 @@ settings through the step's `launcher_config` (see
 **Environment variables from secrets.** On Docker, K8s, LSF and SkyPilot, secrets are never passed
 in bulk. A step declares by name each secret it needs as an environment variable, under an
 environment-specific `config` block (`config.docker`, `config.k8s`, `config.lsf` or
-`config.skypilot`). The space's secret manager supplies the value. Two environments differ:
-
-- **Bash** loads every space secret into the step's environment, whether the step declares it
-  or not.
-- **RunPod** has no support for declared secrets.
+`config.skypilot`). The space's secret manager supplies the value. Bash is the exception: it
+loads every space secret into the step's environment, whether the step declares it or not.
 
 For example, this target runs on a SkyPilot environment and exposes two space secrets to its
 command as `HF_TOKEN` and `WANDB_API_KEY`:
