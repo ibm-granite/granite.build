@@ -1,13 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The mamba-ssm hub-kernel pin: what it pins, and that the loaders call it.
+"""The hub-kernel pins: what they pin, and that the loaders call them.
 
-The pin exists because transformers 5.8.0's default mapping resolves mamba-ssm at
+mamba-ssm is pinned because transformers 5.8.0's default mapping resolves it at
 ``version=1`` -- the kernels-community repo's v1 branch -- whose build imports
 ``GreedySearchDecoderOnlyOutput``, a symbol transformers 5.x renamed. Every fresh
 hybrid (granitemoehybrid) model load dies on that import mid-load (measured
 2026-11-13 on BlueVela, image b6310378: teacher-divergence failed its build,
 preflight-check's probe reported ``loaded=NONE``). ``v0.0.4`` is the
-compatible revision. See ``hub_kernel_pins.py`` for the full measurement.
+compatible revision.
+
+causal-conv1d is pinned for revision AGREEMENT: transformers resolves it at the
+v1 branch while the preflight's unpinned fallback is ``main``, and under
+``HF_HUB_OFFLINE=1`` the trainer cannot resolve the uncached ref (measured
+2026-11-20, image 939685f2: student-sft failed with ``OfflineModeIsEnabled`` on
+causal-conv1d/refs seconds after the preflight downloaded the repo at ``main``).
+
+See ``hub_kernel_pins.py`` for the full measurements.
 
 The mapping tests run against an injected stand-in module so they cover the pin's
 logic in any environment; one test additionally runs against the real transformers
@@ -86,13 +94,21 @@ def test_pin_covers_the_falcon_variant_of_the_same_repo(fake_mapping):
     assert "version" not in entry
 
 
+def test_pin_rewrites_causal_conv1d_onto_the_pinned_revision(fake_mapping):
+    assert fake_mapping["causal-conv1d"].get("version") == 1  # the v1-branch default
+
+    pin_hub_kernels()
+
+    entry = fake_mapping["causal-conv1d"]
+    assert entry["revision"] == PINNED_KERNEL_REVISIONS["kernels-community/causal-conv1d"]
+    # version must be GONE for the same reason as mamba-ssm: get_kernel refuses
+    # a call that passes both revision and version.
+    assert "version" not in entry
+
+
 def test_pin_leaves_unpinned_kernels_alone(fake_mapping):
     pin_hub_kernels()
 
-    assert fake_mapping["causal-conv1d"] == {
-        "repo_id": "kernels-community/causal-conv1d",
-        "version": 1,
-    }
     assert fake_mapping["sonic-moe"] == {
         "repo_id": "kernels-community/sonic-moe",
         "revision": "ep-support",
@@ -137,6 +153,11 @@ def test_pin_against_the_real_transformers():
         entry = hub_kernels._HUB_KERNEL_MAPPING["mamba-ssm"]
         assert entry.get("revision") == "v0.0.4"
         assert "version" not in entry
+        entry = hub_kernels._HUB_KERNEL_MAPPING["causal-conv1d"]
+        assert entry.get("revision") == PINNED_KERNEL_REVISIONS[
+            "kernels-community/causal-conv1d"
+        ]
+        assert "version" not in entry
     finally:
         hub_kernels._HUB_KERNEL_MAPPING.clear()
         hub_kernels._HUB_KERNEL_MAPPING.update(before)
@@ -144,8 +165,11 @@ def test_pin_against_the_real_transformers():
 
 def test_pinned_revision_helper():
     assert pinned_revision("kernels-community/mamba-ssm") == "v0.0.4"
+    assert (
+        pinned_revision("kernels-community/causal-conv1d")
+        == "6e9a58272220a363dc50e59cba737abcedd7b59f"
+    )
     # Unlisted repos keep their default resolution.
-    assert pinned_revision("kernels-community/causal-conv1d") == "main"
     assert pinned_revision("kernels-community/flash-attn2") == "main"
 
 

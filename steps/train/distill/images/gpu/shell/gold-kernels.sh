@@ -82,9 +82,9 @@ for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
         _, path = install_kernel(repo, revision=pinned_revision(repo), local_files_only=True)
         # Layout-tolerant, matching gold.py's preamble: kernels-community repos
-        # carry a variant-root metadata.json only in newer revisions -- the
-        # pinned mamba-ssm v0.0.3 predates it -- so validate only when present
-        # and let install_kernel's own success stand as the check.
+        # carry a variant-root metadata.json only in some revisions -- so
+        # validate only when present and let install_kernel's own success stand
+        # as the check.
         _meta = Path(path) / "metadata.json"
         if _meta.exists():
             json.loads(_meta.read_text())
@@ -156,8 +156,8 @@ for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
         _, path = install_kernel(repo, revision=pinned_revision(repo))
         # Same layout-tolerant check as the probe above (and gold.py's
-        # preamble): the pinned mamba-ssm v0.0.3 has no variant-root
-        # metadata.json, and an unconditional read here failed its prefetch.
+        # preamble): not every pinned revision carries a variant-root
+        # metadata.json, and an unconditional read has failed a prefetch.
         _meta = Path(path) / "metadata.json"
         if _meta.exists():
             json.loads(_meta.read_text())

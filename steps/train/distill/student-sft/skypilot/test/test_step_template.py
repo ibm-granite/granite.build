@@ -183,9 +183,9 @@ class TestLauncher:
         assert "bash -lc" not in run_script
 
     def test_missing_hub_kernels_are_fetched_in_job(self, launcher):
-        """run-sft.sh preflights the required kernel list and REFUSES on a cold cache,
-        because those kernels are resolved at import time — so without this the failure
-        lands after the allocation is up. Measured (build 0e60920a): this image caches
+        """run-sft.sh preflights the required kernel list and downloads in-job on a cold
+        cache, because those kernels are resolved at import time — so without this the
+        failure lands after the allocation is up. Measured (build 0e60920a): this image caches
         mamba-ssm and causal-conv1d but not kernels-community/flash-attn2, which is the
         FA2 fallback the renderer selects for a granite student.
         """

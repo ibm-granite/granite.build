@@ -19,25 +19,39 @@ and ``mamba_ssm/`` inside the build is a compatibility shim. This is the newest
 revision whose cu128 build loads cleanly under transformers 5.8.0. It also ships
 ``metadata.json`` at the variant root, which v0.0.3 lacked.
 
+causal-conv1d is pinned for a different reason: revision AGREEMENT, not a broken
+build (measured 2026-11-20, image 939685f2, student-sft build test). transformers
+resolves it with ``version=1`` -- the repo's v1 branch (6e9a5827) -- while the
+preflight's fallback for unpinned repos is ``main`` (f2651e77). Under
+``HF_HUB_OFFLINE=1`` the trainer cannot resolve an uncached ref, so sft.py died
+with ``OfflineModeIsEnabled`` on causal-conv1d/refs seconds after the preflight
+had downloaded the repo -- at the wrong revision. The pin points both sides at
+the immutable v1-branch tip (verified in the GPU image: ``causal_conv1d_fn``
+available, torch28-cu128 build), so the offline lookup is an exact snapshot hit.
+
 This is a pin, not a fix. When kernels-community/mamba-ssm ships a build that
 imports cleanly under transformers 5.x on the default branch, or the image moves
-past the rename, delete the entry here, the call sites, and the matching probe
-in gold-kernels.sh (which reads ``pinned_revision`` from this module -- keep the
-two in sync by construction, not by discipline).
+past the rename, delete that entry here; delete causal-conv1d's entry when the
+preflight and transformers agree on a revision by construction. Either way,
+remove the call sites and the matching probe in gold-kernels.sh (which reads
+``pinned_revision`` from this module -- keep the two in sync by construction,
+not by discipline).
 """
 
 from __future__ import annotations
 
 # repo_id -> revision. Unlisted repos resolve their default (transformers passes
-# version=1, the kernels package resolves the repo's v1 branch).
+# version=1, the kernels package resolves the repo's v1 branch) -- which the
+# preflight cannot satisfy offline, so a hybrid model's kernels belong here.
 PINNED_KERNEL_REVISIONS: dict[str, str] = {
     "kernels-community/mamba-ssm": "v0.0.4",
+    "kernels-community/causal-conv1d": "6e9a58272220a363dc50e59cba737abcedd7b59f",
 }
 
-# The transformers mapping keys whose repo is mamba-ssm. "falcon_mamba-ssm" shares
-# the repo and the same broken default; pinning it costs nothing and keeps a Falcon
-# run from rediscovering this.
-_PINNED_KERNEL_NAMES = ("mamba-ssm", "falcon_mamba-ssm")
+# The transformers mapping keys whose repos are pinned above. "falcon_mamba-ssm"
+# shares mamba-ssm's repo and the same broken default; pinning it costs nothing
+# and keeps a Falcon run from rediscovering this.
+_PINNED_KERNEL_NAMES = ("mamba-ssm", "falcon_mamba-ssm", "causal-conv1d")
 
 
 def pinned_revision(repo_id: str) -> str:

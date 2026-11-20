@@ -131,9 +131,11 @@ activate_swa_arm()
 import sys as _sys
 
 # BEFORE any kernel resolves: mamba-ssm's default (version=1 -> the v1 branch)
-# build imports symbols transformers 5.x renamed, so a fresh hybrid-model load
-# dies mid-load. The pin below rewrites the mapping onto v0.0.3, the newest
-# compatible revision. See hub_kernel_pins.py for the measurement.
+# build imports symbols transformers 5.x renamed, and causal-conv1d's default
+# resolves a ref the offline cache never holds -- so a fresh hybrid-model load
+# dies mid-load. The pin below rewrites the mapping onto revisions that load
+# cleanly AND match the preflight's download. See hub_kernel_pins.py for the
+# measurements.
 from gb_steps_post_training.distillation.hub_kernel_pins import pin_hub_kernels
 
 pin_hub_kernels()
