@@ -23,7 +23,7 @@ from gbcommon.uri.lh import LhURI
 from gbserver.lineage.attributes import origin_id
 from gbserver.lineage.db_jobstats import DBLineageStore
 from gbserver.lineage.db_service import DBLineageService
-from gbserver.lineage.row_indexing import LineageRowIndexer
+from gbserver.lineage.index_writer import LineageIndexWriter
 from gbserver.lineage.uri_normalize import normalize_uri
 from gbserver.storage.artifact_registration import ArtifactRegistration
 from gbserver.storage.stored_build import StoredBuild
@@ -118,7 +118,7 @@ def all_rows(storage) -> list:
     granite.build's own concept and empty on every imported row. These fixtures
     write one build, so the whole table IS that build's rows.
     """
-    return [row for page in storage.lineage_row_storage.get_paged() for row in page]
+    return [row for page in storage.lineage_index_storage.get_paged() for row in page]
 
 
 def all_jobs(storage) -> list:
@@ -139,7 +139,7 @@ def record_and_index(storage, *args, **kwargs):
     """
     sink = DBLineageStore(job_storage=storage.lineage_job_storage)
     sink.add_jobstats_for_build(storage, *args, **kwargs)
-    indexer = LineageRowIndexer(storage=storage.lineage_row_storage)
+    indexer = LineageIndexWriter(storage=storage.lineage_index_storage)
     for page in storage.lineage_job_storage.get_paged():
         indexer.index_job_records(list(page))
     return sink
@@ -161,7 +161,7 @@ class TestOneHop(_RoundtripTest):
             outputs={"model": [self.model.uuid]},
         )
         self.sink = DBLineageStore(job_storage=storage.lineage_job_storage)
-        self.service = DBLineageService(storage=storage.lineage_row_storage)
+        self.service = DBLineageService(storage=storage.lineage_index_storage)
 
     def record(self, storage, *args, **kwargs):
         """Record and index, so assertions can read either table."""
@@ -313,7 +313,7 @@ class TestFanOutRows(_RoundtripTest):
 
         record_and_index(storage, build.uuid)
 
-        service = DBLineageService(storage=storage.lineage_row_storage)
+        service = DBLineageService(storage=storage.lineage_index_storage)
         graph = service.query_graph(uri=out_a.uri, direction="upstream")
         runs = [n for n in graph["nodes"] if n["node_type"] == "run"]
         assert len(runs) == 1
@@ -346,7 +346,7 @@ class TestChainAcrossBuilds(_RoundtripTest):
         record_and_index(storage, build1.uuid)
         record_and_index(storage, build2.uuid)
 
-        service = DBLineageService(storage=storage.lineage_row_storage)
+        service = DBLineageService(storage=storage.lineage_index_storage)
         graph = service.query_graph(uri=raw.uri, direction="downstream", max_depth=10)
         assert artifact_ids(graph) >= {
             normalize_uri(raw.uri),

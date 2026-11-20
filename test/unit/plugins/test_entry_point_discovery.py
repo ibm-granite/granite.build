@@ -750,7 +750,7 @@ def test_auth_provider_build_list_multi_order(
     monkeypatch, auth_provider_registry_snapshot
 ):
     """build_provider_list preserves the JWT-before-opaque order for 'multi'."""
-    monkeypatch.setenv("GBSERVER_IBMID_CLIENT_ID", "test-id")
+    monkeypatch.setenv("GBSERVER_OIDC_CLIENT_ID", "test-id")
     _patch_entry_points(monkeypatch, {})
 
     providers = auth_provider_registry_snapshot.build_provider_list("multi")

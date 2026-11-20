@@ -17,16 +17,12 @@ from dotenv import load_dotenv
 from gbcommon.types.constants import DEFAULT_GH_DOMAIN, get_gb_home_dir, get_gh_api_base
 from gbcommon.types.gbenvconfig import is_standalone
 from gbserver.types.constants_base import (
-    ENV_VAR_IBMID_AUTHORIZE_URL,
-    ENV_VAR_IBMID_CALLBACK_URL,
-    ENV_VAR_IBMID_CLIENT_ID,
-    ENV_VAR_IBMID_CLIENT_SECRET,
-    ENV_VAR_IBMID_ISSUER,
-    ENV_VAR_IBMID_JWKS_URI,
-    ENV_VAR_IBMID_TOKEN_URL,
-    ENV_VAR_IBMID_USERINFO_URL,
+    ENV_VAR_OIDC_CLIENT_ID,
+    ENV_VAR_OIDC_ISSUER,
+    ENV_VAR_OIDC_JWKS_URI,
     ENV_VAR_PREFIX,
     getenv_boolean,
+    oidc_setting,
 )
 from gbserver.types.gbserverenvconfig import gb_environment_config
 
@@ -1042,28 +1038,11 @@ GBSERVER_AUTH_MODE = os.getenv(ENV_VAR_AUTH_MODE, "github")
 GBSERVER_API_KEY = os.getenv(ENV_VAR_API_KEY, "")
 GBSERVER_API_USER = os.getenv(ENV_VAR_API_USER, "standalone")
 
-# IBMid OIDC
-GBSERVER_IBMID_ISSUER = os.getenv(
-    ENV_VAR_IBMID_ISSUER, "https://login.ibm.com/oidc/endpoint/default"
-)
-GBSERVER_IBMID_JWKS_URI = os.getenv(
-    ENV_VAR_IBMID_JWKS_URI, "https://login.ibm.com/oidc/endpoint/default/jwks"
-)
-GBSERVER_IBMID_CLIENT_ID = os.getenv(ENV_VAR_IBMID_CLIENT_ID, "")
-GBSERVER_IBMID_CLIENT_SECRET = os.getenv(ENV_VAR_IBMID_CLIENT_SECRET, "")
-GBSERVER_IBMID_AUTHORIZE_URL = os.getenv(
-    ENV_VAR_IBMID_AUTHORIZE_URL,
-    "https://login.ibm.com/v1.0/endpoint/default/authorize",
-)
-GBSERVER_IBMID_TOKEN_URL = os.getenv(
-    ENV_VAR_IBMID_TOKEN_URL,
-    "https://login.ibm.com/v1.0/endpoint/default/token",
-)
-GBSERVER_IBMID_USERINFO_URL = os.getenv(
-    ENV_VAR_IBMID_USERINFO_URL,
-    "https://login.ibm.com/v1.0/endpoint/default/userinfo",
-)
-GBSERVER_IBMID_CALLBACK_URL = os.getenv(ENV_VAR_IBMID_CALLBACK_URL, "")
+# SSO (OIDC) token validation. The login endpoints (api/auth_routes.py) read
+# their settings per request through oidc_setting().
+GBSERVER_OIDC_ISSUER = oidc_setting(ENV_VAR_OIDC_ISSUER)
+GBSERVER_OIDC_JWKS_URI = oidc_setting(ENV_VAR_OIDC_JWKS_URI)
+GBSERVER_OIDC_CLIENT_ID = oidc_setting(ENV_VAR_OIDC_CLIENT_ID)
 
 # OpenLineage / WandB lineage provider.
 #
@@ -1198,7 +1177,7 @@ GB_STEP_RUNS_TABLE_NAME = "gb_steps"
 GB_ARTIFACT_REGISTRY_TABLE_NAME = "gb_artifacts"
 GB_TARGET_RUNS_TABLE_NAME = "gb_targets"
 GB_NODE_FAILURES_TABLE_NAME = "gb_ndfail"
-GB_LINEAGE_TABLE_NAME = "gb_lineage_index"
+GB_LINEAGE_INDEX_TABLE_NAME = "gb_lineage_index"
 GB_LINEAGE_JOB_TABLE_NAME = "gb_lineage_job"
 GB_SPACE_USERS_TABLE_NAME = "gb_space_users"
 GB_KV_PAIRS_TABLE_NAME = "gb_kv_pairs"

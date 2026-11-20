@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import hashlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,10 +28,9 @@ def docker_env():
 
 @pytest.fixture
 def mock_assetstore():
-    """Mock assetstore with get_secrets and get_relpath for HF model loading."""
+    """Mock assetstore with no secrets, for HF model loading."""
     store = MagicMock()
     store.get_secrets.return_value = {}
-    store.get_relpath.return_value = "ibm-granite/granite-4.0-350m/main"
     return store
 
 
@@ -100,11 +100,9 @@ async def test_pullasset_hfstore_multiple_models_accumulate(docker_env, tmp_path
     """Verify multiple pullasset_hfstore calls accumulate volumes."""
     store1 = MagicMock()
     store1.get_secrets.return_value = {}
-    store1.get_relpath.return_value = "org1/model1/main"
 
     store2 = MagicMock()
     store2.get_secrets.return_value = {}
-    store2.get_relpath.return_value = "org2/model2/main"
 
     uri1 = HfURI.from_parts(owner="org1", repo="model1", hf_type=HfType.MODEL)
     uri2 = HfURI.from_parts(owner="org2", repo="model2", hf_type=HfType.MODEL)
@@ -159,22 +157,139 @@ async def test_pullasset_hfstore_mounts_only_the_path_in_the_repo(
 
 
 @pytest.mark.asyncio
-async def test_pullasset_hfstore_binds_a_bucket_at_the_mounted_root(
+async def test_pullasset_hfstore_mounts_only_the_path_in_a_bucket(
     docker_env, hf_storeload_config, tmp_path
 ):
-    """A bucket syncs its path's contents into the pull root, so it is bound at
-    the root itself, which has no revision segment."""
-    with patch.object(HfURI, "pull", return_value=True):
+    """Each bucket input is synced into a pull dir of its own (named by its
+    path), so only that path is mounted, not the whole bucket, another path of
+    it, or a same-named model."""
+    leaf = hashlib.sha256(b"sub").hexdigest()[:16]
+    with patch.object(HfURI, "pull", return_value=True) as mock_pull:
         binding_config, _ = await docker_env.pullasset_hfstore(
             uri=HfURI.parse("hf:///buckets/org/b/sub"),
             assetstore=_store(),
             storeload_config=hf_storeload_config,
         )
 
-    root = "/gb-hf-models/org/b"
-    assert binding_config[BINDING_KEY]["path"] == root
-    host_root = str(tmp_path / "hf-cache" / "org" / "b")
-    assert docker_env._extra_volumes == {host_root: {"bind": root, "mode": "ro"}}
+    host = tmp_path / "hf-cache" / "buckets" / "org" / "b" / leaf
+    assert mock_pull.call_args[0][0] == host
+    bound = f"/gb-hf-models/buckets/org/b/{leaf}"
+    assert binding_config[BINDING_KEY]["path"] == bound
+    assert docker_env._extra_volumes == {str(host): {"bind": bound, "mode": "ro"}}
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_requires_a_uri(docker_env, hf_storeload_config):
+    """A missing uri fails on the helper's own assert, not inside URI parsing."""
+    with pytest.raises(AssertionError, match="uri is required"):
+        await docker_env.pullasset_hfstore(
+            uri=None, assetstore=_store(), storeload_config=hf_storeload_config
+        )
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_symlinked_cache_shares_the_mount(docker_env, tmp_path):
+    """Two cache_path values naming one dir (one a symlink) mount it once,
+    rather than refusing the second input or mounting it twice."""
+    real = tmp_path / "cache"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    bindings = []
+    with patch.object(HfURI, "pull", return_value=True):
+        for cache in (real, tmp_path / "link"):
+            config = MagicMock()
+            config.mode = "default"
+            config.config = {"cache_path": str(cache)}
+            binding_config, _ = await docker_env.pullasset_hfstore(
+                uri=HfURI.parse("hf:///org/repo/main"),
+                assetstore=_store(),
+                storeload_config=config,
+            )
+            bindings.append(binding_config[BINDING_KEY]["path"])
+
+    assert bindings == ["/gb-hf-models/org/repo/main"] * 2
+    assert list(docker_env._extra_volumes) == [str(real / "org" / "repo" / "main")]
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_keeps_a_model_and_a_dataset_apart(
+    docker_env, hf_storeload_config, tmp_path
+):
+    """A model and a dataset may share owner/repo on the Hub. Each is pulled
+    into, and mounted from, a pull dir of its own."""
+    store = _store()
+    with patch.object(HfURI, "pull", return_value=True):
+        for uri in ("hf:///org/repo/main", "hf:///datasets/org/repo/main"):
+            await docker_env.pullasset_hfstore(
+                uri=HfURI.parse(uri),
+                assetstore=store,
+                storeload_config=hf_storeload_config,
+            )
+
+    cache = tmp_path / "hf-cache"
+    assert docker_env._extra_volumes == {
+        str(cache / "org" / "repo" / "main"): {
+            "bind": "/gb-hf-models/org/repo/main",
+            "mode": "ro",
+        },
+        str(cache / "datasets" / "org" / "repo" / "main"): {
+            "bind": "/gb-hf-models/datasets/org/repo/main",
+            "mode": "ro",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_same_input_twice_shares_its_mount(
+    docker_env, hf_storeload_config
+):
+    """Two inputs naming the same content through one cache share one mount."""
+    store = _store()
+    bindings = []
+    with patch.object(HfURI, "pull", return_value=True):
+        for _ in range(2):
+            binding_config, _ = await docker_env.pullasset_hfstore(
+                uri=HfURI.parse("hf:///org/repo/main"),
+                assetstore=store,
+                storeload_config=hf_storeload_config,
+            )
+            bindings.append(binding_config[BINDING_KEY]["path"])
+
+    assert bindings == ["/gb-hf-models/org/repo/main"] * 2
+    assert len(docker_env._extra_volumes) == 1
+
+
+@pytest.mark.asyncio
+async def test_pullasset_hfstore_refuses_a_second_cache_for_one_container_path(
+    docker_env, tmp_path
+):
+    """The same content through two cache_path values would mount two host dirs
+    at one container path, which Docker rejects for this and every later
+    container. The second input is refused before it is pulled."""
+    uri = "hf:///org/repo/main"
+    configs = []
+    for name in ("cache-a", "cache-b"):
+        config = MagicMock()
+        config.mode = "default"
+        config.config = {"cache_path": str(tmp_path / name)}
+        configs.append(config)
+
+    with patch.object(HfURI, "pull", return_value=True) as mock_pull:
+        await docker_env.pullasset_hfstore(
+            uri=HfURI.parse(uri), assetstore=_store(), storeload_config=configs[0]
+        )
+        with pytest.raises(ValueError) as exc_info:
+            await docker_env.pullasset_hfstore(
+                uri=HfURI.parse(uri), assetstore=_store(), storeload_config=configs[1]
+            )
+
+    message = str(exc_info.value)
+    first = str(tmp_path / "cache-a" / "org" / "repo" / "main")
+    second = str(tmp_path / "cache-b" / "org" / "repo" / "main")
+    assert first in message and second in message
+    assert "/gb-hf-models/org/repo/main" in message
+    assert mock_pull.call_count == 1
+    assert list(docker_env._extra_volumes) == [first]
 
 
 @pytest.mark.asyncio
@@ -195,10 +310,10 @@ async def test_pullasset_hfstore_two_paths_from_one_repo_get_their_own_mounts(
             bindings.append(binding_config[BINDING_KEY]["path"])
 
     assert bindings == [
-        "/gb-hf-models/org/repo/main/train",
-        "/gb-hf-models/org/repo/main/test",
+        "/gb-hf-models/datasets/org/repo/main/train",
+        "/gb-hf-models/datasets/org/repo/main/test",
     ]
-    host = tmp_path / "hf-cache" / "org" / "repo" / "main"
+    host = tmp_path / "hf-cache" / "datasets" / "org" / "repo" / "main"
     assert docker_env._extra_volumes == {
         str(host / "train"): {"bind": bindings[0], "mode": "ro"},
         str(host / "test"): {"bind": bindings[1], "mode": "ro"},
@@ -653,7 +768,8 @@ def test_pull_asset_hfstore_raises_on_no_uri():
 
 
 def test_pull_asset_hfstore_bucket_cache_path_omits_revision(tmp_path):
-    """Bucket cache path is owner/repo with no revision segment."""
+    """A bucket is pulled under buckets/, with no revision segment, into a dir
+    named by its (here empty) path, and is bound at that dir."""
     uri = HfURI.from_parts(owner="org", repo="my-bucket", hf_type=HfType.BUCKET)
     store = MagicMock()
     store.get_secrets.return_value = {}
@@ -663,7 +779,8 @@ def test_pull_asset_hfstore_bucket_cache_path_omits_revision(tmp_path):
     with patch.object(HfURI, "pull", return_value=True):
         result = pull_asset_hfstore(uri, store, sc)
 
-    assert result == tmp_path / "cache" / "org" / "my-bucket"
+    leaf = hashlib.sha256(b"").hexdigest()[:16]
+    assert result == tmp_path / "cache" / "buckets" / "org" / "my-bucket" / leaf
 
 
 @pytest.mark.asyncio

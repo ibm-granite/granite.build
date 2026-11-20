@@ -269,8 +269,11 @@ async def test_launch_records_workspace_by_targetsteprun(docker_env, tmp_path):
 def _mock_launch_env(docker_env):
     from unittest.mock import MagicMock
 
+    import docker
+
     client = MagicMock()
-    docker_env._get_docker = MagicMock(return_value=(MagicMock(), client))
+    # The real module, for its docker.types; only the client is mocked.
+    docker_env._get_docker = MagicMock(return_value=(docker, client))
     docker_env._resolve_image = MagicMock(return_value="img:latest")
     docker_env._pull_image = MagicMock()
     docker_env._release_monitors = MagicMock()
@@ -289,8 +292,34 @@ async def _launch(docker_env, launch_id, ws, tsr_id):
     )
 
 
+def _binds(run_call):
+    """A container's bind mounts, as host path -> {"bind", "mode"}."""
+    assert "volumes" not in run_call.kwargs
+    return {
+        m["Source"]: {"bind": m["Target"], "mode": "ro" if m["ReadOnly"] else "rw"}
+        for m in run_call.kwargs["mounts"]
+        if m["Type"] == "bind"
+    }
+
+
 def _workspace_binds(volumes):
     return {h: v for h, v in volumes.items() if v["bind"] == "/gb-workspace"}
+
+
+@pytest.mark.asyncio
+async def test_a_colon_in_a_mount_path_reaches_docker_intact(docker_env, tmp_path):
+    """Mounts go to Docker as structured bind mounts, not "host:bind:mode"
+    strings, so a ':' in a path (allowed in a path in a repo or bucket) can't
+    split one and fail this and every later container."""
+    import docker
+
+    client = _mock_launch_env(docker_env)
+    host = str(tmp_path / "hf" / "results 01:30:30.json")
+    bind = "/gb-hf-models/o/r/main/results 01:30:30.json"
+    docker_env._extra_volumes[host] = {"bind": bind, "mode": "ro"}
+    await _launch(docker_env, "launchAAAA", tmp_path / "wsA", "tsrA")
+    mounts = client.containers.run.call_args.kwargs["mounts"]
+    assert docker.types.Mount(bind, host, type="bind", read_only=True) in mounts
 
 
 @pytest.mark.asyncio
@@ -300,8 +329,8 @@ async def test_second_launch_mounts_only_its_own_workspace(docker_env, tmp_path)
     docker_env._extra_volumes.update(ro)
     await _launch(docker_env, "launchAAAA", tmp_path / "wsA", "tsrA")
     await _launch(docker_env, "launchBBBB", tmp_path / "wsB", "tsrB")
-    vols_a = client.containers.run.call_args_list[0].kwargs["volumes"]
-    vols_b = client.containers.run.call_args_list[1].kwargs["volumes"]
+    vols_a = _binds(client.containers.run.call_args_list[0])
+    vols_b = _binds(client.containers.run.call_args_list[1])
     assert _workspace_binds(vols_a) == {
         str(tmp_path / "wsA"): {"bind": "/gb-workspace", "mode": "rw"}
     }
@@ -532,8 +561,8 @@ async def test_env_input_mounted_only_into_referencing_launch(docker_env, tmp_pa
     )
     await _launch(docker_env, "launchBBBB", tmp_path / "wsB", "tsrB")
 
-    vols_a = client.containers.run.call_args_list[0].kwargs["volumes"]
-    vols_b = client.containers.run.call_args_list[1].kwargs["volumes"]
+    vols_a = _binds(client.containers.run.call_args_list[0])
+    vols_b = _binds(client.containers.run.call_args_list[1])
     assert vols_a[str(d)] == {"bind": "/gb-env-inputs/0", "mode": "ro"}
     assert str(d) not in vols_b
     assert docker_env._extra_volumes == {}

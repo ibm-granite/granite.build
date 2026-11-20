@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""``gb_lineage_index`` (SqliteLineageRowStorage) tests against SQLite.
+"""``gb_lineage_index`` (SqliteLineageIndexStorage) tests against SQLite.
 
 The backend-agnostic bodies live in test/libgbtest/storage/lineage_index_storage.py.
 What is here is only what SQLite can prove: that the declared indexes and the
@@ -16,7 +16,7 @@ import sqlite3
 import pytest
 from libgbtest.storage.lineage_index_storage import BaseLineageIndexStorageTest, row
 
-from gbserver.storage.sqlite.sqlite_storage import SqliteLineageRowStorage
+from gbserver.storage.sqlite.sqlite_storage import SqliteLineageIndexStorage
 from gbserver.storage.sqlite.storage_factory import SqliteStorageFactory
 from gbserver.storage.stored_lineage_row import MAX_LINEAGE_URI_LENGTH
 
@@ -31,9 +31,9 @@ class TestSqliteLineageIndexStorage(BaseLineageIndexStorageTest):
     def _get_storage_factory(cls):
         return SqliteStorageFactory()
 
-    def _get_tested_storage(self) -> SqliteLineageRowStorage:
+    def _get_tested_storage(self) -> SqliteLineageIndexStorage:
         storage = super()._get_tested_storage()
-        assert isinstance(storage, SqliteLineageRowStorage)
+        assert isinstance(storage, SqliteLineageIndexStorage)
         return storage
 
     def _query_schema(self, sql: str, parameters: tuple = ()) -> list:

@@ -40,6 +40,8 @@ _OK = {
     "input_path": "/staged/docs",
     "arg_keys": [],
     "arg_keys_empty": "",
+    "pip_constraints_problem": "",
+    "pip_constraints": ["pyarrow<26"],
 }
 
 
@@ -66,6 +68,9 @@ def _run(env=None, **over):
     ]
     for key in cfg["arg_keys"]:
         argv += ["--arg-key", key]
+    argv += ["--pip-constraints-problem", cfg["pip_constraints_problem"]]
+    for c in cfg["pip_constraints"]:
+        argv += ["--pip-constraint", c]
     proc = subprocess.run(
         ["bash", str(_SCRIPT), *argv],
         capture_output=True,
@@ -340,3 +345,73 @@ class TestArgsKeys:
         someone later passes the rendered words instead, this fails.
         """
         assert _run(arg_keys=["tkn_text_lang"])[0] == 0
+
+
+class TestPipConstraints:
+    """dpk_config.pip_constraints: a list of specifiers, one constraints-file line each.
+
+    The entries land in a requirements-syntax file read by `uv pip install
+    --constraint`, where a line that is not a plain specifier is an option, a
+    comment or a continuation. uv honours `--extra-index-url`, `-c` and `-r` lines
+    there (measured), so a single-line value could add an index or read another
+    file. (A `--index-url` line loses to the step's command-line --index-url, but
+    is still not a bound.) Each entry
+    must mean exactly one bound.
+    """
+
+    @pytest.mark.parametrize(
+        "constraints",
+        [
+            [],
+            ["pyarrow<26"],
+            ["pyarrow>=20,<26", "numpy<2"],
+            ['pyarrow<26; python_version < "3.13"'],  # markers are fine
+            ["pyarrow < 26 # trailing comment"],  # an inline comment is fine
+        ],
+    )
+    def test_plain_specifiers_pass(self, constraints):
+        assert _run(pip_constraints=constraints) == (0, [])
+
+    @pytest.mark.parametrize(
+        "problem", ["is null", "is a string, not a list", "is a mapping, not a list"]
+    )
+    def test_a_wrong_shape_is_refused_with_the_fix(self, problem):
+        rc, msgs = _run(pip_constraints_problem=problem, pip_constraints=[])
+        assert rc == 1
+        assert msgs[0] == f"dpk: ERROR dpk_config.pip_constraints {problem}."
+        assert any("[] for no constraints" in m for m in msgs)
+
+    @pytest.mark.parametrize(
+        "entry,reason",
+        [
+            ("", "is empty"),
+            ("--index-url https://evil.example/simple", "starts with '-'"),
+            ("--extra-index-url https://evil.example/simple", "starts with '-'"),
+            ("-r /etc/other.txt", "starts with '-'"),
+            ("  --index-url https://evil.example/simple", "starts with whitespace"),
+            ("\t-c x", "starts with whitespace"),
+            ("#pyarrow<26", "starts with '#'"),
+            ("pyarrow<26 \\", "ends with '\\'"),
+            (
+                "pyarrow<26\n--index-url https://evil.example/simple",
+                "more than one line",
+            ),
+            (
+                "pyarrow<26\r--index-url https://evil.example/simple",
+                "more than one line",
+            ),
+        ],
+    )
+    def test_an_entry_that_is_not_one_specifier_is_refused(self, entry, reason):
+        rc, msgs = _run(pip_constraints=["pyarrow<26", entry])
+        assert rc == 1
+        assert msgs[0].startswith("dpk: ERROR dpk_config.pip_constraints entry 2 ")
+        assert reason in msgs[0]
+
+    def test_the_verdict_does_not_depend_on_the_locale(self):
+        """[[:space:]] is a class; LC_ALL=C at the top pins its meaning."""
+        rc, _ = _run(
+            env={"LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"},
+            pip_constraints=[" -c x"],
+        )
+        assert rc == 1

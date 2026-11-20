@@ -125,7 +125,9 @@ class TestInlineCachePathCheck:
     @pytest.mark.parametrize("path", ["/tmp/hf_cache", "./hf_cache", "hf_cache"])
     async def test_literal_paths_still_allowed_inline(self, env, path):
         binding, step = await self._pull(env, {"cache_path": path, "inline": True})
-        assert binding["_hfpull"]["path"] == str(Path(path) / "o" / "r" / "main")
+        assert binding["_hfpull"]["path"] == str(
+            Path(path) / "datasets" / "o" / "r" / "main"
+        )
         assert step is None
 
     @pytest.mark.asyncio

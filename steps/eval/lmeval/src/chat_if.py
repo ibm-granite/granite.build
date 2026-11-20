@@ -25,9 +25,12 @@ With ``--repeats k`` it is the mean of the k repeats' values (pass@1[avg-of-k])
 and ``details.pass_at_k`` adds pass@k (an example matched in any repeat), both
 averaged over languages the same way.
 
-Generation uses Granite 4.2's card settings for thinking mode, not the task
-configs: ``temperature=1.0``, ``top_p=0.95``, ``max_tokens=8192``, thinking left
-on (see ``CARD_SAMPLING``). This deviates from NeMo Evaluator's lm-eval chat
+Generation uses Granite 4.2's card sampling for thinking mode, not the task
+configs: ``temperature=1.0``, ``top_p=0.95``, thinking left on, with a
+``max_tokens=32768`` budget (see ``CARD_SAMPLING``). The card's own 8192 runs
+out mid-thought on this benchmark: in a granite-4.2-3b smoke every request hit
+it with no answer yet (finish_reason=length, 0 content chars), scoring 0.0.
+``--option max_tokens=8192`` restores the card's budget. This deviates from NeMo Evaluator's lm-eval chat
 protocol (the task's ``max_gen_toks: 2048``, ``temperature 1e-7``/``top_p
 0.9999999``, the task's stop strings): with thinking on, 2048 tokens cut off
 nearly every reasoning trace, so that protocol scores the 3b near 0 against the
@@ -119,10 +122,12 @@ RETRY_BACKOFF_S = 1.0  # doubles per attempt, capped at 30 s
 # the 3b model card, huggingface.co/ibm-granite/granite-4.2-3b README.md at
 # e459acce, lines 331-341 (temperature 1.0, top_p 0.95, max_new_tokens 8192 in
 # thinking mode, 2048 in non-thinking mode) and line 347 (thinking on by default).
+# The budget is 32768, not the card's 8192: on MMLU-ProX's 5-shot CoT prompts the
+# 3b's thinking outruns 8192 on every request (see the module docstring).
 # NeMo Evaluator's lm-eval chat defaults differ (nvidia-lm-eval 26.3
 # core_evals/lm_evaluation_harness/framework.yml:21-23: max_new_tokens null, i.e.
 # the task's 2048, temperature 1e-7, top_p 0.9999999); see the module docstring.
-CARD_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "max_tokens": 8192}
+CARD_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "max_tokens": 32768}
 MAX_STOPS = 4  # lm-eval's chat payload keeps until[:4] (openai_completions.py)
 
 

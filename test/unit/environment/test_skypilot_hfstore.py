@@ -37,6 +37,8 @@ def mock_hfuri():
     uri.get_revision.return_value = "main"
     uri.get_hf_type.return_value = "model"
     uri.get_host.return_value = "huggingface.co"
+    # A model's pull dir, as HfURI.pull_dest lays it out.
+    uri.pull_dest.side_effect = lambda cache_dir: Path(cache_dir) / "myorg/myrepo/main"
     # No path in the repo: the content is bound at the download root.
     uri.local_path.side_effect = lambda dest: dest
     uri.__str__ = lambda self: "hf://models/myorg/myrepo"
@@ -186,6 +188,30 @@ class TestPullassetHfstore:
         )
 
         assert step_config.step_uri == "space://steps/hfpull"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inline", [False, True])
+    async def test_pulls_a_dataset_apart_from_a_same_named_model(
+        self, skypilot_env, inline
+    ):
+        """A dataset is pulled under ``datasets/``, so it can't share a pull dir
+        with a model of the same owner/repo, by the hfpull step and inline."""
+        storeload_config = MagicMock()
+        storeload_config.mode = "default"
+        storeload_config.config = {"cache_path": "/data/cache", "inline": inline}
+
+        binding_config, step_config = await skypilot_env.pullasset_hfstore(
+            uri=HfURI.parse("hf:///datasets/myorg/myrepo/main/data"),
+            assetstore=_hfstore_mock(),
+            storeload_config=storeload_config,
+        )
+
+        dest = "/data/cache/datasets/myorg/myrepo/main"
+        assert binding_config["binding"]["path"] == f"{dest}/data"
+        if inline:
+            assert binding_config["_hfpull"]["path"] == dest
+        else:
+            assert step_config.config["hfpull_config"]["path"] == dest
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("inline", [False, True])

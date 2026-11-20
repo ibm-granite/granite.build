@@ -4,6 +4,7 @@
 
 """URI referring to models/datasets/spaces/etc. in HuggingFace Hub"""
 
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Self, Tuple
+from typing import Any, Iterator, List, Optional, Self, Tuple, Union
 
 from huggingface_hub import (
     HfApi,
@@ -1023,6 +1024,50 @@ class HfURI(URI):
         if not path or self.get_hf_type() == HfType.BUCKET:
             return Path(dest)
         return Path(dest) / path
+
+    def pull_dest(self, cache_dir: Union[str, Path]) -> Path:
+        """The directory under *cache_dir* that this URI is pulled into.
+
+        Used by the Bash, Docker and Skypilot environments (K8s and LSF key
+        their pull dirs on :meth:`hash` instead). A model, dataset, space or
+        bucket of the same name, or on another host, never shares a directory:
+
+        - a model: ``<owner>/<repo>/<revision>``, the layout these caches have
+          always had, so existing model caches stay valid;
+        - a dataset or space: the same, under ``datasets/`` or ``spaces/``;
+        - a bucket: ``buckets/<owner>/<bucket>/<hash>``, where the hash names
+          the path in the bucket. A bucket pull syncs that path's contents into
+          the directory, so each bucket input gets one of its own, and no two
+          nest: a whole bucket and a path in it never share a download lock or
+          write the same files;
+        - any of these on a host other than huggingface.co: under ``@<host>``,
+          with a port's ``:`` as ``_``, keeping ``:`` out of the cache's
+          directory names (``docker run -v`` and similar ``src:dst`` specs read
+          it as a separator; a host has no ``_`` of its own).
+
+        Every path of one repo revision shares its directory, behind one
+        download lock, and lands at its own path there (:meth:`local_path`).
+        No owner directory can collide with these: ``datasets``, ``spaces`` and
+        ``buckets`` are Hub URL routes (``huggingface.co/datasets``), and
+        huggingface_hub's ``validate_repo_id`` refuses an owner starting with
+        ``@``.
+
+        :param cache_dir: The HF cache directory.
+        :returns: The pull destination.
+        """
+        p = self._parts()
+        parts = []
+        if p.host != HF_HOST:
+            parts.append("@" + p.host.replace(":", "_"))
+        if p.hf_type not in (None, HfType.MODEL):
+            parts.append(_HF_TYPE_TO_SEGMENT[p.hf_type])
+        parts += [p.owner, p.repo]
+        if p.hf_type == HfType.BUCKET:
+            path = p.path_in_repo.strip("/")
+            parts.append(hashlib.sha256(path.encode()).hexdigest()[:16])
+        else:
+            parts.append(p.revision)
+        return Path(cache_dir).joinpath(*parts)
 
     def _verify_path_in_repo_pulled(self, dest: Path) -> bool:
         """Whether a pull into *dest* found this URI's path in the repo.

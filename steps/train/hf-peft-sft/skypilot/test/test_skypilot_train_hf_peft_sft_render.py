@@ -453,6 +453,31 @@ class TestValidation:
             "run", _ctx(args={"foo": []})
         )
 
+    @pytest.mark.parametrize("block", ["setup", "run"])
+    @pytest.mark.parametrize(
+        "args,shown",
+        [
+            ({"label_names": ["a", "--output_dir", "/evil"]}, "--output_dir"),
+            ({"bf16_full_eval": "--output_dir=/evil"}, "--output_dir=/evil"),
+        ],
+    )
+    def test_args_value_starting_with_a_dash_refused(self, block, args, shown):
+        # Each value is its own argv word after the step's flags, so the trainer's
+        # argparse would take it as a flag and override the step's (#613).
+        key = next(iter(args))
+        assert _render_error(block, _ctx(args=args)) == (
+            f"hf-peft-sft: hf_peft_sft_config.args.{key} has a value that starts "
+            f"with '-' ('{shown}'); the trainer would read it as a flag, which could "
+            "override a step-owned one. A value may start with '-' only when a digit "
+            "or '.' follows, as in a negative number."
+        )
+
+    def test_negative_number_args_values_pass(self):
+        args = {"weight_decay": -0.5, "seed": "-1", "label_names": ["-.5"]}
+        argv = _argv("run", _ctx(args=args), "hf_peft_sft_run.sh")
+        for word in ("-0.5", "-1", "-.5"):
+            assert word in argv
+
 
 class TestSingleNode:
     """gbserver, not the template, refuses multi-node: the step declares

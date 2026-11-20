@@ -49,7 +49,9 @@ def test_the_security_block_is_appended_last_and_only_once():
     assert text.count(_MARKER) == 1, "the security block must appear exactly once"
     head, _, tail = text.partition(_MARKER)
     assert "[tool.uv]" in tail, "the [tool.uv] block belongs inside the security block"
-    assert "[tool.uv]" not in head, "upstream grew a [tool.uv] section; merge it by hand"
+    assert (
+        "[tool.uv]" not in head
+    ), "upstream grew a [tool.uv] section; merge it by hand"
 
 
 def test_the_vendored_pyproject_is_upstreams_plus_the_block():
@@ -64,7 +66,11 @@ def test_the_vendored_pyproject_is_upstreams_plus_the_block():
 
 def test_every_override_and_constraint_is_justified():
     """Each pin carries an advisory id, so nobody has to guess why it is there."""
-    block = (_DIR / "lock" / "pyproject.toml").read_text(encoding="utf-8").partition(_MARKER)[2]
+    block = (
+        (_DIR / "lock" / "pyproject.toml")
+        .read_text(encoding="utf-8")
+        .partition(_MARKER)[2]
+    )
     pins = [l.strip() for l in block.splitlines() if l.strip().startswith('"')]
     assert pins, "the security block declares no pins"
     assert "PYSEC" in block or "GHSA" in block, "no advisory ids cited in the block"

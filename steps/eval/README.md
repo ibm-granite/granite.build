@@ -14,19 +14,18 @@ benchmark runtime those images are built from, and the image recipes themselves.
 | `scripts/prefetch_datasets.py` | Pins and pre-fetches the HF datasets into a cache the (offline) jobs read. |
 | `eval-example/` | The framework's generic eval exemplar step — pre-existing, not one of the granite-evals families. |
 
-The nine families — `bfcl`, `bird`, `ifbench`, `judged`, `lmeval`, `nemoskills`,
-`swebench`, `tau`, `tbench` — exist because the upstream harnesses' own
-dependencies conflict (see the `[tool.uv]` conflicts in `src/core/pyproject.toml`),
-so each ships as its own image. `benchmark` selects which benchmark in the family
-a target runs.
+The eleven families — `bfcl`, `bird`, `ifbench`, `judged`, `lmeval`, `mcpmark`,
+`nemoskills`, `officeqa`, `swebench`, `tau`, `tbench` — exist because
+the upstream harnesses' own dependencies conflict (see the `[tool.uv]` conflicts
+in `src/core/pyproject.toml`), so each ships as its own image. `benchmark`
+selects which benchmark in the family a target runs.
 
 ## Images
 
-> **The image tags pinned in the recipes live on an IBM-internal registry**
-> (`us.icr.io/cil15-shared-registry`) — a temporary measure until the step
-> framework builds and publishes per-step images to a public registry (#565).
-> Outside IBM, build the family images yourself (below) and point the recipes'
-> `IMAGE` / `IMAGE_CPU` parameters at yours.
+> **The image tags pinned in the recipes live on `quay.io/granitebuild`** —
+> a public registry, so anyone can pull them anonymously; each recipe's
+> `IMAGE` / `IMAGE_CPU` parameters name them. To run your own builds instead,
+> build the family images (below) and repoint those parameters.
 
 `make images REGISTRY=...` from this directory builds every family image from
 `<family>/Dockerfile.{gpu,cpu}` (build context: this directory; see the
@@ -55,7 +54,7 @@ unexpected.
 Each `steps/eval/<family>/skypilot/` is one step: `step-template.yaml` (the source
 of truth), `README.md` / `USAGE.md`, and `test/test_step_template.py` (a shared
 contract test — every sibling has the identical copy, which is what lets one test
-file assert all nine steps follow the same shape). The rendered, committed form
+file assert all eleven steps follow the same shape). The rendered, committed form
 that `space://steps/eval/<family>` actually resolves to lives under
 `configurations/assets/environments/skypilot/steps/eval/<family>/`, produced by
 `make publish-step` from the source template — never hand-edited.

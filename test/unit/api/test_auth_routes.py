@@ -27,9 +27,9 @@ from gbserver.api.auth_routes import (
 ENV_DEFAULTS = {
     "GBSERVER_IBMID_CLIENT_ID": "test-client-id",
     "GBSERVER_IBMID_CLIENT_SECRET": "test-client-secret",
-    "GBSERVER_IBMID_AUTHORIZE_URL": "https://login.ibm.com/v1.0/endpoint/default/authorize",
-    "GBSERVER_IBMID_TOKEN_URL": "https://login.ibm.com/v1.0/endpoint/default/token",
-    "GBSERVER_IBMID_USERINFO_URL": "https://login.ibm.com/v1.0/endpoint/default/userinfo",
+    "GBSERVER_IBMID_AUTHORIZE_URL": "https://idp.example.com/authorize",
+    "GBSERVER_IBMID_TOKEN_URL": "https://idp.example.com/token",
+    "GBSERVER_IBMID_USERINFO_URL": "https://idp.example.com/userinfo",
     "GBSERVER_IBMID_CALLBACK_URL": "https://gbserver.example.com/api/v1/auth/callback",
 }
 
@@ -74,7 +74,7 @@ class TestPKCEVerification:
 
 
 class TestAuthorizeEndpoint:
-    def test_authorize_redirects_to_ibmid(self):
+    def test_authorize_redirects_to_provider(self):
         client = TestClient(auth_api, follow_redirects=False)
         _, challenge = _make_verifier_and_challenge()
 
@@ -91,7 +91,7 @@ class TestAuthorizeEndpoint:
         assert resp.status_code == 302
         location = resp.headers["location"]
         parsed = urlparse(location)
-        assert parsed.hostname == "login.ibm.com"
+        assert parsed.hostname == "idp.example.com"
         qs = parse_qs(parsed.query)
         assert qs["response_type"] == ["code"]
         assert qs["client_id"] == ["test-client-id"]
@@ -224,9 +224,9 @@ class TestCallbackEndpoint:
         userinfo_resp = MagicMock()
         userinfo_resp.status_code = 200
         userinfo_resp.json.return_value = {
-            "sub": "IBMid-12345",
+            "sub": "user-12345",
             "name": "Test User",
-            "email": "test@ibm.com",
+            "email": "user@example.com",
             "preferred_username": "testuser",
         }
         userinfo_resp.raise_for_status = MagicMock()
@@ -244,12 +244,12 @@ class TestCallbackEndpoint:
                     )
 
         assert resp.status_code == 200
-        assert "IBMid login successful." in resp.text
+        assert "SSO login successful." in resp.text
 
         session = _sessions["cb-state-1"]
         assert session.status == "complete"
         assert session.access_token == "at_test"
-        assert session.user_info["email"] == "test@ibm.com"
+        assert session.user_info["email"] == "user@example.com"
 
     def test_callback_unknown_state(self):
         client = TestClient(auth_api)
@@ -341,7 +341,7 @@ class TestStatusEndpoint:
         session.id_token = "idt_test"
         session.refresh_token = "rt_test"
         session.expires_in = 3600
-        session.user_info = {"sub": "IBMid-12345", "email": "test@ibm.com"}
+        session.user_info = {"sub": "user-12345", "email": "user@example.com"}
         _sessions["st-complete"] = session
 
         client = TestClient(auth_api)
@@ -354,7 +354,7 @@ class TestStatusEndpoint:
         data = resp.json()
         assert data["status"] == "complete"
         assert data["access_token"] == "at_test"
-        assert data["user_info"]["email"] == "test@ibm.com"
+        assert data["user_info"]["email"] == "user@example.com"
 
     def test_status_complete_deletes_session(self):
         verifier, challenge = _make_verifier_and_challenge()
