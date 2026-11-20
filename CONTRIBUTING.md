@@ -31,6 +31,13 @@ Thank you for your interest in contributing to Granite.Build! This guide covers 
    source .venv/bin/activate
    ```
 
+4. Enable the git [pre-commit hooks](#pre-commit-hooks) once per clone:
+
+   ```bash
+   pipx install pre-commit    # or: uv tool install pre-commit
+   make pre-commit-install
+   ```
+
 ## Running Tests
 
 Run the standalone test suite:
@@ -119,12 +126,51 @@ python scripts/check_license_headers.py --fix            # every tracked file
 python scripts/check_license_headers.py --fix FILE...    # just these files
 ```
 
+### Pre-commit hooks
+
+[`.pre-commit-config.yaml`](.pre-commit-config.yaml) defines hooks that run on every `git commit`: **black**, **isort** (`--profile black`), **gitleaks** (secret scanning) and the SPDX [license header](#license-headers) check. They are opt-in: enable them once per clone with
+
+```bash
+pipx install pre-commit    # or: uv tool install pre-commit
+make pre-commit-install
+```
+
+`make pre-commit-install` runs `pre-commit install`. It is deliberately not part of `make venv`:
+
+- The git hook records the absolute path of the Python that runs `pre-commit`. If that Python lives in `.venv`, the hook breaks whenever `.venv` is deleted or being rebuilt (`make venv` recreates it from scratch when `pyproject.toml` changes), and commits fail with "`pre-commit` not found" until the venv exists again. Installing `pre-commit` with `pipx` or `uv tool` keeps the hook independent of `.venv`. If no other `pre-commit` is on your `PATH`, the target falls back to `.venv/bin/pre-commit` and prints a note.
+- `.git/hooks` is shared by all git worktrees of a clone, so the target installs the hook only from the main checkout (where `.git` is a directory) and does nothing in a secondary worktree. One install covers every worktree.
+- It does nothing when `CI` is set, and prints a message instead of failing when `core.hooksPath` is set (`pre-commit install` refuses to run then).
+
+`make venv` prints a one-line reminder when no hook is installed yet. To remove the hook, run `pre-commit uninstall`.
+
+No venv-independent setup is perfect, because the hook always needs some Python with `pre-commit` to exist when you commit. Your options, from most to least robust:
+
+- **`uv tool install pre-commit`** ([install uv](https://docs.astral.sh/uv/getting-started/installation/)) or **`pipx install pre-commit`** ([install pipx](https://pipx.pypa.io/stable/installation/)): the tool lives outside every `.venv`, so rebuilding or deleting a venv or a worktree never affects the hook.
+- **A system-level install**, such as `brew install pre-commit` on macOS, has the same property.
+- **Neither of the above:** run `make pre-commit-install` anyway. It falls back to `.venv/bin/pre-commit` and prints a note. The hook then only fails while `.venv` is missing, during a `make venv` rebuild or after a failed one, and works again as soon as `make venv` has recreated it (`pre-commit` is in the `dev` extra). `git commit --no-verify` skips the hooks in an emergency, but please do not use it routinely.
+
+If you installed the hook first and add `uv` or `pipx` later, run `make pre-commit-install` again. It repoints the hook at the `PATH` copy.
+
+The first commit downloads and builds the hook environments, so it needs network access and is slower than later ones. To run the hooks against the whole tree:
+
+```bash
+pre-commit run --all-files
+```
+
+pre-commit installs its own copies of black and isort, from the hook repos at the `rev` in `.pre-commit-config.yaml`, in isolated environments under `~/.cache/pre-commit`. They are separate from the copies in `.venv` (the `dev` extra), which are the ones `make format` and CI use. To keep all of them identical, the hook `rev`s must equal the `black==` / `isort==` pins in the `dev` extra of `pyproject.toml`; CI runs `scripts/check_precommit_versions.py` and fails when they differ. Change hook versions deliberately, in their own PR and together with the matching pins, rather than running `pre-commit autoupdate`.
+
+If a hook reformats files (the output says "files were modified by this hook"), the commit is aborted but the fixes are already written to your working tree. Review them with `git diff`, then `git add` the modified files and run the same `git commit` again. Always re-stage before retrying: committing again with the fixes left unstaged can make pre-commit print "Stashed changes conflicted with hook auto-fixes... Rolling back fixes", which is resolved the same way (`git add` the files, then commit). Please avoid bypassing the hooks with `--no-verify`.
+
+The gitleaks hook only scans your staged changes. The "Secret scan" workflow ([`.github/workflows/gitleaks.yml`](.github/workflows/gitleaks.yml)) also runs gitleaks over the full git history on every pull request, so a secret that slips past the local hook still fails CI. If a real secret is found, rotate or revoke it: deleting it from the PR does not undo the exposure. If the finding is a placeholder or public value, add its fingerprint to [`.gitleaksignore`](.gitleaksignore) as `<path>:<rule>:<line>`, **without** a leading commit hash (pull requests are squash-merged, so the hash would not survive the merge), with a comment explaining why it is safe. See the header of that file for details.
+
+When bumping the gitleaks version, change the `rev` in `.pre-commit-config.yaml` and `GITLEAKS_VERSION` / `GITLEAKS_SHA256` in `gitleaks.yml` together; CI fails if the two versions differ.
+
 ## Pull Request Process
 
-1. Create a feature branch from `dev`:
+1. Create a feature branch from `main`:
 
    ```bash
-   git checkout -b my-feature dev
+   git checkout -b my-feature main
    ```
 
 2. Make your changes. Write tests for new functionality.
@@ -148,7 +194,7 @@ python scripts/check_license_headers.py --fix FILE...    # just these files
    git commit -m "feat: add support for new environment backend"
    ```
 
-6. Push to your fork and open a pull request against `dev`.
+6. Push to your fork and open a pull request against `main`.
 
 ## Commit Messages
 
