@@ -102,8 +102,9 @@ Asset stores
 
 Every build runs **in a space**. A space is a named, self-contained context that supplies
 everything a build references but does not define inline. A `build.yaml` therefore stays short
-and portable with references into the space, for example, 
-`space://environments/skypilot/slurm/bluevela` or `space://steps/eval/lmeval`.
+and portable with references into the space, for example
+[`space://environments/skypilot/slurm/bluevela`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) or
+[`space://steps/eval/lmeval`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/lmeval/README.md).
 The space decides what those names mean, what credentials they use, and where the data lives.
 Moving a build to a new team or cluster usually means running it in a different space, not
 rewriting it. A build contains executable components called targets and steps (contained within target).
@@ -132,8 +133,8 @@ On most environments, steps receive only the secrets they explicitly declare (le
 as environment variables. The exception is Bash, which loads every space secret into the step's
 environment (see [II.4](#ii4-steps)).
 
-**Environments:** An environment is a compute backend definition such as an an instance of 
-AWS, Slurm, or LSF.  It is defined by an `environment.yaml`
+**Environments:** An environment is a compute backend definition such as an instance of
+AWS, Slurm, or LSF. It is defined by an `environment.yaml`
 that gives the environment `type` (the Python class that drives it), an optional
 `subtype`, a type-specific `config` block, and the list of asset stores (see below) reachable 
 from that compute. A `build.yaml` execution block (i.e. target) selects an environment with `environment_uri`. 
@@ -278,16 +279,18 @@ The parts in brief:
   `publish`. Each has one environment, its inputs and outputs, and an ordered list of steps
   (usually just one). See [II.1 Targets](#ii1-targets).
 - **Environments** are referenced, not defined, in the build:
-  `environment_uri: space://environments/bash`, `…/docker`, `…/skypilot/kubernetes`,
-  `…/skypilot/slurm/bluevela` or `…/skypilot/aws`. The definitions live in the space. See
+  `environment_uri:` [`space://environments/bash`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/bash/environment.yaml), [`…/docker`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/docker/environment.yaml),
+  [`…/skypilot/kubernetes`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/kubernetes/environment.yaml), [`…/skypilot/slurm/bluevela`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) or
+  [`…/skypilot/aws`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/aws/environment.yaml). The definitions live in the space. See
   [II.2 Environments](#ii2-environments).
 - **Input and output artifacts** are named, URI-addressed data, for example an input
   `base_model: {uri: hf:///ibm-granite/granite-4.0-350m}`, an input
   `checkpoint: {binding: train.checkpoint}` or an output
   `results: {uri: s3://my-bucket/evals/run1}`. See
   [II.3 Input and output artifacts](#ii3-input-and-output-artifacts).
-- **Steps** are the reusable computations a target runs, for example `space://steps/command`,
-  `space://steps/train/hf-peft-sft` or `space://steps/eval/lmeval`. They are configured through
+- **Steps** are the reusable computations a target runs, for example [`space://steps/command`](https://github.com/ibm-granite/granite.build/blob/main/docs/steps/command.md),
+  [`space://steps/train/hf-peft-sft`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/train/hf-peft-sft/README.md) or
+  [`space://steps/eval/lmeval`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/lmeval/README.md). They are configured through
   their `config` block. See [II.4 Steps](#ii4-steps).
 - **Overrides** let a build change a step's or environment's defaults without editing either one,
   for example `config.launcher_config.resources.accelerators: "H100:8"`. See
@@ -918,15 +921,18 @@ standard assets, each backend is a separate environment with a matching `subtype
   passing files between steps. Partitions are selected with `cluster`/`zone` or
   `resources.infra`. `#SBATCH` directives can be passed with `sbatch_options`. Container images
   (`image_id`) require the cluster's Pyxis plugin. On bare-host SLURM, omit the image.
-  Examples: `space://environments/skypilot/slurm/bluevela` and `…/slurm/local`.
+  Examples: [`space://environments/skypilot/slurm/bluevela`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/slurm/bluevela/environment.yaml) and
+  [`…/slurm/local`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/slurm/local/environment.yaml).
 - **Kubernetes (`default_cloud: kubernetes`):** Each step runs as a pod on an existing cluster,
   using the kube context from `~/.kube/config` on the gbserver host. There is no SSH
   configuration. `image_id` is the pod image. Kubernetes-specific tuning goes in `cloud_config`.
-  Examples: `…/skypilot/kubernetes` and `…/skypilot/kubernetes/local`.
+  Examples: [`…/skypilot/kubernetes`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/kubernetes/environment.yaml) and
+  [`…/skypilot/kubernetes/local`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/kubernetes/local/environment.yaml).
 - **AWS (`default_cloud: aws`):** SkyPilot provisions EC2 instances per step, using the
   credential profiles declared under `aws_credentials` (secret names, written to
   `~/.aws/credentials` at launch). GPU instances are chosen with `accelerators` or
-  `instance_type`. Images run under Docker on the host. Example: `…/skypilot/aws`.
+  `instance_type`. Images run under Docker on the host. Example:
+  [`…/skypilot/aws`](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/aws/environment.yaml).
 
 ### III.1 `environment.yaml` configuration
 
