@@ -80,6 +80,7 @@ from gbserver.types.constants import (
     GBSERVER_GITHUB_TOKEN,
     MEM_URI_SCHEME,
 )
+from gbserver.types.errors import SkypilotConfigUnsupportedError
 from gbserver.types.status import Status
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import get_time, get_uuid
@@ -858,6 +859,8 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
         Raises:
             KeyboardInterrupt: Re-raised after aborting the build.
             AssertionError: From the waiter, if the build did not behave.
+            pytest.skip.Exception: Instead, if the installed SkyPilot rejects the
+                environment's cloud_config.
         """
         self._active_runner = runner
         waiter.start()
@@ -869,8 +872,22 @@ class AbstractBuildTest(AbstractSingletonStorageUsingPreloadedSpaceTest):
             # threading.Thread.join: the waiter's own failure is moot now.
             threading.Thread.join(waiter, ABORT_STOP_TIMEOUT_SECONDS)
             raise
+        except AssertionError:
+            self._skip_if_cloud_config_unsupported()
+            raise
         finally:
             self._active_runner = None
+
+    def _skip_if_cloud_config_unsupported(self: Self) -> None:
+        """Skip if a build failed because the installed SkyPilot rejects its env.
+
+        Such an environment needs another SkyPilot build, so the test cannot pass here.
+        """
+        marker = SkypilotConfigUnsupportedError.MARKER
+        for build in self.storage.build_storage.get_by_uuid(None) or []:
+            for line in (build.failure_reason or "").splitlines():
+                if marker in line:
+                    pytest.skip(line.strip())
 
     def _abort_build(self: Self, reason: str) -> None:
         """Stop the running build and make every status wait fail at once.

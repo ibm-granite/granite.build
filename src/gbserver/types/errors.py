@@ -29,6 +29,13 @@ class SkypilotConfigCollisionError(Exception):
     """
 
 
+class SkypilotConfigUnsupportedError(ValueError):
+    """Raised when the installed SkyPilot rejects an environment's ``cloud_config``."""
+
+    #: In every message, so a recorded failure_reason identifies this error.
+    MARKER = "cloud_config the installed SkyPilot rejects"
+
+
 class StepCertExpiredError(Exception):
     """Raised when an ``IdentityStepCert`` host has no valid Smallstep SSH cert loaded.
 
