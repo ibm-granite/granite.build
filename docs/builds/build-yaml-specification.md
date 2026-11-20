@@ -486,17 +486,17 @@ for resource-group resolution and Enterprise organizations.
 #### Supported URIs
 
 The scheme of a URI selects its asset store. `env://` and `mem://` work in every environment.
-`hf://` and `s3://` are supported **per environment**: an environment must implement the store's
-pull and push and declare the store in its `assetstores`.
+`hf://`, `s3://` and `file://` are supported **per environment**: an environment must implement
+the store's pull and push and declare the store in its `assetstores`.
 
-| Environment | `hf://` | `s3://` / `cos://` | `env://` | `mem://` |
-|-------------|:------:|:-----------------:|:-------:|:-------:|
-| Bash | ✓ | — | ✓ | ✓ |
-| Docker | ✓ | — | ✓ | ✓ |
-| K8s | ✓ | ✓ | ✓ | ✓ |
-| Lsf | ✓ | ✓ | ✓ | ✓ |
-| Runpod | — | — | ✓ | ✓ |
-| Skypilot | ✓ | ✓ | ✓ | ✓ |
+| Environment | `hf://` | `s3://` / `cos://` | `file://` | `env://` | `mem://` |
+|-------------|:------:|:-----------------:|:--------:|:-------:|:-------:|
+| Bash | ✓ | — | ✓ | ✓ | ✓ |
+| Docker | ✓ | — | outputs only | ✓ | ✓ |
+| K8s | ✓ | ✓ | — | ✓ | ✓ |
+| Lsf | ✓ | ✓ | — | ✓ | ✓ |
+| Runpod | — | — | — | ✓ | ✓ |
+| Skypilot | ✓ | ✓ | — | ✓ | ✓ |
 
 ##### `hf://` (HuggingFace)
 
@@ -546,10 +546,22 @@ pull and push and declare the store in its `assetstores`.
 - **Uses:** handing service URLs, cluster names and similar values between targets.
 - **Restrictions:** `type` and `store_push` have no effect on a `mem://` output and are ignored.
 
-##### Other schemes
+##### `file://` (gbserver host filesystem)
 
-- `file:` names a path on the gbserver host and is accepted only on a standalone server.
-- `git+https://` and `git+ssh://` name a cloned repository, with an optional `#subdirectory=`.
+- **Form:** `file:///absolute/path`. Use an absolute path: a relative path in an input or output
+  `uri` is resolved against gbserver's working directory, not the `build.yaml`'s directory. With
+  two slashes, as in `file://data/train`, the first segment is read as a host name.
+- **Where:** accepted only on a standalone server (see [II.8](#ii8-validation)), because the path
+  is on the gbserver host. Bash supports `file://` for inputs and outputs, and Docker for outputs
+  only. No other environment declares the store.
+- **Inputs:** nothing is copied. The input is bound at the path itself, so
+  `{{ bindings.<name>.binding.path }}` is that path.
+- **Outputs:** the environment copies the artifact the step reported to the URI's path. On Bash,
+  a directory's contents are copied into that path, and files already there that the artifact
+  doesn't contain are deleted. On Docker, the step's container path is first translated to its
+  host path, and a directory is copied under the URI's path as `<path>/<directory-name>/`.
+- **Uses:** local runs that read a dataset from, or leave results in, a directory on the machine
+  running gbserver.
 
 ### II.4 Steps
 
@@ -563,7 +575,7 @@ target's environment fails validation.
 
 ```yaml
 steps:
-  - step_uri: space://steps/eval/lmeval       # space://, file: (standalone) or git+…
+  - step_uri: space://steps/eval/lmeval       # space:// or file: (standalone)
     config:                                   # merged over the step's defaults
       benchmark: mmlu-prox-lite               # step-specific (lmeval's own keys)
       model_path: "{{ bindings.model.binding.path }}"
@@ -881,10 +893,10 @@ reports errors before anything runs. `gb build start` validates as well, unless 
 - a step or environment URI that cannot be resolved in the space (`Unresolvable space uri`);
 - a `file:` URI on a non-standalone server, in a target's `environment_uri`, a step's
   `step_uri`, or an input or output `uri`. A `step_uri` or `environment_uri` with no scheme
-  counts as `file:`. On a shared server, use `space://`, a git URI or `env://` instead;
+  counts as `file:`. On a shared server, use `space://` or `env://` instead;
 - a `..` path segment in a `step_uri` or `environment_uri`, on any server, checked after the
-  space's templates are filled. This covers `space://steps/../x`, `file:../x` and a git
-  `#subdirectory=../x`. Dots inside a name, as in `a..b`, are fine;
+  space's templates are filled. This covers `space://steps/../x` and `file:../x`.
+  Dots inside a name, as in `a..b`, are fine;
 - an unquoted number in a K8s `env` block.
 
 Run `gb build validate` and read the error; it names the field at fault.
