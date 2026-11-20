@@ -19,19 +19,28 @@
 #   make test                                   the pin + patch tests (tests/)
 #   make print-image                            just print the ref
 #
-# publish-image PUSHES with $(DOCKER), which reads only the container auth store, so run
-# `podman login quay.io` first. REGISTRY_USER / REGISTRY_PASSWORD are read by the tag
-# CHECK (steps/scripts/registry-tag-status.sh) and NOT by the push -- set only those and
-# you get a check that cheerfully says "is a new tag" followed by a push that dies with
-# "authentication required".
+# publish-image authenticates and creates the repository exactly as steps/common.mk's
+# publish-image does -- same variables, same messages -- because that is the behaviour
+# every step-level Makefile in this repo already has and the one people expect:
 #
-# ON QUAY.IO THE REPOSITORY MUST EXIST AND BE PUBLIC BEFORE ANY RUN USES THE TAG. A push
-# creates it PRIVATE and SkyPilot pulls ANONYMOUSLY, so a private repository gives a
-# build whose pods cannot start -- and the failure names the pod, not this file. Create
-# it public in the quay UI, or flip it right after the first push. Note also that quay
-# answers an anonymous probe of a repository it will not show you with 401 either way, so
-# the tag check cannot tell "absent" from "exists but private" without credentials; it
-# reports `unknown` and publish-image refuses rather than guessing.
+#   - interactively, `podman login $(REGISTRY)` beforehand;
+#   - non-interactively (CI, or a vault-backed shell), export REGISTRY_USER and
+#     REGISTRY_PASSWORD and this logs in for you, password on stdin so it never reaches
+#     the process list.
+#
+# A FAMILY-LEVEL Makefile like this one sits above its steps and does NOT include
+# common.mk, which is why it had none of this and a flow that works for every step image
+# failed here with "authentication required" after a tag check that said "is a new tag" --
+# the check reads REGISTRY_USER/REGISTRY_PASSWORD, the push did not.
+# steps/eval/Makefile has the same gap. When this moves into common.mk, delete it here.
+#
+# ON QUAY.IO A PUSH CREATES THE REPOSITORY *PRIVATE*, AND SKYPILOT PULLS ANONYMOUSLY, so
+# a private repository gives a build whose pods cannot start and a failure that names the
+# pod rather than the registry. With QUAY_API_TOKEN set, publish-image creates it public
+# first; without, it refuses and says so rather than pushing into a private repository.
+# Note that quay answers an anonymous probe of a repository it will not show you with 401
+# whether or not it exists, so this needs credentials -- the check reports `unknown` and
+# publish-image refuses rather than guessing.
 #
 # BUILD A PUBLISHED IMAGE WITH --no-cache: `make image BUILD_ARGS=--no-cache`. A cached
 # build reuses an old `apt-get upgrade` layer and ships un-upgraded packages that the
@@ -80,6 +89,13 @@ TAG_STATUS := sh $(REPO_ROOT)/steps/scripts/registry-tag-status.sh
 # `true`) to replace the tag on purpose. A tag that cannot be checked is refused too,
 # so a broken check never becomes a silent overwrite.
 PUBLISH_OVERWRITE ?= false
+# Registry host (quay.io) parsed from REGISTRY (quay.io/granitebuild). Definitions
+# copied from steps/common.mk so the two cannot drift: podman can scope a login to the
+# namespace, which leaves the user's other logins on that host alone; docker logs in per
+# host only.
+REGISTRY_HOST := $(firstword $(subst /, ,$(REGISTRY)))
+REGISTRY_LOGIN = $(if $(filter podman,$(notdir $(firstword $(DOCKER)))),$(REGISTRY),$(REGISTRY_HOST))
+QUAY_API      ?= https://quay.io/api/v1
 
 # Scanning. Names and defaults match steps/train/distill/Makefile so that lifting both
 # into steps/common.mk later is mechanical. The scanner is pinned by version, not
@@ -211,6 +227,36 @@ scan-image: scan-lock
 
 publish-image: $(if $(filter true,$(SKIP_SCAN)),,scan-image)
 	@$(if $(filter true,$(SKIP_SCAN)),echo "[lm-engine] SKIP_SCAN=true: pushing $(IMAGE_REF) without scanning it",true)
+	@if [ -n "$${REGISTRY_USER:-}" ] && [ -n "$${REGISTRY_PASSWORD:-}" ]; then \
+		echo "[lm-engine] logging in to $(REGISTRY_LOGIN) as $$REGISTRY_USER"; \
+		printf '%s' "$$REGISTRY_PASSWORD" | $(DOCKER) login "$(REGISTRY_LOGIN)" -u "$$REGISTRY_USER" --password-stdin; \
+	fi
+	@if [ "$(REGISTRY_HOST)" = "quay.io" ]; then \
+		ns='$(word 2,$(subst /, ,$(REGISTRY)))'; \
+		repo='$(patsubst $(REGISTRY_HOST)/%,%,$(REGISTRY))/$(IMAGE_NAME)'; repo="$${repo#*/}"; \
+		rstatus=$$($(TAG_STATUS) --repository "$(IMAGE_REF)"); \
+		case "$$rstatus" in \
+			present) ;; \
+			absent) \
+				if [ -z "$${QUAY_API_TOKEN:-}" ]; then \
+					echo "[lm-engine] ERROR: quay.io repository $$ns/$$repo does not exist yet, and a push would create it PRIVATE (SkyPilot pulls anonymously). Set QUAY_API_TOKEN to have publish-image create it public, or create it as Public in the quay UI first." >&2; \
+					exit 1; \
+				else \
+					body=$$(mktemp) || exit 1; \
+					printf '{"namespace":"%s","repository":"%s","visibility":"public","description":"granite.build step image (%s)","repo_kind":"image"}' "$$ns" "$$repo" "$$repo" > "$$body"; \
+					code=$$(printf 'header = "Authorization: Bearer %s"\n' "$$QUAY_API_TOKEN" | curl -s -g -o /dev/null -w '%{http_code}' --max-time 30 --config - \
+						-X POST -H 'Content-Type: application/json' --data-binary "@$$body" --url "$(QUAY_API)/repository"); \
+					rm -f "$$body"; \
+					if [ "$$code" = "201" ]; then \
+						echo "[lm-engine] created public repository quay.io/$$ns/$$repo"; \
+					else \
+						echo "[lm-engine] ERROR: could not create public repository quay.io/$$ns/$$repo (HTTP $$code). Check QUAY_API_TOKEN's scopes (Create Repositories), or create it in the quay UI." >&2; \
+						exit 1; \
+					fi; \
+				fi ;; \
+			*) echo "[lm-engine] ERROR: could not determine whether repository quay.io/$$ns/$$repo exists. quay.io answers an anonymous check of a repository that does not exist yet with 401, so this needs credentials: run 'podman login $(REGISTRY)' (a login kept in a credential helper is not read), or export REGISTRY_USER and REGISTRY_PASSWORD." >&2; exit 1 ;; \
+		esac; \
+	fi
 	@if [ "$(PUBLISH_OVERWRITE)" = "true" ]; then \
 		echo "[lm-engine] PUBLISH_OVERWRITE=true: pushing $(IMAGE_REF) without checking for an existing tag."; \
 	else \
