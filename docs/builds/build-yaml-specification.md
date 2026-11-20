@@ -672,7 +672,7 @@ never written into the build.
 ### C.5 Overrides
 
 A build can change step and environment defaults **without editing the step or the
-environment**. A step's `config` is deep-merged across four layers, lowest priority first. A
+environment**. A step's `config` is deep-merged across three layers, lowest priority first. A
 later layer wins, nested maps merge key by key, and a list is replaced whole:
 
 1. **`environment.yaml` `config.steps.<step-slug>`**: per-step-type defaults set by the
