@@ -8,7 +8,7 @@ so that any local environment can reuse them without duplicating logic.
 
 import os
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from gbserver.spaces.hf_push_config import (
     HfPushConfigError,
@@ -17,6 +17,9 @@ from gbserver.spaces.hf_push_config import (
     resolve_space_resource_group_id,
 )
 from gbserver.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from gbcommon.uri.hf import HfURI
 
 logger = get_logger(__name__)
 
@@ -95,6 +98,27 @@ def _resolve_cache_dir(
     return os.path.join(os.path.expanduser("~"), ".cache", "gbserver", home_leaf)
 
 
+def as_hfuri(uri) -> "HfURI":
+    """Return *uri* as an ``HfURI``, parsing a URI string.
+
+    Args:
+        uri: An ``HfURI`` or an ``hf://`` URI string.
+
+    Returns:
+        The ``HfURI``.
+
+    Raises:
+        AssertionError: If ``uri`` is None or does not resolve to an HfURI.
+    """
+    from gbcommon.uri.hf import HfURI
+    from gbcommon.uri.uri import URI
+
+    assert uri is not None, "uri is required for hfstore loading"
+    hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
+    assert isinstance(hfuri, HfURI), f"expected HfURI, got: {type(hfuri)}"
+    return hfuri
+
+
 def pull_asset_hfstore(
     uri,
     assetstore,
@@ -109,7 +133,7 @@ def pull_asset_hfstore(
 
     Uses ``HfURI.pull`` to download the repo into *dest*, or only its path in
     the repo when the URI has one. When *dest* is not provided it defaults to
-    ``<cache_dir>/<owner>/<repo>/<revision>``.
+    ``HfURI.pull_dest`` under the cache dir.
 
     Args:
         uri: HfURI instance or URI string pointing to the model to pull.
@@ -129,20 +153,15 @@ def pull_asset_hfstore(
         AssertionError: If ``uri`` is None or does not resolve to an HfURI.
         RuntimeError: If the pull fails.
     """
-    from gbcommon.uri.hf import HfURI
     from gbcommon.uri.uri import URI
 
-    assert uri is not None, "uri is required for hfstore loading"
-    hfuri = uri if isinstance(uri, HfURI) else URI.get_uri(uri)
-    assert isinstance(hfuri, HfURI), f"expected HfURI, got: {type(hfuri)}"
+    hfuri = as_hfuri(uri)
 
     if assetstore is not None:
         hfuri.secrets = {**(hfuri.secrets or {}), **(assetstore.get_secrets() or {})}
 
     if dest is None:
-        cache_dir = Path(get_hf_cache_dir(storeload_config))
-        p = hfuri._parts()
-        dest = cache_dir / p.owner / p.repo / p.revision
+        dest = hfuri.pull_dest(get_hf_cache_dir(storeload_config))
     dest.mkdir(parents=True, exist_ok=True)
 
     if not hfuri.pull(dest):

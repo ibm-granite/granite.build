@@ -28,19 +28,25 @@ def bash_env():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("uri", "sub", "is_file"),
+    ("uri", "pull_dir", "sub", "is_file"),
     [
-        ("hf:///datasets/org/repo/main/data/train", "data/train", False),
-        ("hf:///org/repo/main/config.json", "config.json", True),
+        (
+            "hf:///datasets/org/repo/main/data/train",
+            "datasets/org/repo/main",
+            "data/train",
+            False,
+        ),
+        ("hf:///org/repo/main/config.json", "org/repo/main", "config.json", True),
     ],
     ids=["directory", "file"],
 )
 async def test_pullasset_hfstore_binds_the_path_in_the_repo(
-    bash_env, tmp_path, monkeypatch, uri, sub, is_file
+    bash_env, tmp_path, monkeypatch, uri, pull_dir, sub, is_file
 ):
     """Only the path is downloaded, and the step is bound at it.
 
-    A directory binds the directory; a single file binds the file itself.
+    A directory binds the directory; a single file binds the file itself. A
+    dataset is pulled under ``datasets/``, apart from a same-named model.
     """
     # The suite mocks HF; clear it so the real pull reaches snapshot_download.
     monkeypatch.delenv(ENV_VAR_GBTEST_MOCK_HF, raising=False)
@@ -63,7 +69,7 @@ async def test_pullasset_hfstore_binds_the_path_in_the_repo(
         )
 
     bound = Path(binding_config[BINDING_KEY]["path"])
-    assert bound == tmp_path / "org" / "repo" / "main" / sub
+    assert bound == tmp_path / pull_dir / sub
     assert bound.is_file() if is_file else bound.is_dir()
     assert mock_dl.call_args.kwargs["allow_patterns"] == [sub, f"{sub}/*"]
     assert extra_config is None
@@ -82,7 +88,7 @@ async def test_mocked_pullasset_hfstore_binds_a_path_that_exists(
         )
     mock_dl.assert_not_called()
     bound = Path(binding_config[BINDING_KEY]["path"])
-    assert bound == tmp_path / "org" / "repo" / "main" / "data" / "train"
+    assert bound == tmp_path / "datasets" / "org" / "repo" / "main" / "data" / "train"
     assert bound.is_dir()
 
 
