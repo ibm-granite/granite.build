@@ -85,10 +85,11 @@ def _isolate_gb_home_dir(tmp_path_factory, monkeypatch):
     # the test. Storage built earlier (setup_class, module/session fixtures) still
     # points at the real db.
     monkeypatch.setenv("GB_HOME_DIR", str(home))
-    # A test that lazily builds the admin storage singleton would pin it to its own
-    # temp db for every later test; restore whatever was there before (None, or a
-    # value a module-scoped fixture set on purpose).
+    # Start each test with no admin storage singleton, so it builds one on this temp
+    # db instead of sharing one an earlier integration/e2e test on this worker left
+    # on another db (possibly the real one). Restored afterwards.
     saved = {name: getattr(singleton_storage, name) for name in _SINGLETON_GLOBALS}
+    singleton_storage.reset_admin_storage()
     yield
     for name, value in saved.items():
         setattr(singleton_storage, name, value)
