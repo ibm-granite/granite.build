@@ -51,7 +51,7 @@ Most-used group. Submit, monitor, and inspect builds.
 
 Common flags: `--param key=value` (repeatable), `--param-file <file>`
 (repeatable; layered over the recipe's `parameters.yaml`, later files win; see
-[Layering parameter files](../builds/build-yaml-specification.md#c6-parameters-and-jinja-templating)),
+[Layering parameter files](../builds/build-yaml-specification.md#iii6-parameters-and-jinja-templating)),
 `--tag <name>`, `--skip-validation`, `--format json`.
 
 ### `artifact` — work with artifacts

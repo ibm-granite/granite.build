@@ -1,5 +1,7 @@
 # The Granite.Build `build.yaml` Specification
 
+Repository: <https://github.com/ibm-granite/granite.build>
+
 > **Audience:** engineers and researchers who write, review, or maintain `build.yaml` files, and
 > anyone who needs a conceptual map of how Granite.Build runs them. This is the reference for
 > the `build.yaml` format: it explains the model behind the file and specifies each part of it,
@@ -7,16 +9,16 @@
 
 **Contents**
 
-- [A. Granite.Build architecture](#a-granitebuild-architecture)
-- [B. Build orchestration](#b-build-orchestration)
-- [C. The `build.yaml` specification](#c-the-buildyaml-specification)
-- [D. SkyPilot environment specifics](#d-skypilot-environment-specifics)
-- [E. Executing a `build.yaml`](#e-executing-a-buildyaml)
+- [I. Granite.Build architecture](#i-granitebuild-architecture)
+- [II. Build orchestration](#ii-build-orchestration)
+- [III. The `build.yaml` specification](#iii-the-buildyaml-specification)
+- [IV. SkyPilot environment specifics](#iv-skypilot-environment-specifics)
+- [V. Executing a `build.yaml`](#v-executing-a-buildyaml)
 - [Appendix: glossary and references](#appendix-glossary-and-references)
 
 ---
 
-## A. Granite.Build architecture
+## I. Granite.Build architecture
 
 ### Goals
 
@@ -69,18 +71,18 @@ Asset stores
 
 - **Multiple backends.** Each target picks its compute environment. One build can prepare data on
   a CPU queue, train on a GPU cluster and evaluate on another backend. See
-  [C.2 Environments](#c2-environments) and [D. SkyPilot environment
-  specifics](#d-skypilot-environment-specifics).
+  [III.2 Environments](#iii2-environments) and [IV. SkyPilot environment
+  specifics](#iv-skypilot-environment-specifics).
 - **Artifact stores.** HuggingFace, S3/COS, Git, local files, worker-local paths and in-memory
   values are all addressed by URI. See [Supported URIs](#supported-uris).
 - **Retry and reuse.** Builds retry automatically. Retries can reuse the outputs of targets that
-  already succeeded, and individual steps can retry as well. See [C.7 Retries](#c7-retries).
+  already succeeded, and individual steps can retry as well. See [III.7 Retries](#iii7-retries).
 - **Events and lineage.** Build events feed notifications and the web UI. Lineage records which
   artifacts produced which. See
   [Lineage](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/lineage.md) and
   [Event notifications](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/event-notifications.md).
 - **Parameterization.** `$${PARAM}` placeholders and Jinja templates let one `build.yaml` serve
-  many runs. See [C.6 Parameters and Jinja templating](#c6-parameters-and-jinja-templating).
+  many runs. See [III.6 Parameters and Jinja templating](#iii6-parameters-and-jinja-templating).
 
 ### Build orchestration within a space
 
@@ -112,7 +114,7 @@ time. Four backends are available:
 
 On most environments, steps receive only the secrets they explicitly declare (least privilege),
 as environment variables. The exceptions are Bash, which loads every space secret into the step's
-environment, and RunPod, which has no support for declared secrets (see [C.4](#c4-steps)).
+environment, and RunPod, which has no support for declared secrets (see [III.4](#iii4-steps)).
 
 **Environments.** An environment is a compute backend definition, defined by an `environment.yaml`
 that gives the environment `type` (the Python class that drives it). It can also carry an optional
@@ -160,7 +162,7 @@ or one, a circle with a fork means zero or more, and a bar with a fork means one
 
 ---
 
-## B. Build orchestration
+## II. Build orchestration
 
 A **build** is a directed acyclic graph of **targets**. A target is one logical stage of work,
 such as "download", "fine-tune", "evaluate" or "publish". A target:
@@ -210,7 +212,7 @@ declared in its `environment.yaml`.
 
 ---
 
-## C. The `build.yaml` specification
+## III. The `build.yaml` specification
 
 A `build.yaml` is the **only file a user must write** to run work on Granite.Build. It names the
 targets, the environment each runs in, the artifacts each consumes and produces, and the steps,
@@ -229,7 +231,7 @@ For a more detailed discussion of the `gb` CLI, see the
 [`gb` CLI reference](https://github.com/ibm-granite/granite.build/blob/main/docs/cli/gb-cli-reference.md).
 
 This section is **environment-neutral**: everything here applies to every environment type.
-SkyPilot-specific configuration is collected in [section D](#d-skypilot-environment-specifics).
+SkyPilot-specific configuration is collected in [section IV](#iv-skypilot-environment-specifics).
 
 ### Containment overview
 
@@ -248,30 +250,30 @@ The parts in brief:
 
 - **Targets** are the named stages of the build, for example `download`, `train`, `evaluate` and
   `publish`. Each has one environment, its inputs and outputs, and an ordered list of steps
-  (usually just one). See [C.1 Targets](#c1-targets).
+  (usually just one). See [III.1 Targets](#iii1-targets).
 - **Environments** are referenced, not defined, in the build:
   `environment_uri: space://environments/bash`, `…/docker`, `…/skypilot/kubernetes`,
   `…/skypilot/slurm/bluevela` or `…/skypilot/aws`. The definitions live in the space. See
-  [C.2 Environments](#c2-environments).
+  [III.2 Environments](#iii2-environments).
 - **Input and output artifacts** are named, URI-addressed data, for example an input
   `base_model: {uri: hf:///ibm-granite/granite-4.0-350m}`, an input
   `checkpoint: {binding: train.checkpoint}` or an output
   `results: {uri: s3://my-bucket/evals/run1}`. See
-  [C.3 Input and output artifacts](#c3-input-and-output-artifacts).
+  [III.3 Input and output artifacts](#iii3-input-and-output-artifacts).
 - **Steps** are the reusable computations a target runs, for example `space://steps/command`,
   `space://steps/train/hf-peft-sft` or `space://steps/eval/lmeval`. They are configured through
-  their `config` block. See [C.4 Steps](#c4-steps).
+  their `config` block. See [III.4 Steps](#iii4-steps).
 - **Overrides** let a build change a step's or environment's defaults without editing either one,
   for example `config.launcher_config.resources.accelerators: "H100:8"`. See
-  [C.5 Overrides](#c5-overrides).
+  [III.5 Overrides](#iii5-overrides).
 
-### C.0 Top-level fields
+### III.0 Top-level fields
 
 ```yaml
 granite.build:              # required root key ("llm.build" is the accepted legacy alias)
   version: "0.0.1"          # optional schema version
   name: my-build            # optional human-readable name
-  retries:                  # optional build-level retry policy (see C.7)
+  retries:                  # optional build-level retry policy (see III.7)
     max_retries: 0
     target_reuse_enabled: true
   targets:                  # required: map of target name → target (at least one)
@@ -285,7 +287,7 @@ granite.build:              # required root key ("llm.build" is the accepted leg
 | `retries` | object | no | no retries | Build-level retry policy. |
 | `targets` | map | **yes** | — | The build's targets, keyed by name. |
 
-### C.1 Targets
+### III.1 Targets
 
 A target is declared as a key under `targets`. The key is the target's **name**. Names must be
 unique in the build, and they are how bindings (`<target>.<output>`) and the CLI
@@ -319,11 +321,11 @@ targets:
 | Field | Type | Required | Meaning |
 |-------|------|----------|---------|
 | `environment_uri` | string (templated, `space.*` only) | **yes** | The compute environment the target runs in. |
-| `inputs` | map name → input | no | Artifacts the target consumes ([C.3](#c3-input-and-output-artifacts)). |
-| `outputs` | map name → output | no | Artifacts the target produces ([C.3](#c3-input-and-output-artifacts)). |
-| `steps` | list of step | **yes** | Steps run in order ([C.4](#c4-steps)). An empty list only produces a validation warning. |
+| `inputs` | map name → input | no | Artifacts the target consumes ([III.3](#iii3-input-and-output-artifacts)). |
+| `outputs` | map name → output | no | Artifacts the target produces ([III.3](#iii3-input-and-output-artifacts)). |
+| `steps` | list of step | **yes** | Steps run in order ([III.4](#iii4-steps)). An empty list only produces a validation warning. |
 
-### C.2 Environments
+### III.2 Environments
 
 A build does not define environments. It **references** them, and the space supplies the
 definitions. `environment_uri` is usually `space://environments/<path>`. It is resolved relative
@@ -351,13 +353,13 @@ The value can use a build parameter
 | `K8s` | Kubernetes/OpenShift via Helm + AppWrapper | Native cluster runs with streamed events. |
 | `Lsf` | IBM LSF via `bsub` over SSH | HPC clusters with shared filesystems. |
 | `Runpod` | RunPod GPU pods | On-demand GPUs. |
-| `Skypilot` | SkyPilot: SLURM, Kubernetes, AWS, … | One launcher shape across many clouds ([D](#d-skypilot-environment-specifics)). |
+| `Skypilot` | SkyPilot: SLURM, Kubernetes, AWS, … | One launcher shape across many clouds ([IV](#iv-skypilot-environment-specifics)). |
 
 For the full `environment.yaml` schema, per-step-type defaults, asset-store declarations, and
 links to each environment type's own page, see the
 [Environments overview](https://github.com/ibm-granite/granite.build/blob/main/docs/environments/README.md).
 
-### C.3 Input and output artifacts
+### III.3 Input and output artifacts
 
 Inputs and outputs are the target's interface. They are also the inputs and outputs of its steps,
 which read the bound inputs and emit the declared outputs.
@@ -441,7 +443,7 @@ The output's `uri` then decides where the environment pushes the artifact.
 
 | Field | Type | Required | Default | Meaning |
 |-------|------|----------|---------|---------|
-| `uri` | string | no | — | Where the output is pushed. Templated at push time (see [C.6](#c6-parameters-and-jinja-templating)). |
+| `uri` | string | no | — | Where the output is pushed. Templated at push time (see [III.6](#iii6-parameters-and-jinja-templating)). |
 | `type` | string | no | — | The artifact type: `model`, `dataset`, `fileset` and so on. |
 | `public` | bool | no | `false` | `hf://` only: publish the pushed repository. Repositories are private by default. |
 | `store_push` | object | no | — | Push options for the output's store (see below). |
@@ -528,7 +530,7 @@ pull and push and declare the store in its `assetstores`.
 - `file:` names a path on the gbserver host and is accepted only on a standalone server.
 - `git+https://` and `git+ssh://` name a cloned repository, with an optional `#subdirectory=`.
 
-### C.4 Steps
+### III.4 Steps
 
 A step is the **reusable unit of computation**. The same `space://steps/train/hf-peft-sft` serves
 every build in a space, and its author maintains it in one place. Steps are **implemented and
@@ -546,14 +548,14 @@ steps:
       model_path: "{{ bindings.model.binding.path }}"
       compute_config: { num_nodes: 1 }        # step-independent
       poll_interval_seconds: 300              # step-independent (monitor cadence)
-    retry_enabled: true                       # step-level retry (C.7)
+    retry_enabled: true                       # step-level retry (III.7)
     retry_transparently: true
 ```
 
 | Field | Meaning |
 |-------|---------|
 | `step_uri` | Which step to run. If omitted, the built-in base step `gbstep` is used. |
-| `config` | Configuration merged over the step's defaults (see below and [C.5](#c5-overrides)). |
+| `config` | Configuration merged over the step's defaults (see below and [III.5](#iii5-overrides)). |
 | `retry_enabled`, `retry_transparently` | Step-level retry behavior. |
 
 **Using the target's inputs.** A step accesses the target's inputs in one of two ways, depending
@@ -568,7 +570,7 @@ reference the bindings inside the step implementation.
   lmeval's top-level `benchmark` and `model_path`.
 - **Step-independent** blocks are understood by gbserver or the environment for any step:
   - `compute_config`;
-  - `launcher_config`, which overrides the launcher ([C.5](#c5-overrides));
+  - `launcher_config`, which overrides the launcher ([III.5](#iii5-overrides));
   - monitor settings such as `poll_interval_seconds`;
   - secret declarations (`config.<env>.secrets`).
 
@@ -588,7 +590,7 @@ waits for a GPU instead of being scheduled on the normal queue.
 
 Environments with richer resource models, such as SkyPilot, accept additional backend-specific
 settings through the step's `launcher_config` (see
-[D.3](#d3-step-execution-environment-variables-and-compute-resources)).
+[IV.3](#iv3-step-execution-environment-variables-and-compute-resources)).
 
 **Environment variables from secrets.** On Docker, K8s, LSF and SkyPilot, secrets are never passed
 in bulk. A step declares by name each secret it needs as an environment variable, under an
@@ -669,7 +671,7 @@ always win. Quote numbers so that every value reaches the workload as a string. 
 credentials here: use the secrets block above, so the value comes from the secret manager and is
 never written into the build.
 
-### C.5 Overrides
+### III.5 Overrides
 
 A build can change step and environment defaults **without editing the step or the
 environment**. A step's `config` is deep-merged across three layers, lowest priority first. A
@@ -703,9 +705,9 @@ steps:
 
 A `config.steps.<slug>` key that matches no step in the build is silently ignored. When an
 override seems to have no effect, check the slug first. SkyPilot's overridable launcher keys are
-listed in [D.6](#d6-skypilot-overrides).
+listed in [IV.6](#iv6-skypilot-overrides).
 
-### C.6 Parameters and Jinja templating
+### III.6 Parameters and Jinja templating
 
 A `build.yaml` can contain two kinds of placeholder. They are filled at different times, by
 different parts of the system:
@@ -826,7 +828,7 @@ are special to Jinja, though:
 
 Wrap any such text in `{% raw %}…{% endraw %}` to pass it through unchanged.
 
-### C.7 Retries
+### III.7 Retries
 
 **Build retry.** `retries.max_retries` restarts a failed build automatically. With
 `target_reuse_enabled: true` (the default), targets that already succeeded are skipped and their
@@ -847,7 +849,7 @@ For the full mechanism, see
 and
 [Step retry configuration](https://github.com/ibm-granite/granite.build/blob/main/docs/builds/step-retry-configuration.md).
 
-### C.8 Validation
+### III.8 Validation
 
 `gb build validate -f build.yaml` (with the same `--param`/`--param-file` options as `start`)
 reports errors before anything runs. `gb build start` validates as well, unless you pass
@@ -868,9 +870,9 @@ Run `gb build validate` and read the error; it names the field at fault.
 
 ---
 
-## D. SkyPilot environment specifics
+## IV. SkyPilot environment specifics
 
-### D.1 Overview
+### IV.1 Overview
 
 The `Skypilot` environment fronts several compute backends through the
 [SkyPilot](https://docs.skypilot.co/) SDK. For **each step** it provisions a fresh SkyPilot
@@ -894,7 +896,7 @@ standard assets, each backend is a separate environment with a matching `subtype
   `~/.aws/credentials` at launch). GPU instances are chosen with `accelerators` or
   `instance_type`. Images run under Docker on the host. Example: `…/skypilot/aws`.
 
-### D.2 `environment.yaml` configuration
+### IV.2 `environment.yaml` configuration
 
 ```yaml
 name: bluevela
@@ -910,7 +912,7 @@ config:
   cluster_ssh_configs: { ... }         # SLURM/LSF SSH reachability
   cloud_config: { ... }                # merged into ~/.sky/config.yaml
   aws_credentials: [ ... ]             # AWS credential profiles (secret names)
-  steps:                               # per-step-type defaults (C.5)
+  steps:                               # per-step-type defaults (III.5)
     hfpull: { zone: io }
 assetstores:
   - store_uri: space://assetstores/hf
@@ -927,7 +929,7 @@ filesystem every node mounts. gbserver creates a per-target-run workdir under it
 each step's current directory, so relative output paths written by one step are visible to the
 push step and to later steps.
 
-### D.3 Step execution: environment variables and compute resources
+### IV.3 Step execution: environment variables and compute resources
 
 **Environment variables.** A SkyPilot task's environment is assembled in this order, later
 entries winning:
@@ -985,7 +987,7 @@ Jinja-templated against the step config, run under `set -eu`, and start in the s
 directory, which is the per-run workdir when `shared_workdir` is set. `image_id`
 (`docker:<image>`) selects a container. An empty value runs on the bare node.
 
-### D.4 Artifacts on SkyPilot
+### IV.4 Artifacts on SkyPilot
 
 - **`hf://`.** Input is pulled by the built-in `hfpull` step into `cache_path`, which defaults to
   `{shared_workdir}/hf_cache`. Output is pushed by `hfpush`.
@@ -1004,7 +1006,7 @@ directory, which is the per-run workdir when `shared_workdir` is set. `image_id`
   relative path places the output in the shared per-run workdir, where the separate push step can
   see it.
 
-### D.5 Steps available for SkyPilot
+### IV.5 Steps available for SkyPilot
 
 The table lists the documented steps published under
 [`configurations/assets/environments/skypilot/steps`](https://github.com/ibm-granite/granite.build/tree/main/configurations/assets/environments/skypilot/steps).
@@ -1047,7 +1049,7 @@ gbserver rather than published here, and the transfer steps are inserted automat
 | Evaluation | `eval/judged` | granite-evals LLM-judged benchmark family. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/judged/README.md) |
 | Evaluation | `eval/unitxt` | Evaluation with unitxt. | [README](https://github.com/ibm-granite/granite.build/blob/main/configurations/assets/environments/skypilot/steps/eval/unitxt/README.md) |
 
-### D.6 SkyPilot overrides
+### IV.6 SkyPilot overrides
 
 A build can override these SkyPilot launcher settings under the step's `config.launcher_config`:
 
@@ -1066,7 +1068,7 @@ A build can override these SkyPilot launcher settings under the step's `config.l
   - `poll_interval_seconds` and `log_retrieval_mode` are set at the step's `config` level, not
     under `launcher_config`. The default poll interval is 300 seconds; lower it for quick steps.
   - `zone` and `cluster` can be steered per step type from the environment's `config.steps`
-    ([C.5](#c5-overrides)).
+    ([III.5](#iii5-overrides)).
 
 A build **cannot** override the following launcher settings:
 
@@ -1076,7 +1078,7 @@ A build **cannot** override the following launcher settings:
   `config.file_mounts`, but it applies only when the step's launcher defines no `file_mounts` of
   its own; the step's value wins.
 
-### D.7 Example: a three-target SkyPilot pipeline
+### IV.7 Example: a three-target SkyPilot pipeline
 
 ```yaml
 granite.build:
@@ -1143,7 +1145,7 @@ targets SLURM, Kubernetes or AWS.
 
 ---
 
-## E. Executing a `build.yaml`
+## V. Executing a `build.yaml`
 
 This section runs a minimal build with the `gb` CLI in the **`public`** space on the **`bash`**
 environment. Bash runs each step as a local process on the gbserver host, so it needs no cluster,

@@ -202,7 +202,7 @@ steps:
         learning_rate: 2e-5
 ```
 
-See the [`build.yaml` specification](../builds/build-yaml-specification.md#c4-steps)
+See the [`build.yaml` specification](../builds/build-yaml-specification.md#iii4-steps)
 for the full set of fields.
 
 ## Extending with custom steps

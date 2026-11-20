@@ -74,7 +74,7 @@ A `mem://` value is passed verbatim, with no copy and no path normalisation, so 
 normalisation turns `http://host:8000` into `/http:/host:8000`. A `mem://` output takes no
 `type` and no `store_push`. Output URIs can be Jinja-templated (for example
 `{{ run_metadata.targetsteprun_id | short_hash }}` or `{{ unique_hash }}`); see
-[Jinja templating](build-yaml-specification.md#c6-parameters-and-jinja-templating).
+[Jinja templating](build-yaml-specification.md#iii6-parameters-and-jinja-templating).
 
 Full output schema (`public`, `store_push`):
 [`build.yaml` specification — Outputs](build-yaml-specification.md#outputs-and-how-steps-produce-them).
