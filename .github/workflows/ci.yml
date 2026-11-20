@@ -43,6 +43,9 @@ jobs:
       - name: Check license headers
         run: python scripts/check_license_headers.py
 
+      - name: Check pre-commit hook revs match the dev pins
+        run: python scripts/check_precommit_versions.py
+
       - name: Lint (pylint)
         run: |
           pylint src/gbserver/

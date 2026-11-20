@@ -3,7 +3,7 @@
 # Runs the subtree's own `cd autotunex && make check` (ruff + mypy strict + pytest —
 # the gate its 1300+ tests were written against). The monorepo's repo-wide
 # black/isort lint does NOT govern autotunex/: the root pyproject excludes the
-# prefix ([tool.black] extend-exclude / [tool.isort] extend_skip_glob), so this
+# prefix ([tool.black] force-exclude / [tool.isort] extend_skip_glob), so this
 # workflow is the subtree's gate instead.
 #
 # A second job, fm-tune, runs the vendored src/fm-tune suite, which `make check`
