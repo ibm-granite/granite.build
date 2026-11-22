@@ -122,6 +122,11 @@ class BaseStoredItem(BaseModel):
 
     uuid: str = Field(default_factory=get_uuid)
 
+    @field_validator("uuid")
+    @classmethod
+    def _normalize_uuid(cls, v: str) -> str:
+        return v.lower() if isinstance(v, str) else v
+
 
 BASE_ITEM_TYPE = TypeVar("BASE_ITEM_TYPE", bound=BaseStoredItem)
 
@@ -667,6 +672,11 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
             # This avoids creating/initializing the table, which is useful for buildrunner tests that time out.
             return [] if uuids_was_list else [] if uuids is None else None
 
+        if isinstance(uuids, str):
+            uuids = uuids.lower()
+        elif isinstance(uuids, list):
+            uuids = [u.lower() if isinstance(u, str) else u for u in uuids]
+
         if uuids is None or isinstance(uuids, str) or isinstance(uuids, list):
             row_filter: dict[str, Union[str, list[str]]] = {}
             if isinstance(uuids, str):
@@ -902,6 +912,7 @@ class BaseItemStorage(IItemStorage[BASE_ITEM_TYPE], Generic[BASE_ITEM_TYPE]):
         self.__initialize_storage()
         if not isinstance(uuids, list):
             uuids = [uuids]
+        uuids = [u.lower() if isinstance(u, str) else u for u in uuids]
         self._delete(uuids)
         self.logger.info(f"Done deleting items with uuids {uuids}")
 

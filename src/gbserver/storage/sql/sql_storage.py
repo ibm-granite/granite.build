@@ -1309,6 +1309,8 @@ class BaseSQLItemStorage(BaseItemStorage, Generic[BASE_ITEM_TYPE]):
             Optional[BASE_ITEM_TYPE]: The updated item if the update was performed, or None if
             should_update was provided and returned False.
         """
+        if isinstance(uuid, str):
+            uuid = uuid.lower()
         session = self._get_session_without_retry()
         try:
             # Use SELECT FOR UPDATE to lock the row during read - prevents race conditions

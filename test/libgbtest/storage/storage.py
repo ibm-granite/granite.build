@@ -179,6 +179,10 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
         item = storage.get_by_uuid(uuid0)
         self._verify_get_results(item, item0)
 
+        # Test case insensitivity (RFC 9562)
+        item_upper = storage.get_by_uuid(uuid0.upper())
+        self._verify_get_results(item_upper, item0)
+
         # Add some more items
         item1 = self._get_test_item(1)
         uuid1 = storage.add(item1)
@@ -192,6 +196,10 @@ class AbstractStorageTest(AbstractSingletonStorageUsingTest):
         # Now test retrieving more than 1 at a time.
         items = storage.get_by_uuid([uuid0, uuid1])
         self._verify_get_results([item0, item1], items)
+
+        # Test retrieving multiple with mixed case
+        items_case = storage.get_by_uuid([uuid0.upper(), uuid1.lower()])
+        self._verify_get_results([item0, item1], items_case)
 
         # Now test retrieving non-existent uuids
         item = storage.get_by_uuid("non-uuid")
