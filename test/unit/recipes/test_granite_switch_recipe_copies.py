@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The granite-switch recipes carry one block of inline code in two copies:
-the answerability-lora prepare script (slurm-bluevela and aws).
+the answerability-lora prepare script (slurm and aws).
 
 `gb build start` uploads only build.yaml, so a recipe cannot ship a shared
 script beside it yet (ibm-granite/granite.build#628); until it can
@@ -21,7 +21,7 @@ import pytest
 _SKYPILOT = (
     pathlib.Path(__file__).resolve().parents[3] / "recipes/granite-switch/skypilot"
 )
-_SLURM = _SKYPILOT / "slurm-bluevela/answerability-lora/build.yaml"
+_SLURM = _SKYPILOT / "slurm/answerability-lora/build.yaml"
 _AWS = _SKYPILOT / "aws/answerability-lora/build.yaml"
 # The prepare script is the heredoc from the `<<'PY'` line to its `PY` line.
 _START, _END = "<<'PY'", "PY"

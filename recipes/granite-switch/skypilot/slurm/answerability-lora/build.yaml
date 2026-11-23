@@ -13,11 +13,13 @@
 # adapter with TRL's SFTTrainer (loss on the completion only), and registers
 # the ADAPTER as the `adapter` artifact.
 #
-# See README.md for the HF_TOKEN secret this needs and why the conversion
-# exists.
+# Every site-specific value (the environment, the data and output paths, the
+# CPU partition, the GPUs) comes from a private site file; site.example.yaml
+# lists the keys. parameters.yaml, layered under it, holds only the recipe's
+# own settings. See README.md for the setup, the HF_TOKEN secret this needs and
+# why the conversion exists.
 #
-#   gb build start -f build.yaml --param-file parameters.yaml
-#   gb build start -f build.yaml --param-file parameters.yaml --param RUN_ID=r2
+#   gb build start -f build.yaml --param-file <site.yaml> --param RUN_ID=r2
 #####
 granite.build:
   name: answerability-$${METHOD}-$${RUN_ID}
@@ -30,8 +32,8 @@ granite.build:
     prepare:
       environment_uri: "$${ENVIRONMENT_URI}"
       inputs:
-        # Only training_data/answerability/parquet_granite4.2_8b is downloaded,
-        # into the shared hf cache, and bound at that directory.
+        # Only the directory SOURCE_DATA_URI names inside the repo is
+        # downloaded, into the shared hf cache, and bound at that directory.
         source:
           uri: "$${SOURCE_DATA_URI}"
           type: dataset
@@ -50,14 +52,14 @@ granite.build:
         - step_uri: space://steps/command
           config:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
-            # CPU-only: the cpu partition, without the environment-wide H200
+            # CPU-only: the CPU partition, without the environment-wide GPU
             # constraint (as the environment does for hfpull/hfpush).
-            zone: cpu
+            zone: "$${CPU_PARTITION}"
             launcher_config:
               resources:
-                # cpu caps memory at 8 GiB per CPU (MaxMemPerCPU=8192): memory
-                # over cpus x 8 makes SLURM raise cpus-per-task, which then
-                # disagrees with SkyPilot's srun --cpus and srun aborts.
+                # A CPU partition may cap memory per CPU (MaxMemPerCPU): memory
+                # over cpus x that cap makes SLURM raise cpus-per-task, which
+                # then disagrees with SkyPilot's srun --cpus and srun aborts.
                 cpus: $${PREP_CPUS}
                 memory: "$${PREP_MEMORY}"
               sbatch_options:
@@ -226,7 +228,7 @@ granite.build:
                 echo "GB_ARTIFACT_ID:dataset GB_ARTIFACT_PATH:$OUT"
 
     ##########################################################################
-    # train — LoRA adapter with hf-peft-sft (DDP on H200)
+    # train — LoRA adapter with hf-peft-sft (DDP on ACCELERATORS)
     ##########################################################################
     train:
       environment_uri: "$${ENVIRONMENT_URI}"
@@ -251,7 +253,8 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             launcher_config:
               resources:
-                # H200 is the only GPU the cluster schedules (its constraint).
+                # From the site file: a GPU model the cluster schedules (on a
+                # cluster with a GPU constraint, the one it pins), and a count.
                 accelerators: "$${ACCELERATORS}"
                 # Explicit memory wins over compute_config on every cluster; bare
                 # GiB string.

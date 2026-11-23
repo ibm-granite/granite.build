@@ -1,0 +1,93 @@
+# EXAMPLE site file for the answerability-lora recipe on SkyPilot/SLURM. Every
+# value is fake.
+#
+# Copy it to a private location (a private repo, or ~/.granite.build/local-env/),
+# fill in your site's values, and never commit the real one: it names your
+# hosts, users, accounts, paths and data. Secrets are named here, never given.
+#
+# One file serves both uses:
+#   scripts/setup-local-space.sh \
+#     --template recipes/environments/skypilot-slurm.template.yaml \
+#     --site <your-site.yaml> --name <env-name>
+# renders the environment from the "Environment" keys and sets ENVIRONMENT_URI
+# below to it, and
+#   gb build start -f build.yaml --param-file <your-site.yaml> --param RUN_ID=<unique>
+# hands every key to the recipe, layered over its parameters.yaml. A
+# --param KEY=VALUE still overrides any of them.
+#
+# The "Environment" keys are the ones recipes/distill/site.example.yaml has
+# too: one cluster's keys can live in one file passed to both, with each
+# recipe's own keys in a second --param-file.
+
+# ─── Environment: identity and scheduler ─────────────────────────────
+# The rendered environment's `name`.
+ENV_NAME: "slurm-example"
+# SkyPilot cluster name (infra=slurm/<CLUSTER>); also the SSH Host alias and the cluster_configs key.
+CLUSTER: "example-cluster"
+# The GPU partition: the environment's default zone, where train runs.
+GPU_PARTITION: "gpu"
+# The CPU-only partition: HF I/O steps, the image-cache import job and prepare.
+CPU_PARTITION: "cpu"
+# #SBATCH --constraint pinning jobs to one GPU node type; "" leaves the directive out.
+GPU_CONSTRAINT: "a100"
+# SLURM account (association) the jobs are billed to.
+SLURM_ACCOUNT: "my-account"
+# Env-wide SLURM QOS, accepted on GPU_PARTITION.
+SLURM_QOS: "normal"
+# QOS for jobs on CPU_PARTITION.
+CPU_QOS: "cpu"
+# This recipe has no eval target. The template still reads these two: with
+# EVAL_QOS "" they add nothing to the environment.
+EVAL_PARTITION: "gpu"
+EVAL_QOS: ""
+
+# ─── Environment: filesystems ────────────────────────────────────────
+# Shared root of the per-run build workdirs (GB_BUILD_WORKDIR hangs off it).
+SHARED_WORKDIR: "/shared/gb/builds/"
+# SkyPilot's cluster workdir; an ancestor of SHARED_WORKDIR, bind-mounted into containers.
+CLUSTER_WORKDIR: "/shared/gb"
+# SkyPilot runtime dir, on storage every login node shares ($HOME expands remotely).
+CLUSTER_TMPDIR: "$HOME/skypilot-tmp"
+# Extra identity bind mounts into step containers: container_path, host_path,
+# mode. DATA_ROOT and ADAPTER_ROOT below must be under one of them (or under
+# CLUSTER_WORKDIR): prepare and train run in containers.
+CONTAINER_MOUNTS:
+  - container_path: "/shared"
+    host_path: "/shared"
+    mode: "rw"
+# Shared directory holding the imported .sqsh container images.
+IMAGE_CACHE_SHARE_PATH: "/shared/gb/image-cache"
+# Hugging Face cache for hf:// pulls, on shared storage.
+HF_CACHE_PATH: "/shared/gb/hfcache/"
+
+# ─── Environment: SSH to the login nodes ─────────────────────────────
+# Interchangeable login nodes; gbserver picks one per launch and fails over.
+LOGIN_HOSTS:
+  - "login1.example.org"
+  - "login2.example.org"
+# The user the jobs are submitted as.
+SSH_USER: "my-user"
+# NAME of the space secret holding that user's SSH private key (not the key).
+SSH_KEY_SECRET: "MY_CLUSTER_SSH_KEY"
+
+# ─── Recipe: where it runs ───────────────────────────────────────────
+# The environment both targets run in; setup-local-space.sh rewrites this line.
+ENVIRONMENT_URI: "space://environments/skypilot-local/slurm-example"
+
+# ─── Recipe: data and outputs ────────────────────────────────────────
+# The answerability parquet dir (train.parquet, test.parquet) in an HF dataset
+# repo: hf:///datasets/<org>/<dataset>/<revision>/<path>. The path limits the
+# pull to that directory. A private repo needs an HF_TOKEN secret (README.md).
+# Replace the revision with a commit hash to pin the data.
+SOURCE_DATA_URI: "hf:///datasets/my-org/answerability/main/training_data/answerability/parquet_granite4.2_8b"
+# prepare writes the converted dataset to $DATA_ROOT/$RUN_ID, where train reads
+# it. A plain path on the shared filesystem, not a URI.
+DATA_ROOT: "/shared/granite-switch/data/answerability-lora"
+# Adapters land in $ADAPTER_ROOT/answerability-$METHOD/$RUN_ID, so LoRA and
+# aLoRA runs never share a directory. A plain path, not a URI.
+ADAPTER_ROOT: "/shared/granite-switch/adapters"
+
+# ─── Recipe: compute ─────────────────────────────────────────────────
+# train's GPUs, <model>:<count>: a model the cluster schedules (with a
+# GPU_CONSTRAINT, the one it pins). 4 GPUs, DDP: effective batch 4 x 1 x 8 = 32.
+ACCELERATORS: "A100:4"

@@ -3,6 +3,10 @@
 Ready-to-run `build.yaml` files, grouped by model or workflow. Each group's
 README lists its recipes and any prerequisites.
 
+[`environments/`](environments/) is not a recipe group: it holds environment
+templates that several recipes share. `scripts/setup-local-space.sh` fills one
+from a private site file, whose keys the recipe's `site.example.yaml` lists.
+
 ## Placeholders
 
 `<shared-fs>` in a recipe's README or in `parameters.yaml` comments stands for a
