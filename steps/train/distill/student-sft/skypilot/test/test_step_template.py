@@ -365,9 +365,12 @@ class TestConfigDefaults:
         step's name."""
         assert step["config"]["sft_config"]["precomputed_logits_dir"] == ""
 
-    def test_the_optimization_defaults_are_the_treatment_s(self, step):
-        """A control that trains at a different batch size or learning rate than the
-        treatment is not a control."""
+    def test_the_optimization_defaults_are_pinned(self, step):
+        """Pins this step's own optimization defaults. They are NOT logit-distill's:
+        learning_rate and gradient_accumulation_steps differ, and so do max_length and
+        save_steps (USAGE.md, "Using this step as a control"). A recipe that runs this step
+        as a control sets those keys to the treatment's values. Changing a default here
+        changes every run that leaves the key unset."""
         cfg = step["config"]["sft_config"]
         assert cfg["per_device_train_batch_size"] == 1
         assert cfg["gradient_accumulation_steps"] == 8

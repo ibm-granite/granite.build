@@ -39,6 +39,9 @@ Nothing here needs a GPU, CUDA, trl, or transformers.
 
 import ast
 import json
+import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -981,3 +984,205 @@ def test_main_returns_2_and_writes_nothing_on_a_refusal(tmp_path):
     )
     assert rc == 2
     assert not out.exists()
+
+
+# ------------------------------------------- the template's defaults are the renderer's
+#
+# The parity tests above compare the two RENDERERS' argparse defaults, but a recipe never
+# reaches those: it gets step-template.yaml's values, which the run block passes as flags to
+# run-sft.sh, which forwards them to render_sft_config.py. These tests read that chain from
+# the template and the script rather than restating it, then check that the template's
+# defaults parse to the renderer's own -- so the table in USAGE.md ("Using this step as a
+# control"), which is pinned against the renderers above, describes what recipes run.
+
+_STEP_DIR = _HERE.parents[1]
+_STEP_TEMPLATE = _STEP_DIR / "step-template.yaml"
+_RUN_SFT_SH = _STEP_DIR / "src" / "run-sft.sh"
+
+# `--flag {{ config.<section>.<key> }}`, optionally quoted, as the run block writes them.
+_CONFIG_FLAG = re.compile(
+    r"""(--[a-z][a-z0-9-]*)\s+(["']?)(\{\{\s*config\.(\w+)\.(\w+)[^}]*\}\})\2(?=\s|$)"""
+)
+# `{% if config.<section>.<key> %}--flag{% else %}--no-flag{% endif %}`, the boolean pairs.
+_FLAG_PAIR = re.compile(
+    r"\{%\s*if\s+config\.(\w+)\.(\w+)\s*%\}(--[a-z][a-z0-9-]*)"
+    r"\{%\s*else\s*%\}(--no-[a-z][a-z0-9-]*)\{%\s*endif\s*%\}"
+)
+
+# Renderer flags with a default that the template does not pass, and why. A flag the template
+# stops passing fails test_every_defaulted_renderer_flag_is_accounted_for until it is listed.
+_RENDERER_DEFAULTS_THE_TEMPLATE_DOES_NOT_PASS = {
+    # Not a recipe knob: the renderer picks the backend per architecture (ATTN_BY_ARCH).
+    "--attn-implementation",
+    # A rendering-outside-the-runtime switch for tests; the step always checks paths.
+    "--no-check-paths",
+}
+
+
+def _jinja(source, step):
+    """Render a template fragment the way gbserver fills a step (StrictUndefined)."""
+    from jinja2 import StrictUndefined  # noqa: PLC0415
+    from jinja2.sandbox import SandboxedEnvironment  # noqa: PLC0415
+
+    env = SandboxedEnvironment(undefined=StrictUndefined)
+    return env.from_string(source).render(config=step["config"])
+
+
+def _run_sft_command(run_block):
+    """The run block's one (backslash-continued) command that invokes run-sft.sh."""
+    joined = re.sub(r"\\\n", " ", run_block)
+    [command] = [line for line in joined.splitlines() if "/run-sft.sh" in line]
+    return command
+
+
+def _response_template_as_passed(run_block, step):
+    """`--response-template "$RESPONSE_TEMPLATE"`, set by the run block's own decode lines.
+
+    Executed rather than restated: the decode is `printf '%b.'` plus a sentinel strip, and
+    that is exactly the part that is easy to get wrong (see TestResponseTemplateNewline in
+    test_step_template.py).
+    """
+    lines = [
+        line.strip()
+        for line in run_block.splitlines()
+        if re.match(r"\s*(RT_RAW|RESPONSE_TEMPLATE)=", line)
+    ]
+    assert len(lines) == 3, lines
+    script = "\n".join(_jinja(line, step) for line in lines)
+    result = subprocess.run(
+        ["bash", "-c", script + '\nprintf %s "$RESPONSE_TEMPLATE"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _template_flags():
+    """[(template key, argv tokens)] for each config value the run block passes run-sft.sh."""
+    step = yaml.safe_load(_STEP_TEMPLATE.read_text())
+    run_block = step["environment_configs"]["Skypilot"]["launchers"]["train"]["config"][
+        "run"
+    ]
+    command = _run_sft_command(run_block)
+    flags = []
+    for match in _CONFIG_FLAG.finditer(command):
+        flag, quote, expr, section, key = match.groups()
+        value = _jinja(expr, step)
+        # An unquoted value reaches the script as one word only if it is one word.
+        assert quote or (value and not value.split()[1:]), (flag, value)
+        flags.append((f"{section}.{key}", [flag, value]))
+    for match in _FLAG_PAIR.finditer(command):
+        section, key, on, off = match.groups()
+        flags.append(
+            (f"{section}.{key}", [on if step["config"][section][key] else off])
+        )
+    # Every config reference in the command is one of the forms above, so none is skipped.
+    assert len(re.findall(r"\bconfig\.\w+\.\w+", command)) == len(flags), command
+    # Passed under its own flag, but through a shell variable the run block decodes.
+    assert '--response-template "$RESPONSE_TEMPLATE"' in command
+    flags.append(
+        (
+            "sft_config.response_template",
+            ["--response-template", _response_template_as_passed(run_block, step)],
+        )
+    )
+    return flags
+
+
+def _accepted_by_the_renderer(tokens):
+    return tokens[0] in build_parser()._option_string_actions
+
+
+def _renderer_argv_from_run_sft(tmp_path, argv):
+    """What run-sft.sh hands render_sft_config.py, captured by a stub PYBIN."""
+    captured = tmp_path / "argv"
+    stub = tmp_path / "pybin"
+    stub.write_text(
+        f"#!/bin/sh\nshift\nprintf '%s\\0' \"$@\" > '{captured}'\nexit 97\n"
+    )
+    stub.chmod(0o755)
+    (tmp_path / "lib").mkdir()
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PYBIN": str(stub),
+        # Neither is read before the render; set so nothing resolves outside tmp_path.
+        "SFT_SRC": str(tmp_path / "pkg" / "distillation"),
+        "LIB_DIR": str(tmp_path / "lib"),
+        "SFT_PREPROCESS_CACHE_ROOT": str(tmp_path / "cache"),
+    }
+    required = [
+        "--student-model-path",
+        "/s",
+        "--corpus-path",
+        "/c",
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--deepspeed-config",
+        "/ds.yaml",
+    ]
+    result = subprocess.run(
+        ["bash", str(_RUN_SFT_SH), *required, *argv],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 97, result.stdout + result.stderr
+    return captured.read_text().split("\0")[:-1]
+
+
+def test_run_sft_forwards_each_renderer_flag_the_template_passes_unchanged(tmp_path):
+    """The template does not call the renderer; run-sft.sh does, from its own parsed
+    variables. So the template's flag reaches the renderer only if the script forwards it
+    under the same name with the same value -- checked by running the script."""
+    passed = [tokens for _, tokens in _template_flags()]
+    forwarded = _renderer_argv_from_run_sft(
+        tmp_path, [token for tokens in passed for token in tokens]
+    )
+    for tokens in filter(_accepted_by_the_renderer, passed):
+        i = forwarded.index(tokens[0])
+        assert forwarded[i : i + len(tokens)] == tokens, tokens
+
+
+def test_the_template_defaults_are_the_renderers_defaults():
+    """Every config value the template passes parses, in the renderer, to the renderer's own
+    default. Numbers compare as numbers: the parser keeps learning_rate as the string "1e-6".
+    """
+    defaults = vars(parse())
+    differ = {}
+    for key, tokens in _template_flags():
+        if not _accepted_by_the_renderer(tokens):
+            continue
+        dest = build_parser()._option_string_actions[tokens[0]].dest
+        got = vars(parse(*tokens))[dest]
+        if _num(got) != _num(defaults[dest]):
+            differ[key] = (got, defaults[dest])
+    assert differ == {}
+
+
+def test_every_defaulted_renderer_flag_is_accounted_for():
+    """Guards the test above from going vacuous: a renderer flag with a default is either
+    passed by the template or listed, with its reason, as not passed."""
+    passed = {tokens[0] for _, tokens in _template_flags()}
+    for action in build_parser()._actions:
+        if action.required or action.dest == "help":
+            continue
+        assert passed & set(action.option_strings) or (
+            set(action.option_strings) & _RENDERER_DEFAULTS_THE_TEMPLATE_DOES_NOT_PASS
+        ), f"{action.option_strings} has a default the template neither passes nor excuses"
+
+
+def test_the_template_passes_the_batch_shape_to_the_renderer():
+    keys = {
+        key for key, tokens in _template_flags() if _accepted_by_the_renderer(tokens)
+    }
+    assert {
+        "sft_config.gradient_accumulation_steps",
+        "sft_config.learning_rate",
+        "sft_config.max_length",
+        "sft_config.num_train_epochs",
+        "sft_config.per_device_train_batch_size",
+        "sft_config.response_template",
+        "sft_config.save_steps",
+    } <= keys
