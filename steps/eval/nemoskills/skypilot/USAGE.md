@@ -47,6 +47,7 @@ steps:
 | `ruler-64k` / `-128k` / `-256k` / `-512k` / `-1m` | accuracy (NeMo-Skills' `ruler_score`, mean over 13 tasks) | data generated for the model's own tokenizer (RULER source data baked into the image, sha256-checked), 100 samples/task; served at the matching `max_model_len` |
 | `scicode` | pass@1 subtask accuracy | 65 problems / 288 subtasks, with background; graded in NeMo-Skills' local sandbox server (pinned Python 3.10 scientific env: numpy, scipy, sympy, h5py, matplotlib) |
 | `wmt24pp` | en→xx COMET (XCOMET-XXL) | `google/wmt24pp`, default languages de_DE/es_MX/fr_FR/it_IT/ja_JP (998 segments each; `options: languages=` overrides); XCOMET-XXL (`Unbabel/XCOMET-XXL`, gated, CC-BY-NC-SA-4.0) runs in the image's separate COMET env — phase `score` needs the gated model's access |
+| `nemoskills` | ns's own headline metric (`symbolic_correct` unless `metric=` names another ns metric key) | The generic bridge: `options: benchmark=<name>` (required; a dataset directory name under NeMo-Skills' `nemo_skills/dataset` at the pinned checkout, e.g. `benchmark=math-500`) runs that benchmark with ns's own defaults — its prepare, prompts and metrics — where the curated ids above freeze Granite's protocol on the same machinery. `dataset` must then be a local path in ns's row format (a dir holding `<split>.jsonl`, or one `.jsonl` file); a hub id is refused. Without it, ns's own prepare fetches the data unpinned (the run's provenance records what was read). `split=`, the sampling and judge options, the phases and resume are the curated ids' own. Run dir: `$output_root/$run_name/nemoskills-<name>`. |
 
 See `granite-evals list` for the current, authoritative set and sizes.
 
@@ -59,7 +60,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
 | `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a selection option (`tasks=`, `domains=`, `service=`, `categories=`, `benchmark=`) suffixes it as one path segment, e.g. `…/lm-eval-hellaswag` (see steps/eval/README.md, The generic bridges). |
 | `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N examples of the pinned/prepared data. Empty = the benchmark's full set. |
 | `repeats` | Independent generations per example (avg-of-k). Empty = benchmark default (1). |

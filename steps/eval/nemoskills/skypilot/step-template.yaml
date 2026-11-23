@@ -25,6 +25,9 @@ version: 0.1.0
 #                               (ns's ruler_score: the mean over 13 tasks)
 #   scicode                    SciCode, pass@1 subtask accuracy
 #   wmt24pp                    WMT24++ en->xx, XCOMET-XXL
+#   nemoskills                 the generic bridge: any NeMo-Skills benchmark at the
+#                              pinned checkout, options "benchmark=<name>", ns's own
+#                              protocol and headline metric (see USAGE.md)
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. Every steps/eval/*/ template has the same
 # shape and differs only in `name`, the family's image env var, and its defaults.
@@ -97,6 +100,10 @@ config:
   # "temperature=0.6 max_tokens=32768" (unset sampling = the checkpoint's generation_config),
   # "answers=gold" (reference answers through the same grading; model_path may be "none"),
   # "ns.<key>=<value>" (any NeMo-Skills generation override).
+  # nemoskills (the generic bridge) instead takes: "benchmark=math-500" (required;
+  # any NeMo-Skills dataset name at the pinned checkout, run with ns's own prepare,
+  # prompts and metrics) and "metric=<ns metric key>" (default symbolic_correct);
+  # its `dataset` must be a local path in ns's row format (hub ids are refused).
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""
