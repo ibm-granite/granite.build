@@ -454,10 +454,11 @@ launch fails with `NotSupportedError`; the `run:` command then executes directly
 > **GPU steps needing runtime CUDA JIT compilation**: a plain `python:slim`/`ubuntu` base with only
 > pip-installed `nvidia-*-cu12` wheels has no `nvcc`/dev toolkit, so anything that JIT-compiles CUDA at
 > runtime (`torch.compile`/Inductor, raw Triton kernels, FlashInfer's JIT sampler) fails with
-> `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's own image `FROM` a CUDA
-> **devel** base (e.g. an NGC `nvcr.io/nvidia/cuda:<ver>-devel-<distro>` tag) directly, matching the
-> CUDA minor version your step's own pinned wheels expect. Two residual gaps that image does NOT
-> solve on its own, split across two different layers:
+> `libcuda.so cannot found!` or `Could not find nvcc`. Build your step's image `FROM` an NGC CUDA
+> **devel** tag directly (e.g.
+> [`steps/train/distill/images/gpu/Dockerfile`](../../steps/train/distill/images/gpu/Dockerfile)/
+> [`README.md`](../../steps/train/distill/images/gpu/README.md), the distillation steps' shared GPU image). That
+> image's own README covers two residual gaps it does NOT solve, split across two different layers:
 > the generated Pyxis GPU sbatch directives (opt-in via
 > `slurm_gpu_sbatch_directives: true` — see
 > [`sbatch_options`](#sbatch_options--slurm-sbatch-directives)) already set
@@ -639,7 +640,7 @@ The launcher maps it to `sky.Task.num_nodes`, from which the provisioner derives
 SkyPilot SLURM executor (`sky/skylet/executor/slurm.py`) runs one task per node
 (`--ntasks-per-node=1`, `--kill-on-bad-exit`) while re-asserting `SKYPILOT_NODE_RANK` and
 `SKYPILOT_NODE_IPS` on each node at run time — the rank/rendezvous inputs torchrun-based steps
-(e.g. the distill `gold` step) consume for `--node_rank`/`--nnodes`. No PMIx or hostfile plumbing is
+(e.g. the `logit-distill` step) consume for `--node_rank`/`--nnodes`. No PMIx or hostfile plumbing is
 needed; `MASTER_ADDR`/`MASTER_PORT` come from the step's own launcher script.
 
 No device mounts are needed for NCCL on this cluster: enroot's own device hook carries `/dev` into

@@ -1,0 +1,13 @@
+# Vulnerabilities `make scan-image-cpu` / `publish-image-cpu` accept on purpose.
+#
+# Same format and rules as images/gpu/scan-ignore: one advisory id per line, `#` starts a
+# comment, every entry names the issue that removes it and an expiry date.
+
+# wandb-core, the Go binary inside the wandb 0.31.0 wheel (Go stdlib 1.27.2, x/net 0.61.0);
+# trivy reports these, osv-scanner cannot see inside the binary. wandb is tracking-only and
+# defaults off in every step, so the binary does not run unless a recipe turns tracking on.
+# No wandb release bundles the fixed Go deps yet (as of 2026-11-20); the raise is
+# #752 (this image has no vllm, so #676 does not touch it).
+# Ids from trivy's report on the c1069dfd image. Until 2027-05-31.
+CVE-2026-78661
+CVE-2026-111943

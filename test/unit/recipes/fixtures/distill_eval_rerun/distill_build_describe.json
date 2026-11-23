@@ -1,0 +1,184 @@
+[
+ {
+  "target_name": "align",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "corpus",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "sources",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "train",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "export-1000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "divergence-1000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "export-2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "divergence-2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "divergence-baseline",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "repetition-check",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-olmes-gsm8k-ck1000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-salad-bench-ck1000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-bfcl-ck1000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "export-sage-ck1000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "export-bfcl-ck1000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-olmes-deepmind-math-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-olmes-gsm8k-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-olmes-gpqa-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-olmes-gsm-symbolic-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-olmes-minerva-math-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-attaq-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-salad-bench-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "eval-bfcl-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "export-sage-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "export-bfcl-ck2000",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ },
+ {
+  "target_name": "export-combined",
+  "environment_uri": "space://environments/skypilot-local/slurm-example",
+  "inputs": [],
+  "outputs": [],
+  "steps": []
+ }
+]

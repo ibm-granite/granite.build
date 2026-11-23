@@ -1,10 +1,10 @@
 # sft-smoke — smoke-test distill-sft in isolation, for SkyPilot/LSF.
 #
-# Same pair, corpus fixture and chat template as distill-smoke (granite-4.0-350m
-# student, granite-4.1-3b teacher) — see that recipe's parameters.yaml for the
-# full reasoning behind each of those choices. This file only carries what
-# align, corpus and train-sft actually read; every GOLD/export/eval parameter
-# distill-smoke has is absent on purpose, not just unused.
+# A granite-4.0-350m student and a granite-4.1-3b teacher, with a granite-native
+# chat template — see recipes/distill/distill/parameters.yaml for the reasoning
+# behind those choices. This file only carries what align, corpus and train-sft
+# actually read; every GOLD/export/eval parameter of the full distill pipeline
+# is absent on purpose, not just unused.
 #
 # Override any value with: gb build start --param KEY=VALUE
 
@@ -14,13 +14,10 @@ WORKDIR_ROOT: "/proj/granite-build/g4os/gbtest/distill"
 BUILD_SUBDIR: "{{ run_metadata.build_id }}"
 SEED: 42
 
-# ─── Image and trainer code ────────────────────────────────────────────
-IMAGE_ID: "docker:us.icr.io/cil15-shared-registry/kd-sandbox-distill:0.1.0-uv"
 
 # ─── The pair, the data, and the chat template ─────────────────────────
-# See distill-smoke/parameters.yaml for why this pair, why the teacher needs a
-# pinned-tokenizer copy rather than the model directory, and why REQUIRE_CHATML
-# is false.
+# See recipes/distill/distill/parameters.yaml for why REQUIRE_CHATML is false.
+# The teacher is a pinned-tokenizer copy rather than the model directory.
 #
 # Each *_URI carries a FULL uri, not a bare path — the scheme picks how
 # granite.build fetches it (see ibm-bluevela's environment.yaml
@@ -43,7 +40,7 @@ REQUIRE_CHATML: false
 THINK_POLICY: "keep"
 
 # ─── The corpus ─────────────────────────────────────────────────────────
-# Smaller than distill-smoke's 64: no eval target here holds a quarter back,
+# Smaller than the distill smoke layer's 64: no eval target here holds a quarter back,
 # so every row goes to training and this recipe needs fewer of them to reach
 # a full batch.
 MAX_EXAMPLES: 48

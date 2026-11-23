@@ -178,7 +178,7 @@ The build tests can't pass until `run.sh` prints the artifact marker (see
 
 **Existing steps.** Every step sits under a category (`steps/data/dpk`, the
 `steps/eval/<family>` granite-evals steps, `steps/eval/eval-example`, `steps/aux/byoc`,
-the `steps/distill/*` steps). A single-level `steps/<name>/<env>/` step is still supported,
+the `steps/train/distill/*` steps). A single-level `steps/<name>/<env>/` step is still supported,
 but none ship today.
 
 ## Layout of a step/environment directory
@@ -260,10 +260,10 @@ and fixtures under `test-data/steps/`) — see the publish sections below.
 ### Nested steps
 
 A step directory need not sit exactly one level under `steps/`. You can group
-related steps in sub-directories — e.g. `steps/distill/foo/skypilot/` — and the
+related steps in sub-directories — e.g. `steps/train/distill/foo/skypilot/` — and the
 nesting is **preserved end-to-end**. The step's identity is its path relative to
 the enclosing `steps/` ancestor, minus the trailing `<env>` segment (the
-auto-derived `STEP_PATH`): `steps/distill/foo/skypilot` → `STEP_PATH = distill/foo`.
+auto-derived `STEP_PATH`): `steps/train/distill/foo/skypilot` → `STEP_PATH = train/distill/foo`.
 A flat step `steps/foo/skypilot` has `STEP_PATH = foo`, identical to `STEP_NAME`, so
 flat steps publish byte-for-byte as before.
 
@@ -287,6 +287,14 @@ then:
 The same layout groups steps by category: `steps/eval/eval-example/skypilot` is the
 `eval-example` step in the `eval` category (`STEP_PATH = eval/eval-example`, URI
 `space://steps/eval/eval-example`).
+
+Nesting can go a level deeper to group a collection inside a category:
+`steps/train/distill/logit-distill/skypilot` is the `logit-distill` step of the
+distillation collection in the `train` category (`STEP_PATH = train/distill/logit-distill`,
+URI `space://steps/train/distill/logit-distill`), and its Makefile includes
+`../../../../common.mk`. The leaf (`logit-distill`) is still the step's type identity, so
+choose a leaf that reads on its own: it is what cluster job names and the environment's
+per-step `config.steps.<leaf>` overrides see.
 
 The resolver binds that URI by **longest matching prefix**: the step name is the
 longest `steps/`-relative prefix of the URI whose directory holds a `step.yaml`, and

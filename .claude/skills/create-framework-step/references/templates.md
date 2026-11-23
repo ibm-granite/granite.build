@@ -13,7 +13,7 @@ an emptied `required:` too (`inputs: {allow_unknown: true}`), because a bare
 four words directly above `inputs:` saying why, e.g. `# This step reads no inputs;
 recipes may bind any to order targets.`. test_step_inputs_declared.py requires it, and
 rejects one that starts with FIXME. Working examples to copy from:
-`steps/distill/vllm-server/skypilot` (nested under a category, like a new step),
+`steps/train/distill/student-rollout-generator/skypilot` (nested under a category, like a new step),
 `steps/data/dpk/skypilot` (public image, python `src/`, five clusters) and
 `steps/eval/eval-example/skypilot` (custom image). Add the repo's Apache-2.0 header to every `.py`.
 
