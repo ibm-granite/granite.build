@@ -2,9 +2,9 @@
 
 """Unit tests for the generic hf-export step.
 
-Ported from the distillation collection's suite (steps/distill-hf-export/test/ in
-github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training, commit
-70c1550a), with these changes:
+Ported from the distillation collection's suite (steps/distill-hf-export/test/ in the
+upstream gb-steps-collection-post-training step collection, commit 70c1550a), with these
+changes:
   - the `normalise_tokenizer_json` tests (and `_ckpt`'s `tokenizer_json` argument) cover
     a behaviour added here: clearing the trainer's live truncation state out of the
     published tokenizer.json. See the header note in src/export_hf_model.py.

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-PORTED, not authored here. Upstream source of truth:
-  repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
+PORTED from the upstream gb-steps-collection-post-training step collection:
   path   steps/distill-corpus-prep/test/test_prep_corpus.py
   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 
