@@ -7,7 +7,10 @@ mamba-ssm is pinned because transformers 5.8.0's default mapping resolves it at
 hybrid (granitemoehybrid) model load dies on that import mid-load. Every revision
 up to and including v0.0.3 has it (measured 2026-11-20 on BlueVela, image 91cb624c,
 teacher-divergence build test; an earlier reading that v0.0.3 was clean was wrong,
-see c6f3a799). ``v0.0.4`` is the compatible revision, pinned by its commit SHA.
+see c6f3a799). ``v0.0.4`` was the compatible revision under torch 2.8 / cu128. The
+broken import is per build variant: the torch 2.11 / CUDA 13 image (#676) pins
+7e8bf9ea, the oldest v1-branch commit with a torch211-cxx11-cu130 build, whose
+build imports the transformers 5.x name.
 
 causal-conv1d is pinned for revision AGREEMENT: transformers resolves it at the
 v1 branch while the preflight's unpinned fallback is ``main``, and under
@@ -171,10 +174,11 @@ def test_pin_against_the_real_transformers():
 
 
 def test_pinned_revision_helper():
-    # Both pinned by commit SHA: a tag can move. mamba-ssm's is the v0.0.4 tag's commit.
+    # Both pinned by commit SHA: a branch or tag can move. mamba-ssm's is the oldest
+    # v1-branch commit with a torch211-cxx11-cu130-x86_64-linux build.
     assert (
         pinned_revision("kernels-community/mamba-ssm")
-        == "8ce5a4921b3a09bdae509d7143b88eab9e4f21f3"
+        == "7e8bf9ea951cf17e161bd82e44ecf2d95d8bc484"
     )
     assert (
         pinned_revision("kernels-community/causal-conv1d")

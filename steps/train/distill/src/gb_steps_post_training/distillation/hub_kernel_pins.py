@@ -12,13 +12,29 @@ a hybrid (granitemoehybrid) model dies with an ImportError after the model load 
 started. The teacher-divergence build test hit it directly; the e2e smokes did not,
 because they used dense students that never reach the mamba path.
 
-``v0.0.4`` (8ce5a492, "Fix for Falcon"; pinned by that commit's SHA, since a tag
-can move) restructured the build: the top level
+``v0.0.4`` (8ce5a492, "Fix for Falcon") restructured the build: the top level
 is now the actual module (verified in the GPU image -- ``_import_from_path``
 loads it, ``MambaLMHeadModel`` is available, no transformers.generation import),
-and ``mamba_ssm/`` inside the build is a compatibility shim. This is the newest
-revision whose cu128 build loads cleanly under transformers 5.8.0. It also ships
-``metadata.json`` at the variant root, which v0.0.3 lacked.
+and ``mamba_ssm/`` inside the build is a compatibility shim. It also ships
+``metadata.json`` at the variant root, which v0.0.3 lacked. It was the pin while
+the image ran torch 2.8 / cu128.
+
+THE BROKEN IMPORT IS PER VARIANT, NOT PER REVISION. Each ``build/<variant>/`` is
+built separately and an upload only refreshes the variants it rebuilds, so a
+revision can carry a fresh build next to a stale one. On the v1 branch tip
+(768416ab) ``torch28-cxx11-cu128-x86_64-linux/mamba_ssm/utils/generation.py`` still
+imports ``GreedySearchDecoderOnlyOutput``, while ``torch211-cxx11-cu130-x86_64-linux``
+imports ``GenerateDecoderOnlyOutput`` (checked 2026-11-23 against the Hub). Its
+``decode()`` still names the old classes at call time; nothing here calls it, and
+gold.py's generation-output aliases cover it anyway.
+
+The pin is now ``7e8bf9ea`` (v1 branch, 2026-03-26), for torch 2.11 / CUDA 13
+(#676). v0.0.4 has no torch 2.11 build at all (torch28-* and torch29-* only), and
+7e8bf9ea is the OLDEST v1-branch revision with a ``torch211-cxx11-cu130-x86_64-linux``
+build (the commit before it, efeef353, has torch211 for aarch64 only). Its
+torch211-cu130 build has the same Python layout as v0.0.4's (top-level module,
+``mamba_ssm/`` shim, variant-root ``metadata.json``) and the transformers 5.x import.
+Pinned by commit SHA, since a branch moves.
 
 causal-conv1d is pinned for a different reason: revision AGREEMENT, not a broken
 build (measured 2026-11-20, image 939685f2, student-sft build test). transformers
@@ -29,6 +45,8 @@ with ``OfflineModeIsEnabled`` on causal-conv1d/refs seconds after the preflight
 had downloaded the repo -- at the wrong revision. The pin points both sides at
 the immutable v1-branch tip (verified in the GPU image: ``causal_conv1d_fn``
 available, torch28-cu128 build), so the offline lookup is an exact snapshot hit.
+The same commit also carries a ``torch211-cxx11-cu130-x86_64-linux`` build, so the
+torch 2.11 / CUDA 13 image (#676) keeps this pin.
 
 This is a pin, not a fix. When kernels-community/mamba-ssm ships a build that
 imports cleanly under transformers 5.x on the default branch, or the image moves
@@ -45,8 +63,9 @@ from __future__ import annotations
 # version=1, the kernels package resolves the repo's v1 branch) -- which the
 # preflight cannot satisfy offline, so a hybrid model's kernels belong here.
 PINNED_KERNEL_REVISIONS: dict[str, str] = {
-    # The v0.0.4 tag's commit. A tag can be moved; a commit SHA cannot.
-    "kernels-community/mamba-ssm": "8ce5a4921b3a09bdae509d7143b88eab9e4f21f3",
+    # The oldest v1-branch commit with a torch211-cxx11-cu130-x86_64-linux build
+    # (see the docstring). A branch moves; a commit SHA cannot.
+    "kernels-community/mamba-ssm": "7e8bf9ea951cf17e161bd82e44ecf2d95d8bc484",
     "kernels-community/causal-conv1d": "6e9a58272220a363dc50e59cba737abcedd7b59f",
 }
 
