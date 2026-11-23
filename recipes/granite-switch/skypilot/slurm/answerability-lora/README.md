@@ -76,6 +76,17 @@ key secret `SSH_KEY_SECRET` names in that space (see
 gbserver standalone --space-dir ~/.granite.build/local-space
 ```
 
+`gbserver standalone` sets `GB_ENVIRONMENT=STANDALONE` for itself only. Export
+it in the shell you run `gb` from too (as in
+[Getting started](../../../../../docs/getting-started.md#submit-a-build)):
+
+```bash
+export GB_ENVIRONMENT=STANDALONE
+```
+
+Without it, `gb` does not talk to the server as a standalone client, and the
+server can reject the build with a 401 that suggests `gb auth login`.
+
 **4. An `HF_TOKEN` secret**, if the dataset repo is private (the one this
 recipe was built for is). The pull needs a read-only token from an account
 with read access to it. The download runs on a cluster node, which can't see
