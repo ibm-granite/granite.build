@@ -11,6 +11,7 @@ benchmark runtime those images are built from, and the image recipes themselves.
 | `<family>/Dockerfile.gpu`, `<family>/Dockerfile.cpu` | The family's image recipe(s). Every family has a GPU image; the families whose benchmarks split into GPU generate + CPU score (`--phase`) also have a CPU image. Both are tagged `<registry>/steps/eval/<family>/images/{gpu,cpu}:<version>`, the form the recipes pin. Families needing extra system setup carry an `extras.sh` (and `nemoskills` a pinned `comet-requirements.txt` for its COMET judge). |
 | `src/core/` | The shared granite-evals runtime: harness adapters, vLLM serving, scoring, results. |
 | `<family>/src/`, `<family>/tests/` | The family's benchmark modules and their unit tests. `src/` is overlaid onto the core's `granite_evals/benchmarks/` package dir at image-build time (what each family contains: [VENDORED.md](VENDORED.md)). |
+| `shared/output_dir.j2` | The run-script block every family template shares (HF cache and warm-cache env, the options as words, the composed output dir), pulled into each `step-template.yaml` by `gb-include` (see [steps/README.md](../README.md#sharing-jinja-between-templates-gb-include)). |
 | `scripts/prefetch_datasets.py` | Pins and pre-fetches the HF datasets into a cache the (offline) jobs read. |
 | `eval-example/` | The framework's generic eval exemplar step — pre-existing, not one of the granite-evals families. |
 
@@ -45,7 +46,8 @@ publishing refuses a tag that already exists), and re-pinning its tag in the rec
 family is scored on and own the image pins.
 
 `OUTPUT_ROOT` / `RUN_NAME` shape every artifact path a recipe writes:
-`$OUTPUT_ROOT/$RUN_NAME/<benchmark>`. An empty `RUN_NAME` derives it from
+`$OUTPUT_ROOT/$RUN_NAME/<benchmark>` (a generic bridge suffixes what it selected,
+see [The generic bridges](#the-generic-bridges)). An empty `RUN_NAME` derives it from
 `MODEL_PATH`'s basename — re-running the same model then resolves to the same
 artifact URIs, and a reused SUCCESS target's downstream score target never
 dispatches; make it unique per run (append a date or the build id) to force a
@@ -61,33 +63,60 @@ contract test — every sibling has the identical copy, which is what lets one t
 file assert all eleven steps follow the same shape). The rendered, committed form
 that `space://steps/eval/<family>` actually resolves to lives under
 `configurations/assets/environments/skypilot/steps/eval/<family>/`, produced by
-`make publish-step` from the source template — never hand-edited.
+`make publish-step` from the source template — never hand-edited. The run-script
+block the eleven templates share lives once, in `shared/output_dir.j2`; after
+editing it, re-run `make publish-step` in all eleven step dirs.
 
-## The generic bridge
+## The generic bridges
 
 Every family's benchmarks are curated: one registered id per benchmark, a fixed
 protocol the module freezes (sampling, stop strings, aggregation). That is what
 makes a score comparable across models — and what costs a module per benchmark,
 which is why a family offers a fraction of what its harness can run.
 
-The generic bridge is the escape hatch: one more registered id per family
-(`lm-eval` in the lmeval family) that runs *anything* the family's pinned
-harness knows, with the recipe's `options` carrying the harness's own selection
-surface. For lm-eval that is `tasks=` (any of the 14k+ task and group names the
-pinned harness ships), plus `mode=`, `num_fewshot=`, `gen_kwargs=` and `metric=`
-— the bridge passes them to the harness instead of freezing them. A new task
-becomes a recipe's config, not a module; the curated ids stay exactly as they
-are (a recipe that wants a comparable protocol pins the curated benchmark).
+A generic bridge is the escape hatch: one more registered id in a family that
+runs *anything* of a kind the family's pinned harness knows, with the recipe's
+`options` (or `dataset`) carrying the harness's own selection surface. A new
+benchmark of that kind becomes a recipe's config, not a module; the curated ids
+stay exactly as they are (a recipe that wants a comparable protocol pins the
+curated benchmark). Six families have one:
 
-The shape, so other families can grow the same: the bridge reuses the family's
-own machinery (serving, adapters, resume caches, artifacts) and adds only the
-selection surface; the headline is the macro mean over the resolved tasks of
-each task's primary metric; what a curated benchmark freezes is the task's own
-default here, overridable per recipe. The registry contracts hold unchanged:
-the bridge's pin is the harness repo at the release the family's pyproject extra
-pins, and the bridge is listed in the extended suite. See
-`steps/eval/lmeval/src/generic.py` and the lmeval `USAGE.md` for the worked
-example.
+| Family | Bridge id | Selection (required) | What it reaches | Example recipe |
+|---|---|---|---|---|
+| `lmeval` | `lm-eval` | `tasks=` (comma-separated task/group names); also `mode=`, `num_fewshot=`, `gen_kwargs=`, `metric=` | any task or group in the pinned lm-evaluation-harness (14k+ names); the task yamls pin no dataset revisions | `lmeval/hellaswag`, `lmeval/gsm8k`, `lmeval/gpqa-diamond` |
+| `nemoskills` | `nemoskills` | `benchmark=` (a NeMo-Skills dataset name); also `metric=`, and `dataset=` as a local path in ns's row format | any benchmark the pinned NeMo-Skills checkout ships, with ns's own prepare, prompts and metrics; without `dataset=` ns's prepare fetches unpinned | `nemoskills/ns-math-500` |
+| `tau` | `tau3` | `domains=` (comma-separated) | any combination of the pinned τ²-bench domains, headline the mean of pass^1 over them | `tau/tau3-airline-retail` |
+| `mcpmark` | `mcpmark` | `service=`; also `task_suite=` | any service the pinned MCPMark checkout ships that the image can run (today the curated three: filesystem, postgres, playwright) | `mcpmark/mcpmark-filesystem-easy`, `mcpmark/mcpmark-postgres-easy` |
+| `swebench` | `swebench` | `dataset=` (+ `dataset_revision=`); `instances=` subsets | any SWE-bench-format set carrying each instance's image, eval script and log parser (the Verified/Multilingual shape); not SWE-bench Pro | `swebench/swebench-multilingual-druid` |
+| `tbench` | `terminal-bench` | `dataset=` (+ `dataset_revision=`); `tasks=` / `exclude=` subset | any Terminal-Bench-format dataset, registry or registry-less layout | `tbench/terminal-bench-2.0` |
+
+The shape, so other families can grow the same: the bridge is a thin subclass
+of the family's parameterized base, reusing its machinery (serving, adapters,
+phases, resume, sandboxes, judges) and adding only the selection surface; what a
+curated benchmark freezes is the harness's own default here, overridable per
+recipe. The registry contracts hold unchanged: each bridge's class-level pin is
+the harness itself (the repo at the pyproject extra's release, the ns checkout,
+or the harness wheel), the recipe pins the data where the harness does not, and
+every bridge is listed in the extended suite. The worked example is
+`lmeval/src/generic.py` and the lmeval `USAGE.md`; each family's `USAGE.md`
+documents its own bridge row.
+
+The other five families have no bridge id; their selection surface already
+exists on the curated ids: `bfcl`'s `categories=` (`bfcl/bfcl-multiturn`,
+`bfcl-agentic`, `bfcl-live`), and the `dataset` / `dataset_revision` swap on
+`bird`, `ifbench` and `judged/gdpval` (the recipes' `DATASET` / `DATASET_REVISION`
+parameters).
+
+**Run dirs.** A bridge runs many benchmarks through one id, so the composed
+output dir is suffixed with what the recipe selected: `tasks=`, `domains=`,
+`service=`, `categories=` or `benchmark=` give
+`$OUTPUT_ROOT/$RUN_NAME/<id>-<value>` (`lm-eval-hellaswag`,
+`tau3-airline-retail`), and the two dataset-pinned bridges take the dataset's
+basename (`swebench-SWE-bench_Multilingual`, `terminal-bench-2.0`). The value
+becomes one path segment — commas turn into `-`, anything outside
+`[A-Za-z0-9._-]` into `_` — and the options are read without glob expansion. A
+benchmark run without a selection option (every curated recipe) keeps
+`$OUTPUT_ROOT/$RUN_NAME/<id>`.
 
 ## The warm HF cache
 
