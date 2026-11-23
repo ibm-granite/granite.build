@@ -21,18 +21,13 @@ step's `run:` block rather than in `render_sft_config.py` — which stays verbat
 solved the same problem in its own renderer because that renderer is ours to change; this one is
 not.
 
-## Three fixes the ported test suite needed
-
-All three are path resolution, none is behaviour:
+## What the ported test suite changed
 
 - upstream's `sys.path` inserts are removed; `conftest.py` resolves the step's own `src/` and the
   in-repo shared package at `steps/train/distill/src`.
-- the **parity tests** import `distill-gold-train`'s renderer, which granite.build does not
-  contain. They are pointed at the upstream renderer in a `gb-steps-distillation` checkout
-  (`GB_DISTILL_CODE_DIR`) rather than dropped, and skip without one — see [Tests](#tests) for
-  what they then assert.
-- three tests read `sft.py`'s **source text** (a property that cannot be imported, since it pulls
-  torch at module scope). Repointed at the same checkout for the same reason.
+- the **parity tests** compare this renderer with the treatment in this repository:
+  `logit-distill`'s `render_gold_config.py` and the vendored `sft.py`. See [Tests](#tests) for
+  what they assert.
 
 ## Source delivery
 
@@ -42,21 +37,16 @@ The package and this step's `src/` are baked into the shared GPU image under `$D
 ## Tests
 
 ```bash
-make test                                                   # contract tests (+ the in-repo package)
-GB_DISTILL_CODE_DIR=/path/to/checkout make test              # + the ported upstream suite (test_render_sft_config.py)
+make test
 ```
 
-`test_render_sft_config.py` is the exception among the distill steps: besides the in-repo
-package it needs `distill-gold-train/src` from an upstream `gb-steps-distillation` checkout
-(`GB_DISTILL_CODE_DIR`, defaulting to the `/proj` copy), is marked `ibm`, and skips when that
-directory is absent.
-
-The ported suite includes upstream's parity tests, which compare this renderer against
-`distill-gold-train`'s. That renderer is not in granite.build — `steps/train/distill/logit-distill` ships a
-different one, because it drives a different trainer — so they are pointed at the **upstream**
-renderer in that checkout. What they then assert is still worth knowing: upstream's
-control and its treatment share their guards, their optimization defaults and their tracking
-surface.
+`test_render_sft_config.py` includes the ported parity tests, which read `logit-distill`'s
+renderer and the vendored `sft.py` from this repository. The two steps are not a matched pair
+today: they differ in several optimization defaults, in their resume model and in tracking (see
+[USAGE.md](USAGE.md#using-this-step-as-a-control)). The parity tests check what they share (the
+`ConfigError` type and the corpus guard) and pin the documented differences, so a new
+difference fails the suite until the docs say so. Three tests read `sft.py`'s **source text**,
+because it cannot be imported here (it pulls torch at module scope).
 
 ## Publishing
 

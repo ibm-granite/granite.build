@@ -7,8 +7,7 @@ With `precomputed_logits_dir` set, the same step becomes forward-KL distillation
 frozen teacher — see [Two uses](#two-uses-and-the-second-one-is-not-a-control).
 
 > **Developing or testing this step?** See `steps/train/distill/student-sft/skypilot/README.md` in the
-> granite.build repository for how the step is generated, tested, and published — including the
-> ported upstream tests that need a `gb-steps-distillation` checkout (`GB_DISTILL_CODE_DIR`).
+> granite.build repository for how the step is generated, tested, and published.
 
 ## Referencing the step
 
@@ -191,10 +190,22 @@ In epic 61's pipeline this step's role is the **SFT warm-up stage** rather than 
 control: its checkpoint becomes the GOLD student. That is a recipe-level choice; the step is the
 same either way.
 
-The optimization keys (`per_device_train_batch_size`, `gradient_accumulation_steps`,
-`learning_rate`, `seed`) have the same names and defaults as the `space://steps/train/distill/logit-distill`
-step, deliberately: a control that trains at a different batch size or learning rate than the
-treatment is not a control.
+### Using this step as a control
+
+A control that trains at a different batch size, learning rate or sequence length than the
+treatment is not a control. This step's defaults are **not** those of
+`space://steps/train/distill/logit-distill`:
+
+| Key | logit-distill (`config.gold_config`) | this step (`config.sft_config`) |
+|---|---|---|
+| `learning_rate` | `1.0e-05` | `1e-6` |
+| `gradient_accumulation_steps` | `6` | `8` |
+| `max_length` | `16384` | `4096` |
+| `save_steps` | `500` | `100` |
+
+`per_device_train_batch_size` (`1`) and `num_train_epochs` (`1`) agree. To run this step as
+the control for a logit-distill run, set the four keys above to the values that run uses. The
+response template differs too, by its trailing newline; see the next section.
 
 ### The response template's trailing newline
 

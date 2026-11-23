@@ -1,26 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-PORTED, not authored here. Upstream source of truth:
-  repo   github.ibm.com/Herbert-Woisetschlaeger/gb-steps-collection-post-training
+PORTED from the upstream gb-steps-collection-post-training step collection:
   path   steps/distill-sft/test/test_render_sft_config.py
   commit 70c1550a171aa8e09a9ad9047a5bf763c39e8579
 
-Divergences, all about path resolution rather than behaviour:
+Divergences from upstream:
   - upstream's sys.path inserts are removed. conftest.py resolves the step's own src/ and
     the shared distillation package (from the in-repo steps/train/distill/src).
-  - the PARITY TESTS import distill-gold-train's renderer, which granite.build does not
-    contain: this repo's steps/train/distill/logit-distill ships a DIFFERENT renderer (268 lines against
-    upstream's 575), because it drives kd-sandbox's trainer rather than the vendored
-    gb_steps_post_training one. So those tests would be asserting a parity that does not
-    exist here.
-    They are kept rather than dropped, and pointed at the UPSTREAM renderer in the
-    delivered checkout. What they then assert is true and worth knowing: that upstream's
-    control and its treatment share their guards, their optimization defaults and their
-    tracking surface. That is a property of the code this step actually runs, which is the
-    point of the whole ported test tier.
-
-Keep this a near-verbatim copy so re-syncing upstream stays a three-way merge.
+  - the PARITY TESTS read the treatment from this repo: logit-distill's renderer
+    (steps/train/distill/logit-distill/skypilot/src/render_gold_config.py) and the vendored
+    sft.py. The two in-repo arms are NOT a matched pair the way upstream's were: they differ
+    in several optimization defaults, in their resume model and in tracking. The parity
+    tests therefore pin what IS shared (the error type, the corpus guard) and the documented
+    divergences (see USAGE.md, "Using this step as a control"), so a new divergence, or a
+    documented one that quietly goes away, fails here instead of going unnoticed.
 """
 
 """Tests for distill-sft's config validation and rendering.
@@ -35,11 +29,10 @@ loaded on every rank, which on this cluster means after the allocation is held.
 
 THE SECOND KIND is about being a CONTROL. Every number the distillation arms report is a
 comparison against this step, so a way for it to differ silently from them is a way the
-comparison stops meaning anything. Two properties are asserted directly against
-distill-gold-train's renderer rather than restated: that the shared guards are literally the
-same objects, and that the optimization defaults agree key for key -- which the step README
-has claimed since it was a scaffold and nothing checked. `nodes` is the single intended
-divergence and it is named as such, so the test fails if a SECOND one appears.
+comparison stops meaning anything. These are asserted directly against logit-distill's
+renderer rather than restated: that the shared guards are literally the same objects, and
+that the optimization defaults differ from the treatment's in exactly the documented keys,
+so the test fails if another one appears.
 
 Nothing here needs a GPU, CUDA, trl, or transformers.
 """
@@ -53,41 +46,31 @@ import pytest
 import yaml
 
 _HERE = Path(__file__).resolve()
-# The repo's shared distillation package: render_sft_config imports render_common from it, and
-# the parity tests below import distill-gold-train's renderer, which does too. The Dockerfile
-# vendors the same package onto PYTHONPATH, so this mirrors the image layout.
-# distill-gold-train's renderer, for the parity tests. A test that asserts the control matches
-# the treatment has to read the treatment, not a transcription of it.
+# steps/train/distill, from steps/train/distill/student-sft/skypilot/test/<this file>.
+_DISTILL = _HERE.parents[3]
+# The treatment, for the parity tests: logit-distill's renderer and the vendored trainer
+# package. A test that compares the control with the treatment has to read the treatment, not
+# a transcription of it.
+_GOLD_SRC = _DISTILL / "logit-distill" / "skypilot" / "src"
+_SFT_PY = _DISTILL / "src" / "gb_steps_post_training" / "distillation" / "sft.py"
 
-# See the module docstring: distill-gold-train's renderer lives only in the delivered
-# checkout, so resolve it there rather than expecting it beside this file. conftest.py has
-# already validated that GB_DISTILL_CODE_DIR points at a real checkout, or skipped this
-# module entirely.
-import os as _os
-import sys as _sys
 
-_CHECKOUT = Path(
-    _os.environ.get(
-        "GB_DISTILL_CODE_DIR",
-        "/proj/granite-build/g4os/gb-steps-collection-post-training",
+def _load_gold_renderer():
+    """Load logit-distill's renderer from its file, without putting its src/ on sys.path:
+    that directory has a check_weight_residency.py of its own, which would shadow this
+    step's copy for every other test in the session."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "render_gold_config", _GOLD_SRC / "render_gold_config.py"
     )
-)
-_GOLD_SRC = _CHECKOUT / "steps" / "distill-gold-train" / "src"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-# The parity tests need the UPSTREAM gold renderer, which is not vendored here and is only
-# reachable from an IBM-internal /proj checkout (or GB_DISTILL_CODE_DIR). Tagged `ibm`, and
-# skipped when the checkout is absent.
-import pytest as _pytest  # noqa: E402
 
-pytestmark = _pytest.mark.ibm
-if not _GOLD_SRC.is_dir():
-    _pytest.skip(
-        f"upstream gold renderer not found at {_GOLD_SRC}", allow_module_level=True
-    )
-if str(_GOLD_SRC) not in _sys.path:
-    _sys.path.insert(0, str(_GOLD_SRC))
+render_gold_config = _load_gold_renderer()
 
-import render_gold_config  # noqa: E402
 from gb_steps_post_training.distillation import render_common  # noqa: E402
 from render_sft_config import (  # noqa: E402
     ATTN_BY_ARCH,
@@ -729,17 +712,39 @@ SHARED_GUARDS = (
 
 _RENDERERS = {
     "render_sft_config": _HERE.parent.parent / "src" / "render_sft_config.py",
-    # Repointed: upstream's _HERE.parents[2] assumed this file sits inside the steps
-    # collection. From granite.build the treatment's renderer is in the delivered checkout.
     "render_gold_config": _GOLD_SRC / "render_gold_config.py",
 }
 
+# Which shared guards each renderer calls. logit-distill calls only the corpus guard:
+#   - validate_resume: logit-distill has no resume=auto|never|require. Each run starts in a
+#     fresh workdir and resumes only from an explicit resume_from_checkpoint_dir.
+#   - validate_topology: logit-distill takes no gpus_per_node, and its node rules depend on
+#     the on-policy layout (total_nodes against vllm_num_servers), checked in its own
+#     build_config.
+_CALLED_GUARDS = {
+    "render_sft_config": SHARED_GUARDS,
+    "render_gold_config": ("validate_student_against_corpus",),
+}
 
-def test_both_renderers_raise_the_same_error_type():
-    """`except ConfigError` in one launcher must catch what the other raises: the two are
-    aliases of render_common.ConfigError, not two same-named classes."""
+
+def _defined_names(src):
+    return {
+        n.name
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
+def test_both_renderers_use_the_one_config_error():
+    """`except ConfigError` must catch what the shared guards raise: this step aliases
+    render_common.ConfigError, and logit-distill's renderer catches that same class from the
+    corpus guard. Neither may define a same-named class of its own."""
     assert ConfigError is render_common.ConfigError
-    assert render_gold_config.ConfigError is render_common.ConfigError
+    for module, path in _RENDERERS.items():
+        src = path.read_text()
+        assert "ConfigError" not in _defined_names(src), f"{module} defines ConfigError"
+    gold_src = _RENDERERS["render_gold_config"].read_text()
+    assert "render_common.ConfigError" in gold_src
 
 
 @pytest.mark.parametrize("name", SHARED_GUARDS)
@@ -749,24 +754,33 @@ def test_the_shared_guards_exist_in_one_place(name):
 
 @pytest.mark.parametrize("module,path", sorted(_RENDERERS.items()))
 @pytest.mark.parametrize("name", SHARED_GUARDS)
-def test_each_renderer_calls_the_shared_guard_and_defines_no_copy(name, module, path):
+def test_no_renderer_defines_a_copy_of_a_shared_guard(name, module, path):
     """Read as SOURCE, not as attributes: the failure this catches is someone answering a
     divergence by pasting a local copy of the rule into one of the two files, which no
     identity check on render_common's own attributes can see.
 
     A local `def validate_resume` would shadow the import, both steps would pass their own
     tests, and the two arms would differ on exactly the rule this asserts they share."""
-    src = path.read_text()
-    tree = ast.parse(src)
-    defined = {
-        n.name
-        for n in ast.walk(tree)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert (
-        name not in defined
+    assert name not in _defined_names(
+        path.read_text()
     ), f"{module} defines its own {name}; it must call render_common's"
+
+
+@pytest.mark.parametrize(
+    "module,name",
+    [(m, g) for m, guards in sorted(_CALLED_GUARDS.items()) for g in guards],
+)
+def test_each_renderer_calls_its_shared_guards(module, name):
+    src = _RENDERERS[module].read_text()
     assert f"render_common.{name}(" in src, f"{module} never calls render_common.{name}"
+
+
+def test_logit_distill_still_skips_the_guards_it_has_no_input_for():
+    """Pins the two guards _CALLED_GUARDS says logit-distill does not call. If it starts
+    calling one, move it into its entry above, so the list keeps describing the code."""
+    src = _RENDERERS["render_gold_config"].read_text()
+    for name in set(SHARED_GUARDS) - set(_CALLED_GUARDS["render_gold_config"]):
+        assert f"render_common.{name}(" not in src
 
 
 # ---------------------------------------------------------------------------------------------
@@ -786,19 +800,19 @@ def test_each_renderer_calls_the_shared_guard_and_defines_no_copy(name, module, 
 # still present (the fallback fills it), the collator still runs, the shapes still match. It
 # fails one row deep into every KD run, and only when a template's generation block and its
 # response template happen to disagree -- which is a property of the template, not of us.
-# Repointed for the same reason as render_gold_config above: sft.py is the trainer this
-# step runs, and it lives in the delivered checkout rather than in this repo.
-_SFT_PY = _CHECKOUT / "src" / "gb_steps_post_training" / "distillation" / "sft.py"
+# _SFT_PY (defined at the top) is the vendored trainer this step runs.
 
 
 def test_kd_requests_the_assistant_mask_regardless_of_assistant_only_loss():
-    src = _SFT_PY.read_text()
+    # Compared with all whitespace removed: black wraps the vendored call sites over three
+    # lines, and an exact-text match would then count none of them.
+    src = "".join(_SFT_PY.read_text().split())
     assert "return_assistant_tokens_mask=assistant_only_loss," not in src, (
         "a call site gates the mask on assistant_only_loss again; in KD mode that switches "
         "the mask mechanism to the response-template scan and desynchronises it from the "
         "producer by one token per assistant turn"
     )
-    n = src.count("return_assistant_tokens_mask=(assistant_only_loss or kd_mode)")
+    n = src.count("return_assistant_tokens_mask=(assistant_only_lossorkd_mode)")
     assert n == 2, (
         f"expected both branches of _tokenize_one_row (prompt/completion and language "
         f"modeling) to request the mask in KD mode, found {n}"
@@ -827,35 +841,73 @@ def _parser_defaults(parser):
     return {a.dest: a.default for a in parser._actions if a.dest != "help"}
 
 
-# The one key the two steps are MEANT to differ on. There is no student rollout in plain SFT,
-# so there is no vLLM server, no split-role allocation and no reason to hold a second node.
-INTENDED_DIVERGENCES = {"nodes": (2, 1)}
+_GOLD_REQUIRED = [
+    "--output",
+    "/o",
+    "--total-nodes",
+    "1",
+    "--model-name-or-path",
+    "/m",
+    "--teacher-model-name-or-path",
+    "/t",
+    "--dataset-name",
+    "/d",
+]
 
 
-def test_optimization_defaults_match_distill_gold_train():
-    """The README has said "the optimization defaults, which are distill-gold-train's, key
-    for key" since this step was a scaffold. A control that trains at a different learning
-    rate, batch size, sequence length or seed than the treatment is not a control, and
-    nothing about either run would fail -- the two just stop being comparable."""
-    gold = _parser_defaults(render_gold_config.build_parser())
-    sft = _parser_defaults(build_parser())
-    differ = {k: (gold[k], sft[k]) for k in set(gold) & set(sft) if gold[k] != sft[k]}
-    assert differ == INTENDED_DIVERGENCES
+def _num(value):
+    """Compare numbers as numbers: this step's parser keeps learning_rate as the string
+    "1e-6", logit-distill's parses it to a float."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
 
 
-def test_the_intended_divergence_is_still_real():
-    """Guards the test above from going vacuous: if `nodes` is ever made equal, the entry
-    above stops describing anything and would start hiding the next divergence."""
-    gold = _parser_defaults(render_gold_config.build_parser())
-    sft = _parser_defaults(build_parser())
-    for key, (want_gold, want_sft) in INTENDED_DIVERGENCES.items():
-        assert (gold[key], sft[key]) == (want_gold, want_sft)
+def _shared_defaults():
+    """(logit-distill, student-sft) parsed defaults for the keys both renderers take."""
+    gold = vars(render_gold_config._parse_args(_GOLD_REQUIRED))
+    sft = vars(build_parser().parse_args(BASE))
+    return {k: (_num(gold[k]), _num(sft[k])) for k in sorted(set(gold) & set(sft))}
 
 
-def test_the_tracking_surface_is_the_same_five_keys():
-    """Same keys, same defaults, same tracking.py. A control whose runs land in a different
-    project, or under a differently shaped name, is a control nobody can line up against the
-    arms it exists to anchor."""
+# The defaults the two steps differ on, as (logit-distill, student-sft). Documented in
+# USAGE.md ("Using this step as a control"): a recipe that runs this step as a control sets
+# these to logit-distill's values. The response template differs by its trailing newline,
+# which USAGE.md explains in its own section.
+DOCUMENTED_DIVERGENCES = {
+    "gradient_accumulation_steps": (6.0, 8.0),
+    "learning_rate": (1e-05, 1e-06),
+    "max_length": (16384.0, 4096.0),
+    "response_template": ("<|im_start|>assistant", "<|im_start|>assistant\n"),
+    "save_steps": (500.0, 100.0),
+}
+
+
+def test_optimization_defaults_differ_only_where_documented():
+    """A control that trains at a different learning rate, batch size or sequence length
+    than the treatment is not a control, and nothing about either run would fail. The two
+    steps' defaults are not matched today, so this pins the documented differences: a new
+    one, or a changed value, fails here until USAGE.md and the table above say so."""
+    differ = {k: v for k, v in _shared_defaults().items() if v[0] != v[1]}
+    assert differ == DOCUMENTED_DIVERGENCES
+
+
+def test_the_keys_both_steps_take_include_the_batch_shape():
+    """Guards the test above from going vacuous: if a renaming made the two parsers stop
+    sharing these keys, the comparison would silently cover less."""
+    assert {
+        "gradient_accumulation_steps",
+        "learning_rate",
+        "max_length",
+        "num_train_epochs",
+        "per_device_train_batch_size",
+    } <= set(_shared_defaults())
+
+
+def test_this_steps_tracking_keys_default_to_off():
+    """logit-distill renders no tracking keys, so there is no surface to compare. This step's
+    five default to empty, so a run tracks nothing unless the recipe says where."""
     keys = {
         "clearml_project",
         "clearml_run_name",
@@ -863,12 +915,8 @@ def test_the_tracking_surface_is_the_same_five_keys():
         "wandb_project",
         "wandb_run_name",
     }
-    gold = _parser_defaults(render_gold_config.build_parser())
     sft = _parser_defaults(build_parser())
-    assert keys <= set(gold) and keys <= set(sft)
-    assert (
-        {k: sft[k] for k in keys} == {k: gold[k] for k in keys} == {k: "" for k in keys}
-    )
+    assert {k: sft[k] for k in keys} == {k: "" for k in keys}
 
 
 def test_no_teacher_flag_exists_on_this_step():
