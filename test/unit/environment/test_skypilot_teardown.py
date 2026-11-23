@@ -192,6 +192,57 @@ class TestSkypilotTeardown:
             f"{res_kwargs!r}"
         )
 
+    @staticmethod
+    async def _cleanup_vm_resource_kwargs(extra_config: dict) -> dict:
+        """sky.Resources kwargs of the td- cleanup VM for a k8s env with ``extra_config``."""
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={
+                "default_cloud": "k8s",
+                "shared_workdir": "/shared",
+                **extra_config,
+            },
+        )
+        env = Skypilot(event_q=asyncio.Queue(), environment_config=config)
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        await env.setup_skypilot(
+            setup_id,
+            runmetadata=EntityRunMetadata(
+                build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+                target_name="train",
+                targetrun_id="run-1",
+            ),
+        )
+        mock_sky = MagicMock()
+        mock_sky.Resources = MagicMock(return_value=MagicMock())
+        mock_sky.Task = MagicMock(return_value=MagicMock())
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=None)
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+        ):
+            await env.teardown_skypilot(setup_id)
+        return mock_sky.Resources.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_cleanup_vm_uses_the_env_cleanup_image(self):
+        # On clusters whose admission policy (e.g. OpenShift RHACS) rejects
+        # SkyPilot's default image, the env names an image the td- VM can use;
+        # otherwise the cleanup is refused and the per-run workdir is orphaned.
+        image = "docker:public.ecr.aws/docker/library/python:3.12-slim"
+        res_kwargs = await self._cleanup_vm_resource_kwargs({"cleanup_image_id": image})
+        assert res_kwargs.get("image_id") == image
+        # The image sits alongside, not instead of, the small-instance floor.
+        assert res_kwargs.get("cpus") == "1+"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("extra", [{}, {"cleanup_image_id": ""}])
+    async def test_cleanup_vm_keeps_skypilots_default_image_when_unset(self, extra):
+        res_kwargs = await self._cleanup_vm_resource_kwargs(extra)
+        assert "image_id" not in res_kwargs
+
     @pytest.mark.parametrize("cloud", ["slurm", "lsf"])
     @pytest.mark.asyncio
     async def test_cleanup_vm_cpus_floor_is_a_bare_int_on_hpc_clouds(self, cloud):
@@ -277,9 +328,12 @@ async def _run_workdir_teardown(default_cloud, stream_side_effect=None):
 
 
 class TestWorkdirTeardownReleasesHpcCluster:
-    """teardown_skypilot's td- cluster relies on autodown, which SLURM/LSF do
-    not support, so on those clouds it must be downed explicitly or it keeps
-    its allocation (observed on BlueVela: td- jobs still RUNNING 40 min on)."""
+    """teardown_skypilot's td- cluster is launched with autodown. SLURM/LSF do
+    not support it, so there it must be downed explicitly or it keeps its
+    allocation (observed on BlueVela: td- jobs still RUNNING 40 min on).
+    Kubernetes autodown runs in the pod as its service account and is refused
+    where that account may only view pods, so it is downed there too, but only
+    once its reap job has finished. VM clouds rely on autodown."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cloud", ["slurm", "lsf"])
@@ -295,9 +349,105 @@ class TestWorkdirTeardownReleasesHpcCluster:
         mock_sky.down.assert_called_once_with(td_name, purge=True)
 
     @pytest.mark.asyncio
-    async def test_autodown_cloud_is_left_to_autodown(self):
-        mock_sky, _ = await _run_workdir_teardown("k8s")
+    @pytest.mark.parametrize("cloud", ["k8s", "kubernetes"])
+    async def test_kubernetes_td_cluster_is_downed(self, cloud):
+        # Kubernetes autodown runs inside the pod with its own service account,
+        # which on e.g. an OpenShift namespace may only have `view`: the
+        # self-delete is refused and the td- pod is never removed. gbserver
+        # downs it with the launching user's credentials instead.
+        mock_sky, td_name = await _run_workdir_teardown(cloud)
+        mock_sky.down.assert_called_once_with(td_name, purge=True)
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_td_cluster_is_downed_even_if_rm_fails(self):
+        mock_sky, td_name = await _run_workdir_teardown(
+            "k8s", stream_side_effect=RuntimeError("admission refused")
+        )
+        mock_sky.down.assert_called_once_with(td_name, purge=True)
+
+    @pytest.mark.asyncio
+    async def test_vm_cloud_is_left_to_autodown(self):
+        mock_sky, _ = await _run_workdir_teardown("aws")
         mock_sky.down.assert_not_called()
+
+    @staticmethod
+    async def _submitted_reap_teardown(default_cloud, get_return=None, get_raises=None):
+        """teardown_skypilot where the reap job IS submitted (job id 7) and its
+        status poll returns ``get_return`` (or raises ``get_raises``), with the
+        cleanup wait shortened to give up at once.
+
+        :returns: (mock_sky, td_cluster_name).
+        """
+        config = EnvironmentConfig(
+            name="test-skypilot",
+            type="Skypilot",
+            config={"default_cloud": default_cloud, "shared_workdir": "/shared"},
+        )
+        env = Skypilot(event_q=asyncio.Queue(), environment_config=config)
+        setup_id = "3168aa02-1234-5678-9abc-def012345678"
+        await env.setup_skypilot(
+            setup_id,
+            runmetadata=EntityRunMetadata(
+                build_id="9f3ac1d2-aaaa-bbbb-cccc-ddddeeeeffff",
+                target_name="train",
+                targetrun_id="run-1",
+            ),
+        )
+        mock_sky = MagicMock()
+        mock_sky.JobStatus = _FakeJobStatus
+        mock_sky.launch = MagicMock(return_value="req-td")
+        mock_sky.stream_and_get = MagicMock(return_value=(7, MagicMock()))
+        mock_sky.job_status = MagicMock(return_value="req-status")
+        mock_sky.down = MagicMock(return_value="req-down")
+        if get_raises is not None:
+            mock_sky.get = MagicMock(side_effect=get_raises)
+        else:
+            mock_sky.get = MagicMock(return_value=get_return)
+        with (
+            patch("gbserver.environment.skypilot.sky", mock_sky),
+            patch("gbserver.environment.skypilot.HAS_SKYPILOT", True),
+            patch("gbserver.environment.skypilot._CLEANUP_STATUS_TIMEOUT_S", 0.0),
+            patch("gbserver.environment.skypilot._CLEANUP_STATUS_POLL_INTERVAL_S", 0.0),
+        ):
+            await env.teardown_skypilot(setup_id)
+        return mock_sky, mock_sky.launch.call_args.kwargs["cluster_name"]
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_still_running_reap_is_not_cut_short(self, caplog):
+        # The wait gave up while the rm -rf was still running: downing the
+        # cluster now would leave the per-run tree only partly removed, so it
+        # is left to autodown and named in a warning instead.
+        mock_sky, td_name = await self._submitted_reap_teardown(
+            "k8s", get_return={7: _FakeJobStatus.RUNNING}
+        )
+        mock_sky.down.assert_not_called()
+        assert any(
+            "not confirmed finished" in r.getMessage() and td_name in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_unconfirmable_reap_is_not_cut_short(self):
+        # A status error means the reap's state is unknown: same as still running.
+        mock_sky, _ = await self._submitted_reap_teardown(
+            "k8s", get_raises=RuntimeError("status unavailable")
+        )
+        mock_sky.down.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_finished_reap_is_downed(self):
+        mock_sky, td_name = await self._submitted_reap_teardown(
+            "k8s", get_return={7: _FakeJobStatus.SUCCEEDED}
+        )
+        mock_sky.down.assert_called_once_with(td_name, purge=True)
+
+    @pytest.mark.asyncio
+    async def test_hpc_still_running_reap_is_still_downed(self):
+        # Unchanged SLURM/LSF behavior: no autodown there, so it is always downed.
+        mock_sky, td_name = await self._submitted_reap_teardown(
+            "slurm", get_return={7: _FakeJobStatus.RUNNING}
+        )
+        mock_sky.down.assert_called_once_with(td_name, purge=True)
 
 
 class TestMonitorTreatsTeardownAsSuccess:

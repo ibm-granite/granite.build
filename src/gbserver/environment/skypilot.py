@@ -16,6 +16,7 @@ import functools
 import glob
 import importlib.util
 import json
+import logging
 import math
 import os
 import re
@@ -1176,7 +1177,9 @@ _SSH_HPC_CLOUDS = ("slurm", "lsf")
 # Clouds whose schedulers don't honor SkyPilot autostop/autodown (see the
 # autostop=None handling in the launch path), so a cluster launched with
 # down=True is never removed and keeps its allocation. teardown_skypilot downs
-# its td- cluster explicitly on these. Deliberately separate from
+# its td- cluster explicitly on these, unconditionally. (It also downs it on
+# _CLOUDS_AUTODOWN_ONLY, but only once the reap job has finished; see
+# _launch_cleanup_vm.) Deliberately separate from
 # _SSH_HPC_CLOUDS: this tracks one capability, not HPC-ness. Observed on SLURM
 # (BlueVela); LSF included because it also has autostop forced off.
 _CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
@@ -1187,6 +1190,9 @@ _CLOUDS_NEEDING_MANUAL_TEARDOWN = ("slurm", "lsf")
 # since #5010) — every launch fails provisioning. Passing down=True turns the idle
 # window into autodown instead, keeping it as the backstop that reaps a pod
 # orphaned by a crashed gbserver (per-step cleanup still `sky down`s normally).
+# Autodown runs in the pod as its own service account, so the backstop fails
+# where that account may not delete pods; teardown_skypilot therefore also downs
+# its td- cluster explicitly here once the reap job has finished.
 # Both spellings: `k8s` is a documented default_cloud alias and _get_cloud()'s own
 # fallback.
 _CLOUDS_AUTODOWN_ONLY = ("kubernetes", "k8s")
@@ -3378,6 +3384,18 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             return 10
         return self.config.config.get("idle_minutes_to_autostop", 10)
 
+    def _cleanup_image_id(self: Self) -> Optional[str]:
+        """The ``cleanup_image_id`` the teardown cleanup VM launches with, or ``None``.
+
+        Unset keeps SkyPilot's default image. Set it where cluster admission
+        rejects that image -- e.g. an OpenShift cluster whose RHACS policy blocks
+        images with old critical CVEs -- or the ``td-`` cleanup is refused and the
+        per-run workdir is left on the shared filesystem.
+        """
+        if self.config is None:
+            return None
+        return self.config.config.get("cleanup_image_id") or None
+
     def _pyxis_gpu_sbatch_directives(
         self: Self,
         accelerators: Optional[Any],
@@ -3857,6 +3875,9 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         res_kwargs["cpus"] = _cpus_floor(cloud, 1)
         if cloud not in _SSH_HPC_CLOUDS:
             res_kwargs["memory"] = "2+"  # keep Ray above the sub-1-GiB nano floor
+        cleanup_image = self._cleanup_image_id()
+        if cleanup_image:
+            res_kwargs["image_id"] = cleanup_image
         zone = provider.cleanup_zone() if provider is not None else None
         if zone:
             res_kwargs["zone"] = zone  # land where a mount target exists
@@ -3877,6 +3898,12 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             provider is not None,
             zone,
         )
+        # Whether the reap job may still be running when we leave: submitted
+        # (a job id) but no terminal status seen (timeout, status error, or
+        # cancellation during the wait). Downing the cluster then would cut the
+        # rm -rf short, so the Kubernetes branch in `finally` skips it.
+        job_id = None
+        final = None
         try:
             task = sky.Task(
                 name=cluster_name,
@@ -3939,9 +3966,36 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             # support (see _CLOUDS_NEEDING_MANUAL_TEARDOWN), so there the td-
             # cluster otherwise keeps its allocation indefinitely. Down it
             # explicitly; _teardown tolerates a cluster that never came up.
+            #
+            # Kubernetes does support autodown, but the pod performs it itself
+            # with its own service account. Where that account may not delete
+            # pods/services (e.g. an OpenShift namespace whose `remote_identity`
+            # SA only has `view`) the autodown is refused and the td- pod runs
+            # forever; even where it works, the pod idles for the whole autodown
+            # window holding quota. So gbserver downs it with the launching
+            # user's credentials, but only once the reap job is known to have
+            # stopped (terminal status) or never started (no job id, e.g. the
+            # launch was refused): downing it mid-rm would leave the tree only
+            # partly removed. Otherwise it is left to autodown, and named here
+            # in case that autodown cannot delete it.
             cloud_group = (str(self._get_cloud()).split("/", 1)[0] or "").lower()
             if cloud_group in _CLOUDS_NEEDING_MANUAL_TEARDOWN:
                 await self._teardown(cluster_name)
+            elif cloud_group in _CLOUDS_AUTODOWN_ONLY:
+                if job_id is not None and final is None:
+                    logger.warning(
+                        "teardown_skypilot: cleanup job %s on %s not confirmed "
+                        "finished; leaving the cluster to autodown rather than "
+                        "cutting the reap short. If its service account cannot "
+                        "delete pods, remove it with `sky down %s`",
+                        job_id,
+                        cluster_name,
+                        cluster_name,
+                    )
+                else:
+                    # Its own autodown may already be deleting it; a failure
+                    # here is then expected and not worth an ERROR.
+                    await self._teardown(cluster_name, failure_level=logging.WARNING)
 
     async def _await_cleanup_job_status(
         self: Self,
@@ -6101,7 +6155,9 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             )
         return max_line
 
-    async def _teardown(self: Self, cluster_name: str) -> None:
+    async def _teardown(
+        self: Self, cluster_name: str, failure_level: int = logging.ERROR
+    ) -> None:
         """Tear down a SkyPilot cluster by name, off the event loop.
 
         Wraps ``sky.down(purge=True)`` + ``sky.get`` in ``asyncio.to_thread`` so
@@ -6111,6 +6167,9 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
 
         Args:
             cluster_name: The SkyPilot cluster name to remove.
+            failure_level: Log level for a failed teardown (default ERROR). The
+                Kubernetes td- path passes WARNING, since the pod may already be
+                deleting itself through autodown.
         """
         try:
             request_id = await asyncio.to_thread(sky.down, cluster_name, purge=True)
@@ -6125,7 +6184,12 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             if isinstance(cluster_gone, type) and isinstance(e, cluster_gone):
                 logger.info("SkyPilot cluster %s already gone", cluster_name)
                 return
-            logger.error("Failed to tear down SkyPilot cluster %s: %s", cluster_name, e)
+            logger.log(
+                failure_level,
+                "Failed to tear down SkyPilot cluster %s: %s",
+                cluster_name,
+                e,
+            )
 
     @_kube_scoped(strict=False)
     async def cleanup_skypilot(
