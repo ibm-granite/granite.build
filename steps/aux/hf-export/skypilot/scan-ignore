@@ -6,38 +6,6 @@
 # than deriving one from another); `#` starts a comment. The same file goes to osv-gate.py
 # and to trivy as --ignorefile, so keep it in that format. Every entry names the issue that
 # removes it and an expiry ("until YYYY-MM-DD"); delete it when that issue lands.
-
-# TODO(decision): accept or raise. No issue and no expiry have been chosen yet; replace
-# the TODO(decision) placeholders below, or delete this section and fix the image.
 #
-# pip 26.2.2's vendored copies (pip/_vendor/vendor.txt) in the base interpreter that uv
-# installs (/opt/uv-python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/site-packages/pip),
-# not in the step's venv. trivy reports them; osv-scanner does not see them (requirements.lock
-# has no pip). Not reachable: the venv is created with include-system-site-packages = false
-# and has no pip, so none of these modules is importable from /opt/hf-export/.venv, and the
-# step never runs pip (it copies files and loads config and tokenizer offline). pip 26.3
-# vendors msgpack 1.2.4 and urllib3 2.8.0; the setuptools entry stays until pip stops
-# vendoring setuptools 70.3.0, or pip is removed from the base interpreter.
-# Ids from trivy's report on the 7f2f77cc image. Issue: TODO(decision). Until TODO(decision).
-
-# msgpack 1.1.2 (fixed in 1.2.3): DoS via a memory leak in map deserialization (strict_map_key).
-CVE-2026-114613
-GHSA-j586-36cw-2gc2
-# msgpack 1.1.2 (fixed in 1.2.1): out-of-bounds read on Unpacker reuse after a caught error.
-GHSA-6v7p-g79w-8964
-CVE-2026-57585
-PYSEC-2026-3625
-# setuptools 70.3.0 (fixed in 78.1.1): path traversal in PackageIndex.download. pip vendors
-# only pkg_resources from setuptools (pip/_vendor/pkg_resources/__init__.py), so the
-# PackageIndex code the advisory is about is not in the image at all.
-CVE-2025-47273
-GHSA-5rjg-fvgr-3xxf
-PYSEC-2025-49
-# urllib3 2.7.0 (fixed in 2.8.0): HTTPS proxy TLS configuration may be ignored or overridden.
-CVE-2026-97687
-GHSA-8988-9cw3-xx77
-PYSEC-2026-4175
-# urllib3 2.7.0 (fixed in 2.8.0): unbounded chunk-size line buffered in read_chunked().
-CVE-2026-97689
-GHSA-vxq7-64xx-v4gw
-PYSEC-2026-4177
+# No accepted advisories: the image passes the gate with this file empty. Keep the file
+# (with no ids) so both scanners always read the same, explicit list.

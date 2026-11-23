@@ -30,7 +30,11 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_LINK_MODE=copy
 
 COPY requirements.lock /tmp/requirements.lock
+# pip is removed from the uv-managed interpreter, as in the distill images: nothing runs it
+# (uv builds and owns the venv, which has no pip), and its vendored copies (msgpack,
+# setuptools, urllib3) carry advisories of their own.
 RUN uv venv --python 3.12 /opt/hf-export/.venv \
+ && "$(uv python find 3.12)" -m pip uninstall -y --break-system-packages --root-user-action=ignore pip \
  && uv pip install --python /opt/hf-export/.venv/bin/python \
       --require-hashes --no-deps -r /tmp/requirements.lock \
  && rm /tmp/requirements.lock \
