@@ -48,8 +48,9 @@ measured while training continues.
 
 ## Setup
 
-**Requires layered `--param-file`** ([#663](https://github.com/ibm-granite/granite.build/issues/663),
-PR [#665](https://github.com/ibm-granite/granite.build/pull/665)). Each command below passes
+**Requires `gb` v0.3.10 or later**, for layered `--param-file`
+([#663](https://github.com/ibm-granite/granite.build/issues/663), PR
+[#665](https://github.com/ibm-granite/granite.build/pull/665)). Each command below passes
 the site file, and the smoke run passes `smoke.yaml` too, as layers over the recipe's own
 `parameters.yaml`. Without it, the site file replaces `parameters.yaml` instead of layering
 over it.

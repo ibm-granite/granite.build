@@ -228,7 +228,7 @@ granite.build:
                 echo "GB_ARTIFACT_ID:dataset GB_ARTIFACT_PATH:$OUT"
 
     ##########################################################################
-    # train — LoRA adapter with hf-peft-sft (DDP on ACCELERATORS)
+    # train — LoRA adapter with hf-peft-sft (DDP on NUM_GPUS GPUs)
     ##########################################################################
     train:
       environment_uri: "$${ENVIRONMENT_URI}"
@@ -253,9 +253,9 @@ granite.build:
             poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
             launcher_config:
               resources:
-                # From the site file: a GPU model the cluster schedules (on a
-                # cluster with a GPU constraint, the one it pins), and a count.
-                accelerators: "$${ACCELERATORS}"
+                # The model from the site file (one the cluster schedules; with
+                # a GPU constraint, the one it pins), the count from the recipe.
+                accelerators: "$${GPU_ACCELERATOR}:$${NUM_GPUS}"
                 # Explicit memory wins over compute_config on every cluster; bare
                 # GiB string.
                 memory: "$${MEMORY}"

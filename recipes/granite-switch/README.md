@@ -31,6 +31,12 @@ the recipe you want and run:
 gb build start -f <path to the recipe>/build.yaml
 ```
 
+A recipe with a site file, like the SLURM one, also takes that file:
+
+```bash
+gb build start -f <path to the recipe>/build.yaml --param-file <your-site.yaml>
+```
+
 Each recipe directory carries its own `README.md` and `parameters.yaml`; read
 the README first, since a recipe may have a prerequisite to satisfy before the
 first run — data to stage, or a credential to register.

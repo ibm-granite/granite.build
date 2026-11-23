@@ -195,7 +195,9 @@ config:
           # options global < cluster < partition, so this overrides the env-wide
           # QOS on that partition alone. EVAL_QOS "" adds nothing, and so does an
           # EVAL_PARTITION that is the GPU or CPU partition, whose QOS is already set.
-<%- if EVAL_QOS and EVAL_PARTITION != GPU_PARTITION and EVAL_PARTITION != CPU_PARTITION %>
+          # A recipe with no eval lane leaves both keys out: EVAL_QOS defaults to
+          # "", and EVAL_PARTITION is read only when EVAL_QOS is set.
+<%- if EVAL_QOS | default("") and EVAL_PARTITION != GPU_PARTITION and EVAL_PARTITION != CPU_PARTITION %>
             $${EVAL_PARTITION}:
               sbatch_options:
                 qos: $${EVAL_QOS}

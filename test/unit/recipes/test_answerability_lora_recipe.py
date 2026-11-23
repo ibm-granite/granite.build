@@ -32,6 +32,7 @@ _RECIPE = (
 )
 _SITE_FILE = _RECIPE / "site.example.yaml"
 _SITE = get_params_from_file(str(_SITE_FILE))
+_PARAMS = get_params_from_file(str(_RECIPE / "parameters.yaml"))
 _STEP = _REPO / "steps" / "train" / "hf-peft-sft" / "skypilot"
 # As `make space` renders it: gb-include lines expanded.
 _TEMPLATE = expanded_step_template(_STEP / "step-template.yaml")
@@ -115,7 +116,12 @@ def test_environment_and_gpus_come_from_the_site_file(tmp_path):
     for target in build["targets"].values():
         assert target["environment_uri"] == _SITE["ENVIRONMENT_URI"]
     resources = _step_config(build["targets"]["train"])["launcher_config"]["resources"]
-    assert resources["accelerators"] == _SITE["ACCELERATORS"]
+    # The model is the site's, the count the recipe's: the effective batch
+    # the recipe documents (NUM_GPUS x 1 x 8) holds whatever the site.
+    assert resources["accelerators"] == (
+        f"{_SITE['GPU_ACCELERATOR']}:{_PARAMS['NUM_GPUS']}"
+    )
+    assert _PARAMS["NUM_GPUS"] == 4
     assert isinstance(resources["memory"], str)
 
 
@@ -126,7 +132,7 @@ def test_without_a_site_file_the_recipe_does_not_render(tmp_path):
         apply_parameters(
             (_RECIPE / "build.yaml").read_text(),
             [],
-            get_params_from_file(str(_RECIPE / "parameters.yaml")),
+            _PARAMS,
             str(tmp_path),
         )
 
@@ -240,9 +246,9 @@ def test_clearml_on_declares_the_three_secrets(tmp_path):
 
 
 def test_smoke_overrides_render(tmp_path):
-    target = _target(
-        tmp_path, "DATASET_SPLIT=train[:64]", "MAX_STEPS=4", "ACCELERATORS=H200:1"
-    )
+    target = _target(tmp_path, "DATASET_SPLIT=train[:64]", "MAX_STEPS=4", "NUM_GPUS=1")
+    resources = _step_config(target)["launcher_config"]["resources"]
+    assert resources["accelerators"] == f"{_SITE['GPU_ACCELERATOR']}:1"
     flags = _flags(_run_argv(target))
     assert flags["--dataset_split"] == "train[:64]"
     assert flags["--max_steps"] == "4"

@@ -21,6 +21,7 @@ import pytest
 import yaml
 from libgbtest.site_template import (
     LEAK,
+    OPTIONAL_KEYS,
     REPO_ROOT,
     SLURM_TEMPLATE,
     leak_hits,
@@ -39,14 +40,15 @@ _PARAMS = _RECIPE / "parameters.yaml"
 _SITE = _RECIPE / "site.example.yaml"
 _SETUP = REPO_ROOT / "scripts" / "setup-local-space.sh"
 
-# The keys parameters.yaml used to default to one cluster's values, and the
-# CPU partition prepare runs on.
+# The keys parameters.yaml used to default to one cluster's values (the GPU
+# model, not the count, which stays the recipe's NUM_GPUS), and the CPU
+# partition prepare runs on.
 _RECIPE_SITE_KEYS = {
     "ENVIRONMENT_URI",
     "SOURCE_DATA_URI",
     "DATA_ROOT",
     "ADAPTER_ROOT",
-    "ACCELERATORS",
+    "GPU_ACCELERATOR",
     "CPU_PARTITION",
 }
 
@@ -73,10 +75,17 @@ def test_template_renders_from_example(tmp_path):
     assert env["config"]["steps"]["hfpull"]["zone"] == _site()["CPU_PARTITION"]
 
 
-def test_every_template_key_is_in_example_site():
+def test_every_required_template_key_is_in_example_site():
     site = set(_site())
-    assert value_keys() <= site, sorted(value_keys() - site)
-    assert undeclared_keys() <= site, sorted(undeclared_keys() - site)
+    required = undeclared_keys() - OPTIONAL_KEYS
+    assert value_keys() - OPTIONAL_KEYS <= site, sorted(value_keys() - site)
+    assert required <= site, sorted(required - site)
+
+
+def test_example_site_has_no_eval_lane():
+    """The recipe has no eval target, so its example leaves the template's
+    optional eval-lane keys out (and still renders, above)."""
+    assert not OPTIONAL_KEYS & set(_site())
 
 
 def test_site_keys_are_in_the_site_file_only():

@@ -18,6 +18,7 @@ import pytest
 import yaml
 from libgbtest.site_template import (
     LEAK,
+    OPTIONAL_KEYS,
     SLURM_TEMPLATE,
     leak_hits,
     render,
@@ -265,6 +266,25 @@ def test_eval_qos_adds_nothing_when_not_needed(tmp_path, partition, qos):
     site["EVAL_QOS"] = qos
     _, parts = _partition_configs(site, tmp_path)
     assert set(parts) == {site["CPU_PARTITION"]}
+
+
+def test_the_eval_lane_keys_may_be_left_out(tmp_path):
+    site = _site()
+    for key in OPTIONAL_KEYS:
+        del site[key]
+    _, parts = _partition_configs(site, tmp_path)
+    assert set(parts) == {site["CPU_PARTITION"]}
+
+
+def test_an_eval_qos_needs_an_eval_partition(tmp_path):
+    site = _site()
+    site["EVAL_QOS"] = "burst"
+    del site["EVAL_PARTITION"]
+    site_path = tmp_path / "site.yaml"
+    site_path.write_text(yaml.safe_dump(site), encoding="utf-8")
+    proc = render(site_path, tmp_path / "rendered.yaml")
+    assert proc.returncode == 2, proc.stderr
+    assert "EVAL_PARTITION" in proc.stderr
 
 
 def test_empty_gpu_constraint_drops_the_directive(tmp_path):

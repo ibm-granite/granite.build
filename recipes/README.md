@@ -16,7 +16,8 @@ container sees at the same path.
 - **Not one root.** Different `<shared-fs>` paths may be on different
   shared-filesystem roots, even in the same file. Two paths that both start
   with `<shared-fs>/` are not necessarily siblings. The matching
-  `parameters.yaml` default gives the real path.
+  `parameters.yaml` default gives the real path or, for a recipe with a site
+  file, that file's value.
 - **Not `shared_workdir`.** The environment's `shared_workdir` holds gbserver's
   per-run directories (`${shared_workdir}/builds/<build_id>/runs/<targetrun_id>/`).
   The `<shared-fs>` paths hold models, data and outputs you manage yourself.

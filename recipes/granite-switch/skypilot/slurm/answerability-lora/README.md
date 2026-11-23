@@ -23,13 +23,14 @@ prepare ──(dataset)──> train
   copy to the cluster's shared filesystem. The `hf://` URI ends in a path inside the repo, so
   only that directory is downloaded, not the whole repo. It also binds the
   base model, for its tokenizer.
-- **`train`** (`ACCELERATORS`, 4 GPUs with DDP) stages the base model, binds `prepare.dataset`,
+- **`train`** (`NUM_GPUS`, 4 by default, of the site's `GPU_ACCELERATOR`, with DDP) stages the base model, binds `prepare.dataset`,
   and trains the adapter.
 
 ## Setup
 
-**Requires layered `--param-file`** ([#663](https://github.com/ibm-granite/granite.build/issues/663),
-PR [#665](https://github.com/ibm-granite/granite.build/pull/665)): the site file
+**Requires `gb` v0.3.10 or later**, for layered `--param-file`
+([#663](https://github.com/ibm-granite/granite.build/issues/663), PR
+[#665](https://github.com/ibm-granite/granite.build/pull/665)): the site file
 is layered over the recipe's `parameters.yaml`, not in place of it. The setup
 commands run from the repo root; the `gb build start` commands, from this
 directory.
@@ -49,8 +50,9 @@ Its comments describe each key. The `Environment` keys describe the cluster:
 partitions, GPU constraint, account and QOS, shared paths and container mounts,
 login nodes, and the **name** of the space secret holding the SSH key. The
 `Recipe` keys are what `parameters.yaml` used to default to one cluster's
-values: `ENVIRONMENT_URI`, `SOURCE_DATA_URI`, `DATA_ROOT`, `ADAPTER_ROOT` and
-`ACCELERATORS`. `prepare` also reads `CPU_PARTITION`. `parameters.yaml` has none
+values: `ENVIRONMENT_URI`, `SOURCE_DATA_URI`, `DATA_ROOT`, `ADAPTER_ROOT`, and
+`GPU_ACCELERATOR`, the GPU model (the recipe keeps the count, `NUM_GPUS`).
+`prepare` also reads `CPU_PARTITION`. `parameters.yaml` has none
 of these, so a run without a site file fails to render instead of running
 somewhere else.
 
@@ -66,9 +68,7 @@ It writes the environment into the standalone space
 `~/.granite.build/local-space` (or, with `--out DIR`, into a private repo
 backing a shared gbserver) and sets `ENVIRONMENT_URI` in the site file to it.
 [The distill recipes' Setup](../../../../distill/README.md#setup) describes
-what it writes and its options; the same template serves both. Define the SSH
-key secret `SSH_KEY_SECRET` names in that space (see
-[Secrets in `cluster_ssh_configs`](../../../../../docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs)).
+what it writes and its options; the same template serves both.
 
 **3. gbserver**, for the standalone case:
 
@@ -87,9 +87,12 @@ export GB_ENVIRONMENT=STANDALONE
 Without it, `gb` does not talk to the server as a standalone client, and the
 server can reject the build with a 401 that suggests `gb auth login`.
 
-**4. An `HF_TOKEN` secret**, if the dataset repo is private (the one this
-recipe was built for is). The pull needs a read-only token from an account
-with read access to it. The download runs on a cluster node, which can't see
+**4. Secrets**, with gbserver running. The space needs the secret
+`SSH_KEY_SECRET` names, holding the SSH private key (see
+[Secrets in `cluster_ssh_configs`](../../../../../docs/environments/skypilot-slurm.md#secrets-in-cluster_ssh_configs)).
+If the dataset repo is private (the one this recipe was built for is), it
+also needs an `HF_TOKEN`: a read-only token from an account with read access
+to the repo. The download runs on a cluster node, which can't see
 your shell, so register the token once by name:
 
 ```bash
@@ -249,8 +252,9 @@ there.
 | `ALORA_INVOCATION_STRING` | `<\|im_start\|>assistant` | Only for `METHOD=alora`. A trailing newline would be dropped (see [aLoRA](#alora)). |
 | `LORA_R` / `LORA_ALPHA` / `LEARNING_RATE` | `16` / `32` / `5e-5` | Adapter rank, scale and learning rate. |
 | `ADAPTER_ROOT` | *site file* | A plain path on the shared filesystem, so the adapter survives teardown. Each method gets its own subdirectory, `answerability-lora/` or `answerability-alora/`, so a LoRA and an aLoRA run with the same `RUN_ID` don't collide. |
-| `ACCELERATORS` | *site file* | `<model>:<count>`; 4 GPUs for DDP. Effective batch 4 × 1 × 8 = 32. |
-| `MEMORY` | `512` | Host GiB for `train`, set as `resources.memory` so it wins on every cluster. |
+| `GPU_ACCELERATOR` | *site file* | `train`'s GPU model, e.g. `A100`; the recipe appends `:<NUM_GPUS>`. |
+| `NUM_GPUS` | `4` | DDP over that many GPUs. Effective batch `NUM_GPUS` × 1 × 8 = 32; another count trains at another effective batch. |
+| `MEMORY` | `512` | Host GiB for `train`, set as `resources.memory` so it wins on every cluster. SLURM rejects a request above a node's `RealMemory`, so lower it on smaller nodes. |
 | `NUM_TRAIN_EPOCHS` / `MAX_STEPS` | `3` / `-1` | A positive `MAX_STEPS` caps the run. |
 | `CLEARML` | `false` | `true` turns tracking on and declares space secrets `CLEARML_API_HOST`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY`, which must exist. |
 
@@ -258,7 +262,7 @@ A smoke run, to try the plumbing on one GPU before the full run:
 
 ```bash
 gb build start -f build.yaml --param-file "$SITE" \
-  --param RUN_ID=smoke1 --param ACCELERATORS=<model>:1 \
+  --param RUN_ID=smoke1 --param NUM_GPUS=1 \
   --param DATASET_SPLIT='train[:64]' --param MAX_STEPS=4
 ```
 

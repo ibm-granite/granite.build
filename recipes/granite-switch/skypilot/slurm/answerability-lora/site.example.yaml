@@ -16,9 +16,10 @@
 # --param KEY=VALUE still overrides any of them.
 #
 # The "Environment" keys are the ones recipes/distill/site.example.yaml has
-# too, except that distill files EVAL_PARTITION with its recipe keys, as it
-# runs evals there. One cluster's keys can live in one file passed to both,
-# with each recipe's own keys in a second --param-file.
+# too, less the eval lane's EVAL_QOS and EVAL_PARTITION: this recipe has no
+# eval target, and the template treats both as optional. One cluster's keys can
+# live in one file passed to both recipes, with each recipe's own keys in a
+# second --param-file.
 
 # ─── Environment: identity and scheduler ─────────────────────────────
 # The rendered environment's `name`.
@@ -37,10 +38,6 @@ SLURM_ACCOUNT: "my-account"
 SLURM_QOS: "normal"
 # QOS for jobs on CPU_PARTITION.
 CPU_QOS: "cpu"
-# This recipe has no eval target. The template still reads these two: with
-# EVAL_QOS "" they add nothing to the environment.
-EVAL_PARTITION: "gpu"
-EVAL_QOS: ""
 
 # ─── Environment: filesystems ────────────────────────────────────────
 # Shared root of the per-run build workdirs (GB_BUILD_WORKDIR hangs off it).
@@ -89,6 +86,6 @@ DATA_ROOT: "/shared/granite-switch/data/answerability-lora"
 ADAPTER_ROOT: "/shared/granite-switch/adapters"
 
 # ─── Recipe: compute ─────────────────────────────────────────────────
-# train's GPUs, <model>:<count>: a model the cluster schedules (with a
-# GPU_CONSTRAINT, the one it pins). 4 GPUs, DDP: effective batch 4 x 1 x 8 = 32.
-ACCELERATORS: "A100:4"
+# train's GPU model: one the cluster schedules (with a GPU_CONSTRAINT, the one
+# it pins). The recipe appends ":<count>" (its NUM_GPUS), as distill does.
+GPU_ACCELERATOR: "A100"

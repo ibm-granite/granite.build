@@ -1,7 +1,7 @@
 # The recipe's own settings. gb build start layers these under every
 # --param-file, so the site file (site.example.yaml lists its keys) adds the
 # site-specific ones: ENVIRONMENT_URI, SOURCE_DATA_URI, DATA_ROOT,
-# ADAPTER_ROOT, ACCELERATORS and the environment's CPU_PARTITION. No key here
+# ADAPTER_ROOT, GPU_ACCELERATOR and the environment's CPU_PARTITION. No key here
 # is also a site key. Override any of them with --param KEY=VALUE.
 #
 #   gb build start -f build.yaml --param-file <site.yaml> --param RUN_ID=<unique>
@@ -42,14 +42,14 @@ LORA_R: 16
 LORA_ALPHA: 32
 LEARNING_RATE: 5.0e-05
 
-# ── Output ───────────────────────────────────────────────────────────────────
-# Adapters land in $ADAPTER_ROOT/answerability-$METHOD/$RUN_ID; ADAPTER_ROOT
-# comes from the site file.
-
 # ── Compute ──────────────────────────────────────────────────────────────────
-# The GPUs (ACCELERATORS) come from the site file: 4 for DDP, one bf16 copy of
-# the 8B base per GPU, effective batch = 4 GPUs x 1 x 8 accumulation = 32.
-# Host GiB for train.
+# train's GPU count, DDP: one bf16 copy of the 8B base per GPU. The GPU model is
+# the site file's GPU_ACCELERATOR. Effective batch = NUM_GPUS x 1 per device x 8
+# accumulation (fixed in build.yaml) = 32; another count trains at another
+# effective batch (the 1-GPU smoke run at 8).
+NUM_GPUS: 4
+# Host GiB for train. SLURM rejects a request above a node's RealMemory, so
+# lower it with --param MEMORY=<GiB> on smaller nodes.
 MEMORY: "512"
 # prepare runs on the CPU partition in the hf-peft-sft image (its venv has
 # pyarrow). A partition that caps memory per CPU (MaxMemPerCPU, 8 GiB on the

@@ -36,6 +36,10 @@ LEAK = re.compile(
     re.IGNORECASE,
 )
 
+# Keys a site file may leave out: EVAL_QOS defaults to "", and EVAL_PARTITION
+# is read only when EVAL_QOS is set. A recipe with no eval lane omits both.
+OPTIONAL_KEYS = frozenset({"EVAL_QOS", "EVAL_PARTITION"})
+
 _VALUE = re.compile(r"\$\$\{\s*([A-Za-z_][A-Za-z0-9_]*)")
 _LOOP_VAR = re.compile(r"<%-?\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b")
 
