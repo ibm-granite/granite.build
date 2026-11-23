@@ -18,8 +18,14 @@ Properties, from the #540 review:
 - reference agreement: beta 0 = forward KL, beta 1 = reverse KL, the mixture
   JSD, the convex KL interpolation, DistiLLM-2's on/off-policy arms, and
   sft.py's top-K forward-KD ``_compute_loss_kd``.
+
+The ULD arm (``CustomULDLoss``, the cross-tokenizer loss) is checked
+separately in ``TestULD``: it is a sorted-distribution distance, not a
+divergence over one shared vocabulary, so only some of these properties apply
+to it, and its point is the EOS-only completion its parent scores at zero.
 """
 
+import dataclasses
 import math
 import types
 
@@ -29,10 +35,15 @@ torch = pytest.importorskip("torch")
 F = torch.nn.functional
 pytest.importorskip("trl")  # custom_gold_trainer imports trl at module load
 
+from gb_steps_post_training.distillation.custom_gold_config import (  # noqa: E402
+    CustomGOLDConfig,
+)
 from gb_steps_post_training.distillation.custom_gold_trainer import (  # noqa: E402
     CustomGOLDTrainer,
+    CustomULDLoss,
 )
 from gb_steps_post_training.distillation.sft import CustomSFTTrainer  # noqa: E402
+from trl.experimental.gold.gold_trainer import ULDLoss  # noqa: E402
 
 # float64 throughout: the properties assert against tight tolerances, and the
 # stationarity check in particular is meaningless in float32.
@@ -244,3 +255,282 @@ class TestComputeLossKd:
         expected_kl = (-s_at_argmax).mean()  # t log t - t log s at one-hot t
         expected = 0.7 * (T * T) * expected_kl
         assert loss.item() == pytest.approx(expected.item(), abs=1e-8)
+
+
+# --- ULD -----------------------------------------------------------------------------------
+#
+# What the reference follows. `loss_arm: uld` renders `use_uld_loss: true` and nothing else
+# (render_gold_config.py LOSS_ARMS["uld"]), so every other ULD knob is a dataclass default:
+# use_extended_uld True, uld_use_hybrid_loss False, cross-entropy weight 0, distillation
+# weight 1, both temperatures 1. With the hybrid loss off, CustomULDLoss hands the whole
+# computation to TRL's ULDLoss._compute_distillation_loss (trl 0.26.2,
+# trl/experimental/gold/gold_trainer.py:325-423), and overrides only two things it uses:
+# skip_student_eos / skip_teacher_eos forced False, and _build_alignment_groups_from_ids,
+# which aligns the bodies and appends the two EOS positions as one final group. Per row,
+# TRL's base path:
+#
+#   1. takes the completion as [first label, first label + label count) (:367-368) -- the
+#      logits AT those positions, i.e. each one's prediction of the NEXT token. The hybrid
+#      path (custom_gold_trainer.py:2023) reads start-1, the prediction of the token itself;
+#      the reference follows the base path, which is the one the arm runs;
+#   2. softmaxes each side over its own vocabulary (:371-372);
+#   3. merges each alignment group into one distribution: a single position as is, several
+#      as the renormalised product of their probabilities (:521-557, via log-sum-softmax);
+#   4. sorts each merged distribution descending, zero-pads the narrower vocabulary, and
+#      takes the L1 distance summed over groups and vocabulary, divided by the group count
+#      (:405-419);
+#   5. averages the rows and scales by the distillation weight (:422-423).
+#
+# The reference below writes the same steps out with the alignment groups spelled out by
+# hand, so a regression in the class's grouping is caught rather than reproduced. TRL builds
+# the merged tensor with torch.zeros and no dtype (:538), so the loss is float32 whatever the
+# logits are; hence the 1e-6 tolerances here rather than the 1e-10 elsewhere in this file.
+
+ULD_TOL = 1e-6
+
+# Student vocabulary (7) and teacher vocabulary (9): different sizes, and different
+# segmentations of the same text ("ab" is one student token, "abc" one teacher token).
+S_PIECES = ["</s>", "a", "b", "c", "ab", "ca", "<pad>"]
+T_PIECES = ["<pad>", "<|eos|>", "a", "b", "c", "abc", "bc", "x", "y"]
+S_EOS, T_EOS = 0, 1
+S_PAD, T_PAD = 6, 0
+IGNORE = -100
+
+
+class _PieceTokenizer:
+    """What the ULD losses read from a tokenizer on the path the step uses: eos_token_id
+    (CustomULDLoss.__init__) and decode over each prefix of a completion, which the
+    alignment walks to recover every id's text piece. Concatenating pieces is exactly a
+    decode for these vocabularies, and it needs no download."""
+
+    def __init__(self, pieces, eos_token_id):
+        self._pieces = pieces
+        self.eos_token_id = eos_token_id
+
+    def decode(
+        self, ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
+    ):
+        return "".join(self._pieces[i] for i in ids)
+
+    def get_vocab(self):
+        return {p: i for i, p in enumerate(self._pieces)}
+
+
+def _uld_config(**overrides):
+    """The step's ULD configuration: every CustomGOLDConfig default, plus the one flag the
+    uld arm sets. Read from the dataclass fields rather than by constructing the
+    TrainingArguments, which would validate output dirs and devices this test has no use for.
+    """
+    cfg = {}
+    for f in dataclasses.fields(CustomGOLDConfig):
+        if f.default is not dataclasses.MISSING:
+            cfg[f.name] = f.default
+        elif f.default_factory is not dataclasses.MISSING:
+            cfg[f.name] = f.default_factory()
+    cfg["use_uld_loss"] = True
+    cfg.update(overrides)
+    return types.SimpleNamespace(**cfg)
+
+
+def _custom_uld(**overrides):
+    return CustomULDLoss(
+        _uld_config(**overrides),
+        student_tokenizer=_PieceTokenizer(S_PIECES, S_EOS),
+        teacher_tokenizer=_PieceTokenizer(T_PIECES, T_EOS),
+    )
+
+
+def _parent_uld(**overrides):
+    return ULDLoss(
+        _uld_config(**overrides),
+        student_tokenizer=_PieceTokenizer(S_PIECES, S_EOS),
+        teacher_tokenizer=_PieceTokenizer(T_PIECES, T_EOS),
+    )
+
+
+def _rows(rows, pad):
+    """[(prompt ids, completion ids)] -> right-padded (input_ids, labels), prompt and pad
+    unlabelled, the completion (EOS included) labelled with its own ids."""
+    width = max(len(p) + len(c) for p, c in rows)
+    ids, labels = [], []
+    for prompt, completion in rows:
+        n_pad = width - len(prompt) - len(completion)
+        ids.append(prompt + completion + [pad] * n_pad)
+        labels.append([IGNORE] * len(prompt) + completion + [IGNORE] * n_pad)
+    return torch.tensor(ids), torch.tensor(labels)
+
+
+# Two rows. Row 0 is "abcab": student ab|c|ab, teacher abc|a|b, so the greedy alignment
+# groups student [0,1] with teacher [0] ("abc") and student [2] with teacher [1,2] ("ab").
+# Row 1 is "cab": student ca|b, teacher c|a|b, grouping student [0] with teacher [0,1]
+# ("ca") and student [1] with teacher [2] ("b"). Each row then ends with its EOS group.
+# Prompt lengths differ by side and by row, so the completions start at different offsets.
+S_ROWS = [([1, 2], [4, 3, 4, S_EOS]), ([3, 1, 2], [5, 2, S_EOS])]
+T_ROWS = [([7], [5, 2, 3, T_EOS]), ([8, 8], [4, 2, 3, T_EOS])]
+S_GROUPS = [[[0, 1], [2], [3]], [[0], [1], [2]]]
+T_GROUPS = [[[0], [1, 2], [3]], [[0, 1], [2], [3]]]
+
+
+def _uld_batch(seed=0):
+    s_ids, s_labels = _rows(S_ROWS, S_PAD)
+    t_ids, t_labels = _rows(T_ROWS, T_PAD)
+    g = torch.Generator().manual_seed(seed)
+    s_logits = torch.randn(*s_ids.shape, len(S_PIECES), generator=g, dtype=DTYPE)
+    t_logits = torch.randn(*t_ids.shape, len(T_PIECES), generator=g, dtype=DTYPE)
+    return dict(
+        student_logits=s_logits,
+        teacher_logits=t_logits,
+        student_labels=s_labels,
+        teacher_labels=t_labels,
+        student_input_ids=s_ids,
+        teacher_input_ids=t_ids,
+    )
+
+
+def _uld_reference(batch, s_groups, t_groups):
+    """Sorted-distribution ULD, written out (see the block comment above for each step)."""
+
+    def merged(logits, labels, groups):
+        probs = F.softmax(logits[labels != IGNORE], dim=-1)  # step 1-2: AT the labels
+        out = []
+        for g in groups:  # step 3: renormalised product over the group
+            q = probs[g].prod(dim=0)
+            out.append(q / q.sum())
+        return torch.stack(out)
+
+    row_losses = []
+    for i in range(batch["student_logits"].size(0)):
+        s = merged(batch["student_logits"][i], batch["student_labels"][i], s_groups[i])
+        t = merged(batch["teacher_logits"][i], batch["teacher_labels"][i], t_groups[i])
+        width = max(s.size(-1), t.size(-1))  # step 4: sort, zero-pad, L1 per group
+        s = F.pad(s.sort(dim=-1, descending=True).values, (0, width - s.size(-1)))
+        t = F.pad(t.sort(dim=-1, descending=True).values, (0, width - t.size(-1)))
+        row_losses.append((s - t).abs().sum() / len(s_groups[i]))
+    return torch.stack(row_losses).mean()  # step 5, at distillation weight 1
+
+
+class TestULD:
+    """CustomULDLoss on the configuration the uld arm renders."""
+
+    def test_the_step_config_takes_the_sorted_path(self):
+        """The reference below is the non-hybrid, extended-alignment path at unit weights.
+        If a re-vendor changes any of these defaults, the arm computes something else.
+        """
+        loss = _custom_uld()
+        assert loss.use_extended_uld is True
+        assert loss.use_hybrid_loss is False and loss._vocab_mapping is None
+        assert loss.crossentropy_weight == 0.0
+        assert loss.distillation_weight == 1.0
+        assert loss.student_temperature == loss.teacher_temperature == 1.0
+        assert loss.skip_student_eos is False and loss.skip_teacher_eos is False
+
+    def test_alignment_groups_are_the_hand_derived_ones(self):
+        """The class aligns the bodies greedily and appends EOS as its own group."""
+        loss = _custom_uld()
+        for (_, s_c), (_, t_c), s_g, t_g in zip(S_ROWS, T_ROWS, S_GROUPS, T_GROUPS):
+            assert loss._build_alignment_groups_from_ids(s_c, t_c) == (s_g, t_g)
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_matches_reference(self, seed):
+        batch = _uld_batch(seed)
+        expected = _uld_reference(batch, S_GROUPS, T_GROUPS)
+        assert _custom_uld()(**batch).item() == pytest.approx(
+            expected.item(), abs=ULD_TOL
+        )
+
+    @pytest.mark.parametrize("seed", range(5))
+    def test_is_nonnegative(self, seed):
+        assert _custom_uld()(**_uld_batch(seed)).item() >= 0.0
+
+    def test_is_zero_when_the_student_matches_the_teacher(self):
+        """Across two vocabularies "matches" means: the same distribution up to a relabelling
+        of tokens, with the teacher's surplus tokens at probability zero. That is the zero
+        set of a sorted, zero-padded distance. The text "abc" is a|b|c on both sides, so
+        every group is one position and no merge perturbs the probabilities."""
+        s_ids, s_labels = _rows([([5], [1, 2, 3, S_EOS])], S_PAD)
+        t_ids, t_labels = _rows([([7], [2, 3, 4, T_EOS])], T_PAD)
+        g = torch.Generator().manual_seed(3)
+        t_logits = torch.randn(1, 5, len(T_PIECES), generator=g, dtype=DTYPE)
+        t_logits[..., 7:] = float("-inf")  # the two surplus teacher tokens
+        relabel = torch.randperm(
+            7, generator=g
+        )  # student token k <- teacher token relabel[k]
+        s_logits = t_logits[..., relabel].clone()
+        batch = dict(
+            student_logits=s_logits,
+            teacher_logits=t_logits,
+            student_labels=s_labels,
+            teacher_labels=t_labels,
+            student_input_ids=s_ids,
+            teacher_input_ids=t_ids,
+        )
+        assert _custom_uld()(**batch).item() == pytest.approx(0.0, abs=ULD_TOL)
+        # and the same pair at an unrelated student is not zero, so the check has teeth.
+        batch["student_logits"] = torch.randn(
+            1, 5, len(S_PIECES), generator=g, dtype=DTYPE
+        )
+        assert _custom_uld()(**batch).item() > 1e-3
+
+    @pytest.mark.parametrize("side", ["student", "teacher", "both"])
+    def test_is_unchanged_by_a_vocabulary_permutation(self, side):
+        """Sorting discards token identity, so relabelling either vocabulary (the logit
+        columns; the ids, and so the alignment, unchanged) cannot change the loss."""
+        batch = _uld_batch(seed=4)
+        before = _custom_uld()(**batch).item()
+        g = torch.Generator().manual_seed(5)
+        if side in ("student", "both"):
+            perm = torch.randperm(len(S_PIECES), generator=g)
+            batch["student_logits"] = batch["student_logits"][..., perm]
+        if side in ("teacher", "both"):
+            perm = torch.randperm(len(T_PIECES), generator=g)
+            batch["teacher_logits"] = batch["teacher_logits"][..., perm]
+        assert _custom_uld()(**batch).item() == pytest.approx(before, abs=ULD_TOL)
+
+
+class TestULDEosOnlyCompletion:
+    """The bug CustomULDLoss exists for (its docstring): when the completion is only EOS,
+    TRL's ULDLoss subtracts the EOS from each answer size (uld_skip_*_eos default True,
+    gold_trainer.py:338-341), every size is then 0, and it returns a constant zero
+    (:343-349) -- no loss and no gradient for the student's decision to stop."""
+
+    @staticmethod
+    def _eos_only_batch():
+        s_ids, s_labels = _rows([([1, 2], [S_EOS])], S_PAD)
+        t_ids, t_labels = _rows([([7], [T_EOS])], T_PAD)
+        g = torch.Generator().manual_seed(6)
+        return dict(
+            student_logits=torch.randn(1, 3, len(S_PIECES), generator=g, dtype=DTYPE),
+            teacher_logits=torch.randn(1, 2, len(T_PIECES), generator=g, dtype=DTYPE),
+            student_labels=s_labels,
+            teacher_labels=t_labels,
+            student_input_ids=s_ids,
+            teacher_input_ids=t_ids,
+        )
+
+    def test_parent_scores_it_zero(self):
+        """The defect, pinned on the parent, so the subclass's fix has something to fix:
+        if trl stops dropping the EOS, this fails and the subclass's override can go."""
+        batch = self._eos_only_batch()
+        batch["student_logits"].requires_grad_(True)
+        loss = _parent_uld()(**batch)
+        assert loss.item() == 0.0
+        loss.backward()
+        assert batch["student_logits"].grad.abs().max().item() == 0.0
+
+    def test_custom_scores_it_and_matches_reference(self):
+        batch = self._eos_only_batch()
+        batch["student_logits"].requires_grad_(True)
+        loss = _custom_uld()(**batch)
+        # One row, one group: the two EOS positions, aligned by the subclass. Pinned
+        # separately because without that group the parent falls back to the unmerged
+        # positions (gold_trainer.py:532-533), which for a one-token completion scores the
+        # same number for the wrong reason.
+        assert _custom_uld()._build_alignment_groups_from_ids([S_EOS], [T_EOS]) == (
+            [[0]],
+            [[0]],
+        )
+        expected = _uld_reference(batch, [[[0]]], [[[0]]])
+        assert loss.item() > 1e-3
+        assert loss.item() == pytest.approx(expected.item(), abs=ULD_TOL)
+        loss.backward()
+        assert batch["student_logits"].grad.abs().max().item() > 1e-6
