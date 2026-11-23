@@ -148,23 +148,14 @@ environment_configs:
           run: |
             set -e
             set -o pipefail
-            BENCHMARK="{{ config.benchmark }}"
-            echo "=== granite $BENCHMARK on $(hostname) ==="
-            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
-            # vLLM refuses to start inside an initialised torch.distributed env.
-            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
-            # SLURM's pyxis/enroot injects the NVIDIA driver libraries at launch, after the image
-            # is built, so the image's ld.so cache has no libcuda.so and Triton/torch.compile
-            # fail with "libcuda.so cannot found!". Refreshing the cache is a per-step runtime
-            # job (no image can do it; pyxis bypasses ENTRYPOINT). Harmless where it is not needed.
-            ldconfig 2>/dev/null || true
-            # The image's ENV PATH can be lost on BlueVela: the LSF provider flattens
-            # enroot's layers in reverse order, so enroot's layer 0 (/etc/environment)
-            # ends up under the base image's. The venv path is fixed by the image.
-            export PATH="/opt/granite-evals/.venv/bin:$PATH"
-            command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is config.image set to a granite-evals image?"; exit 1; }
-            test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
-
+            {#- included from steps/eval/shared/output_dir.j2 -#}
+            {#- granite_output_dir(config): the run-script block every granite-evals family
+                template shares (steps/eval/<family>/skypilot): the HF cache and warm-cache
+                env, the options read once as words (OPT_WORDS, never globbed), and the
+                composed, created $OUTPUT_DIR. After an edit, re-run make publish-step in
+                all eleven (CI's test_published_steps_match_their_templates.py fails until
+                then). -#}
+            {%- macro granite_output_dir(config) -%}
             {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
             {% if config.hf_offline and not config.hf_home %}echo "granite: hf_offline needs hf_home pointing at a cache warmed by make -C steps/eval prefetch" >&2; exit 1{% endif %}
             {% if config.hf_offline %}export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1  # warm-cache mode: hub reads hit HF_HOME's cache only, never the hub{% endif %}
@@ -211,6 +202,25 @@ environment_configs:
             fi
             case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
             mkdir -p "$OUTPUT_DIR"
+            {%- endmacro %}
+            BENCHMARK="{{ config.benchmark }}"
+            echo "=== granite $BENCHMARK on $(hostname) ==="
+            nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+            # vLLM refuses to start inside an initialised torch.distributed env.
+            unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
+            # SLURM's pyxis/enroot injects the NVIDIA driver libraries at launch, after the image
+            # is built, so the image's ld.so cache has no libcuda.so and Triton/torch.compile
+            # fail with "libcuda.so cannot found!". Refreshing the cache is a per-step runtime
+            # job (no image can do it; pyxis bypasses ENTRYPOINT). Harmless where it is not needed.
+            ldconfig 2>/dev/null || true
+            # The image's ENV PATH can be lost on BlueVela: the LSF provider flattens
+            # enroot's layers in reverse order, so enroot's layer 0 (/etc/environment)
+            # ends up under the base image's. The venv path is fixed by the image.
+            export PATH="/opt/granite-evals/.venv/bin:$PATH"
+            command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is config.image set to a granite-evals image?"; exit 1; }
+            test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
+
+            {{ granite_output_dir(config) }}
 
             {% if config.sandbox_cache %}
             # Sandboxes: enroot inside this job's container. Image squashfs files go to

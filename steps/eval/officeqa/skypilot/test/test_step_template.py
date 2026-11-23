@@ -61,6 +61,8 @@ def run_script(step):
 
 
 def _as_shell(script):
+    # Jinja comments (a gb-include's header) and tags out, expressions as a word.
+    script = re.sub(r"\{#.*?#\}", " ", script, flags=re.S)
     script = re.sub(r"\{%.*?%\}", " ", script, flags=re.S)
     return re.sub(r"\{\{.*?\}\}", "X", script, flags=re.S)
 

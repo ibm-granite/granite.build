@@ -129,6 +129,7 @@ environment_configs:
           run: |
             set -e
             set -o pipefail
+            {#- gb-include ../../shared/output_dir.j2 -#}
             BENCHMARK="{{ config.benchmark }}"
             echo "=== granite $BENCHMARK on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
@@ -147,52 +148,7 @@ environment_configs:
             command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is config.image set to a granite-evals image?"; exit 1; }
             test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
 
-            {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
-            {% if config.hf_offline and not config.hf_home %}echo "granite: hf_offline needs hf_home pointing at a cache warmed by make -C steps/eval prefetch" >&2; exit 1{% endif %}
-            {% if config.hf_offline %}export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1  # warm-cache mode: hub reads hit HF_HOME's cache only, never the hub{% endif %}
-
-            # options, split on whitespace (no quoting) and never glob-expanded: read -a
-            # over a single-quoted word, not an unquoted for, so a * or ? in a value (a
-            # tasks= pattern) stays literal here and in the harness call below.
-            read -r -a OPT_WORDS <<< '{{ config.options | replace("'", "'\"'\"'") }}'
-
-            OUTPUT_DIR="{{ config.output_dir }}"
-            OUTPUT_ROOT="{{ config.output_root }}"
-            RUN_NAME="{{ config.run_name }}"
-            # run_name defaults to the model_path basename (the same defaulting as
-            # served_model_name), so one output_root serves every model.
-            if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
-            # The generic bridges run many benchmarks through one id; suffix the
-            # composed dir with what the recipe selected, so two bridge recipes
-            # scoring one model don't share an output dir (results.json would
-            # overwrite): tasks=hellaswag -> .../lm-eval-hellaswag,
-            # domains=airline,retail -> .../tau3-airline-retail,
-            # service=filesystem -> .../mcpmark-filesystem, and a dataset-pinned
-            # bridge (swebench, terminal-bench) takes the dataset's basename. A
-            # selection becomes ONE path segment: commas turn into -, and anything but
-            # [A-Za-z0-9._-] (a /, a glob character) into _. With no selection option
-            # the dir is the benchmark id, as for every curated benchmark.
-            granite_seg() { printf '%s' "$1" | tr ',' '-' | tr -c 'A-Za-z0-9._-' '_'; }
-            BENCH_DIR="$BENCHMARK"
-            for kv in "${OPT_WORDS[@]}"; do
-              case "$kv" in
-                tasks=*|domains=*|service=*|categories=*|benchmark=*) BENCH_DIR="$BENCHMARK-$(granite_seg "${kv#*=}")";;
-              esac
-            done
-            {% if config.dataset and config.benchmark in ("swebench", "terminal-bench") %}
-            d="$(granite_seg "$(basename "{{ config.dataset }}")")"; case "$d" in "$BENCHMARK"-*) BENCH_DIR="$d";; *) BENCH_DIR="$BENCHMARK-$d";; esac
-            {% endif %}
-            # Either a full output_dir, or output_root composed per benchmark; with
-            # neither set, fail here rather than deep inside a harness.
-            if [ -z "$OUTPUT_DIR" ]; then
-              if [ -z "$OUTPUT_ROOT" ]; then
-                echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCH_DIR) or output_dir" >&2
-                exit 1
-              fi
-              OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCH_DIR"
-            fi
-            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
-            mkdir -p "$OUTPUT_DIR"
+            {{ granite_output_dir(config) }}
 
             {% if config.sandbox_cache %}
             # Sandboxes: enroot inside this job's container. Image squashfs files go to
