@@ -361,6 +361,153 @@ def _slurm_tracks_memory(cluster: str) -> bool:
     return tracked
 
 
+# A partition's MaxMemPerCPU, cached per (cluster, partition) for an hour: one
+# SSH round trip per partition, like SkyPilot's own SelectTypeParameters cache.
+_SLURM_MAX_MEM_PER_CPU_TTL_S = 3600.0
+_SLURM_MAX_MEM_PER_CPU_PROBE_TIMEOUT_S = 30
+_slurm_max_mem_per_cpu_cache: Dict[Tuple[str, str], Tuple[float, Optional[int]]] = {}
+
+# SkyPilot's SLURM catalog defaults when a launch names no cpus
+# (sky/catalog/slurm_catalog.py _DEFAULT_NUM_VCPUS, and
+# sky/clouds/slurm.py _DEFAULT_NUM_VCPUS_WITH_GPU).
+_SLURM_DEFAULT_CPUS = 2
+_SLURM_DEFAULT_CPUS_WITH_GPU = 4
+
+
+def _parse_max_mem_per_cpu_mb(scontrol_partition: str) -> Optional[int]:
+    """Read ``MaxMemPerCPU`` (MB) from ``scontrol show partition`` output.
+
+    :param scontrol_partition: the command's stdout (``-o`` one-line or the
+        multi-line form).
+    :returns: the limit in MB, or ``None`` when the partition sets none
+        (``UNLIMITED``, absent, or 0).
+    """
+    match = re.search(r"\bMaxMemPerCPU=(\d+)\b", scontrol_partition)
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value or None
+
+
+def _slurm_max_mem_per_cpu_mb(cluster: str, partition: str) -> Optional[int]:
+    """A SLURM partition's ``MaxMemPerCPU`` in MB, or ``None`` if it has none.
+
+    Slurm raises a job's CPU count when its memory exceeds
+    ``cpus * MaxMemPerCPU``. The job then carries ``SLURM_CPUS_PER_TASK`` (the
+    raised count) next to ``SLURM_TRES_PER_TASK`` (the requested one), and an
+    ``srun`` that passes no CPU count -- SkyPilot's Pyxis container-setup step
+    -- aborts on the mismatch, one second after allocation (issue #749).
+    Blocking (SSH); call it via ``_sky_submit_to_thread``. A probe failure is
+    logged and returns ``None``, which leaves the request unchanged.
+
+    :param cluster: the SLURM cluster alias (the SSH ``Host``).
+    :param partition: the partition the job is submitted to.
+    :returns: the limit in MB, or ``None``.
+    """
+    key = (cluster, partition)
+    cached = _slurm_max_mem_per_cpu_cache.get(key)
+    if cached is not None and cached[0] > time.time():
+        return cached[1]
+    try:
+        from sky.provision.slurm import utils as slurm_utils
+
+        rc, stdout, stderr = slurm_utils.run_on_login_node(
+            cluster,
+            f"scontrol show partition {shlex.quote(partition)} -o",
+            timeout=_SLURM_MAX_MEM_PER_CPU_PROBE_TIMEOUT_S,
+        )
+    except Exception as e:  # noqa: BLE001 - fail safe: leave the request as is
+        logger.warning(
+            "SLURM cluster %s: could not read MaxMemPerCPU for partition %s (%s); "
+            "not checking cpus against memory",
+            cluster,
+            partition,
+            e,
+        )
+        return None
+    if rc != 0:
+        logger.warning(
+            "SLURM cluster %s: `scontrol show partition %s` failed (rc=%s: %s); "
+            "not checking cpus against memory",
+            cluster,
+            partition,
+            rc,
+            (stderr or "").strip()[:200],
+        )
+        return None
+    value = _parse_max_mem_per_cpu_mb(stdout)
+    _slurm_max_mem_per_cpu_cache[key] = (
+        time.time() + _SLURM_MAX_MEM_PER_CPU_TTL_S,
+        value,
+    )
+    return value
+
+
+def _memory_request_mb(memory: Any) -> Optional[float]:
+    """A SkyPilot ``memory`` value (GiB) as MB, or ``None`` if it is not a size.
+
+    Accepts the forms gbserver passes on SLURM: a number, a numeric string, or
+    a ``"{n}+"`` minimum. ``0``/``None`` (no ``--mem``) and the per-CPU ratio
+    form (``"{n}x"``) are not sizes and return ``None``.
+    """
+    if memory is None or isinstance(memory, bool):
+        return None
+    text = str(memory).strip()
+    if text.endswith("+"):
+        text = text[:-1]
+    try:
+        gib = float(text)
+    except ValueError:
+        return None
+    return gib * 1024 if gib > 0 else None
+
+
+def _cpus_request(cpus: Any) -> Optional[int]:
+    """A SkyPilot ``cpus`` value as the integer ``--cpus-per-task`` it becomes.
+
+    SkyPilot's SLURM provisioner writes ``ceil(float(cpus))``; a ``"{n}+"``
+    minimum is read as ``n``. Returns ``None`` for anything else.
+    """
+    if cpus is None or isinstance(cpus, bool):
+        return None
+    text = str(cpus).strip()
+    if text.endswith("+"):
+        text = text[:-1]
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return math.ceil(value) if value > 0 else None
+
+
+def _fit_slurm_cpus_to_memory(
+    res_config: Dict, max_mem_per_cpu_mb: Optional[int]
+) -> Optional[Tuple[int, int]]:
+    """The CPU count a SLURM request needs for its memory, when it is short.
+
+    :param res_config: the merged resources (``cpus``, ``memory``,
+        ``accelerators``) about to go to ``sky.Resources``.
+    :param max_mem_per_cpu_mb: the partition's ``MaxMemPerCPU``, or ``None``.
+    :returns: ``(requested_cpus, needed_cpus)`` when ``memory`` needs more CPUs
+        than the request would get, else ``None``. ``requested_cpus`` is
+        SkyPilot's default when the request names none.
+    """
+    if not max_mem_per_cpu_mb:
+        return None
+    memory_mb = _memory_request_mb(res_config.get("memory"))
+    if memory_mb is None:
+        return None
+    requested = _cpus_request(res_config.get("cpus"))
+    if requested is None:
+        requested = (
+            _SLURM_DEFAULT_CPUS_WITH_GPU
+            if res_config.get("accelerators")
+            else _SLURM_DEFAULT_CPUS
+        )
+    needed = math.ceil(memory_mb / max_mem_per_cpu_mb)
+    return (requested, needed) if needed > requested else None
+
+
 def _lsf_job_alive(lsf_cluster: str, job_name: str) -> Optional[bool]:
     """Ask LSF directly whether the job behind a SkyPilot cluster is alive.
 
@@ -3891,6 +4038,72 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         mem_str = f"{memory:f}".rstrip("0").rstrip(".")
         return f"{mem_str}+"
 
+    async def _fit_slurm_cpus_for_launch(
+        self: Self,
+        cloud_group: str,
+        target_alias: Optional[str],
+        partition: Optional[str],
+        res_config: Dict,
+    ) -> Dict:
+        """Raise a SLURM request's ``cpus`` to what its memory needs (issue #749).
+
+        When ``memory > cpus * MaxMemPerCPU`` for the partition, Slurm grants
+        ``ceil(memory / MaxMemPerCPU)`` CPUs anyway, but the job's environment
+        then disagrees with its request and SkyPilot's container-setup ``srun``
+        aborts, which surfaces as a provisioning failure retried until
+        ``retry.max_retries`` runs out. Requesting the CPUs Slurm would grant
+        keeps the request and the allocation consistent. Probes only for slurm
+        launches that carry a memory size and name a cluster and partition; a
+        probe failure leaves the request unchanged.
+
+        :param cloud_group: the normalized target cloud.
+        :param target_alias: the SLURM cluster alias, or ``None``.
+        :param partition: the partition (``zone``) the job is submitted to.
+        :param res_config: the merged resources about to go to
+            ``sky.Resources``.
+        :returns: ``res_config``, with ``cpus`` raised when the memory needs it.
+        """
+        if (
+            cloud_group != "slurm"
+            or not target_alias
+            or not partition
+            or _memory_request_mb(res_config.get("memory")) is None
+        ):
+            return res_config
+        try:
+            max_mem_per_cpu_mb = await asyncio.wait_for(
+                _sky_submit_to_thread(
+                    _slurm_max_mem_per_cpu_mb, target_alias, partition
+                ),
+                timeout=_SLURM_MAX_MEM_PER_CPU_PROBE_TIMEOUT_S + 10,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "SLURM cluster %s: MaxMemPerCPU probe for partition %s timed out; "
+                "not checking cpus against memory",
+                target_alias,
+                partition,
+            )
+            return res_config
+        fit = _fit_slurm_cpus_to_memory(res_config, max_mem_per_cpu_mb)
+        if fit is None:
+            return res_config
+        requested, needed = fit
+        logger.warning(
+            "SLURM partition %s on %s allows %s MB per CPU, so memory=%s needs %d "
+            "CPUs; raising cpus from %d to %d (Slurm would grant %d anyway, and a "
+            "request below that aborts the container launch -- issue #749)",
+            partition,
+            target_alias,
+            max_mem_per_cpu_mb,
+            res_config.get("memory"),
+            needed,
+            requested,
+            needed,
+            needed,
+        )
+        return {**res_config, "cpus": needed}
+
     async def _slurm_memory_tracked_for_launch(
         self: Self,
         cloud_group: str,
@@ -4377,6 +4590,16 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
                 # directly, so a bare int is fine there.)
                 **override_res,
             }
+            # A memory request above cpus * MaxMemPerCPU gets more CPUs than it
+            # asked for, which aborts the container launch (issue #749): ask for
+            # them up front. The partition is the infra's third segment, or the
+            # separate zone.
+            res_config = await self._fit_slurm_cpus_for_launch(
+                cloud_group,
+                probe_alias,
+                infra_parts[2] if len(infra_parts) >= 3 else zone,
+                res_config,
+            )
 
             # num_nodes is a sky.Task field, not a sky.Resources one, so it is
             # resolved separately from res_config above (a num_nodes key placed
