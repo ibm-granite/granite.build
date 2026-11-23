@@ -39,10 +39,10 @@ lock: ## Recompile requirements.lock (hashed) from requirements.in for linux x86
 #     socket is needed. A report pass (HIGH and above, fixed and unfixed) fails only
 #     if trivy cannot run; the gate pass (fixable SCAN_SEVERITY, --ignore-unfixed)
 #     fails on a finding.
-#   - One deliberate difference: trivy's --severity is a set, not a floor
-#     (`--severity HIGH` drops CRITICAL), so both trivy passes are given SCAN_SEVERITY
-#     AND ABOVE, plus UNKNOWN so an unscored fixable finding fails closed as it does in
-#     osv-gate.py. distill's passes `--severity $(SCAN_SEVERITY)` alone.
+#   - trivy's --severity is a set, not a floor (`--severity HIGH` drops CRITICAL), so
+#     both trivy passes are given SCAN_SEVERITY AND ABOVE, plus UNKNOWN so an unscored
+#     fixable finding fails closed as it does in osv-gate.py. distill's gate does the
+#     same; its report pass is fixed at HIGH,CRITICAL.
 #   - scan-ignore (next to this Makefile) lists accepted advisory ids, one per line,
 #     with the reason, the issue that removes it and an expiry; both passes read it.
 #   - publish-image runs both first, so an unscanned tag is never pushed. SKIP_SCAN=true

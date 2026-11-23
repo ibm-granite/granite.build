@@ -78,6 +78,15 @@ TAG_STATUS        := sh ../../scripts/registry-tag-status.sh
 # HIGH, not CRITICAL: a fixable HIGH ships only if it is recorded in the
 # image's scan-ignore; silence is not acceptance.
 SCAN_SEVERITY     ?= HIGH
+# trivy's --severity is a set, not a floor: `--severity HIGH` drops CRITICAL. The gate
+# therefore passes SCAN_SEVERITY and above, plus UNKNOWN, so an unscored fixable finding
+# fails closed as it does in osv-gate.py. Same as steps/aux/hf-export.
+SEVERITY_UP_CRITICAL := CRITICAL
+SEVERITY_UP_HIGH     := HIGH,CRITICAL
+SEVERITY_UP_MEDIUM   := MEDIUM,HIGH,CRITICAL
+SEVERITY_UP_LOW      := LOW,MEDIUM,HIGH,CRITICAL
+TRIVY_GATE_SEVERITY   = UNKNOWN,$(SEVERITY_UP_$(SCAN_SEVERITY))
+check-severity = $(if $(SEVERITY_UP_$(SCAN_SEVERITY)),,$(error SCAN_SEVERITY=$(SCAN_SEVERITY) is not one of CRITICAL HIGH MEDIUM LOW))
 SCAN_CACHE        ?= $(HOME)/.cache/gb-image-scan
 TRIVY_IMAGE       ?= ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
 SKIP_SCAN         ?= false
@@ -155,6 +164,7 @@ $(addprefix scan-lock-,$(IMAGES)): scan-lock-%:
 # itself cannot run; the gate pass exits 3 on a fixable finding at SCAN_SEVERITY, so
 # a finding is told apart from trivy failing (pull, database download).
 $(addprefix scan-image-,$(IMAGES)): scan-image-%: scan-lock-%
+	$(check-severity)
 	$(require_registry)
 	@$(DOCKER) image exists $(call image_ref,$*) 2>/dev/null || $(DOCKER) image inspect $(call image_ref,$*) >/dev/null 2>&1 || \
 		{ echo "[scan] $(call image_ref,$*) is not built: run make image-$* REGISTRY=$(REGISTRY) first" >&2; exit 1; }
@@ -174,15 +184,15 @@ $(addprefix scan-image-,$(IMAGES)): scan-image-%: scan-lock-%
 	echo "[scan] trivy report (HIGH,CRITICAL, fixed and unfixed) for $(call image_ref,$*)"; \
 	trivy_all --severity HIGH,CRITICAL --format table; rc=$$?; \
 	if [ $$rc -ne 0 ]; then rm -f "$$tar"; echo "[scan] trivy did not run (exit $$rc); see the error above" >&2; exit $$rc; fi; \
-	echo "[scan] trivy gate (fixable $(SCAN_SEVERITY)) for $(call image_ref,$*)"; \
-	trivy --severity $(SCAN_SEVERITY) --exit-code 3 --format table --skip-db-update; rc=$$?; \
+	echo "[scan] trivy gate (fixable $(TRIVY_GATE_SEVERITY)) for $(call image_ref,$*)"; \
+	trivy --severity $(TRIVY_GATE_SEVERITY) --exit-code 3 --format table --skip-db-update; rc=$$?; \
 	rm -f "$$tar"; \
 	case $$rc in \
 		0) ;; \
-		3) echo "[scan] FAILED: $(call image_ref,$*) has fixable $(SCAN_SEVERITY) vulnerabilities; fix them before publish-image-$*" >&2; exit 1 ;; \
+		3) echo "[scan] FAILED: $(call image_ref,$*) has fixable $(TRIVY_GATE_SEVERITY) vulnerabilities; fix them before publish-image-$*" >&2; exit 1 ;; \
 		*) echo "[scan] trivy did not run (exit $$rc); see the error above" >&2; exit $$rc ;; \
 	esac; \
-	echo "[scan] $(call image_ref,$*): no fixable $(SCAN_SEVERITY) vulnerabilities"
+	echo "[scan] $(call image_ref,$*): no fixable $(TRIVY_GATE_SEVERITY) vulnerabilities"
 
 $(addprefix fix-lock-,$(IMAGES)): fix-lock-%:
 	@command -v uvx >/dev/null 2>&1 || { echo "[fix-lock] uvx is not on PATH (https://docs.astral.sh/uv/)" >&2; exit 1; }

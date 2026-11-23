@@ -11,3 +11,9 @@
 # Ids from trivy's report on the c1069dfd image. Until 2027-05-31.
 CVE-2026-78661
 CVE-2026-111943
+# GO-2026-5932: golang.org/x/crypto/openpgp is unmaintained (Go vuln DB; no CVE alias,
+# no severity score, so trivy reports it as UNKNOWN; the "fix" is a deprecation
+# pseudo-version of x/crypto). Found once the trivy gate also checked UNKNOWN. Whether
+# wandb-core imports openpgp at all is not verified; accepted on the same grounds as the
+# ids above, and removed by the same raise (#752). Until 2027-05-31.
+GO-2026-5932
