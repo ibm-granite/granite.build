@@ -21,13 +21,17 @@ requires-python = ">=3.12,<3.13"
 # used -- including the run that trained this step's off-policy arm end-to-end through the
 # rendered step command. Read out of that venv's installed metadata on 2026-08-25.
 #
+# EXCEPT the vLLM upgrade (#676), which moved vllm, trl, torch (transitively, through vllm)
+# and datasets OFF that environment to clear vllm 0.11.0's two CRITICAL advisories, and
+# moved the image from CUDA 12.8 to CUDA 13 with them. Those pins are NOT from a recorded
+# run. Their evidence is a resolve, an image build and the import/patch probes named in
+# each comment; until a training run on that image, they are built and probed, not trained.
+#
 # HOW FAR THE PINS ARE VERIFIED. `uv lock` resolves them against PyPI (see uv.lock, and
-# `uv lock --check` re-verifies), and the venv above proves the same set runs. What is
-# NOT verified is that they INSTALL from these pins into this step's base image: no
-# container build environment is available here (Dockerfile header), and the sandbox
-# venv was assembled by hand rather than from this file. `deepspeed` is sdist-only and
-# compiles against the CUDA toolkit in the base image, which is the part a resolution check
-# cannot speak to.
+# `uv lock --check` re-verifies), and the image build installs exactly that lock
+# (`uv sync --locked` in the Dockerfile), including `deepspeed`, which is sdist-only and
+# builds against the base image's CUDA toolkit. For the pins the venv above recorded,
+# that venv proves the set runs; for the #676 pins, see their comments.
 #
 # WHY EXACT `==` AND NOT RANGES, for this step specifically. Two of this step's
 # entrypoints reach into private internals of the pinned packages to work around bugs in
@@ -35,10 +39,10 @@ requires-python = ">=3.12,<3.13"
 # `vllm.model_executor.models.{granitemoehybrid,granite}`, and run_vllm_serve.py also
 # patches `trl.scripts.vllm_serve`. A monkeypatch against a private attribute is not
 # version-tolerant: it either no-ops or raises when upstream moves the attribute, and
-# upstream HAS moved it (trl main has deleted `trl/extras/vllm_client.py`, the module
-# whose import failure the trl patch exists to prevent, and is at v1.9.2 against the
-# 0.26.2 pinned here). A range would let a resolver pick a release these patches do not
-# describe. Bumping any of them is therefore a deliberate change with its own test, not
+# upstream HAS moved it (trl 1.17.1 has no `trl/extras/vllm_client.py` -- the client is
+# `trl/generation/vllm_client.py` -- no `_vllm_ascend_available` and no
+# `trl.scripts.vllm_serve.sanitize_logprob`; see patch_targets.py). A range would let a
+# resolver pick a release these patches do not describe. Bumping any of them is therefore a deliberate change with its own test, not
 # a resolver's choice -- see the patch inventory in README.md.
 dependencies = [
     # GOLD lives in trl.experimental.gold, which is not a stable public API: the module
@@ -46,35 +50,43 @@ dependencies = [
     # src/gb_steps_post_training/distillation/custom_gold_config.py subclasses GOLDConfig
     # directly.
     #
-    # 0.26.2 EXACTLY, and this is the pin with the most evidence behind it. Under
-    # transformers >= 4.57 `trl.import_utils._is_package_available()` returns a
-    # (bool, version) TUPLE, and trl/import_utils.py:43 stores it raw --
-    # `_vllm_ascend_available = _is_package_available("vllm_ascend")` with no
-    # `return_version=True` -- so the guard is truthy even though the package is absent,
-    # and trl/extras/vllm_client.py:42 then unconditionally runs
-    # `from vllm_ascend.distributed...import PyHcclCommunicator`. Reproduced directly in
-    # the sandbox venv: `import trl.experimental.gold` raises
-    # `ModuleNotFoundError: No module named 'vllm_ascend'`. gold.py and
-    # run_vllm_serve.py each undo it before their first `from trl...` import, which is
-    # why training ran anyway. The bug is still unfixed on trl main (that function
-    # still omits return_version), but its consumer has moved, so neither the failure nor
-    # the workaround transfers to a newer release unexamined.
-    "trl==0.26.2",
+    # 1.17.1 EXACTLY (#676; was 0.26.2). 0.26.2 requires vllm<0.12, so the vLLM upgrade
+    # below forces a trl 1.x: 1.17.1 accepts vllm>=0.22,<0.33 (its `vllm` extra) and
+    # needs datasets>=4.7 and accelerate>=1.11 (both satisfied below). Its optional
+    # extras ask for deepspeed>=0.18.6 and liger-kernel>=0.8.2; neither extra is
+    # installed here (see the deepspeed and liger pins).
+    #
+    # What 0.26.2 needed working around is gone in 1.17.1: trl/import_utils.py now has
+    # its own `_is_package_available` that returns a plain bool unless asked for the
+    # version, has no `_vllm_ascend_available` at all, and `is_weave_available()` calls
+    # it directly, so the tuple-guard failures (`No module named 'vllm_ascend'` /
+    # `'weave'`) cannot happen. That makes gold.py's and run_vllm_serve.py's ascend
+    # patch a no-op and is why weave is no longer installed.
+    #
+    # NOT yet verified: that this code's GOLD extension runs on it. custom_gold_trainer.py
+    # and custom_gold_config.py extend the 0.26.2 GOLDTrainer/GOLDConfig, and the 1.x
+    # trainer, config and vLLM client/server protocol differ (#676 phase 2 ports them).
+    # Until then this pin builds and imports; it does not train.
+    "trl==1.17.1",
     # 5.8.0 EXACTLY. This is a 5.x-only codebase in ways that are load-bearing rather
     # than incidental: the chat template is read from `chat_template.jinja` as a FILE and
     # not from tokenizer_config.json (patches/granite-chat-template-generation-markers/),
     # the legacy vocab.json/merges.txt sidecars are inert (docs/tokenizer_mismatch.md),
     # `rope_theta` has moved into `config.rope_parameters` (which is what gold.py's vLLM
-    # patches exist for), and the tuple-returning `_is_package_available` above is a
-    # transformers change. Held exactly rather than as >=5.8,<6 because the vLLM pin
-    # below has to agree with it and one of them moving alone is the failure mode.
+    # patches existed for; vllm 0.26.0 reads rope_parameters itself), and the
+    # tuple-returning `_is_package_available` trl 0.26.2 tripped over is a transformers
+    # change. Held exactly rather than as >=5.8,<6 because the vLLM pin below has to agree
+    # with it (vllm 0.26.0 needs transformers>=5.5.3; 0.32+ needs >=5.16) and one of them
+    # moving alone is the failure mode. Unchanged by #676.
     "transformers==5.8.0",
     # 1.12.0 EXACTLY. accelerate is the DeepSpeed integration layer here, not a
     # convenience: configs/distillation/deepspeed/accelerate_deepspeed_zero3.yaml is an
     # ACCELERATE config, the launcher invokes `accelerate launch`, and ZeRO-3 checkpoint
     # saving (zero3_save_16bit_model) is what makes distill-hf-export a selector rather
     # than a converter. The accelerate/deepspeed/torch triple is the one this step has
-    # actually trained and resumed under, confirmed by direct measurement.
+    # actually trained and resumed under, confirmed by direct measurement -- with torch
+    # 2.8.0. #676 keeps accelerate and deepspeed and moves torch to 2.11.0, so the triple
+    # is new: imports in the dev image, not yet trained or resumed.
     "accelerate==1.12.0",
     # 0.17.5 EXACTLY, which is what `deepspeed<0.17.6` already meant in practice: 0.17.5
     # was the newest release under that ceiling and is the version installed in the
@@ -83,22 +95,41 @@ dependencies = [
     # version this code has ever run under is 0.17.5 and stops a resolver from choosing
     # differently. What breaks at 0.17.6+ is still unknown; finding out is a deliberate
     # experiment (one bump, one training run, one recorded result), not something to
-    # discover during a distillation run on preemptable capacity.
+    # discover during a distillation run on preemptable capacity. Kept at 0.17.5 through
+    # #676 for that reason, although trl 1.17.1's (uninstalled) `deepspeed` extra asks for
+    # >=0.18.6: under torch 2.11.0 it builds and imports in the dev image, and a JIT op
+    # (FusedAdam, for sm_90) compiles against the base image's CUDA 13.0 nvcc; it has not
+    # trained there.
     "deepspeed==0.17.5",
     # Serves the STUDENT for on-policy rollouts (lmbda > 0), not the teacher -- the teacher
     # is sharded by the trainer's own ZeRO-3.
     #
-    # 0.11.0 EXACTLY, and it is coupled to BOTH neighbours. Downwards: vllm 0.11.0 pins
-    # torch==2.8.0, which must equal the torch in the base image, because the Mamba2 Hub
-    # kernels are resolved per-variant and the cache baked into the image is
-    # torch28-cxx11-cu128-x86_64-linux, confirmed by direct measurement -- a torch bump silently invalidates
-    # it. Upwards: gold.py and run_vllm_serve.py patch
-    # `GraniteMoeHybridAttention.__init__` and `GraniteDecoderLayer.__init__` inside
-    # vllm.model_executor, private surfaces that vLLM reorganises freely.
-    "vllm==0.11.0",
+    # 0.26.0 EXACTLY (#676; was 0.11.0, which has two CRITICAL advisories: an RCE in video
+    # processing, fixed in 0.14.1, and an OpenAI-server auth bypass, fixed in 0.22.0).
+    # 0.14.1 is out because it requires transformers<5. 0.26.0 is the newest release that
+    # resolves with the pins around it: 0.27 needs torch 2.13, 0.28 needs
+    # huggingface_hub>=1.27, 0.32 needs transformers>=5.16. It still has HIGH advisories
+    # (see scan-ignore); the next raise is bounded by those three pins.
+    #
+    # It is coupled to BOTH neighbours. Downwards: vllm 0.26.0 pins torch==2.11.0 (and
+    # torchvision 0.26.0 / torchaudio 2.11.0), and the Mamba2 Hub kernels are resolved
+    # per torch/CUDA variant (torch211-cxx11-cu130-x86_64-linux now), so a torch bump
+    # needs a kernel revision that ships that variant (hub_kernel_pins.py). torch is not
+    # listed here: the default PyPI torch 2.11.0 wheel is the CUDA 13.0 build vLLM's
+    # default wheel is built against, so no index pin is needed to choose its source, and
+    # vllm's exact pin already fixes its version. vLLM publishes no cu128 wheel for any
+    # release with the CRITICAL fixes (only the default CUDA 13 wheel and +cu129), which
+    # is why the image moved to CUDA 13 (Dockerfile). Upwards: gold.py and
+    # run_vllm_serve.py patch `GraniteMoeHybridAttention.__init__` and
+    # `GraniteDecoderLayer.__init__` inside vllm.model_executor, private surfaces that
+    # vLLM reorganises freely; 0.26.0 passes `config.rope_parameters` itself, so those
+    # patches are now no-ops (patch_targets.py).
+    "vllm==0.26.0",
     # Mamba2 mixer kernels for Granite 4 hybrid models, resolved from the Hub at gold.py
-    # import time. The image must ship a warm cache or the step fails after allocation;
-    # see run-gold.sh's kernel gate and the companion cache-prefetch tool.
+    # import time. The HF cache the step mounts must be warm for the pinned revision and
+    # this image's torch/CUDA variant, or the step fails after allocation; see
+    # gold-kernels.sh's kernel gate (it downloads on a miss by default) and
+    # hub_kernel_pins.py.
     #
     # 0.12.3 EXACTLY, because gold.py does not use the public `kernels` API for the
     # preflight: it imports `kernels.utils.install_kernel` and `kernels.utils.
@@ -116,15 +147,25 @@ dependencies = [
     # default jsd arm, but the arm must not be a config value that fails on import.
     # 0.6.4 is the sandbox version; the arm itself is a scaffold and has not been trained,
     # so this pin records what is installed rather than what has been exercised.
+    # trl 1.17.1's own is_liger_kernel_available() requires >=0.8.2 and so reports False
+    # for 0.6.4, and its GOLD trainer has no liger path at all. This code gates on
+    # transformers' check instead (custom_gold_trainer.py, sft.py), which needs >=0.3.0,
+    # and liger_losses.py imports liger_kernel directly, so 0.6.4 still serves the arm.
+    # Imports under torch 2.11.0 / triton 3.6.0 in the dev image; whether to raise it is
+    # a #676 phase 2 decision.
     "liger-kernel==0.6.4",
-    # 4.4.1 EXACTLY, and this pin is NEW -- datasets was previously not declared at all
-    # and arrived transitively, which meant an unconstrained resolve picked 5.0.1, a MAJOR
-    # version ahead of anything this code has run under. gold.py imports
-    # `datasets.{Dataset, DatasetDict, load_dataset, load_from_disk}` directly and
-    # corpus-prep's output is consumed through them, so datasets is a direct dependency
-    # of this step whether or not it is listed; listing it is what makes the version a
-    # decision instead of a side effect.
-    "datasets==4.4.1",
+    # Declared because gold.py imports `datasets.{Dataset, DatasetDict, load_dataset,
+    # load_from_disk}` directly and corpus-prep's output is consumed through them, so
+    # datasets is a direct dependency of this step whether or not it is listed; listing it
+    # is what makes the version a decision instead of a side effect (an unconstrained
+    # resolve once picked 5.0.1, a MAJOR version ahead of anything this code had run under).
+    #
+    # 4.8.5 EXACTLY (#676; was 4.4.1, the recorded environment's version). trl 1.17.1
+    # requires datasets>=4.7. 4.8.5 is the newest 4.x; 5.x needs huggingface_hub>=1.31,
+    # and huggingface_hub stays at 1.14.0 below. Still 4.x, so the same major as before.
+    # It caps fsspec[http]<=2026.2.0, so the fsspec HIGH (fixed in 2026.6.0) stays
+    # unsatisfiable until datasets 5.1+ (scan-ignore, #752).
+    "datasets==4.8.5",
     # render_gold_config.py's only third-party dependency. Deliberately NOT pinned exactly:
     # nothing here touches a private pyyaml surface, safe_load/safe_dump are stable across
     # its releases, and an exact pin on a leaf utility only creates conflicts with whatever
@@ -139,17 +180,11 @@ dependencies = [
     # would be declared but unchecked.
     "clearml==2.1.12",
     "wandb==0.28.2",
-    # 0.53.12 EXACTLY. NOT used by this code: trl 0.26.2 imports it. trl/trainer/callbacks.py
-    # does `import weave` whenever trl.import_utils._weave_available is truthy, and that guard
-    # is `_is_package_available("weave")` with no return_version -- the same tuple-returning
-    # call as the vllm_ascend one above. On the transformers pinned here that call returns a
-    # (bool, version) tuple, which is truthy even when weave is absent, so `import
-    # trl.trainer.callbacks` (reached from `from trl import ...` in gold.py) raises
-    # `ModuleNotFoundError: No module named 'weave'`. Measured on BlueVela SLURM: both ranks
-    # died at import, before any model loaded. Installing it makes the guard's import real.
-    # Pinned exactly, like the other trl-adjacent packages, because it is reached through a
-    # private guard rather than an API this step chose.
-    "weave==0.53.12",
+    # weave is NOT listed any more (#676; was weave==0.53.12). This code never used it:
+    # trl 0.26.2's callbacks.py imported it behind a tuple-returning guard that was truthy
+    # with weave absent, so it had to be installed for `from trl import ...` to work.
+    # trl 1.17.1's guard returns a bool (see the trl pin), so with weave absent
+    # trl.trainer.callbacks skips the import; verified by import in the dev image.
     # A transitive dependency, pinned because 4.70.0 (what the lock resolved) breaks the
     # Mamba2 kernel fetch: huggingface_hub's snapshot_download hands thread_map a
     # generator, and tqdm 4.70's _min_map_len then calls min() on an empty sequence, so
@@ -157,6 +192,7 @@ dependencies = [
     # empty" on a cold cache. causal-conv1d and flash-attn2 download fine, which is why
     # only the sft and logit-precompute steps (the GOLD_PREFETCH_KERNELS=1 launchers)
     # failed. Measured in the a20c8f39 image: 4.70.0 fails, 4.67.1 downloads the kernel.
+    # huggingface_hub is unchanged by #676, so the pin stays.
     "tqdm==4.67.1",
 ]
 
@@ -177,4 +213,12 @@ constraint-dependencies = [
     "graphql-core>=3.3.1",
     "msgpack>=1.2.3",
     "urllib3>=2.8.0",
+    # A CEILING, not a fix: filelock 4.x changes UnixFileLock's behaviour on shared lock
+    # directories, and these steps share one HF cache across accounts. vllm 0.26.0 and
+    # torch 2.11.0 accept 4.x, so without this the resolver is free to take it. Moving to
+    # 4.x is its own, cluster-tested change (#752; see scan-ignore).
+    "filelock<4",
+    # vllm 0.11.0 capped setuptools<80; 0.26.0 allows <81, so setuptools can take the
+    # release that vendors fixed jaraco.context and wheel copies (scan-ignore).
+    "setuptools>=80.10.2",
 ]
