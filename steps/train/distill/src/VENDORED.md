@@ -8,7 +8,7 @@ from that commit in these ways, and in no other:
 - **Formatting.** Every file is reformatted with `black` and `isort`, which CI enforces
   repo-wide. To compare against upstream, format both sides the same way first.
 - **Local patches** in `custom_gold_config.py` and `custom_gold_trainer.py`, described
-  below: the two on-policy study patches.
+  below: the two on-policy study patches, and the ULD base-path fix.
 
 ## Licence
 
@@ -90,14 +90,30 @@ changed, and uses trl's machinery where it does the same job:
   the sampled token's at index 0 of the top-k structure (D-2/D-4); a NaN logprob (None from
   trl's client) masks the token out of importance sampling (D-3).
 - The non-hybrid ULD path (`CustomULDLoss._compute_base_distillation_loss`) and the
-  probability merge (`_merge_probabilities_with_alignment_groups`) are trl 0.26.2's,
-  vendored unchanged (D-7: bit-identical numerics). trl 1.x's base path needs byte offsets
-  this trainer does not pass, and its "observed" merge is unnormalised and needs
-  `token_ids`.
+  probability merge (`_merge_probabilities_with_alignment_groups`) are trl 0.26.2's: the
+  merge vendored unchanged (D-7: bit-identical numerics), the base path with the local fix
+  below. trl 1.x's base path needs byte offsets this trainer does not pass, and its
+  "observed" merge is unnormalised and needs `token_ids`.
 - `CustomULDLoss._compute_distillation_loss` accepts trl 1.x's byte-offset keywords and
   ignores them (it aligns from token IDs).
 
 `steps/train/distill/logit-distill/skypilot/test/test_trl1_port.py` pins each of these.
+
+## Local fix: the ULD base path
+
+`CustomULDLoss._compute_base_distillation_loss`, the path `loss_arm: uld` runs, is trl
+0.26.2's non-hybrid `ULDLoss._compute_distillation_loss` with two fixes, both described in
+its docstring and pinned in
+`steps/train/distill/logit-distill/skypilot/test/test_loss_numerics.py`:
+
+- TRL read the logits AT each completion position, one late: logits[t] predicts token
+  t + 1, and nothing upstream shifts them. It now reads start-1, as the hybrid path and
+  the JSD path do. trl 1.18.2 has the same default, `uld_token_merge_strategy="observed"`
+  (its opt-in `"bayesian"` strategy shifts).
+- A row whose alignment yields no groups reached the merge, which then returned the
+  probabilities unmerged: a shape `RuntimeError`, or a distance between unaligned
+  positions. Such a row now contributes no loss, as on the hybrid path, and is counted in
+  `train/alignment_unaligned_rows`.
 
 ## A second copy elsewhere
 

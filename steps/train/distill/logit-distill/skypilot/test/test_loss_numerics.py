@@ -262,17 +262,16 @@ class TestComputeLossKd:
 # What the reference follows. `loss_arm: uld` renders `use_uld_loss: true` and nothing else
 # (render_gold_config.py LOSS_ARMS["uld"]), so every other ULD knob is a dataclass default:
 # use_extended_uld True, uld_use_hybrid_loss False, cross-entropy weight 0, distillation
-# weight 1, both temperatures 1. With the hybrid loss off, CustomULDLoss hands the whole
-# computation to TRL's ULDLoss._compute_distillation_loss (trl 0.26.2,
-# trl/experimental/gold/gold_trainer.py:325-423), and overrides only two things it uses:
-# skip_student_eos / skip_teacher_eos forced False, and _build_alignment_groups_from_ids,
-# which aligns the bodies and appends the two EOS positions as one final group. Per row,
-# TRL's base path:
+# weight 1, both temperatures 1. With the hybrid loss off, CustomULDLoss runs
+# _compute_base_distillation_loss: TRL's non-hybrid ULD (trl 0.26.2,
+# trl/experimental/gold/gold_trainer.py:325-423) with skip_*_eos forced False, its own
+# _build_alignment_groups_from_ids (bodies aligned greedily, the two EOS positions appended
+# as one final group), and two fixes to TRL (TestULDLogitAlignment, TestULDUnalignedRow).
+# Per row:
 #
-#   1. takes the completion as [first label, first label + label count) (:367-368) -- the
-#      logits AT those positions, i.e. each one's prediction of the NEXT token. The hybrid
-#      path (custom_gold_trainer.py:2023) reads start-1, the prediction of the token itself;
-#      the reference follows the base path, which is the one the arm runs;
+#   1. takes the completion as [first label, first label + label count), and reads the
+#      logits one position EARLIER, so probs[k] predicts token k. (TRL reads the logits AT
+#      those positions, :367-368, which predict the token after each one.)
 #   2. softmaxes each side over its own vocabulary (:371-372);
 #   3. merges each alignment group into one distribution: a single position as is, several
 #      as the renormalised product of their probabilities (:521-557, via log-sum-softmax);
@@ -387,11 +386,14 @@ def _uld_batch(seed=0):
     )
 
 
-def _uld_reference(batch, s_groups, t_groups):
-    """Sorted-distribution ULD, written out (see the block comment above for each step)."""
+def _uld_reference(batch, s_groups, t_groups, at_labels=False):
+    """Sorted-distribution ULD, written out (see the block comment above for each step).
+    `at_labels` reads the logits at the label positions instead, as TRL does."""
 
     def merged(logits, labels, groups):
-        probs = F.softmax(logits[labels != IGNORE], dim=-1)  # step 1-2: AT the labels
+        # step 1-2: the logits BEFORE each label (or AT it, for TRL's indexing)
+        where = (labels != IGNORE).nonzero().squeeze(-1) - (0 if at_labels else 1)
+        probs = F.softmax(logits[where], dim=-1)
         out = []
         for g in groups:  # step 3: renormalised product over the group
             q = probs[g].prod(dim=0)
@@ -534,3 +536,163 @@ class TestULDEosOnlyCompletion:
         assert loss.item() == pytest.approx(expected.item(), abs=ULD_TOL)
         loss.backward()
         assert batch["student_logits"].grad.abs().max().item() > 1e-6
+
+
+def _single_row(s_completion, t_completion, seed, s_prompt=(5,), t_prompt=(7,)):
+    s_ids, s_labels = _rows([(list(s_prompt), s_completion)], S_PAD)
+    t_ids, t_labels = _rows([(list(t_prompt), t_completion)], T_PAD)
+    g = torch.Generator().manual_seed(seed)
+    return dict(
+        student_logits=torch.randn(
+            *s_ids.shape, len(S_PIECES), generator=g, dtype=DTYPE
+        ),
+        teacher_logits=torch.randn(
+            *t_ids.shape, len(T_PIECES), generator=g, dtype=DTYPE
+        ),
+        student_labels=s_labels,
+        teacher_labels=t_labels,
+        student_input_ids=s_ids,
+        teacher_input_ids=t_ids,
+    )
+
+
+class TestULDLogitAlignment:
+    """Which logits score a completion token. The trainer passes both models' logits and
+    labels in input coordinates, unshifted (compute_loss; the teacher crop keeps
+    `teacher_prompt_length - 1` so the first completion token keeps its predictor), and in
+    a causal LM logits[t] predict token t + 1. So the distribution for completion token p
+    is logits[p - 1]: what the JSD path (logits[:, :-1] against labels[:, 1:]) and the
+    hybrid ULD path (start-1) read. TRL's base path read logits[p] (gold_trainer.py:367-368),
+    one position late: every token was scored by the prediction of the token after it, and
+    the EOS by the prediction past the end of the completion.
+
+    The construction makes the two readings disagree. Text "abc" is a|b|c on both sides, so
+    every group is one position. At the positions that PREDICT the completion (the last
+    prompt position through the one before EOS) the student is the teacher relabelled, so
+    the correct reading gives exactly zero; at the EOS position, whose logits predict past
+    the end, the student is unrelated, so the late reading does not."""
+
+    @staticmethod
+    def _batch():
+        batch = _single_row([1, 2, 3, S_EOS], [2, 3, 4, T_EOS], seed=7)
+        t_logits = batch["teacher_logits"]
+        t_logits[..., 7:] = float("-inf")  # the two surplus teacher tokens
+        relabel = torch.randperm(7, generator=torch.Generator().manual_seed(8))
+        predictors = slice(0, 4)  # positions 0..3 predict completion tokens 1..4
+        batch["student_logits"][:, predictors] = t_logits[:, predictors][..., relabel]
+        return batch
+
+    def test_each_token_is_scored_by_the_logits_before_it(self):
+        batch = self._batch()
+        groups = [[[0], [1], [2], [3]]]
+        assert _uld_reference(batch, groups, groups).item() == pytest.approx(
+            0.0, abs=ULD_TOL
+        )
+        assert _uld_reference(batch, groups, groups, at_labels=True).item() > 1e-3
+        assert _custom_uld()(**batch).item() == pytest.approx(0.0, abs=ULD_TOL)
+
+    def test_trl_reads_the_logits_at_the_labels(self):
+        """The upstream defect, pinned on the parent with the subclass's EOS settings, so
+        the override has something to fix. trl 1.x's base path aligns by byte offsets,
+        which this trainer does not pass, so the parent cannot score these inputs at all;
+        what is pinned is that its default strategy, "observed", is the one that reads the
+        logits AT the labels (only the opt-in "bayesian" reads start-1). If trl's default
+        moves to the shifted reading, this fails and fix 1 is to be re-judged."""
+        batch = self._batch()
+        parent = _parent_uld()
+        parent.skip_student_eos = parent.skip_teacher_eos = False
+        assert parent.token_merge_strategy == "observed"
+        with pytest.raises(ValueError, match="Byte offsets are required"):
+            parent(**batch)
+
+    def test_an_eos_only_completion_is_scored_where_the_stop_is_predicted(self):
+        """The EOS fix is only worth having at the right position: the stop decision is
+        the last PROMPT position's distribution. Agree there and disagree past the end, and
+        the loss must be zero; the reverse, and it must be the predictor's distance."""
+        batch = _single_row([S_EOS], [T_EOS], seed=9)
+        t_logits = batch["teacher_logits"]
+        t_logits[..., 7:] = float("-inf")
+        relabel = torch.randperm(7, generator=torch.Generator().manual_seed(10))
+        agree_at_stop = {k: v.clone() for k, v in batch.items()}
+        agree_at_stop["student_logits"][:, 0] = t_logits[:, 0][..., relabel]
+        assert _custom_uld()(**agree_at_stop).item() == pytest.approx(0.0, abs=ULD_TOL)
+
+        agree_past_end = {k: v.clone() for k, v in batch.items()}
+        agree_past_end["student_logits"][:, 1] = t_logits[:, 1][..., relabel]
+        loss = _custom_uld()(**agree_past_end).item()
+        assert loss > 1e-3
+        assert loss == pytest.approx(
+            _uld_reference(agree_past_end, [[[0]]], [[[0]]]).item(), abs=ULD_TOL
+        )
+
+
+class TestULDUnalignedRow:
+    """A row whose alignment yields NO groups. TRL's merge then returns the probabilities
+    unmerged (gold_trainer.py:532-533), so the base path either raised (the completions
+    differ in length) or scored unaligned positions against each other (they do not). The
+    class's alignment returns no groups when the decoded completions differ before the
+    first common boundary (a tokenizer or render mismatch: special tokens, whitespace,
+    normalisation, truncation) or when matching texts reach max_alignment_group_size
+    tokens on either side before one. Such a row now contributes no loss, as on the hybrid
+    path, and is counted for `train/alignment_unaligned_rows`."""
+
+    @staticmethod
+    def _with_good_row(s_bad, t_bad):
+        """Row 0 is the aligned "abcab" row of S_ROWS/T_ROWS; row 1 the unaligned one."""
+        s_ids, s_labels = _rows([S_ROWS[0], ([1], s_bad)], S_PAD)
+        t_ids, t_labels = _rows([T_ROWS[0], ([8], t_bad)], T_PAD)
+        g = torch.Generator().manual_seed(11)
+        return dict(
+            student_logits=torch.randn(
+                *s_ids.shape, len(S_PIECES), generator=g, dtype=DTYPE
+            ),
+            teacher_logits=torch.randn(
+                *t_ids.shape, len(T_PIECES), generator=g, dtype=DTYPE
+            ),
+            student_labels=s_labels,
+            teacher_labels=t_labels,
+            student_input_ids=s_ids,
+            teacher_input_ids=t_ids,
+        )
+
+    @staticmethod
+    def _row0_reference(batch):
+        """The aligned row on its own, i.e. the batch's row 0 with row 1 dropped."""
+        return _uld_reference(
+            {k: v[:1] for k, v in batch.items()}, S_GROUPS[:1], T_GROUPS[:1]
+        )
+
+    @pytest.mark.parametrize(
+        "s_bad, t_bad",
+        [
+            # "ab" vs "abc", 3 positions vs 2: TRL's L1 raised a shape RuntimeError.
+            ([1, 2, S_EOS], [5, T_EOS]),
+            # "ab" vs "abc", 2 positions each: TRL compared position k with position k.
+            ([4, S_EOS], [5, T_EOS]),
+        ],
+        ids=["lengths-differ", "lengths-equal"],
+    )
+    def test_texts_that_differ_contribute_nothing_and_are_counted(self, s_bad, t_bad):
+        loss_fn = _custom_uld()
+        assert loss_fn._build_alignment_groups_from_ids(s_bad, t_bad) == ([], [])
+        batch = self._with_good_row(s_bad, t_bad)
+        batch["student_logits"].requires_grad_(True)
+        loss = loss_fn(**batch)
+        # TRL's base-path mean is over rows, an empty row counting as zero (as it does
+        # for a row with no completion), so the aligned row's loss is halved.
+        expected = self._row0_reference(batch) / 2
+        assert loss.item() == pytest.approx(expected.item(), abs=ULD_TOL)
+        assert loss_fn._alignment_unaligned == 1
+        loss.backward()
+        assert batch["student_logits"].grad[1].abs().max().item() == 0.0
+
+    def test_matching_texts_past_the_group_size_limit_contribute_nothing(self):
+        """Not only a mismatch: "abcab" aligns at the default limit (S_GROUPS), but its
+        first group needs two student tokens, so at max_alignment_group_size 1 no group
+        closes and the row is unaligned too."""
+        loss_fn = _custom_uld(max_alignment_group_size=1)
+        s_c, t_c = S_ROWS[0][1], T_ROWS[0][1]
+        assert loss_fn._build_alignment_groups_from_ids(s_c, t_c) == ([], [])
+        batch = _single_row(s_c, t_c, seed=12)
+        assert loss_fn(**batch).item() == 0.0
+        assert loss_fn._alignment_unaligned == 1

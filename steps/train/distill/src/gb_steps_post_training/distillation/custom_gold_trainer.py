@@ -777,6 +777,9 @@ class CustomULDLoss(ULDLoss):
 
         self._alignment_total = 0
         self._alignment_truncated = 0
+        # Rows (regions, on the hybrid path) whose alignment produced no groups at all, and so
+        # contributed no loss. Logged as `train/alignment_unaligned_rows`.
+        self._alignment_unaligned = 0
 
         self._opd_batch_norm_stats_accum = {"mean": 0.0, "std": 0.0}
         self._opd_batch_norm_stats_count = 0
@@ -1782,28 +1785,46 @@ class CustomULDLoss(ULDLoss):
         student_input_ids,
         teacher_input_ids,
     ):
-        """The non-hybrid ULD loss: trl 0.26.2's ULDLoss._compute_distillation_loss, vendored
-        unchanged (#676 decision D-7: bit-identical numerics).
+        """The non-hybrid ULD loss: trl 0.26.2's ULDLoss._compute_distillation_loss
+        (trl v0.26.2 trl/experimental/gold/gold_trainer.py:325-423), owned here, with two
+        fixes to it. The rest is TRL 0.26.2's arithmetic unchanged. trl 1.x replaced that
+        path with a byte-offset alignment that raises on token-ID inputs without offsets,
+        which is all this trainer passes (#676), so it calls this class's
+        _build_alignment_groups_from_ids and the vendored 0.26.2 merge below.
 
-        Copied from trl v0.26.2 trl/experimental/gold/gold_trainer.py:325-423. trl 1.x replaced
-        it with a byte-offset alignment that raises on token-ID inputs without offsets, which
-        is all this trainer passes. It calls this class's _build_alignment_groups_from_ids
-        and the vendored merge below, as it called them under 0.26.2.
+        1. OFF BY ONE (upstream). TRL reads `logits[start : start + size]`, the logits AT the
+           completion positions. Nothing shifts them first: compute_loss passes the models'
+           logits and the labels in input coordinates (as TRL's own compute_loss does,
+           gold_trainer.py:1504-1511 in 0.26.2), and there logits[t] predicts ids[t + 1]. So
+           TRL scored each completion token with the distribution for the token after it,
+           and the EOS with the distribution after the end. The JSD path aligns
+           logits[:, :-1] with labels[:, 1:] (compute_loss), the teacher crop keeps
+           `teacher_prompt_length - 1` for exactly this reason, and the hybrid path below
+           reads start-1. So does this. (trl 1.18.2's opt-in
+           `uld_token_merge_strategy="bayesian"` makes the same shift; its default,
+           "observed", still reads the unshifted positions.)
+        2. NO ALIGNMENT, NO LOSS. When _build_alignment_groups_from_ids returns no groups,
+           _merge_probabilities_with_alignment_groups returns the probabilities UNMERGED
+           (trl 0.26.2's gold_trainer.py:532-533, kept in the vendored merge): a
+           RuntimeError when the two completions have different lengths, and a distance
+           between unaligned positions when they do not. Such a row is skipped as the
+           hybrid path skips it (zero loss, graph kept) and counted in
+           `train/alignment_unaligned_rows`, rather than killing a long run over one row. A
+           rate near 1 is the signature of a systematic text mismatch between the two
+           renders, the failure the per-turn byte path's scaffold trim was for.
         """
-        # Get answer regions (same as original)
         student_answer_index, student_answer_size = self._get_start_and_size_answers(
             student_labels
         )
         teacher_answer_index, teacher_answer_size = self._get_start_and_size_answers(
             teacher_labels
         )
-
+        # Always False on this class (__init__); kept so the code reads as TRL's.
         if self.skip_student_eos:
             student_answer_size = [size - 1 for size in student_answer_size]
         if self.skip_teacher_eos:
             teacher_answer_size = [size - 1 for size in teacher_answer_size]
 
-        # Handle edge case where all answer sizes are 0
         if (
             not student_answer_size
             or not teacher_answer_size
@@ -1815,38 +1836,36 @@ class CustomULDLoss(ULDLoss):
                 * 1e-8
             )
 
-        batch_size = student_logits.size(0)
         distillation_losses = []
-
-        for i in range(batch_size):
-            # Get answer regions for this batch item
+        for i in range(student_logits.size(0)):
             student_start = student_answer_index[i]
             student_size = student_answer_size[i]
             teacher_start = teacher_answer_index[i]
             teacher_size = teacher_answer_size[i]
 
             if student_size <= 0 or teacher_size <= 0:
-                loss_i = student_logits[i].sum() * 0.0
-                distillation_losses.append(loss_i)
+                distillation_losses.append(student_logits[i].sum() * 0.0)
                 continue
+            if student_start < 1 or teacher_start < 1:
+                # No logit predicts a completion that starts at position 0. Every layout this
+                # trainer builds has a prompt (the teacher crop keeps one position of it), so
+                # this is a construction error, not a data condition to degrade over.
+                raise ValueError(
+                    f"ULD row {i}: completion starts at position 0 (student {student_start}, "
+                    f"teacher {teacher_start}), so no logit predicts its first token"
+                )
 
-            # Extract answer logits
-            student_answer_logits = student_logits[
-                i, student_start : student_start + student_size
-            ]
-            teacher_answer_logits = teacher_logits[
-                i, teacher_start : teacher_start + teacher_size
-            ]
-
-            # Convert to probabilities
+            # Fix 1: logits at start-1 .. start+size-2, so probs[k] predicts token_ids[k].
             student_probs = F.softmax(
-                student_answer_logits / self.student_temperature, dim=-1
+                student_logits[i, student_start - 1 : student_start + student_size - 1]
+                / self.student_temperature,
+                dim=-1,
             )
             teacher_probs = F.softmax(
-                teacher_answer_logits / self.teacher_temperature, dim=-1
+                teacher_logits[i, teacher_start - 1 : teacher_start + teacher_size - 1]
+                / self.teacher_temperature,
+                dim=-1,
             )
-
-            # Get token IDs for mapping (always use actual input_ids)
             student_token_ids = student_input_ids[
                 i, student_start : student_start + student_size
             ].tolist()
@@ -1855,61 +1874,34 @@ class CustomULDLoss(ULDLoss):
             ].tolist()
 
             if self.use_extended_uld:
-                # Build alignment groups directly from token ids using greedy text matching
-                student_alignment_groups, teacher_alignment_groups = (
-                    self._build_alignment_groups_from_ids(
-                        student_token_ids, teacher_token_ids
-                    )
+                s_groups, t_groups = self._build_alignment_groups_from_ids(
+                    student_token_ids, teacher_token_ids
                 )
-
-                # Merge student probabilities using student alignment groups
+                if not s_groups:
+                    # Fix 2.
+                    self._alignment_unaligned += 1
+                    distillation_losses.append(student_logits[i].sum() * 0.0)
+                    continue
                 student_aligned = self._merge_probabilities_with_alignment_groups(
-                    student_probs, student_alignment_groups
+                    student_probs, s_groups
                 )
-
-                # Merge teacher probabilities using teacher alignment groups
                 teacher_aligned = self._merge_probabilities_with_alignment_groups(
-                    teacher_probs, teacher_alignment_groups
+                    teacher_probs, t_groups
                 )
             else:
                 min_length = min(len(student_token_ids), len(teacher_token_ids))
                 student_aligned = student_probs[:min_length, :]
                 teacher_aligned = teacher_probs[:min_length, :]
 
-            # Apply ULD loss computation
-            if self.use_hybrid_loss and self._vocab_mapping is not None:
-                # Use hybrid approach: direct comparison for matched tokens, sorting for unmatched
-                aligned_loss = self._compute_hybrid_uld_loss(
-                    student_aligned, teacher_aligned
-                )
-            else:
-                # Original approach: sort all probabilities
-                student_sorted = student_aligned.sort(dim=-1, descending=True).values
-                teacher_sorted = teacher_aligned.sort(dim=-1, descending=True).values
+            student_sorted = student_aligned.sort(dim=-1, descending=True).values
+            teacher_sorted = teacher_aligned.sort(dim=-1, descending=True).values
+            width = max(student_sorted.size(-1), teacher_sorted.size(-1))
+            student_sorted = F.pad(student_sorted, (0, width - student_sorted.size(-1)))
+            teacher_sorted = F.pad(teacher_sorted, (0, width - teacher_sorted.size(-1)))
+            aligned_loss = F.l1_loss(student_sorted, teacher_sorted, reduction="sum")
+            distillation_losses.append(aligned_loss / student_aligned.size(0))
 
-                # Pad vocabularies to same size
-                student_vocab_size = student_sorted.size(-1)
-                teacher_vocab_size = teacher_sorted.size(-1)
-                max_vocab_size = max(student_vocab_size, teacher_vocab_size)
-
-                if student_vocab_size < max_vocab_size:
-                    student_sorted = F.pad(
-                        student_sorted, (0, max_vocab_size - student_vocab_size)
-                    )
-                if teacher_vocab_size < max_vocab_size:
-                    teacher_sorted = F.pad(
-                        teacher_sorted, (0, max_vocab_size - teacher_vocab_size)
-                    )
-
-                # Compute L1 distance (ULD approach)
-                aligned_loss = F.l1_loss(
-                    student_sorted, teacher_sorted, reduction="sum"
-                )
-                aligned_loss /= student_aligned.size(0)  # Normalize by sequence length
-            distillation_losses.append(aligned_loss)
-
-        distillation_loss = torch.stack(distillation_losses).mean()
-        return self.distillation_weight * distillation_loss
+        return self.distillation_weight * torch.stack(distillation_losses).mean()
 
     def _merge_probabilities_with_alignment_groups(
         self, probs, alignment_groups, token_ids=None
@@ -2241,6 +2233,7 @@ class CustomULDLoss(ULDLoss):
                 if not s_groups:
                     # Alignment failed entirely (e.g. full Unicode mismatch + truncation);
                     # skip this sample with a zero-gradient-preserving loss.
+                    self._alignment_unaligned += 1
                     uld_losses.append(student_logits[row].sum() * 0.0)
                     uld_token_counts.append(0)
                     opd_losses.append(student_logits[row].sum() * 0.0)
@@ -6216,8 +6209,12 @@ class CustomGOLDTrainer(GOLDTrainer):
             logs["train/alignment_total"] = total
             logs["train/alignment_truncated"] = trunc
             logs["train/alignment_truncation_rate"] = trunc / total
+            logs["train/alignment_unaligned_rows"] = (
+                self.uld_loss_fn._alignment_unaligned
+            )
             self.uld_loss_fn._alignment_total = 0
             self.uld_loss_fn._alignment_truncated = 0
+            self.uld_loss_fn._alignment_unaligned = 0
 
         if (
             mode == "train"
