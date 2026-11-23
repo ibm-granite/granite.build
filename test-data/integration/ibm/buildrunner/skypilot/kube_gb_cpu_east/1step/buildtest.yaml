@@ -1,0 +1,30 @@
+# YAML-driven spec for test/integration/ibm/buildrunner/skypilot/kube_gb_cpu_east/test_1step.py.
+# CPU-cluster copy of test-data/integration/standalone/buildrunner/skypilot_kube/1step/buildtest.yaml.
+targets:
+  - pod-run
+target_expectations:
+  - target_name: pod-run
+    # step_count = 5, as on kind and slurm: the hfpull step for the hf input (a
+    # separate pod writing to the shared volume) + the command step + one hfpush
+    # step per artifact marker (output_model1 emits two, output_model2 one). The
+    # env:// output moves no bytes, so it queues no push step.
+    step_count: 5
+    input_artifact_count: 1    # input_model
+    output_artifact_count: 3   # output_model1, output_model2, env_output
+    # Not asserted under standalone's NoopLineageStore; CALIBRATE on a lineage run.
+    jobstats_count: 1
+# The env (environments/skypilot/kubernetes/gb-cpu-east) is site-specific and
+# lives in the internal gb-test space, as for slurm_bluevela/1step. To test a gb-test
+# checkout or branch before it is merged, point space_uri at it instead, e.g. a
+# sibling checkout (relative to this YAML's directory):
+#space_uri: ../../../../../../../../gb-test
+# HTTPS, not git+ssh: github.ibm.com no longer accepts SSH for git, so this uses
+# the machine's git credentials (a token).
+space_uri: git+https://github.ibm.com/granite-dot-build/gb-test.git@gbspace-config
+# Same coverage as the kind spec: `tests` defaults to runner + runner_cancellation,
+# and simulate_step_failure injects one failure so AnyFailureRetryStrategy tears
+# the pod down and relaunches it as <cluster>-r1.
+simulate_step_failure: true
+# Pod scheduling on a remote cluster + first image pull + the hfpull step.
+# CALIBRATE after the first green run on the CPU cluster.
+timeout_minutes: 30
