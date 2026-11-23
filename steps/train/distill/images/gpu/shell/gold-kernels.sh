@@ -24,7 +24,8 @@
 #
 # WHICH KERNELS ARE REQUIRED. causal-conv1d and mamba-ssm only. These are the Mamba2
 # mixer kernels a Granite 4 hybrid model actually needs, and they are exactly the two
-# gold.py's preamble preloads. The recorded prefetch also pulled
+# hub_kernel_pins.py pins (prepare_hub_kernels loads them lazily, at the pinned
+# revision, through transformers' lazy_load_kernel). The recorded prefetch also pulled
 # kernels-community/vllm-flash-attn3, which this deliberately does NOT require: FA3 is
 # reachable only through the vendored GraniteSWAAttention path, which is gated behind
 # GOLD_SWA_ARM (see src/gb_steps_post_training/distillation/_swa_arm.py). Requiring it
@@ -82,10 +83,9 @@ missing = []
 for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
         _, path = install_kernel(repo, revision=pinned_revision(repo), local_files_only=True)
-        # Layout-tolerant, matching gold.py's preamble: kernels-community repos
-        # carry a variant-root metadata.json only in some revisions -- so
-        # validate only when present and let install_kernel's own success stand
-        # as the check.
+        # Layout-tolerant: kernels-community repos carry a variant-root
+        # metadata.json only in some revisions -- so validate only when present
+        # and let install_kernel's own success stand as the check.
         _meta = Path(path) / "metadata.json"
         if _meta.exists():
             json.loads(_meta.read_text())
@@ -156,9 +156,9 @@ rc = 0
 for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
         _, path = install_kernel(repo, revision=pinned_revision(repo))
-        # Same layout-tolerant check as the probe above (and gold.py's
-        # preamble): not every pinned revision carries a variant-root
-        # metadata.json, and an unconditional read has failed a prefetch.
+        # Same layout-tolerant check as the probe above: not every pinned
+        # revision carries a variant-root metadata.json, and an unconditional
+        # read has failed a prefetch.
         _meta = Path(path) / "metadata.json"
         if _meta.exists():
             json.loads(_meta.read_text())

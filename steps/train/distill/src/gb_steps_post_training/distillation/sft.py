@@ -33,7 +33,8 @@ from datasets import Dataset, DatasetDict, IterableDataset, load_dataset
 
 # Hybrid (granitemoehybrid) students resolve mamba-ssm and causal-conv1d at load
 # time, and the modeling code asserts on the legacy causal_conv1d_cuda object --
-# the pins, the warm-cache pre-population, and the shim. See hub_kernel_pins.py.
+# the revision pins and the legacy causal_conv1d shim; the kernels themselves load
+# lazily through transformers' lazy_load_kernel. See hub_kernel_pins.py.
 from gb_steps_post_training.distillation.hub_kernel_pins import prepare_hub_kernels
 from transformers import AutoTokenizer, GenerationConfig
 
