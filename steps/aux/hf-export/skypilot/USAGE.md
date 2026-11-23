@@ -73,7 +73,7 @@ The step declares its inputs, read as `{{ bindings.<name>.binding.path }}`:
 
 | Input | Required | Type | Typical source |
 |---|---|---|---|
-| `train_output` | yes | model | the trainer target's output directory, e.g. the `checkpoint` output of `space://steps/train/distill/logit-distill` or `sft` |
+| `train_output` | yes | model | the trainer target's output directory, e.g. the `checkpoint` output of `space://steps/train/distill/logit-distill` or `student-sft` |
 | `expected_tokenizer` | no | model | the tokenizer the run trained with, e.g. `align.retagged_student`; unbound skips the cross-check |
 
 Binding `expected_tokenizer` means the cross-check cannot name a tokenizer this build did

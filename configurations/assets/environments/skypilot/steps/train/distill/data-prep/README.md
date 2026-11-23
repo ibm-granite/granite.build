@@ -1,4 +1,4 @@
-# corpus-prep (SkyPilot / LSF or SLURM)
+# data-prep (SkyPilot / LSF or SLURM)
 
 Turns a conversation dataset into the GOLD training corpus: filter by rendered length, apply a
 think-tag policy, enforce the completion boundary, split deterministically, and record what was
@@ -109,7 +109,7 @@ targets read: three stages measure lengths and they have to agree about the budg
 
 ```yaml
 granite.build:
-  name: corpus-prep-example
+  name: data-prep-example
   targets:
     align:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela

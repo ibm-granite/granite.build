@@ -1,4 +1,4 @@
-# sft — development notes
+# student-sft — development notes
 
 User-facing documentation is [USAGE.md](USAGE.md), which `make publish-step` copies to the
 released step as its `README.md`.
@@ -17,7 +17,7 @@ released step as its `README.md`.
 
 `response_template`'s trailing newline cannot cross gbserver's config fill as a real character
 (see USAGE.md). That is a property of **granite.build's transport**, so the decode is in this
-step's `run:` block rather than in `render_sft_config.py` — which stays verbatim. `distill-gold`
+step's `run:` block rather than in `render_sft_config.py` — which stays verbatim. `logit-distill`
 solved the same problem in its own renderer because that renderer is ours to change; this one is
 not.
 

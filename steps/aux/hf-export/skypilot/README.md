@@ -14,7 +14,7 @@ It was `space://steps/distill/hf-export` until it moved here.
 | `step-template.yaml` | the step; `image_id` is filled from the Makefile's image |
 | `Dockerfile`, `requirements.in`, `requirements.lock` | the step's own CPU image (no torch) |
 | `src/export_hf_model.py` | the workload |
-| `src/hf_export_state/` | the resume gate (`.step-done.json`), copied from the distillation package so this step imports nothing from `steps/distill` |
+| `src/hf_export_state/` | the resume gate (`.step-done.json`), copied from the distillation package so this step imports nothing from `steps/train/distill` |
 | `test/test_step_template.py` | template contract tests |
 | `test/test_export_hf_model.py` | the workload's unit tests |
 | `test-data/chatml_granite_42_generation.jinja` | the real chat template the thinking-policy tests run against |

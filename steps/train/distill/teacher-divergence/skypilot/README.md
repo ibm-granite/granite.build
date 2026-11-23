@@ -1,4 +1,4 @@
-# eval — development notes
+# teacher-divergence — development notes
 
 User-facing documentation is [USAGE.md](USAGE.md), which `make publish-step` copies to the
 released step as its `README.md`.
@@ -24,7 +24,7 @@ drops the template's. Tests assert both halves: the script prints it, the templa
 ## The monitor is overridden
 
 `log_retrieval.mode` is `periodic`, not the library default `on_completion`, for the same reason
-`distill-gold` overrides it: a teacher forward pass over 256 samples is not a seconds-long job,
+`logit-distill` overrides it: a teacher forward pass over 256 samples is not a seconds-long job,
 and `on_completion` surfaces nothing until the end — so a stalled run looks identical to a slow
 one. Both intervals stay recipe-overridable.
 
@@ -48,9 +48,9 @@ oversight: the metric arithmetic is worth testing against real tensors, and the 
 torch is the cluster's, not CI's.
 
 The end-to-end test (`test/lsf/test_skypilot_lsf_distill_eval.py`, fixtures in
-`test-data/lsf/`) is a three-target chain (align -> corpus -> eval), because the student has to
-be a retagged model whose tokenizer agrees with the teacher's and the corpus has to be an eval
-split. It asks for one H100 and eight samples, so it costs minutes. Without
+`test-data/lsf/`) is a three-target chain (align -> corpus -> eval-transfer-baseline),
+because the student has to be a retagged model whose tokenizer agrees with the teacher's and
+the corpus has to be an eval split. It asks for one H100 and eight samples, so it costs minutes. Without
 `GB_STEP_BLUEVELA_BUILD=1`, or when the BlueVela login node is unreachable, it skips.
 
 ## Publishing

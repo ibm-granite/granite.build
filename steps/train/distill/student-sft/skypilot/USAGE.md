@@ -1,4 +1,4 @@
-# sft (SkyPilot / LSF or SLURM)
+# student-sft (SkyPilot / LSF or SLURM)
 
 Plain SFT on the distillation corpus, with **no teacher**. It is a `training` step that runs on
 the LSF and SLURM SkyPilot environments (`subtypes: [lsf, slurm]`), on one GPU node, in the prebuilt
@@ -143,7 +143,7 @@ step points `run-sft.sh` at them with
 
 ## Example build.yaml
 
-The warm-up stage, after align and corpus-prep (their targets as in the
+The warm-up stage, after align and data-prep (their targets as in the
 `space://steps/train/distill/data-prep` step's example):
 
 ```yaml

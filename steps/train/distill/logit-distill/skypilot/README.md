@@ -1,4 +1,4 @@
-# gold — authoring notes
+# logit-distill — authoring notes
 
 User-facing documentation is in [USAGE.md](USAGE.md), which `make publish-step`
 publishes as the asset's `README.md`. This file is for people changing the step.

@@ -1,4 +1,4 @@
-# logit-precompute — development notes
+# teacher-logits — development notes
 
 User-facing documentation is [USAGE.md](USAGE.md), which `make publish-step` copies to the
 released step as its `README.md`.
@@ -30,7 +30,7 @@ facts that step paid an allocation each to learn, before its first run:
 Each is pinned by a test, including one asserting the script *still* overwrites `CHECKOUT_ROOT` —
 so if upstream ever guards it, the test says to revisit rather than silently keeping a workaround.
 
-One more, from the `distill-eval` port: the artifact marker is printed by the **script only**.
+One more, from the `teacher-divergence` port: the artifact marker is printed by the **script only**.
 Upstream's template echoed it a second time, which would register two `NEWARTIFACT` events for one
 id.
 

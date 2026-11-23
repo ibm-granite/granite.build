@@ -1,4 +1,4 @@
-# probe (SkyPilot / LSF or SLURM)
+# preflight-check (SkyPilot / LSF or SLURM)
 
 Runs one of three cheap checks on a checkpoint, used to settle questions before a
 distillation run is spent on them. It trains nothing and produces no artifact: the
@@ -83,7 +83,7 @@ One target per probe. All three can run against the same checkpoint in one build
 
 ```yaml
 granite.build:
-  name: probe-example
+  name: preflight-check-example
   targets:
     load-student:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela

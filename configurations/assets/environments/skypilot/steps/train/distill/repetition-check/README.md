@@ -1,4 +1,4 @@
-# gen-smoke (SkyPilot / LSF or SLURM)
+# repetition-check (SkyPilot / LSF or SLURM)
 
 Asks whether a trained model still writes usable text. It greedy-decodes eight raw
 prompts (code in five languages and three short prose prompts) from each checkpoint in a
@@ -57,7 +57,7 @@ variable-length list, so there is no fixed set of names to declare. It reads the
 directories named in `rungs`, each of which must be a complete local HF export — the
 `hf_model` output of the `space://steps/aux/hf-export` step. A recipe declares one input
 per export on the target (`binding: export-<N>.hf_model`) and lists the same directories in
-`rungs`. Binding the export targets as inputs makes gen-smoke wait for every checkpoint it
+`rungs`. Binding the export targets as inputs makes repetition-check wait for every checkpoint it
 reads.
 
 ### Outputs
@@ -88,17 +88,17 @@ Declare `repetition_report` on the target (typically `uri: "env://{{ binding.pat
 
 ## Example build.yaml
 
-One `gen-smoke` target for a two-rung ladder. `export-500` and `export-1000` are targets
+One `repetition-check` target for a two-rung ladder. `export-500` and `export-1000` are targets
 running the `space://steps/aux/hf-export` step; they are elided here.
 
 ```yaml
 granite.build:
-  name: gen-smoke-example
+  name: repetition-check-example
   version: 0.0.1
   targets:
     # train, export-500, export-1000: elided.
 
-    gen-smoke:
+    repetition-check:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         export_500:  {binding: export-500.hf_model}
@@ -117,7 +117,7 @@ granite.build:
               rungs:
                 - "500:/proj/run/export-500"
                 - "1000:/proj/run/export-1000"
-              output_dir: /proj/run/gen-smoke
+              output_dir: /proj/run/repetition-check
 ```
 
 ## Notes and limitations

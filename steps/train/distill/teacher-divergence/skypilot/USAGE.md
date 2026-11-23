@@ -1,4 +1,4 @@
-# eval (SkyPilot / LSF or SLURM)
+# teacher-divergence (SkyPilot / LSF or SLURM)
 
 Measures **how far the student's next-token distribution is from the teacher's** on a
 held-out corpus, and writes the result as an artifact. This is the read on whether
@@ -130,7 +130,7 @@ elided here.
 
 ```yaml
 granite.build:
-  name: distill-eval-example
+  name: teacher-divergence-example
   version: 0.0.1
   targets:
     # align, corpus, train, export: elided.

@@ -49,7 +49,7 @@ No `code_config` field: the server code
 (`gb_steps_post_training.distillation.run_vllm_serve`) is baked into the shared GPU
 image this step runs in (`steps/train/distill/images/gpu/Dockerfile` COPYs `steps/train/distill/src/`,
 pinned `a5d59bc45524a8d75706e20d44ae1a254f273f23` — see `steps/train/distill/src/VENDORED.md`),
-the same as `distill-gold`. There is no per-run clone to configure.
+the same as `logit-distill`. There is no per-run clone to configure.
 
 ### Top-level config
 
@@ -125,15 +125,15 @@ on the trainer's checkpoint. Ordering is implicit — there is no `depends_on` k
 target starts when all its input bindings resolve:
 
 ```
-vllm-server ──vllm_url──> train ──checkpoint──> teardown
-     └────────────────cluster_name───────────────┘
+rollout-server ──vllm_url──> train ──checkpoint──> teardown
+        └────────────────cluster_name───────────────┘
 ```
 
 ```yaml
 granite.build:
   name: gold-onpolicy-example
   targets:
-    vllm-server:
+    rollout-server:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         model:
@@ -162,7 +162,7 @@ granite.build:
         teacher:
           uri: "env:///proj/.../teacher"
           type: model
-        vllm: {binding: vllm-server.vllm_url}
+        vllm: {binding: rollout-server.vllm_url}
       outputs:
         checkpoint:
           uri: "env://{{ binding.path }}"
@@ -179,7 +179,7 @@ granite.build:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         gate: {binding: train.checkpoint}            # ordering only
-        vllm_cluster: {binding: vllm-server.cluster_name}
+        vllm_cluster: {binding: rollout-server.cluster_name}
       steps:
         - step_uri: space://steps/skypilot-teardown
           config:

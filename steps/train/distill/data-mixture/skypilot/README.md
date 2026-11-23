@@ -1,10 +1,10 @@
-# corpus-sources
+# data-mixture
 
 User-facing documentation is [USAGE.md](USAGE.md), which `make publish-step` copies to the
 released step as its `README.md`.
 
 Builds one prep-ready `train.jsonl` from several raw SFT splits, for
-the `corpus-prep` step to consume. It does three things, and the rationale for each is
+the `data-prep` step to consume. It does three things, and the rationale for each is
 in [`src/build_sources.py`](src/build_sources.py):
 
 1. renames `conversations` to `messages`, the key prep reads;

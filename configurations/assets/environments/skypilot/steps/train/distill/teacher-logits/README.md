@@ -1,4 +1,4 @@
-# logit-precompute (SkyPilot / LSF or SLURM)
+# teacher-logits (SkyPilot / LSF or SLURM)
 
 Runs the teacher **once** over the corpus and keeps the top-K logits per assistant token, so a
 later training run can do forward KL against a file instead of holding the teacher in memory.
@@ -118,7 +118,7 @@ are passed through unchanged; bind inputs that resolve to absolute paths.
 
 ```yaml
 granite.build:
-  name: logit-precompute-example
+  name: teacher-logits-example
   targets:
     precompute:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela

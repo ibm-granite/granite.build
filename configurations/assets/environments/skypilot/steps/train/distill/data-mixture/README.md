@@ -1,4 +1,4 @@
-# corpus-sources (SkyPilot / LSF or SLURM)
+# data-mixture (SkyPilot / LSF or SLURM)
 
 Combines several raw SFT splits into one `train.jsonl` that corpus prep can read. The
 `space://steps/train/distill/data-prep` step takes a single file, reads the `messages` key,
@@ -89,7 +89,7 @@ A `sources` target feeding corpus prep:
 
 ```yaml
 granite.build:
-  name: corpus-sources-example
+  name: data-mixture-example
   targets:
     sources:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela

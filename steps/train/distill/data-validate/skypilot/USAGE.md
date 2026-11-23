@@ -1,4 +1,4 @@
-# corpus-pin-check (SkyPilot / LSF or SLURM)
+# data-validate (SkyPilot / LSF or SLURM)
 
 Checks that a pinned corpus, one built by an earlier run and reused by this one, was
 built the way this build would have built it. It reads the corpus's
@@ -99,10 +99,10 @@ A relative `output_dir` becomes `$WORK/<output_dir>`; it is created before the c
 
 ```yaml
 granite.build:
-  name: corpus-pin-check-example
+  name: data-validate-example
   version: 0.0.1
   targets:
-    corpus-pin-check:
+    data-validate:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         pinned_corpus:
@@ -130,7 +130,7 @@ granite.build:
               output_dir: /proj/run/corpus-pin
     train:
       inputs:
-        pin_check: {binding: corpus-pin-check.pin_check}
+        pin_check: {binding: data-validate.pin_check}
       # ...
 ```
 
@@ -171,7 +171,7 @@ The reasoning behind each comparison is in `src/check_corpus_pin.py`.
 ### Failures
 
 Every mismatch is reported in one run, under a `CORPUS-PIN REJECTED <corpus_dir>` line,
-and the target fails with `FATAL [corpus-pin-check]: N mismatch(es) between this build
+and the target fails with `FATAL [data-validate]: N mismatch(es) between this build
 and the pinned corpus manifest`. A directory with no `corpus_manifest.json` fails
 immediately with `FATAL: no corpus_manifest.json under <corpus_dir>`. On acceptance the
 log shows `CORPUS-PIN ACCEPTED <corpus_dir> (<mode>)`.

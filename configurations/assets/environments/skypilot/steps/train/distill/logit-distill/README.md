@@ -1,4 +1,4 @@
-# gold (SkyPilot / LSF or SLURM)
+# logit-distill (SkyPilot / LSF or SLURM)
 
 Distils a small **student** from a larger **teacher** with the GOLD trainer (generalized
 JSD, `gb_steps_post_training.distillation.gold`), multi-node via the SkyPilot LSF or SLURM
@@ -165,8 +165,9 @@ the local patches listed in `steps/train/distill/src/VENDORED.md` folded into th
 
 ### Image
 
-This step runs in the shared GPU image used by every GPU distillation step (`gold`, `sft`,
-`logit-precompute`, `eval`, `vllm-server`, `gen-smoke`, `probe`) — see
+This step runs in the shared GPU image used by every GPU distillation step (`logit-distill`, `student-sft`,
+`teacher-logits`, `teacher-divergence`, `student-rollout-generator`, `repetition-check`,
+`preflight-check`) — see
 `steps/train/distill/images/gpu/README.md`. The image bakes in CUDA, a uv-managed Python 3.12, the
 trainer's own pinned deps (torch, transformers, trl, vllm, deepspeed, etc.) via
 `uv sync --locked` at build time, and the vendored trainer source itself, so nothing
@@ -198,7 +199,7 @@ inputs:
     uri: "env:///proj/.../teacher"
     type: model
   vllm:                               # external-server on-policy path only
-    binding: vllm-server.vllm_url
+    binding: rollout-server.vllm_url
 ```
 
 `gold_config.model_name_or_path`, `teacher_model_name_or_path`, `dataset_name` and
@@ -253,9 +254,9 @@ Two-node off-policy run; `accelerators` is **per node**:
 
 ```yaml
 granite.build:
-  name: gold-example
+  name: logit-distill-example
   targets:
-    train-gold:
+    train:
       environment_uri: space://environments/skypilot/lsf/ibm-bluevela
       inputs:
         student:
@@ -288,7 +289,7 @@ granite.build:
 ```
 
 `gradient_accumulation_steps: 12` holds the reference effective batch of 192 on two nodes
-instead of four. For a full chain (align, corpus-prep, optional SFT, gold, export), see
+instead of four. For a full chain (align, data-prep, optional SFT, logit-distill, export), see
 `recipes/distill/distill` in the granite.build repository, and its `README.md`.
 
 ## Notes and limitations

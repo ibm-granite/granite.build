@@ -1,4 +1,4 @@
-# probe
+# preflight-check
 
 User-facing documentation is [USAGE.md](USAGE.md), which `make publish-step` copies to the
 released step as its `README.md`.
