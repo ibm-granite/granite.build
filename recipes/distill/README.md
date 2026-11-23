@@ -11,7 +11,7 @@ divergence reads and optional benchmark evals.
 | [`distill-eval/`](distill-eval/build.yaml) | Benchmark evals of models that are already exported: a ladder of a `distill` build's exports, failed evals re-run, or any model given by URI. Its eval targets are `distill`'s, text for text. |
 | [`distill/smoke.yaml`](distill/smoke.yaml) | A parameter layer, not a recipe: shrinks `distill` to a plumbing run (64 rows, 2 steps, 1 node with 2 GPUs) in any λ mode. |
 | [`site.example.yaml`](site.example.yaml) | Every site-specific key, with fake values. |
-| [`environments/skypilot-slurm.template.yaml`](environments/skypilot-slurm.template.yaml) | The SkyPilot-on-SLURM environment, as a template filled from the site file. |
+| [`../environments/skypilot-slurm.template.yaml`](../environments/skypilot-slurm.template.yaml) | The SkyPilot-on-SLURM environment, as a template filled from the site file. Shared with the other SLURM recipes. |
 
 The recipes need a SkyPilot environment, and are tested against SkyPilot on SLURM (render
 tests only; see the last section). They are scheduler-neutral: every launcher uses only SkyPilot's generic keys (`cluster`, `zone`,
@@ -48,8 +48,9 @@ measured while training continues.
 
 ## Setup
 
-**Requires layered `--param-file`** ([#663](https://github.com/ibm-granite/granite.build/issues/663),
-PR [#665](https://github.com/ibm-granite/granite.build/pull/665)). Each command below passes
+**Requires `gb` v0.3.10 or later**, for layered `--param-file`
+([#663](https://github.com/ibm-granite/granite.build/issues/663), PR
+[#665](https://github.com/ibm-granite/granite.build/pull/665)). Each command below passes
 the site file, and the smoke run passes `smoke.yaml` too, as layers over the recipe's own
 `parameters.yaml`. Without it, the site file replaces `parameters.yaml` instead of layering
 over it.
@@ -85,7 +86,7 @@ with the space `setup-local-space.sh` writes, that is the `public` space.
 
 ```bash
 scripts/setup-local-space.sh \
-  --template recipes/distill/environments/skypilot-slurm.template.yaml \
+  --template recipes/environments/skypilot-slurm.template.yaml \
   --site "$SITE" --name <env-name>
 ```
 
@@ -375,7 +376,7 @@ the generation floor and `stop_at_step` are in the vendored trainer.
 | File | Holds | In this repo |
 |---|---|---|
 | your site file (from [`site.example.yaml`](site.example.yaml)) | every host, user, secret name, partition, account, QOS, path, model, dataset, accelerator model and registry | no; only the fake example |
-| [`environments/skypilot-slurm.template.yaml`](environments/skypilot-slurm.template.yaml) | how the site's SLURM values become an environment: sbatch options, the image cache, container mounts, SSH config | yes, with placeholders only |
+| [`../environments/skypilot-slurm.template.yaml`](../environments/skypilot-slurm.template.yaml) | how the site's SLURM values become an environment: sbatch options, the image cache, container mounts, SSH config | yes, with placeholders only |
 | [`distill/parameters.yaml`](distill/parameters.yaml), [`distill-eval/parameters.yaml`](distill-eval/parameters.yaml) | the experiment's knobs; no key may also be a site key | yes |
 
 [`test_distill_site.py`](../../test/unit/recipes/test_distill_site.py) scans every file

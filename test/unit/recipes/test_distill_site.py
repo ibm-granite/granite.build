@@ -1,31 +1,35 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""recipes/distill/: the SLURM environment template and the example site file.
+"""recipes/distill/: the shared SLURM environment template and the example site file.
 
-The template is rendered the way scripts/setup-local-space.sh renders it, by
-scripts/render_env_template.py run as a subprocess, so these tests exercise the
-real gb CLI parameter syntax (dollar-dollar-brace values, <% %> blocks).
+The template (recipes/environments/skypilot-slurm.template.yaml) is rendered the
+way scripts/setup-local-space.sh renders it, by scripts/render_env_template.py
+run as a subprocess, so these tests exercise the real gb CLI parameter syntax
+(dollar-dollar-brace values, <% %> blocks).
 
-The leak guard walks every file under recipes/distill/: nothing site-specific
-may be committed there, only in a private site file.
+The leak guard walks every file under recipes/distill/ and the template: nothing
+site-specific may be committed there, only in a private site file.
 """
 
-import os
 import pathlib
 import re
-import subprocess
-import sys
 
-import jinja2
 import pytest
 import yaml
-from jinja2 import meta
+from libgbtest.site_template import (
+    LEAK,
+    OPTIONAL_KEYS,
+    SLURM_TEMPLATE,
+    leak_hits,
+    render,
+    undeclared_keys,
+    value_keys,
+)
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _DISTILL = _REPO / "recipes" / "distill"
-_TEMPLATE = _DISTILL / "environments" / "skypilot-slurm.template.yaml"
+_TEMPLATE = SLURM_TEMPLATE
 _SITE = _DISTILL / "site.example.yaml"
-_RENDER = _REPO / "scripts" / "render_env_template.py"
 # The site-specific environment the template was derived from. It may leave the
 # public repo later; the test comparing against it then skips.
 _REAL_ENV = (
@@ -39,17 +43,6 @@ _REAL_ENV = (
     / "environment.yaml"
 )
 
-# Tokens that identify one site's infrastructure. Case-insensitive.
-_LEAK = re.compile(
-    r"bluevela|rmf\.ibm|ibm\.com|/proj/|us\.icr\.io|cil15|grp_granite|granitebuild"
-    r"|mlx5_|login[0-9]+\.bluevela"
-    r"|data-eng|llmb-read-write|g4os|gpu-mid|bv_ssh|1password"
-    r"|\bp[0-9]+-r[0-9]+-n[0-9]+\b",
-    re.IGNORECASE,
-)
-
-_VALUE = re.compile(r"\$\$\{\s*([A-Za-z_][A-Za-z0-9_]*)")
-_LOOP_VAR = re.compile(r"<%-?\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b")
 _GBSERVER_TEMPLATE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}")
 
 # Recipe-level keys the distill recipes read from the same site file.
@@ -85,13 +78,7 @@ def _site():
 
 def _render(site_path, tmp_path):
     out = tmp_path / "rendered.yaml"
-    proc = subprocess.run(
-        [sys.executable, str(_RENDER), str(_TEMPLATE), str(site_path), str(out)],
-        capture_output=True,
-        text=True,
-        check=False,
-        env={**os.environ, "GB_ENVIRONMENT": "STANDALONE"},
-    )
+    proc = render(site_path, out)
     assert proc.returncode == 0, proc.stderr
     return out.read_text(encoding="utf-8")
 
@@ -146,20 +133,11 @@ def test_gbserver_templates_pass_through(rendered_example):
 
 
 def test_every_template_key_is_in_example_site():
-    template = _TEMPLATE.read_text(encoding="utf-8")
     site = _site()
-    loop_vars = set(_LOOP_VAR.findall(template))
-    values = set(_VALUE.findall(template)) - loop_vars
+    values = value_keys()
     assert values, "the template uses no site values"
     assert values <= set(site), sorted(values - set(site))
-
-    jenv = jinja2.Environment(
-        variable_start_string="$${",
-        variable_end_string="}",
-        block_start_string="<%",
-        block_end_string="%>",
-    )
-    undeclared = meta.find_undeclared_variables(jenv.parse(template))
+    undeclared = undeclared_keys()
     assert undeclared <= set(site), sorted(undeclared - set(site))
 
 
@@ -176,17 +154,8 @@ def test_example_site_uris_are_full_uris():
 
 def test_no_site_specific_tokens_under_recipes_distill():
     files = [p for p in _DISTILL.rglob("*") if p.is_file()]
-    assert _TEMPLATE in files and _SITE in files
-    hits = []
-    for p in files:
-        try:
-            text = p.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        for n, line in enumerate(text.splitlines(), 1):
-            m = _LEAK.search(line)
-            if m:
-                hits.append(f"{p.relative_to(_REPO)}:{n}: {m.group(0)}")
+    assert _SITE in files
+    hits = leak_hits([*files, _TEMPLATE])
     assert not hits, "\n".join(hits)
 
 
@@ -198,9 +167,9 @@ def test_leak_guard_matches_the_source_env():
         real = yaml.safe_load(f)
     site = _site_from_real_env(real)
     for key in ("CLUSTER", "SLURM_ACCOUNT", "SHARED_WORKDIR", "SSH_USER"):
-        assert _LEAK.search(str(site[key])), key
+        assert LEAK.search(str(site[key])), key
     for host in site["LOGIN_HOSTS"]:
-        assert _LEAK.search(host), host
+        assert LEAK.search(host), host
 
 
 def _site_from_real_env(env):
@@ -297,6 +266,25 @@ def test_eval_qos_adds_nothing_when_not_needed(tmp_path, partition, qos):
     site["EVAL_QOS"] = qos
     _, parts = _partition_configs(site, tmp_path)
     assert set(parts) == {site["CPU_PARTITION"]}
+
+
+def test_the_eval_lane_keys_may_be_left_out(tmp_path):
+    site = _site()
+    for key in OPTIONAL_KEYS:
+        del site[key]
+    _, parts = _partition_configs(site, tmp_path)
+    assert set(parts) == {site["CPU_PARTITION"]}
+
+
+def test_an_eval_qos_needs_an_eval_partition(tmp_path):
+    site = _site()
+    site["EVAL_QOS"] = "burst"
+    del site["EVAL_PARTITION"]
+    site_path = tmp_path / "site.yaml"
+    site_path.write_text(yaml.safe_dump(site), encoding="utf-8")
+    proc = render(site_path, tmp_path / "rendered.yaml")
+    assert proc.returncode == 2, proc.stderr
+    assert "EVAL_PARTITION" in proc.stderr
 
 
 def test_empty_gpu_constraint_drops_the_directive(tmp_path):

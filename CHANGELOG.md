@@ -112,6 +112,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
+  site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
+  moved to `recipes/granite-switch/skypilot/slurm-bluevela/answerability-lora` in #639 (the
+  v0.3.10 path), and now moves to `recipes/granite-switch/skypilot/slurm/answerability-lora`.
+  Its environment is rendered by `scripts/setup-local-space.sh` from the SLURM template the
+  distill recipes use, now shared at `recipes/environments/skypilot-slurm.template.yaml`,
+  where the eval lane's `EVAL_QOS` and `EVAL_PARTITION` become optional. A
+  `site.example.yaml` next to the recipe lists every site key with a fake value. The
+  prepare target's partition is now `$${CPU_PARTITION}`, the template's key, not a fixed
+  `cpu`. **Breaking:** `parameters.yaml` no longer has `ENVIRONMENT_URI`,
+  `SOURCE_DATA_URI`, `DATA_ROOT` or `ADAPTER_ROOT`, and `ACCELERATORS` is split into the
+  site's GPU model, `GPU_ACCELERATOR` (as in distill), and the recipe's count, `NUM_GPUS`
+  (default 4). A run needs `--param-file <site.yaml>` with those site keys (and
+  `CPU_PARTITION`), and fails to render without one; a smoke run's
+  `--param ACCELERATORS=<model>:1` becomes `--param NUM_GPUS=1`. Neither old path is kept.
 - **The fm-tune step moves from the `tune` category to `train` (#677).** Its URI changes from
   `space://steps/tune/fm-tune` to `space://steps/train/fm-tune`. The source is now
   `steps/train/fm-tune/`, and the published copies are

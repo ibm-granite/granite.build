@@ -1,31 +1,27 @@
-# Parameters for build.yaml (gb build start -f build.yaml --param-file parameters.yaml).
-# Override any of these with --param KEY=VALUE.
+# The recipe's own settings. gb build start layers these under every
+# --param-file, so the site file (site.example.yaml lists its keys) adds the
+# site-specific ones: ENVIRONMENT_URI, SOURCE_DATA_URI, DATA_ROOT,
+# ADAPTER_ROOT, GPU_ACCELERATOR and the environment's CPU_PARTITION. No key here
+# is also a site key. Override any of them with --param KEY=VALUE.
+#
+#   gb build start -f build.yaml --param-file <site.yaml> --param RUN_ID=<unique>
 
 # Names the build, the adapter dir and the ClearML task. Use a new value per
 # run: a re-run with the same RUN_ID replaces that run's adapter.
 RUN_ID: "it1-r1"
 
-ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
-
 # ── Model ────────────────────────────────────────────────────────────────────
 # Public, ungated, ~17.6 GB of safetensors (no onnx). Staged by an hfpull job
-# on the cpu partition into <shared-fs>/hfcache/. If that
-# job fails, point this at an existing copy instead:
+# on the CPU partition into the environment's HF cache. If that job fails,
+# point this at an existing copy instead:
 #   BASE_MODEL_URI: "env://<shared-fs>/<...>/granite-4.2-8b"
 BASE_MODEL_URI: "hf:///ibm-granite/granite-4.2-8b"
 # Written into adapter_config.json as base_model_name_or_path.
 BASE_MODEL_ID: "ibm-granite/granite-4.2-8b"
 
 # ── Data ─────────────────────────────────────────────────────────────────────
-# The answerability parquet in a private HF dataset repo.
-# The path after the revision limits the pull to that directory; the prepare
-# target keeps its prompt/completion columns. Needs an HF_TOKEN secret with
-# read access to that repo (README.md). Replace `main` with a commit hash
-# to pin the data.
-SOURCE_DATA_URI: "hf:///datasets/ibm-research/touma/main/training_data/answerability/parquet_granite4.2_8b"
-# prepare writes the converted dataset to $DATA_ROOT/$RUN_ID on the shared filesystem
-# (container-visible), where train reads it.
-DATA_ROOT: "/proj/data-eng/llmb-read-write/touma/data/answerability-lora"
+# The source parquet (SOURCE_DATA_URI) and where prepare writes (DATA_ROOT)
+# come from the site file.
 # load_dataset split spec; slicing works ("train[:256]" for a smoke run).
 DATASET_SPLIT: "train"
 
@@ -46,21 +42,20 @@ LORA_R: 16
 LORA_ALPHA: 32
 LEARNING_RATE: 5.0e-05
 
-# ── Output ───────────────────────────────────────────────────────────────────
-# Adapters land in $ADAPTER_ROOT/answerability-$METHOD/$RUN_ID on the shared filesystem
-# (container-visible), so LoRA and aLoRA runs never share a directory.
-ADAPTER_ROOT: "/proj/data-eng/llmb-read-write/touma/adapters"
-
 # ── Compute ──────────────────────────────────────────────────────────────────
-# 4x H200, DDP: one bf16 copy of the 8B base per GPU.
-# Effective batch = 4 GPUs x 1 x 8 accumulation = 32.
-ACCELERATORS: "H200:4"
+# train's GPU count, DDP: one bf16 copy of the 8B base per GPU. The GPU model is
+# the site file's GPU_ACCELERATOR. Effective batch = NUM_GPUS x 1 per device x 8
+# accumulation (fixed in build.yaml) = 32; another count trains at another
+# effective batch (the 1-GPU smoke run at 8).
+NUM_GPUS: 4
+# Host GiB for train. SLURM rejects a request above a node's RealMemory, so
+# lower it with --param MEMORY=<GiB> on smaller nodes.
 MEMORY: "512"
-# prepare runs on the cpu partition in the hf-peft-sft image (its venv has
-# pyarrow). The partition allows at most 8 GiB per CPU, so keep
-# PREP_MEMORY <= 8 x PREP_CPUS: above that SLURM raises the CPU count and
-# SkyPilot's srun aborts ("cpus-per-task set by two different environment
-# variables").
+# prepare runs on the CPU partition in the hf-peft-sft image (its venv has
+# pyarrow). A partition that caps memory per CPU (MaxMemPerCPU, 8 GiB on the
+# cluster this was first run on) needs PREP_MEMORY <= cap x PREP_CPUS: above
+# that SLURM raises the CPU count and SkyPilot's srun aborts ("cpus-per-task
+# set by two different environment variables").
 PREP_IMAGE: "quay.io/granitebuild/steps/train/hf-peft-sft/skypilot:peft-v0.21.2-6"
 PREP_CPUS: 2
 PREP_MEMORY: "16"

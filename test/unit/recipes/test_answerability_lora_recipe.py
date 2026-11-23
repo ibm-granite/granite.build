@@ -4,7 +4,8 @@
 
 """Unit tests for the granite-switch answerability-lora recipe.
 
-The recipe is rendered with its parameters and then through hf-peft-sft's own
+The recipe is rendered with its parameters, with the example site file layered
+over them as `gb build start --param-file` layers it, and then through hf-peft-sft's own
 expanded step-template blocks with the strict renderer, so a config error that
 would fail the build at step creation fails here instead. The prepare target's command is
 rendered the way the command step renders it and run on a small parquet with
@@ -18,21 +19,20 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import yaml
+from jinja2.exceptions import UndefinedError
 from libgbtest.step_templates import expanded_step_template
 
-from gbcli.services.service_build import get_params_from_file
+from gbcli.services.service_build import get_params_from_file, load_layered_params
 from gbcli.utils.buildutil import apply_parameters
 from gbserver.utils.template import fill_objtemplate, fill_template
 
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _RECIPE = (
-    _REPO
-    / "recipes"
-    / "granite-switch"
-    / "skypilot"
-    / "slurm-bluevela"
-    / "answerability-lora"
+    _REPO / "recipes" / "granite-switch" / "skypilot" / "slurm" / "answerability-lora"
 )
+_SITE_FILE = _RECIPE / "site.example.yaml"
+_SITE = get_params_from_file(str(_SITE_FILE))
+_PARAMS = get_params_from_file(str(_RECIPE / "parameters.yaml"))
 _STEP = _REPO / "steps" / "train" / "hf-peft-sft" / "skypilot"
 # As `make space` renders it: gb-include lines expanded.
 _TEMPLATE = expanded_step_template(_STEP / "step-template.yaml")
@@ -43,9 +43,10 @@ _SCRIPTS = ("hf_peft_sft_guard.sh", "hf_peft_sft_setup.sh", "hf_peft_sft_run.sh"
 
 
 def _build(tmp_path, *params, overrides=None):
-    """The recipe rendered with parameters.yaml, --param style *params*, and
-    *overrides* merged into the file values (for values --param can't carry)."""
-    file_params = get_params_from_file(str(_RECIPE / "parameters.yaml"))
+    """The recipe rendered with parameters.yaml and the example site file over
+    it, --param style *params*, and *overrides* merged into the file values
+    (for values --param can't carry)."""
+    file_params = load_layered_params(str(_RECIPE / "build.yaml"), [str(_SITE_FILE)])
     text = apply_parameters(
         (_RECIPE / "build.yaml").read_text(),
         list(params),
@@ -110,12 +111,30 @@ def _flags(argv):
     return dict(zip(rest[::2], rest[1::2]))
 
 
-def test_environment_is_bluevela_slurm(tmp_path):
-    target = _target(tmp_path)
-    assert target["environment_uri"] == "space://environments/skypilot/slurm/bluevela"
-    resources = _step_config(target)["launcher_config"]["resources"]
-    assert resources["accelerators"].startswith("H200:")
+def test_environment_and_gpus_come_from_the_site_file(tmp_path):
+    build = _build(tmp_path)
+    for target in build["targets"].values():
+        assert target["environment_uri"] == _SITE["ENVIRONMENT_URI"]
+    resources = _step_config(build["targets"]["train"])["launcher_config"]["resources"]
+    # The model is the site's, the count the recipe's: the effective batch
+    # the recipe documents (NUM_GPUS x 1 x 8) holds whatever the site.
+    assert resources["accelerators"] == (
+        f"{_SITE['GPU_ACCELERATOR']}:{_PARAMS['NUM_GPUS']}"
+    )
+    assert _PARAMS["NUM_GPUS"] == 4
     assert isinstance(resources["memory"], str)
+
+
+def test_without_a_site_file_the_recipe_does_not_render(tmp_path):
+    """parameters.yaml alone has no site values, so the render fails instead
+    of falling back to some cluster's."""
+    with pytest.raises(UndefinedError):
+        apply_parameters(
+            (_RECIPE / "build.yaml").read_text(),
+            [],
+            _PARAMS,
+            str(tmp_path),
+        )
 
 
 def test_regular_lora_with_the_prepared_dataset(tmp_path):
@@ -131,25 +150,25 @@ def test_prepare_pulls_only_the_parquet_dir_from_hf(tmp_path):
 
     source = _prepare(tmp_path)["inputs"]["source"]
     assert source["type"] == "dataset"
+    assert source["uri"] == _SITE["SOURCE_DATA_URI"]
     uri = HfURI.parse(source["uri"])
     assert uri.get_hf_type() == HfType.DATASET
-    assert f"{uri.get_owner()}/{uri.get_repo()}" == "ibm-research/touma"
     assert uri.get_path_in_repo() == "training_data/answerability/parquet_granite4.2_8b"
 
 
 def test_prepare_writes_to_shared_storage_on_the_cpu_partition(tmp_path):
     prepare = _prepare(tmp_path, "RUN_ID=abc")
     out = prepare["outputs"]["dataset"]
-    assert out["uri"].startswith("env:///proj/data-eng/llmb-read-write/")
-    assert out["uri"].endswith("/abc")
+    assert out["uri"] == f"env://{_SITE['DATA_ROOT']}/abc"
     (step,) = prepare["steps"]
     assert step["step_uri"] == "space://steps/command"
-    assert step["config"]["zone"] == "cpu"
+    assert step["config"]["zone"] == _SITE["CPU_PARTITION"]
     assert step["config"]["launcher_config"]["sbatch_options"] == {"constraint": None}
     resources = step["config"]["launcher_config"]["resources"]
     assert "accelerators" not in resources
-    # cpu's MaxMemPerCPU is 8 GiB: more makes SLURM raise cpus-per-task past
-    # SkyPilot's srun --cpus, and srun aborts.
+    # The defaults fit a CPU partition capping MaxMemPerCPU at 8 GiB (the
+    # cluster this was first run on): more makes SLURM raise cpus-per-task
+    # past SkyPilot's srun --cpus, and srun aborts.
     assert int(resources["memory"]) <= 8 * int(resources["cpus"])
 
 
@@ -227,9 +246,9 @@ def test_clearml_on_declares_the_three_secrets(tmp_path):
 
 
 def test_smoke_overrides_render(tmp_path):
-    target = _target(
-        tmp_path, "DATASET_SPLIT=train[:64]", "MAX_STEPS=4", "ACCELERATORS=H200:1"
-    )
+    target = _target(tmp_path, "DATASET_SPLIT=train[:64]", "MAX_STEPS=4", "NUM_GPUS=1")
+    resources = _step_config(target)["launcher_config"]["resources"]
+    assert resources["accelerators"] == f"{_SITE['GPU_ACCELERATOR']}:1"
     flags = _flags(_run_argv(target))
     assert flags["--dataset_split"] == "train[:64]"
     assert flags["--max_steps"] == "4"
@@ -360,7 +379,7 @@ def test_prepare_keeps_only_prompt_and_completion(tmp_path):
         assert table.num_rows == rows
     readme = (out / "README.md").read_text()
     assert "source_sha256" in readme
-    assert "hf:///datasets/ibm-research/touma/main/" in readme
+    assert _SITE["SOURCE_DATA_URI"] in readme
     assert f"GB_ARTIFACT_ID:dataset GB_ARTIFACT_PATH:{out}" in proc.stdout
 
 
@@ -496,7 +515,7 @@ def test_alora_hyperparameters_are_parameters(tmp_path):
 
 def test_adapter_dir_follows_the_method(tmp_path):
     """Same RUN_ID, different METHOD: the two adapters never share a dir."""
-    root = "/proj/data-eng/llmb-read-write/touma/adapters"
+    root = _SITE["ADAPTER_ROOT"]
     for method in ("lora", "alora"):
         target = _target(tmp_path, f"METHOD={method}", "RUN_ID=r1")
         cfg = _step_config(target)["hf_peft_sft_config"]

@@ -1,19 +1,23 @@
-# SkyPilot-on-SLURM environment TEMPLATE for the recipes under recipes/distill/.
+# SkyPilot-on-SLURM environment TEMPLATE, shared by the recipes that run on
+# SkyPilot/SLURM from a site file:
+#
+#   recipes/distill/                                    site.example.yaml
+#   recipes/granite-switch/skypilot/slurm/<recipe>/     site.example.yaml
 #
 # This file is not an environment and is not in any space. Every site-specific
 # value is a placeholder filled from a private site file that never enters this
-# repo; recipes/distill/site.example.yaml lists every key with a fake value.
+# repo; each recipe's site.example.yaml lists every key with a fake value.
 # Render it into a usable environment with:
 #
 #   scripts/setup-local-space.sh \
-#     --template recipes/distill/environments/skypilot-slurm.template.yaml \
+#     --template recipes/environments/skypilot-slurm.template.yaml \
 #     --site <site.yaml> --name <env-name>
 #
 # which writes the rendered environment into a standalone space (or, with
 # --out DIR, a private repo backing a shared gbserver) and sets ENVIRONMENT_URI
-# in the site file to it. Pass the same site file to the recipes:
+# in the site file to it. Pass the same site file to the recipe:
 #
-#   gb build start -f recipes/distill/<recipe>/build.yaml --param-file <site.yaml>
+#   gb build start -f <recipe>/build.yaml --param-file <site.yaml>
 #
 # Syntax: the gb CLI's build.yaml parameter syntax, rendered under
 # StrictUndefined, so a key missing from the site file is an error. A value is
@@ -23,8 +27,10 @@
 # (double braces, brace-percent) are left as they are.
 #
 # Everything SLURM-specific (partitions, account, QOS, constraint, sbatch
-# options) lives here, so the recipes only use the generic SkyPilot launcher
-# keys (cluster, zone, accelerators, memory).
+# options) lives here, so the recipes use the generic SkyPilot launcher keys
+# (cluster, zone, accelerators, memory). A CPU-only target may also clear the
+# GPU constraint (sbatch_options.constraint: null), as the hfpull/hfpush
+# defaults below do.
 name: $${ENV_NAME}
 type: Skypilot
 subtype: slurm
@@ -189,7 +195,9 @@ config:
           # options global < cluster < partition, so this overrides the env-wide
           # QOS on that partition alone. EVAL_QOS "" adds nothing, and so does an
           # EVAL_PARTITION that is the GPU or CPU partition, whose QOS is already set.
-<%- if EVAL_QOS and EVAL_PARTITION != GPU_PARTITION and EVAL_PARTITION != CPU_PARTITION %>
+          # A recipe with no eval lane leaves both keys out: EVAL_QOS defaults to
+          # "", and EVAL_PARTITION is read only when EVAL_QOS is set.
+<%- if EVAL_QOS | default("") and EVAL_PARTITION != GPU_PARTITION and EVAL_PARTITION != CPU_PARTITION %>
             $${EVAL_PARTITION}:
               sbatch_options:
                 qos: $${EVAL_QOS}

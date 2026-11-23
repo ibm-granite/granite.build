@@ -6,7 +6,7 @@
 #
 # One file serves both uses:
 #   scripts/setup-local-space.sh \
-#     --template recipes/distill/environments/skypilot-slurm.template.yaml \
+#     --template recipes/environments/skypilot-slurm.template.yaml \
 #     --site <your-site.yaml> --name <env-name>
 # renders the environment from the "Environment" keys and sets ENVIRONMENT_URI
 # below to it, and
