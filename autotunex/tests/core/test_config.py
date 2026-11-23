@@ -484,43 +484,114 @@ def test_cors_allow_origins_rejects_a_wildcard() -> None:
 
 
 @pytest.mark.parametrize(
-    "origin",
+    ("entry", "origin"),
     [
-        "https://ui.example.com/",
-        "https://ui.example.com/app",
-        "https://UI.example.com",
-        "HTTPS://ui.example.com",
-        "https://ui.example.com:443",
-        "http://ui.example.com:80",
-        "https://ui.example.com?x=1",
-        "https://ui.example.com#x",
-        "https://user@ui.example.com",
+        ("https://ui.example.com/", "https://ui.example.com"),
+        ("https://ui.example.com/app", "https://ui.example.com"),
+        ("https://UI.example.com", "https://ui.example.com"),
+        ("HTTPS://ui.example.com", "https://ui.example.com"),
+        ("https://ui.example.com:443", "https://ui.example.com"),
+        ("http://ui.example.com:80", "http://ui.example.com"),
+        ("https://ui.example.com?x=1", "https://ui.example.com"),
+        ("https://ui.example.com#x", "https://ui.example.com"),
+        ("http://[0:0::1]:5173", "http://[::1]:5173"),
+    ],
+)
+def test_cors_allow_origins_rewrites_an_entry_to_the_origin_a_browser_sends(
+    entry: str, origin: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A browser's ``Origin`` header is always ``scheme://host[:port]``, host lowercased.
+
+    0.4.0 loaded these spellings, so refusing them would stop an upgraded
+    deployment from starting; they are rewritten, with a WARNING naming them.
+    """
+    with caplog.at_level("WARNING", logger="autotunex"):
+        settings = Settings(_env_file=None, environment="test", cors_allow_origins=[entry])
+
+    assert settings.cors_allow_origins == [origin]
+    assert entry in caplog.text
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
         "ui.example.com",
+        "localhost:3000",
         "ftp://ui.example.com",
+        "https://user@ui.example.com",
+        "https://dash board.invalid",
+        "https://dash%20board.invalid",
         "https://[",
         "https://",
     ],
 )
-def test_cors_allow_origins_rejects_an_entry_that_is_not_a_bare_origin(origin: str) -> None:
-    """CORS and the login ``return_to`` both match an entry exactly against an origin.
+def test_cors_allow_origins_drops_an_entry_with_no_origin(
+    entry: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No browser request can match these; dropping them keeps startup working."""
+    with caplog.at_level("WARNING", logger="autotunex"):
+        settings = Settings(
+            _env_file=None,
+            environment="test",
+            cors_allow_origins=[entry, "https://ui.example.com"],
+        )
 
-    A browser's ``Origin`` header is always ``scheme://host[:port]`` with the
-    host lowercased and a default port dropped. An entry in any other shape
-    (a trailing slash, say) matches nothing, so startup refuses it instead of
-    letting every cross-origin call fail with nothing to explain why.
-    """
-    with pytest.raises(ValidationError, match="cors_allow_origins"):
-        Settings(_env_file=None, environment="test", cors_allow_origins=[origin])
+    assert settings.cors_allow_origins == ["https://ui.example.com"]
+    assert "Dropping" in caplog.text
 
 
 @pytest.mark.parametrize(
     "origin",
-    ["https://ui.example.com", "https://ui.example.com:8443", "http://localhost:5173"],
+    [
+        "https://ui.example.com",
+        "https://ui.example.com:8443",
+        "http://localhost:5173",
+        "http://[::1]:5173",
+    ],
 )
-def test_cors_allow_origins_accepts_a_bare_origin(origin: str) -> None:
-    settings = Settings(_env_file=None, environment="test", cors_allow_origins=[origin])
+def test_cors_allow_origins_keeps_a_bare_origin_without_a_warning(
+    origin: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING", logger="autotunex"):
+        settings = Settings(_env_file=None, environment="test", cors_allow_origins=[origin])
 
     assert settings.cors_allow_origins == [origin]
+    assert not caplog.records
+
+
+def test_return_to_allowlist_defaults_to_the_cors_allowlist() -> None:
+    settings = Settings(
+        _env_file=None, environment="test", cors_allow_origins=["https://ui.example.com"]
+    )
+
+    assert settings.return_to_allow_origins is None
+    assert settings.resolved_return_to_allow_origins == ["https://ui.example.com"]
+
+
+def test_return_to_allowlist_set_to_empty_overrides_the_cors_allowlist() -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        cors_allow_origins=["https://ui.example.com"],
+        return_to_allow_origins=[],
+    )
+
+    assert settings.resolved_return_to_allow_origins == []
+
+
+def test_return_to_allowlist_entries_are_normalized() -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        return_to_allow_origins=["https://UI.example.com/", "ui.example.com"],
+    )
+
+    assert settings.resolved_return_to_allow_origins == ["https://ui.example.com"]
+
+
+def test_return_to_allowlist_rejects_a_wildcard() -> None:
+    with pytest.raises(ValidationError, match="return_to_allow_origins"):
+        Settings(_env_file=None, environment="test", return_to_allow_origins=["*"])
 
 
 def test_cross_site_cookies_require_an_explicit_cors_allowlist() -> None:

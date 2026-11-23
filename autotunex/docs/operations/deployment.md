@@ -121,8 +121,8 @@ backend-for-frontend session flow). If you do use one:
   ```
 
   Write each entry as a bare origin (`https://app.example.com`, no trailing slash,
-  lowercase, no `:443`); startup refuses an entry with a path, trailing slash,
-  uppercase host or default port.
+  lowercase, no `:443`). Startup rewrites any other spelling to that form, and
+  drops an entry with no http(s) origin, logging a WARNING for each.
 
 - **`AUTOTUNEX_SESSION_COOKIE_SAME_SITE=none` requires a non-empty allowlist.**
   Cross-site cookies are only legal alongside an explicit

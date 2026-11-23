@@ -58,6 +58,7 @@ def make_settings(
     session_ttl_hours: int = 8,
     session_cookie_same_site: Literal["lax", "none"] = "lax",
     cors_allow_origins: list[str] | None = None,
+    return_to_allow_origins: list[str] | None = None,
     dataset_storage_backend: Literal["auto", "local", "huggingface"] = "auto",
     dataset_storage_dir: Path | None = None,
     gb_environment: str | None = None,
@@ -156,6 +157,9 @@ def make_settings(
             ``None``, resolved below to ``[]`` — matching ``Settings``'s own
             default — so a caller that never passes this sees no behaviour
             change.
+        return_to_allow_origins: The ``return_to`` allowlist. Defaults to
+            ``None``, matching ``Settings``'s own default (use
+            ``cors_allow_origins``).
         dataset_storage_backend: Which dataset storage backend to force.
             Defaults to ``"auto"``, matching ``Settings``'s own default, so
             existing callers see no behaviour change.
@@ -217,6 +221,7 @@ def make_settings(
         session_ttl_hours=session_ttl_hours,
         session_cookie_same_site=session_cookie_same_site,
         cors_allow_origins=cors_allow_origins if cors_allow_origins is not None else [],
+        return_to_allow_origins=return_to_allow_origins,
         dataset_storage_backend=dataset_storage_backend,
         # Path("artifacts/datasets") is Settings' own default; only override when a
         # test passes a tmp dir, so no test ever writes real dataset files.

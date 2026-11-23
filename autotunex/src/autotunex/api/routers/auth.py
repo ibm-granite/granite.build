@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import Annotated
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
@@ -58,7 +58,7 @@ from autotunex.api.deps import (
 from autotunex.core.auth.impersonation import mint_assume_token
 from autotunex.core.auth.oidc import OidcBearerVerifier
 from autotunex.core.auth.session import mint_session_token
-from autotunex.core.config import Settings, canonical_origin
+from autotunex.core.config import Settings
 from autotunex.core.exceptions import (
     AdminRequiredError,
     CannotImpersonateSelfError,
@@ -67,6 +67,7 @@ from autotunex.core.exceptions import (
     UserNotFoundError,
 )
 from autotunex.core.logging import get_logger
+from autotunex.core.urls import split_origin
 from autotunex.db.repositories.protocols import UserRepository
 from autotunex.models.auth import Principal
 
@@ -215,50 +216,54 @@ def _clear_cookie(response: Response, key: str, settings: Settings) -> None:
 def _allowed_return_to(return_to: str | None, settings: Settings) -> str | None:
     """Return ``return_to`` if its origin is allowlisted, else ``None``.
 
-    The allowlist is ``cors_allow_origins``: the origins already trusted to make
-    credentialed calls are the ones a login may land back on. ``return_to``'s
-    origin, serialized the way a browser does (:func:`canonical_origin`), must
-    equal an entry, so another host, scheme or port, a relative or
-    scheme-relative URL, userinfo, and a URL that does not parse all fall back
-    to ``public_base_url``. So do a non-ASCII value and one over the length cap.
+    The allowlist is :attr:`Settings.resolved_return_to_allow_origins`
+    (``return_to_allow_origins``, else ``cors_allow_origins``). ``return_to``'s
+    origin, serialized the way a browser does (:func:`split_origin`), must equal
+    an entry, so another host, scheme or port, a relative or scheme-relative
+    URL, userinfo, and a URL that does not parse all fall back to
+    ``public_base_url``. So do a non-ASCII value and one over the length cap.
     An empty value is treated as absent.
 
-    Rejections are logged without the value, which is caller-supplied, and the
-    routine one (no allowlist at all) only at DEBUG, so a UI that always sends
-    ``return_to`` does not bury this module's real warnings.
+    Rejections are logged only at DEBUG, and without the value:
+    ``/auth/login`` is unauthenticated, so anyone can send a rejected
+    ``return_to``, and a WARNING per request would bury this module's real
+    warnings.
     """
     if not return_to:
         return None
-    if not settings.cors_allow_origins:
+    allowlist = settings.resolved_return_to_allow_origins
+    if not allowlist:
         logger.debug(
-            "Ignoring return_to: AUTOTUNEX_CORS_ALLOW_ORIGINS is empty, so no origin "
-            "is allowed. The login lands on AUTOTUNEX_PUBLIC_BASE_URL."
+            "Ignoring return_to: the return_to allowlist is empty, so no origin is "
+            "allowed. The login lands on AUTOTUNEX_PUBLIC_BASE_URL."
         )
         return None
     if len(return_to) > _RETURN_TO_MAX_LENGTH or not return_to.isascii():
-        logger.warning(
+        logger.debug(
             "Ignoring return_to: it is not ASCII or is over %d characters. The "
             "login lands on AUTOTUNEX_PUBLIC_BASE_URL.",
             _RETURN_TO_MAX_LENGTH,
         )
         return None
-    origin = canonical_origin(return_to)
-    if origin is None:
-        logger.warning(
-            "Ignoring return_to: it is not an absolute http(s) URL with a host, it "
-            "carries userinfo, or it does not parse. The login lands on "
+    split = split_origin(return_to)
+    if split is None:
+        logger.debug(
+            "Ignoring return_to: it is not an absolute http(s) URL with a valid host, "
+            "it carries userinfo, or it does not parse. The login lands on "
             "AUTOTUNEX_PUBLIC_BASE_URL."
         )
         return None
-    if origin not in settings.cors_allow_origins:
-        logger.warning(
-            "Ignoring return_to: its origin is not in AUTOTUNEX_CORS_ALLOW_ORIGINS. "
+    origin, parts = split
+    if origin not in allowlist:
+        logger.debug(
+            "Ignoring return_to: its origin is not in the return_to allowlist "
+            "(AUTOTUNEX_RETURN_TO_ALLOW_ORIGINS, else AUTOTUNEX_CORS_ALLOW_ORIGINS). "
             "The login lands on AUTOTUNEX_PUBLIC_BASE_URL."
         )
         return None
     # `urlsplit` drops tabs and newlines before parsing, so redirect to what it
     # parsed (the URL just validated), not the raw string.
-    return urlsplit(return_to).geturl()
+    return parts.geturl()
 
 
 @router.get("/login", summary="Start the W3ID login flow")
@@ -272,7 +277,7 @@ async def login(settings: SettingsDep, return_to: str | None = None) -> Redirect
     choosing.
 
     ``return_to`` is where ``/callback`` sends the browser once the session
-    is minted, if its origin is in ``cors_allow_origins`` (see
+    is minted, if its origin is allowlisted (see
     :func:`_allowed_return_to`); otherwise ``public_base_url``. It travels in
     the signed flow cookie, so ``/callback`` never reads it from the request,
     and ``/callback`` checks it against the allowlist again.

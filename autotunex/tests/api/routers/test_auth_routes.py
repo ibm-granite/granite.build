@@ -986,7 +986,7 @@ async def test_return_to_with_no_allowlist_logs_below_warning(
     assert all(r.levelno < logging.WARNING for r in records)
 
 
-def _allowlisted_settings(*origins: str) -> Settings:
+def _allowlisted_settings(*origins: str, return_to_origins: list[str] | None = None) -> Settings:
     return make_settings(
         auth_providers=["session"],
         oidc_issuer=ISSUER,
@@ -999,25 +999,14 @@ def _allowlisted_settings(*origins: str) -> Settings:
         public_base_url=PUBLIC_BASE_URL,
         session_secret=SESSION_SECRET,
         cors_allow_origins=list(origins),
+        return_to_allow_origins=return_to_origins,
     )
 
 
 class TestReturnToWithAnAllowlistedOrigin:
     @pytest.fixture
     def settings(self) -> Settings:
-        return make_settings(
-            auth_providers=["session"],
-            oidc_issuer=ISSUER,
-            oidc_jwks_uri="https://unused.invalid/jwks",
-            oidc_audience=AUDIENCE,
-            oidc_client_id=AUDIENCE,
-            oidc_client_secret=CLIENT_SECRET,
-            oidc_authorization_endpoint=AUTHORIZATION_ENDPOINT,
-            oidc_token_endpoint=TOKEN_ENDPOINT,
-            public_base_url=PUBLIC_BASE_URL,
-            session_secret=SESSION_SECRET,
-            cors_allow_origins=[GB_UI_ORIGIN],
-        )
+        return _allowlisted_settings(GB_UI_ORIGIN)
 
     @pytest.mark.parametrize(
         "return_to",
@@ -1099,17 +1088,20 @@ class TestReturnToWithAnAllowlistedOrigin:
         assert response.status_code == HTTPStatus.FOUND
         assert response.headers["location"] == PUBLIC_BASE_URL
 
-    async def test_a_rejected_return_to_is_logged_without_its_value(
+    async def test_a_rejected_return_to_is_logged_below_warning_without_its_value(
         self, bff_client: AsyncClient, caplog: pytest.LogCaptureFixture
     ) -> None:
-        with caplog.at_level(logging.WARNING):
+        """``/auth/login`` is unauthenticated, so anyone can send a rejected value."""
+        with caplog.at_level(logging.DEBUG, logger="autotunex"):
             await bff_client.get(
                 "/auth/login",
                 params={"return_to": "https://evil.invalid/x"},
                 follow_redirects=False,
             )
 
-        assert "return_to" in caplog.text
+        records = [r for r in caplog.records if "return_to" in r.getMessage()]
+        assert records
+        assert all(r.levelno < logging.WARNING for r in records)
         assert "evil.invalid" not in caplog.text
 
     async def test_callback_rechecks_return_to_against_the_current_allowlist(
@@ -1144,3 +1136,37 @@ class TestReturnToWithAnAllowlistedOrigin:
 
         assert response.status_code == HTTPStatus.FOUND
         assert response.headers["location"] == PUBLIC_BASE_URL
+
+
+class TestReturnToWithItsOwnAllowlist:
+    """``return_to_allow_origins``, when set, replaces ``cors_allow_origins`` for return_to."""
+
+    @pytest.fixture
+    def settings(self) -> Settings:
+        return _allowlisted_settings(GB_UI_ORIGIN, return_to_origins=["https://landing.invalid"])
+
+    async def test_callback_redirects_to_an_origin_on_the_return_to_allowlist(
+        self, bff_client: AsyncClient
+    ) -> None:
+        response = await _login_and_callback(bff_client, return_to="https://landing.invalid/x")
+
+        assert response.headers["location"] == "https://landing.invalid/x"
+
+    async def test_callback_ignores_a_cors_origin_missing_from_the_return_to_allowlist(
+        self, bff_client: AsyncClient
+    ) -> None:
+        response = await _login_and_callback(bff_client, return_to=f"{GB_UI_ORIGIN}/x")
+
+        assert response.headers["location"] == PUBLIC_BASE_URL
+
+
+async def test_an_empty_return_to_allowlist_ignores_return_to_despite_cors(
+    app: FastAPI, bff_client: AsyncClient
+) -> None:
+    app.dependency_overrides[get_settings] = lambda: _allowlisted_settings(
+        GB_UI_ORIGIN, return_to_origins=[]
+    )
+
+    response = await _login_and_callback(bff_client, return_to=f"{GB_UI_ORIGIN}/x")
+
+    assert response.headers["location"] == PUBLIC_BASE_URL

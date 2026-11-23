@@ -10,10 +10,14 @@ import shutil
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from autotunex.core.logging import get_logger
+from autotunex.core.urls import split_origin
+
+logger = get_logger(__name__)
 
 AuthProviderName = Literal["disabled", "api_key", "oidc", "session"]
 """``"session"`` backs the browser backend-for-frontend flow: a session JWT this
@@ -82,33 +86,6 @@ def _secret_value(value: SecretStr | None) -> str | None:
     reopened for every ``SecretStr`` field.
     """
     return None if value is None else value.get_secret_value()
-
-
-def canonical_origin(url: str) -> str | None:
-    """Return ``url``'s origin as a browser serializes it, or ``None`` if it has none.
-
-    That is ``http(s)://host[:port]`` with the host lowercased and a default
-    port dropped, which is the form of a browser's ``Origin`` header. ``None``
-    covers anything that is not an absolute http(s) URL with a host, a URL that
-    does not parse (``https://[``, a port over 65535), and a URL carrying
-    userinfo, which a browser never puts in an origin.
-    """
-    try:
-        parts = urlsplit(url)
-        port = parts.port
-    except ValueError:
-        return None
-    host = parts.hostname
-    if parts.scheme not in ("http", "https") or not host:
-        return None
-    if parts.username is not None or parts.password is not None:
-        return None
-    if ":" in host:
-        host = f"[{host}]"
-    origin = f"{parts.scheme}://{host}"
-    if port is not None and port != (443 if parts.scheme == "https" else 80):
-        origin += f":{port}"
-    return origin
 
 
 def _default_auth_providers() -> list[AuthProviderName]:
@@ -838,9 +815,27 @@ class Settings(BaseSettings):
     ``CORSMiddleware`` echo back any request's ``Origin`` header with the
     session cookie attached — see the validator below for the mechanism.
 
-    Each entry must be a bare origin (see :func:`canonical_origin`). It is also
-    the allowlist for ``/auth/login``'s ``return_to``.
+    Each entry is rewritten to the bare origin a browser sends (see
+    :meth:`_normalize_origins`). Unless ``return_to_allow_origins`` is set, it
+    is also the allowlist for ``/auth/login``'s ``return_to``.
     """
+
+    return_to_allow_origins: list[str] | None = None
+    """Origins ``/auth/login``'s ``return_to`` may send the browser back to.
+
+    Unset (the default) means ``cors_allow_origins``: an origin trusted to make
+    credentialed calls is one a login may land on. Set it to keep the two
+    decisions apart, e.g. ``[]`` to ignore ``return_to`` while keeping CORS.
+    Entries are normalized like ``cors_allow_origins``'s, and ``"*"`` is
+    refused. Read it through :attr:`resolved_return_to_allow_origins`.
+    """
+
+    @property
+    def resolved_return_to_allow_origins(self) -> list[str]:
+        """The ``return_to`` allowlist, falling back to ``cors_allow_origins`` when unset."""
+        if self.return_to_allow_origins is None:
+            return self.cors_allow_origins
+        return self.return_to_allow_origins
 
     @property
     def dataset_staging_dir(self) -> Path:
@@ -946,6 +941,46 @@ class Settings(BaseSettings):
             return None
         return value.strip().lower() or None
 
+    @field_validator("cors_allow_origins", "return_to_allow_origins", mode="after")
+    @classmethod
+    def _normalize_origins(cls, value: list[str] | None) -> list[str] | None:
+        """Rewrite each entry to the bare origin a browser sends; drop one that has none.
+
+        Both lists are matched exactly against a browser-serialized origin, so
+        ``https://ui.example.com/`` or ``https://UI.example.com`` would match
+        nothing. 0.4.0 loaded such entries, so refusing them would stop an
+        upgraded deployment from starting, whatever its auth provider. They
+        are rewritten instead, and an entry with no origin at all
+        (``ui.example.com``, ``ftp://…``) is dropped, each with a WARNING
+        naming the entry. ``"*"`` is kept for ``_validate_auth`` to refuse.
+        """
+        if value is None:
+            return None
+        normalized: list[str] = []
+        for entry in value:
+            if entry == "*":
+                normalized.append(entry)
+                continue
+            split = split_origin(entry)
+            if split is None:
+                logger.warning(
+                    "Dropping origin allowlist entry %r: it is not an http(s) origin a "
+                    "browser can send (no scheme or host, userinfo, or an invalid host), "
+                    "so no request can match it.",
+                    entry,
+                )
+                continue
+            origin = split[0]
+            if origin != entry:
+                logger.warning(
+                    "Rewriting origin allowlist entry %r to %r, the form a browser "
+                    "sends. Write it that way to silence this warning.",
+                    entry,
+                    origin,
+                )
+            normalized.append(origin)
+        return normalized
+
     @model_validator(mode="after")
     def _validate_auth(self) -> Settings:
         """Fail startup rather than at request time on misconfiguration."""
@@ -1042,13 +1077,10 @@ class Settings(BaseSettings):
                 "Origin header with the session cookie attached, which defeats "
                 "the allowlist entirely."
             )
-        malformed = [entry for entry in self.cors_allow_origins if canonical_origin(entry) != entry]
-        if malformed:
+        if "*" in (self.return_to_allow_origins or []):
             raise ValueError(
-                "cors_allow_origins entries must be bare origins, written as a browser "
-                "sends them: http(s)://host[:port] with a lowercase host, no default "
-                "port and no path or trailing slash. Any other spelling matches "
-                f"nothing. Got {malformed!r}."
+                'return_to_allow_origins must not contain "*": it would let a login '
+                "redirect to any site."
             )
         if self.session_cookie_same_site == "none" and not self.cors_allow_origins:
             raise ValueError(

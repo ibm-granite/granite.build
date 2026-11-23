@@ -348,21 +348,28 @@ A UI on another origin sends a signed-out user to
 `/auth/login?return_to=<absolute URL>` so they land back on that UI after
 logging in. `return_to` is honoured only when its origin, as a browser
 serializes it (`scheme://host[:port]`, host lowercased, default port dropped),
-matches an entry in `AUTOTUNEX_CORS_ALLOW_ORIGINS`, and it is ASCII
+matches an entry in the `return_to` allowlist, and it is ASCII
 (percent-encoded, as a browser builds it) and at most 1024 characters.
+
+The allowlist is `AUTOTUNEX_RETURN_TO_ALLOW_ORIGINS`, or
+`AUTOTUNEX_CORS_ALLOW_ORIGINS` when that is unset. The two lists answer different
+questions (which origins may make credentialed calls, and where a login may land),
+so set `AUTOTUNEX_RETURN_TO_ALLOW_ORIGINS` to narrow the landing list; `[]` ignores
+`return_to` while keeping CORS.
 
 Anything else, including a relative URL, a URL with userinfo
 (`https://allowed@evil`) and one that does not parse, falls back to
-`AUTOTUNEX_PUBLIC_BASE_URL` and is logged at WARNING without the value. An empty
-`return_to=` is treated as absent. With the default empty allowlist, `return_to`
-is always ignored, and that is logged only at DEBUG.
+`AUTOTUNEX_PUBLIC_BASE_URL`. An empty `return_to=` is treated as absent, and with
+an empty allowlist `return_to` is always ignored. Rejections are logged only at
+DEBUG, without the value: `/auth/login` is unauthenticated, so anyone can send one.
 
-Allowlist entries must be bare origins written the way a browser sends them:
+Write allowlist entries as bare origins, the way a browser sends them:
 `https://ui.example.com`, not `https://ui.example.com/`, `https://UI.example.com`
-or `https://ui.example.com:443`. Startup refuses an entry with a path, a trailing
-slash, an uppercase host, a default port or userinfo, because it would match
-neither a CORS `Origin` header nor a `return_to`. Write an internationalized host
-in its ASCII (punycode) form, as a browser sends it.
+or `https://ui.example.com:443`. Startup rewrites any other spelling to that form
+(an IPv6 host is compressed, so `[0:0::1]` becomes `[::1]`) and drops an entry
+with no http(s) origin or with a host no browser can send (userinfo, a space, a
+backslash, a percent-escape), logging a WARNING for each. Write an
+internationalized host in its ASCII (punycode) form, as a browser sends it.
 
 Being on another **origin** is not the same as being on another **site**. The
 default `AUTOTUNEX_SESSION_COOKIE_SAME_SITE=lax` is enough for a UI on the same
