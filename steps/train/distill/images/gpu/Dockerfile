@@ -56,6 +56,8 @@ ARG UV_PYTHON=3.12
 # reads /etc/apt/sources.list only (SourceParts=-), so a vendor repository in
 # sources.list.d is never consulted and its packages keep the base image's versions.
 # That keeps NVIDIA's CUDA, cuDNN and NCCL packages exactly as the pinned base ships them.
+# Not reproducible from the commit alone: a later rebuild picks up newer archive packages,
+# so the published, trivy-scanned digest is the record of what shipped.
 # nsight-compute (the CUDA profiler) is removed: no step runs it, and its plugins are Go
 # binaries with advisories of their own.
 RUN apt-get update && apt-get install -y --no-install-recommends \

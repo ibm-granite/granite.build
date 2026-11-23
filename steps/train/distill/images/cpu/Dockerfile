@@ -43,6 +43,8 @@ ARG UV_PYTHON=3.12
 # packages (kernel headers, openssl, apt) fall behind the archive's fixes. The upgrade
 # reads /etc/apt/sources.list only (SourceParts=-), so a vendor repository in
 # sources.list.d is never consulted and its packages keep the base image's versions.
+# Not reproducible from the commit alone: a later rebuild picks up newer archive packages,
+# so the published, trivy-scanned digest is the record of what shipped.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl wget ca-certificates \
     && apt-get upgrade -y --no-install-recommends -o Dir::Etc::SourceParts=- \

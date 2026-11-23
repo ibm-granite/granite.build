@@ -36,7 +36,8 @@ make publish-images REGISTRY=<registry>   # refuses to overwrite a published tag
 ```
 
 The bases and `uv` are pinned by digest, and the venv comes from the locked `uv.lock`
-(`uv sync --locked`), so a rebuild from the same commit reproduces the published image.
+(`uv sync --locked`). Both Dockerfiles also run `apt-get upgrade` against the Ubuntu archive, so a
+later rebuild of the same commit picks up newer Ubuntu packages: the published, scanned digest is the record.
 After publishing, repin the tag in every `steps/train/distill/*/skypilot/step-template.yaml`
 and run `make publish-step` in each step directory.
 
