@@ -361,9 +361,11 @@ def _slurm_tracks_memory(cluster: str) -> bool:
     return tracked
 
 
-# A partition's MaxMemPerCPU, cached per (cluster, partition) for an hour: one
-# SSH round trip per partition, like SkyPilot's own SelectTypeParameters cache.
+# A partition's MaxMemPerCPU, cached in this process per (cluster, partition):
+# a read for an hour, a failed probe for five minutes, so a wedged login node
+# costs one probe timeout per partition rather than one per launch.
 _SLURM_MAX_MEM_PER_CPU_TTL_S = 3600.0
+_SLURM_MAX_MEM_PER_CPU_FAILURE_TTL_S = 300.0
 _SLURM_MAX_MEM_PER_CPU_PROBE_TIMEOUT_S = 30
 _slurm_max_mem_per_cpu_cache: Dict[Tuple[str, str], Tuple[float, Optional[int]]] = {}
 
@@ -389,7 +391,7 @@ def _parse_max_mem_per_cpu_mb(scontrol_partition: str) -> Optional[int]:
     return value or None
 
 
-def _slurm_max_mem_per_cpu_mb(cluster: str, partition: Optional[str]) -> Optional[int]:
+def _slurm_max_mem_per_cpu_mb(cluster: str, partition: str) -> Optional[int]:
     """A SLURM partition's ``MaxMemPerCPU`` in MB, or ``None`` if it has none.
 
     Slurm raises a job's CPU count when its memory exceeds
@@ -401,27 +403,16 @@ def _slurm_max_mem_per_cpu_mb(cluster: str, partition: Optional[str]) -> Optiona
     logged and returns ``None``, which leaves the request unchanged.
 
     :param cluster: the SLURM cluster alias (the SSH ``Host``).
-    :param partition: the partition the job is submitted to, or ``None`` for
-        the cluster's default partition (the one Slurm uses when the job names
-        none, resolved the way SkyPilot's provisioner resolves it).
+    :param partition: the partition the job is submitted to.
     :returns: the limit in MB, or ``None``.
     """
-    key = (cluster, partition or "")
+    key = (cluster, partition)
     cached = _slurm_max_mem_per_cpu_cache.get(key)
     if cached is not None and cached[0] > time.time():
         return cached[1]
     try:
         from sky.provision.slurm import utils as slurm_utils
 
-        if not partition:
-            partition = slurm_utils.get_cluster_default_partition(cluster)
-            if not partition:
-                logger.debug(
-                    "SLURM cluster %s marks no default partition; not checking "
-                    "cpus against memory",
-                    cluster,
-                )
-                return None
         rc, stdout, stderr = slurm_utils.run_on_login_node(
             cluster,
             f"scontrol show partition {shlex.quote(partition)} -o",
@@ -436,6 +427,10 @@ def _slurm_max_mem_per_cpu_mb(cluster: str, partition: Optional[str]) -> Optiona
             partition,
             e,
         )
+        _slurm_max_mem_per_cpu_cache[key] = (
+            time.time() + _SLURM_MAX_MEM_PER_CPU_FAILURE_TTL_S,
+            None,
+        )
         return None
     if rc != 0:
         logger.warning(
@@ -445,6 +440,10 @@ def _slurm_max_mem_per_cpu_mb(cluster: str, partition: Optional[str]) -> Optiona
             partition,
             rc,
             (stderr or "").strip()[:200],
+        )
+        _slurm_max_mem_per_cpu_cache[key] = (
+            time.time() + _SLURM_MAX_MEM_PER_CPU_FAILURE_TTL_S,
+            None,
         )
         return None
     value = _parse_max_mem_per_cpu_mb(stdout)
@@ -535,6 +534,11 @@ def _fit_slurm_cpus_to_memory(
     :param res_config: the merged resources (``cpus``, ``memory``,
         ``accelerators``) about to go to ``sky.Resources``.
     :param max_mem_per_cpu_mb: the partition's ``MaxMemPerCPU``, or ``None``.
+    Assumes one task per node with ``--cpus-per-task=cpus``, which is what
+    SkyPilot submits. A step that sets ``ntasks-per-node`` through
+    ``sbatch_options`` changes the CPUs per node to ``ntasks * cpus``, and this
+    arithmetic no longer matches Slurm's.
+
     :returns: ``(requested_cpus, needed_cpus)`` when ``memory`` needs more CPUs
         than the request would get, else ``None``. ``requested_cpus`` is
         SkyPilot's default when the request names none (2, or 4 per GPU).
@@ -4096,15 +4100,20 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         then disagrees with its request and SkyPilot's container-setup ``srun``
         aborts, which surfaces as a provisioning failure retried until
         ``retry.max_retries`` runs out. Requesting the CPUs Slurm would grant
-        keeps the request and the allocation consistent. Probes only for slurm
-        launches that carry a memory size and name a cluster; with no
-        partition named it checks the cluster's default one. A probe failure
-        leaves the request unchanged.
+        keeps the request and the allocation consistent.
+
+        Applies only to slurm launches that carry a memory size and name both
+        a cluster and a partition, on clusters that schedule memory as a
+        consumable resource (only there is MaxMemPerCPU enforced). With no
+        partition named, SkyPilot picks one from its candidate partitions
+        (``gpu_partition_map``, failover), which gbserver cannot know here, so
+        the request is left as written. A probe failure or timeout also leaves
+        it unchanged.
 
         :param cloud_group: the normalized target cloud.
         :param target_alias: the SLURM cluster alias, or ``None``.
         :param partition: the partition (``zone``) the job is submitted to, or
-            ``None`` for the cluster's default partition.
+            ``None`` when the launch names none.
         :param res_config: the merged resources about to go to
             ``sky.Resources``.
         :returns: ``res_config``, with ``cpus`` raised when the memory needs it.
@@ -4114,6 +4123,32 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             or not target_alias
             or _memory_request_mb(res_config.get("memory")) is None
         ):
+            return res_config
+        if not partition:
+            logger.debug(
+                "SLURM cluster %s: no partition named; SkyPilot chooses one, so "
+                "cpus are not checked against memory",
+                target_alias,
+            )
+            return res_config
+        # MaxMemPerCPU is only enforced where memory is a consumable resource;
+        # on CR_CPU/CR_Core clusters Slurm never raises the CPUs, and raising
+        # them here would only lengthen the queue wait. Probed directly: the
+        # memory_tracked flag of the launch short-circuits exactly when
+        # resources.memory is set.
+        try:
+            tracks_memory = await asyncio.wait_for(
+                _sky_submit_to_thread(_slurm_tracks_memory, target_alias),
+                timeout=_SLURM_MEMORY_PROBE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "SLURM cluster %s: SelectTypeParameters probe timed out; not "
+                "checking cpus against memory",
+                target_alias,
+            )
+            return res_config
+        if not tracks_memory:
             return res_config
         try:
             max_mem_per_cpu_mb = await asyncio.wait_for(
@@ -4134,17 +4169,22 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         if fit is None:
             return res_config
         requested, needed = fit
+        if _cpus_request(res_config.get("cpus")) is None:
+            change = (
+                f"setting cpus to {needed} (above SkyPilot's default of {requested})"
+            )
+        else:
+            change = f"raising cpus from {requested} to {needed}"
         logger.warning(
             "SLURM partition %s on %s allows %s MB per CPU, so memory=%s needs %d "
-            "CPUs; raising cpus from %d to %d (Slurm would grant %d anyway, and a "
-            "request below that aborts the container launch -- issue #749)",
+            "CPUs; %s (Slurm would grant %d anyway, and a request below that "
+            "aborts the container launch -- issue #749)",
             partition,
             target_alias,
             max_mem_per_cpu_mb,
             res_config.get("memory"),
             needed,
-            requested,
-            needed,
+            change,
             needed,
         )
         return {**res_config, "cpus": needed}
@@ -4637,8 +4677,8 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             }
             # A memory request above cpus * MaxMemPerCPU gets more CPUs than it
             # asked for, which aborts the container launch (issue #749): ask for
-            # them up front. The partition is the infra's third segment, the
-            # separate zone, or (None) the cluster's default partition.
+            # them up front. The partition is the infra's third segment or the
+            # separate zone; with neither, the request is left as written.
             res_config = await self._fit_slurm_cpus_for_launch(
                 cloud_group,
                 probe_alias,
