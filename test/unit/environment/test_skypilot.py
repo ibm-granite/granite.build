@@ -1006,15 +1006,22 @@ class TestLaunchSkypilot:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "resources",
+        "resources, partition",
         [
-            {"infra": "slurm/mycluster/cpu", "cpus": 4, "memory": 64},
-            {"infra": "slurm/mycluster", "zone": "cpu", "cpus": 4, "memory": 64},
+            ({"infra": "slurm/mycluster/batch", "cpus": 4, "memory": 64}, "batch"),
+            (
+                {"infra": "slurm/mycluster", "zone": "batch", "cpus": 4, "memory": 64},
+                "batch",
+            ),
+            # No partition named: the probe checks the cluster's default one.
+            ({"infra": "slurm/mycluster", "cpus": 4, "memory": 64}, None),
+            # A size with a unit is read the way SkyPilot reads it.
+            ({"infra": "slurm/mycluster/batch", "cpus": 4, "memory": "64GB"}, "batch"),
         ],
-        ids=["partition-in-infra", "partition-as-zone"],
+        ids=["partition-in-infra", "partition-as-zone", "default-partition", "unit"],
     )
     async def test_slurm_memory_above_cpus_times_limit_raises_cpus(
-        self, skypilot_env, resources
+        self, skypilot_env, resources, partition
     ):
         """Issue #749: 4 CPUs and 64 GB on a partition with MaxMemPerCPU=8192
         is granted 8 CPUs by Slurm, and the container-setup srun aborts on the
@@ -1028,9 +1035,9 @@ class TestLaunchSkypilot:
                 launcher_config={"run": "echo hi", "resources": resources},
                 config={},
             )
-        probe.assert_called_once_with("mycluster", "cpu")
+        probe.assert_called_once_with("mycluster", partition)
         assert kwargs.get("cpus") == 8
-        assert kwargs.get("memory") == 64
+        assert kwargs.get("memory") == resources["memory"]
 
     @pytest.mark.asyncio
     async def test_slurm_memory_within_cpus_times_limit_is_unchanged(
@@ -1046,7 +1053,7 @@ class TestLaunchSkypilot:
                 launcher_config={
                     "run": "echo hi",
                     "resources": {
-                        "infra": "slurm/mycluster/cpu",
+                        "infra": "slurm/mycluster/batch",
                         "cpus": 4,
                         "memory": 32,
                     },
@@ -1067,7 +1074,7 @@ class TestLaunchSkypilot:
                 launcher_config={
                     "run": "echo hi",
                     "resources": {
-                        "infra": "slurm/mycluster/cpu",
+                        "infra": "slurm/mycluster/batch",
                         "cpus": 4,
                         "memory": 64,
                     },
@@ -1078,20 +1085,18 @@ class TestLaunchSkypilot:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "resources",
+        "resources, cpus",
         [
             # No memory size: nothing for Slurm to raise CPUs over.
-            {"infra": "slurm/mycluster/cpu", "cpus": 4},
-            {"infra": "slurm/mycluster/cpu", "cpus": 4, "memory": 0},
-            # No partition named: nothing to probe.
-            {"infra": "slurm/mycluster", "cpus": 4, "memory": 64},
-            # Not slurm.
-            {"cpus": 4, "memory": 64},
+            ({"infra": "slurm/mycluster/batch", "cpus": 4}, 4),
+            ({"infra": "slurm/mycluster/batch", "cpus": 4, "memory": 0}, 4),
+            # Not slurm: the cloud-catalog cpus minimum is passed through.
+            ({"cpus": "4+", "memory": 64}, "4+"),
         ],
-        ids=["no-memory", "memory-0", "no-partition", "not-slurm"],
+        ids=["no-memory", "memory-0", "not-slurm"],
     )
     async def test_slurm_cpu_fit_skips_the_probe_when_it_cannot_apply(
-        self, skypilot_env, resources
+        self, skypilot_env, resources, cpus
     ):
         with patch("gbserver.environment.skypilot._slurm_max_mem_per_cpu_mb") as probe:
             kwargs = await self._launch_and_capture_resources(
@@ -1100,7 +1105,7 @@ class TestLaunchSkypilot:
                 config={},
             )
         probe.assert_not_called()
-        assert kwargs.get("cpus") in (4, "4+")
+        assert kwargs.get("cpus") == cpus
 
 
 class TestSlurmCpusForMemory:
@@ -1117,9 +1122,9 @@ class TestSlurmCpusForMemory:
     @pytest.mark.parametrize(
         "output, expected",
         [
-            ("PartitionName=cpu DefMemPerCPU=8192 MaxMemPerCPU=8192 State=UP", 8192),
-            ("PartitionName=cpu\n   MaxMemPerCPU=4096\n", 4096),
-            ("PartitionName=gpu-mid MaxMemPerNode=UNLIMITED", None),
+            ("PartitionName=batch DefMemPerCPU=8192 MaxMemPerCPU=8192 State=UP", 8192),
+            ("PartitionName=batch\n   MaxMemPerCPU=4096\n", 4096),
+            ("PartitionName=gpu MaxMemPerNode=UNLIMITED", None),
             ("PartitionName=x MaxMemPerCPU=UNLIMITED", None),
             ("PartitionName=x MaxMemPerCPU=0", None),
             ("", None),
@@ -1133,14 +1138,23 @@ class TestSlurmCpusForMemory:
     @pytest.mark.parametrize(
         "res_config, expected",
         [
-            # The hf-export build test: 4 CPUs, 64 GB on an 8 GB/CPU partition.
+            # 4 CPUs and 64 GB on an 8 GB/CPU partition: Slurm grants 8.
             ({"cpus": 4, "memory": 64}, (4, 8)),
-            # Measured on BlueVela: 1 CPU and 10 GB is granted 2 CPUs.
+            # 1 CPU and 10 GB: Slurm grants 2.
             ({"cpus": 1, "memory": "10+"}, (1, 2)),
             ({"cpus": "4+", "memory": "64+"}, (4, 8)),
-            # No cpus: SkyPilot's SLURM default (2, or 4 with a GPU) applies.
+            # Sizes with a unit, as sky.Resources accepts them.
+            ({"cpus": 4, "memory": "64GB"}, (4, 8)),
+            ({"cpus": 4, "memory": "65536MB"}, (4, 8)),
+            ({"cpus": 4, "memory": "64GB+"}, (4, 8)),
+            ({"cpus": 4, "memory": "1TB"}, (4, 128)),
+            # No cpus: SkyPilot's SLURM default applies -- 2, or 4 per GPU.
             ({"memory": 64}, (2, 8)),
             ({"memory": 64, "accelerators": {"H100": 1}}, (4, 8)),
+            ({"memory": 256, "accelerators": "H100:2"}, (8, 32)),
+            # 8 GPUs default to 32 CPUs, which already covers 64 GB: unchanged,
+            # never lowered.
+            ({"memory": 64, "accelerators": {"H100": 8}}, None),
             # Already enough CPUs, or no memory size: nothing to do.
             ({"cpus": 4, "memory": 32}, None),
             ({"cpus": 8, "memory": 64}, None),
@@ -1165,13 +1179,43 @@ class TestSlurmCpusForMemory:
 
         with patch(
             "sky.provision.slurm.utils.run_on_login_node",
-            return_value=(0, "PartitionName=cpu MaxMemPerCPU=8192 State=UP", ""),
+            return_value=(0, "PartitionName=batch MaxMemPerCPU=8192 State=UP", ""),
         ) as run:
-            assert _slurm_max_mem_per_cpu_mb("mycluster", "cpu") == 8192
-            assert _slurm_max_mem_per_cpu_mb("mycluster", "cpu") == 8192
+            assert _slurm_max_mem_per_cpu_mb("mycluster", "batch") == 8192
+            assert _slurm_max_mem_per_cpu_mb("mycluster", "batch") == 8192
         run.assert_called_once()
         assert run.call_args.args[0] == "mycluster"
-        assert run.call_args.args[1] == "scontrol show partition cpu -o"
+        assert run.call_args.args[1] == "scontrol show partition batch -o"
+
+    def test_probe_without_a_partition_checks_the_default_one(self):
+        from gbserver.environment.skypilot import _slurm_max_mem_per_cpu_mb
+
+        with (
+            patch(
+                "sky.provision.slurm.utils.get_cluster_default_partition",
+                return_value="batch",
+            ) as default,
+            patch(
+                "sky.provision.slurm.utils.run_on_login_node",
+                return_value=(0, "PartitionName=batch MaxMemPerCPU=4096", ""),
+            ) as run,
+        ):
+            assert _slurm_max_mem_per_cpu_mb("mycluster", None) == 4096
+        default.assert_called_once_with("mycluster")
+        assert run.call_args.args[1] == "scontrol show partition batch -o"
+
+    def test_probe_without_any_default_partition_returns_none(self):
+        from gbserver.environment.skypilot import _slurm_max_mem_per_cpu_mb
+
+        with (
+            patch(
+                "sky.provision.slurm.utils.get_cluster_default_partition",
+                return_value=None,
+            ),
+            patch("sky.provision.slurm.utils.run_on_login_node") as run,
+        ):
+            assert _slurm_max_mem_per_cpu_mb("mycluster", None) is None
+        run.assert_not_called()
 
     @pytest.mark.parametrize(
         "run_kwargs",
@@ -1185,7 +1229,7 @@ class TestSlurmCpusForMemory:
         from gbserver.environment.skypilot import _slurm_max_mem_per_cpu_mb
 
         with patch("sky.provision.slurm.utils.run_on_login_node", **run_kwargs):
-            assert _slurm_max_mem_per_cpu_mb("mycluster", "cpu") is None
+            assert _slurm_max_mem_per_cpu_mb("mycluster", "batch") is None
 
 
 class TestWarnUnrequestedGpus:

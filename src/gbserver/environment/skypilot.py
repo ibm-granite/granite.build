@@ -367,11 +367,11 @@ _SLURM_MAX_MEM_PER_CPU_TTL_S = 3600.0
 _SLURM_MAX_MEM_PER_CPU_PROBE_TIMEOUT_S = 30
 _slurm_max_mem_per_cpu_cache: Dict[Tuple[str, str], Tuple[float, Optional[int]]] = {}
 
-# SkyPilot's SLURM catalog defaults when a launch names no cpus
-# (sky/catalog/slurm_catalog.py _DEFAULT_NUM_VCPUS, and
-# sky/clouds/slurm.py _DEFAULT_NUM_VCPUS_WITH_GPU).
+# SkyPilot's SLURM defaults when a launch names no cpus: 2 without GPUs
+# (sky/catalog/slurm_catalog.py _DEFAULT_NUM_VCPUS), and 4 per GPU with them
+# (sky/clouds/slurm.py, _DEFAULT_NUM_VCPUS_WITH_GPU * acc_count).
 _SLURM_DEFAULT_CPUS = 2
-_SLURM_DEFAULT_CPUS_WITH_GPU = 4
+_SLURM_DEFAULT_CPUS_PER_GPU = 4
 
 
 def _parse_max_mem_per_cpu_mb(scontrol_partition: str) -> Optional[int]:
@@ -389,7 +389,7 @@ def _parse_max_mem_per_cpu_mb(scontrol_partition: str) -> Optional[int]:
     return value or None
 
 
-def _slurm_max_mem_per_cpu_mb(cluster: str, partition: str) -> Optional[int]:
+def _slurm_max_mem_per_cpu_mb(cluster: str, partition: Optional[str]) -> Optional[int]:
     """A SLURM partition's ``MaxMemPerCPU`` in MB, or ``None`` if it has none.
 
     Slurm raises a job's CPU count when its memory exceeds
@@ -401,16 +401,27 @@ def _slurm_max_mem_per_cpu_mb(cluster: str, partition: str) -> Optional[int]:
     logged and returns ``None``, which leaves the request unchanged.
 
     :param cluster: the SLURM cluster alias (the SSH ``Host``).
-    :param partition: the partition the job is submitted to.
+    :param partition: the partition the job is submitted to, or ``None`` for
+        the cluster's default partition (the one Slurm uses when the job names
+        none, resolved the way SkyPilot's provisioner resolves it).
     :returns: the limit in MB, or ``None``.
     """
-    key = (cluster, partition)
+    key = (cluster, partition or "")
     cached = _slurm_max_mem_per_cpu_cache.get(key)
     if cached is not None and cached[0] > time.time():
         return cached[1]
     try:
         from sky.provision.slurm import utils as slurm_utils
 
+        if not partition:
+            partition = slurm_utils.get_cluster_default_partition(cluster)
+            if not partition:
+                logger.debug(
+                    "SLURM cluster %s marks no default partition; not checking "
+                    "cpus against memory",
+                    cluster,
+                )
+                return None
         rc, stdout, stderr = slurm_utils.run_on_login_node(
             cluster,
             f"scontrol show partition {shlex.quote(partition)} -o",
@@ -445,19 +456,30 @@ def _slurm_max_mem_per_cpu_mb(cluster: str, partition: str) -> Optional[int]:
 
 
 def _memory_request_mb(memory: Any) -> Optional[float]:
-    """A SkyPilot ``memory`` value (GiB) as MB, or ``None`` if it is not a size.
+    """A SkyPilot ``memory`` value as MB, or ``None`` if it is not a size.
 
-    Accepts the forms gbserver passes on SLURM: a number, a numeric string, or
-    a ``"{n}+"`` minimum. ``0``/``None`` (no ``--mem``) and the per-CPU ratio
-    form (``"{n}x"``) are not sizes and return ``None``.
+    Parsed with SkyPilot's own ``parse_memory_resource``, so every form
+    ``sky.Resources`` accepts is read the same way: a bare number or a
+    ``"{n}+"`` minimum (GB), and sizes with a unit (``"64GB"``,
+    ``"65536MB"``, ``"1TB"``, ``"64GB+"``). ``0``/``None`` (no ``--mem``), the
+    per-CPU ratio form (``"{n}x"``) and anything unparseable return ``None``.
     """
     if memory is None or isinstance(memory, bool):
         return None
-    text = str(memory).strip()
-    if text.endswith("+"):
-        text = text[:-1]
     try:
-        gib = float(text)
+        from sky.utils import resources_utils
+
+        parsed = resources_utils.parse_memory_resource(
+            memory, "memory", ret_type=float, allow_plus=True, allow_x=True
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        # Not a size SkyPilot would accept: nothing to fit against.
+        return None
+    text = str(parsed).strip()
+    if text.endswith("x"):
+        return None
+    try:
+        gib = float(text.rstrip("+"))
     except ValueError:
         return None
     return gib * 1024 if gib > 0 else None
@@ -481,6 +503,30 @@ def _cpus_request(cpus: Any) -> Optional[int]:
     return math.ceil(value) if value > 0 else None
 
 
+def _accelerator_count(accelerators: Any) -> int:
+    """How many GPUs a SkyPilot ``accelerators`` value asks for (0 if none).
+
+    Reads the forms ``sky.Resources`` takes: ``{"H100": 8}``, ``"H100:8"``, and
+    a bare ``"H100"`` (one GPU). A count that can't be read counts as 1, the
+    floor of what the request asked for.
+    """
+    if not accelerators:
+        return 0
+    if isinstance(accelerators, dict):
+        counts = accelerators.values()
+    else:
+        counts = [
+            str(accelerators).rsplit(":", 1)[1] if ":" in str(accelerators) else 1
+        ]
+    total = 0.0
+    for count in counts:
+        try:
+            total += float(count if count is not None else 1)
+        except (TypeError, ValueError):
+            total += 1
+    return max(1, math.ceil(total))
+
+
 def _fit_slurm_cpus_to_memory(
     res_config: Dict, max_mem_per_cpu_mb: Optional[int]
 ) -> Optional[Tuple[int, int]]:
@@ -491,7 +537,7 @@ def _fit_slurm_cpus_to_memory(
     :param max_mem_per_cpu_mb: the partition's ``MaxMemPerCPU``, or ``None``.
     :returns: ``(requested_cpus, needed_cpus)`` when ``memory`` needs more CPUs
         than the request would get, else ``None``. ``requested_cpus`` is
-        SkyPilot's default when the request names none.
+        SkyPilot's default when the request names none (2, or 4 per GPU).
     """
     if not max_mem_per_cpu_mb:
         return None
@@ -500,11 +546,8 @@ def _fit_slurm_cpus_to_memory(
         return None
     requested = _cpus_request(res_config.get("cpus"))
     if requested is None:
-        requested = (
-            _SLURM_DEFAULT_CPUS_WITH_GPU
-            if res_config.get("accelerators")
-            else _SLURM_DEFAULT_CPUS
-        )
+        gpus = _accelerator_count(res_config.get("accelerators"))
+        requested = _SLURM_DEFAULT_CPUS_PER_GPU * gpus if gpus else _SLURM_DEFAULT_CPUS
     needed = math.ceil(memory_mb / max_mem_per_cpu_mb)
     return (requested, needed) if needed > requested else None
 
@@ -4054,12 +4097,14 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         aborts, which surfaces as a provisioning failure retried until
         ``retry.max_retries`` runs out. Requesting the CPUs Slurm would grant
         keeps the request and the allocation consistent. Probes only for slurm
-        launches that carry a memory size and name a cluster and partition; a
-        probe failure leaves the request unchanged.
+        launches that carry a memory size and name a cluster; with no
+        partition named it checks the cluster's default one. A probe failure
+        leaves the request unchanged.
 
         :param cloud_group: the normalized target cloud.
         :param target_alias: the SLURM cluster alias, or ``None``.
-        :param partition: the partition (``zone``) the job is submitted to.
+        :param partition: the partition (``zone``) the job is submitted to, or
+            ``None`` for the cluster's default partition.
         :param res_config: the merged resources about to go to
             ``sky.Resources``.
         :returns: ``res_config``, with ``cpus`` raised when the memory needs it.
@@ -4067,7 +4112,6 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         if (
             cloud_group != "slurm"
             or not target_alias
-            or not partition
             or _memory_request_mb(res_config.get("memory")) is None
         ):
             return res_config
@@ -4593,8 +4637,8 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
             }
             # A memory request above cpus * MaxMemPerCPU gets more CPUs than it
             # asked for, which aborts the container launch (issue #749): ask for
-            # them up front. The partition is the infra's third segment, or the
-            # separate zone.
+            # them up front. The partition is the infra's third segment, the
+            # separate zone, or (None) the cluster's default partition.
             res_config = await self._fit_slurm_cpus_for_launch(
                 cloud_group,
                 probe_alias,
