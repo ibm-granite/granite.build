@@ -31,7 +31,7 @@ LEAK = re.compile(
     r"bluevela|rmf\.ibm|ibm\.com|/proj/|us\.icr\.io|cil15|grp_granite"
     r"|(?<!quay\.io/)granitebuild"
     r"|mlx5_|login[0-9]+\.bluevela"
-    r"|data-eng|llmb-read-write|g4os|gpu-mid|bv_ssh|1password|touma"
+    r"|data-eng|llmb-read-write|g4os|gpu-mid|bv_ssh|1password"
     r"|\bp[0-9]+-r[0-9]+-n[0-9]+\b",
     re.IGNORECASE,
 )

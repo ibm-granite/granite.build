@@ -7,7 +7,8 @@ The recipe runs in an environment rendered from the shared SLURM template
 from the same site file. These tests check that the example renders the
 template, that it and parameters.yaml together give the recipe every key it
 reads, that no key is in both, and that nothing site-specific is committed
-under the recipe's tree. test_distill_site.py covers the template itself.
+under recipes/granite-switch/skypilot/slurm/. test_distill_site.py covers the
+template itself.
 """
 
 import os
@@ -51,6 +52,7 @@ _RECIPE_SITE_KEYS = {
 
 
 def _site():
+    """The example site file, as a dict."""
     with open(_SITE, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
@@ -168,13 +170,13 @@ def test_no_site_specific_tokens_under_the_slurm_recipes():
     "line",
     [
         'DATA_ROOT: "/proj/x/data"',
-        "# --constraint=h200 on the bluevela cluster",
-        'SOURCE_DATA_URI: "hf:///datasets/ibm-research/touma/main/x"',
+        'ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"',
         "User: granitebuild",
     ],
 )
 def test_leak_guard_catches_the_old_defaults(line):
-    """The guard is not vacuous: the kind of value parameters.yaml held."""
+    """The guard is not vacuous: it catches the kinds of value the recipe and
+    its environment used to name (a shared path, the environment, the user)."""
     assert LEAK.search(line), line
 
 

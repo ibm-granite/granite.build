@@ -16,8 +16,9 @@
 # --param KEY=VALUE still overrides any of them.
 #
 # The "Environment" keys are the ones recipes/distill/site.example.yaml has
-# too: one cluster's keys can live in one file passed to both, with each
-# recipe's own keys in a second --param-file.
+# too, except that distill files EVAL_PARTITION with its recipe keys, as it
+# runs evals there. One cluster's keys can live in one file passed to both,
+# with each recipe's own keys in a second --param-file.
 
 # ─── Environment: identity and scheduler ─────────────────────────────
 # The rendered environment's `name`.
