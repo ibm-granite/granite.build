@@ -1,10 +1,10 @@
-# tokenizer-align (SkyPilot / LSF)
+# tokenizer-align (SkyPilot / LSF or SLURM)
 
 Makes a raw Granite base student able to speak the teacher's chat format, and emits the
 three tokenizer artifacts every later distillation step reads: the student re-embedded
 onto the teacher's tokenizer with a chat template installed, and pinned tokenizer
 overlays of the teacher and of the pre-retag student. It is a `data_processing` step,
-gated to SkyPilot on LSF (`subtypes: [lsf]`), and needs no GPU: it loads two tokenizers
+gated to SkyPilot on LSF or SLURM (`subtypes: [lsf, slurm]`), and needs no GPU: it loads two tokenizers
 and one embedding matrix on CPU. It runs in the prebuilt image
 `docker:quay.io/granitebuild/steps/train/distill/images/cpu:ca31e173` and builds none.
 

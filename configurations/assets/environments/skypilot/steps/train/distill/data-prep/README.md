@@ -1,9 +1,9 @@
-# corpus-prep (SkyPilot / LSF)
+# corpus-prep (SkyPilot / LSF or SLURM)
 
 Turns a conversation dataset into the GOLD training corpus: filter by rendered length, apply a
 think-tag policy, enforce the completion boundary, split deterministically, and record what was
 done in a manifest the trainer checks. It is a `data_processing` step that runs on the LSF
-SkyPilot environment only (`subtypes: [lsf]`), on CPU, in the prebuilt
+and SLURM SkyPilot environments (`subtypes: [lsf, slurm]`), on CPU, in the prebuilt
 `docker:quay.io/granitebuild/steps/train/distill/images/cpu:ca31e173` image; it builds no image.
 
 > **Developing or testing this step?** See `steps/train/distill/data-prep/skypilot/README.md` in the

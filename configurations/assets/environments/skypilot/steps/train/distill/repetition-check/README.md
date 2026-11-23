@@ -1,4 +1,4 @@
-# gen-smoke (SkyPilot / LSF)
+# gen-smoke (SkyPilot / LSF or SLURM)
 
 Asks whether a trained model still writes usable text. It greedy-decodes eight raw
 prompts (code in five languages and three short prose prompts) from each checkpoint in a
@@ -154,7 +154,7 @@ all of them.
   export.
 - Needs one GPU, which the build supplies, and no trainer source. It runs in
   `docker:quay.io/granitebuild/steps/train/distill/images/gpu:ca31e173` (whose venv carries
-  torch and transformers), on SkyPilot's LSF backend only (`subtypes: [lsf]`).
+  torch and transformers), on SkyPilot's LSF and SLURM backends (`subtypes: [lsf, slurm]`).
 - One run covers the whole ladder rather than one per rung: for a 350m model, loading
   several checkpoints serially on one GPU is still minutes.
 

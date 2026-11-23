@@ -1,4 +1,4 @@
-# corpus-pin-check (SkyPilot / LSF)
+# corpus-pin-check (SkyPilot / LSF or SLURM)
 
 Checks that a pinned corpus, one built by an earlier run and reused by this one, was
 built the way this build would have built it. It reads the corpus's

@@ -1,4 +1,4 @@
-# probe (SkyPilot / LSF)
+# probe (SkyPilot / LSF or SLURM)
 
 Runs one of three cheap checks on a checkpoint, used to settle questions before a
 distillation run is spent on them. It trains nothing and produces no artifact: the

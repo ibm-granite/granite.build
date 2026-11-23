@@ -81,7 +81,7 @@ think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inli
 | Field | Type | Purpose |
 |---|---|---|
 | `temperature` | number | Distillation temperature. Default: `1.0`. |
-| `lmbda` | number | Fraction of on-policy (student-generated) training. `0.0` => off-policy: every node trains on the fixed dataset. Default: `0.0`. |
+| `lmbda` | number | Fraction of on-policy (student-generated) training. `0.0` => off-policy: every node trains on the fixed dataset. `> 0` needs `vllm_num_servers > 0`; the renderer refuses it otherwise (TRL's in-process generation path would mask every generated EOS when pad == eos). Default: `0.0`. |
 | `beta` | number | Generalized JSD interpolation: `0.0` = forward KL, `1.0` = reverse KL. Default: `0.0`. |
 | `use_liger_fused_jsd` | boolean | Fused Liger JSD kernel. **Leave false:** granite's `logits_scaling=10` overflows the fused bf16 kernel and gives NaN loss. Default: `false`. |
 | `loss_arm` | string | The objective as a validated preset instead of free boolean combinations; see [Loss arms](#loss-arms). Empty means unchanged — the flags above stay authoritative. Default: `""`. |
@@ -119,7 +119,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 
 | Field | Type | Purpose |
 |---|---|---|
-| `vllm_num_servers` | integer | `> 0` selects on-policy. Without the optional `vllm` input bound, dedicates the **last** N nodes of the allocation to serving the student under vLLM and trains on the rest. Default: `0`. |
+| `vllm_num_servers` | integer | `> 0` selects on-policy, and is required by `lmbda > 0` (the renderer refuses `lmbda > 0` with `0`). Without the optional `vllm` input bound, dedicates the **last** N nodes of the allocation to serving the student under vLLM and trains on the rest. Default: `0`. |
 | `vllm_mode` | string | `server` = talk to a vLLM HTTP server (the reference launcher's value). Passed to the trainer only on the external-server path. Default: `server`. |
 | `vllm_sync_frequency` | integer | How often, in optimizer steps, the trainer pushes updated weights to the server; a larger value samples from a staler policy. Passed to the trainer only on the external-server path. Default: `1`. |
 | `top_p` | number | Rollout sampling `top_p`; emitted only on-policy. Default: `0.95`. |

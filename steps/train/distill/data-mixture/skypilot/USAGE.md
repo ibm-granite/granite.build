@@ -1,4 +1,4 @@
-# corpus-sources (SkyPilot / LSF)
+# corpus-sources (SkyPilot / LSF or SLURM)
 
 Combines several raw SFT splits into one `train.jsonl` that corpus prep can read. The
 `space://steps/train/distill/data-prep` step takes a single file, reads the `messages` key,

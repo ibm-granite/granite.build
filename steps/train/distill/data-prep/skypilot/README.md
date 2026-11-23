@@ -44,4 +44,4 @@ make space && make test && make publish-step && make check-published
 ```
 
 Publishes to `configurations/assets/environments/skypilot/steps/train/distill/data-prep/` — not
-under `lsf/ibm-bluevela/`; the step gates itself with `subtypes: [lsf]`.
+under `lsf/ibm-bluevela/`; the step gates itself with `subtypes: [lsf, slurm]`.

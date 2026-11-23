@@ -1,4 +1,4 @@
-# logit-precompute (SkyPilot / LSF)
+# logit-precompute (SkyPilot / LSF or SLURM)
 
 Runs the teacher **once** over the corpus and keeps the top-K logits per assistant token, so a
 later training run can do forward KL against a file instead of holding the teacher in memory.
@@ -155,7 +155,7 @@ granite.build:
 | | |
 |---|---|
 | **Type** | `data_generation` — it samples from a model (the distinction the `space://steps/train/distill/data-prep` step draws from the other side) |
-| **Environment** | SkyPilot, LSF only (`subtypes: [lsf]`) |
+| **Environment** | SkyPilot, LSF and SLURM (`subtypes: [lsf, slurm]`) |
 | **Image** | `docker:quay.io/granitebuild/steps/train/distill/images/gpu:ca31e173` (prebuilt; builds none) |
 | **GPU** | yes — this is the only step that holds the teacher without a student |
 | **Nodes** | 1 only; more is refused, and the reason is unusual (below) |

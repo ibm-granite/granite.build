@@ -1,7 +1,7 @@
-# sft (SkyPilot / LSF)
+# sft (SkyPilot / LSF or SLURM)
 
 Plain SFT on the distillation corpus, with **no teacher**. It is a `training` step that runs on
-the LSF SkyPilot environment only (`subtypes: [lsf]`), on one GPU node, in the prebuilt
+the LSF and SLURM SkyPilot environments (`subtypes: [lsf, slurm]`), on one GPU node, in the prebuilt
 `docker:quay.io/granitebuild/steps/train/distill/images/gpu:ca31e173` image; it builds no image.
 With `precomputed_logits_dir` set, the same step becomes forward-KL distillation against a
 frozen teacher — see [Two uses](#two-uses-and-the-second-one-is-not-a-control).

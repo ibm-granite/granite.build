@@ -1,10 +1,10 @@
-# eval (SkyPilot / LSF)
+# eval (SkyPilot / LSF or SLURM)
 
 Measures **how far the student's next-token distribution is from the teacher's** on a
 held-out corpus, and writes the result as an artifact. This is the read on whether
 distillation transferred anything, and unlike a capability benchmark it needs no labels.
 It runs two models' forward passes on a GPU, in a prebuilt image, on SkyPilot's LSF
-backend only.
+and SLURM backends.
 
 > **Developing or testing this step?** See `steps/train/distill/teacher-divergence/skypilot/README.md` in the
 > granite.build repository for how the step is generated, tested, and published —
@@ -317,7 +317,7 @@ Worth applying to any result before believing it:
 
 ### Runtime
 
-- **Type** `custom`; **environment** SkyPilot, LSF only (`subtypes: [lsf]`).
+- **Type** `custom`; **environment** SkyPilot, LSF and SLURM (`subtypes: [lsf, slurm]`).
 - **Image** `docker:quay.io/granitebuild/steps/train/distill/images/gpu:ca31e173`, prebuilt; this
   step builds none.
 - **GPU required** — two models' forward passes. Accelerators come from the build.yaml, so one
