@@ -416,7 +416,8 @@ def _slurm_max_mem_per_cpu_mb(cluster: str, partition: str) -> Optional[int]:
             f"scontrol show partition {shlex.quote(partition)} -o",
             timeout=_SLURM_MAX_MEM_PER_CPU_PROBE_TIMEOUT_S,
         )
-    except Exception as e:  # noqa: BLE001 - fail safe: leave the request as is
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        # Fail safe: an unreadable limit leaves the request as written.
         logger.warning(
             "SLURM cluster %s: could not read MaxMemPerCPU for partition %s (%s); "
             "not checking cpus against memory",
