@@ -12,7 +12,7 @@ tests sit beside its modules at `<family>/tests/`:
 | Directory                    | Contents                                                                      |
 |------------------------------|-------------------------------------------------------------------------------|
 | `src/core/`                  | CLI, registry, data, meter, serving, sandbox, `benchmarks/nemo_skills.py`, `pyproject.toml`, `uv.lock` |
-| `bfcl/src/`                  | `bfcl`                                                                        |
+| `bfcl/src/`                  | `bfcl` (BFCL v4); `bfcl_v3` and its child `bfcl_v3_child` (BFCL v3, written here, not from upstream; the child runs in the side venv `bfcl/extras.sh` bakes — v3's harness cannot live in this venv) |
 | `bird/src/`                  | `birdbench`                                                                   |
 | `ifbench/src/`               | `ifbench` (split out of upstream `chat_if.py`)                                |
 | `judged/src/`                | `judge_general` (profbench, gdpval), `mcpatlas`, `multi_challenge`, `safety`  |
