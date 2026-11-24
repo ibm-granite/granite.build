@@ -84,6 +84,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # ... and node 20 for the npx MCP servers (upstream's choice).
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
+    # npm 11: node 20's bundled npm 10 carries tar 6, minimatch 9, pacote 18 and
+    # sigstore 2, each with fixable advisories (npm runs only as npx, for the MCP
+    # servers extras.sh warms below).
+    && npm install -g npm@11.21.3 && rm -rf /root/.npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Security updates from Debian's security archive: the base is a snapshot, and its
