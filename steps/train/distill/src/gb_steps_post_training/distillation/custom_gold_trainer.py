@@ -2744,6 +2744,15 @@ class _VLLMWeightSyncCallback(TrainerCallback):
     def __init__(self, trainer):
         self.trainer = trainer
 
+    def on_train_begin(self, args, state, control, **kwargs):
+        """On a resume the server still holds the initial checkpoint: push the restored
+        weights before the first rollout (trl 1.x also syncs before its first generation).
+        """
+        t = self.trainer
+        if state.global_step > 0:
+            t._move_model_to_vllm()
+            t._last_vllm_sync_step = state.global_step
+
     def on_step_end(self, args, state, control, **kwargs):
         t = self.trainer
         if (
@@ -3017,6 +3026,14 @@ class CustomGOLDTrainer(GOLDTrainer):
                 raise ValueError(
                     f"vllm_server_host/port ({first_url}) must be one of the servers in "
                     f"VLLM_SERVER_HOSTS/PORTS ({servers}); it is the one trl already joined."
+                )
+            first_nccl = [n for h, p, n in servers if f"http://{h}:{p}" == first_url][0]
+            if first_nccl != self.args.vllm_group_port:
+                # trl joined that server's weight-transfer group on vllm_group_port; a
+                # different port listed for it would be silently ignored.
+                raise ValueError(
+                    f"VLLM_NCCL_COORDINATOR_PORTS lists {first_nccl} for {first_url}, but trl "
+                    f"joined it on vllm_group_port={self.args.vllm_group_port}; set them equal."
                 )
             clients = [first]
             for host, port, nccl_port in extra:

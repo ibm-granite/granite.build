@@ -103,6 +103,17 @@ def test_weights_sync_every_vllm_sync_frequency_steps():
     assert len(synced) == 3  # never twice for one step
 
 
+def test_a_resumed_run_syncs_before_its_first_rollout():
+    synced = []
+    trainer = types.SimpleNamespace(_last_vllm_sync_step=-1, vllm_sync_frequency=10)
+    trainer._move_model_to_vllm = lambda: synced.append(True)
+    cb = cgt._VLLMWeightSyncCallback(trainer)
+    cb.on_train_begin(None, types.SimpleNamespace(global_step=0), None)
+    assert synced == []  # a fresh run: the server already holds these weights
+    cb.on_train_begin(None, types.SimpleNamespace(global_step=1200), None)
+    assert synced == [True] and trainer._last_vllm_sync_step == 1200
+
+
 def test_move_model_to_vllm_is_trls_sync_weights():
     t = _bare_trainer()
     calls = []

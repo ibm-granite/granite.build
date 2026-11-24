@@ -189,4 +189,5 @@ def test_the_real_stack_reports_no_broken_target():
     bug is back."""
     pytest.importorskip("deepspeed")
     pytest.importorskip("trl")
+    pytest.importorskip("vllm")  # the rope guards read vLLM's source
     assert pt.main([]) == 0

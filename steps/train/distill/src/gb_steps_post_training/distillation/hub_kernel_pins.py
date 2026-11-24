@@ -82,6 +82,17 @@ _REGISTERED_PACKAGES: tuple[tuple[str, str], ...] = (
     ("mamba_ssm", "kernels-community/mamba-ssm"),
 )
 
+# The names transformers 5.22.2's granitemoehybrid decorators look up in each package
+# (use_kernel_func_from_hub_with_fallback; checked in the dev image: all five bind).
+_REQUIRED_NAMES: dict[str, tuple[str, ...]] = {
+    "causal_conv1d": ("causal_conv1d_fn", "causal_conv1d_update"),
+    "mamba_ssm": (
+        "mamba_chunk_scan_combined",
+        "mamba_split_conv1d_scan_combined",
+        "selective_state_update",
+    ),
+}
+
 # Imported by AutoModel*.from_pretrained for a granitemoehybrid config. Once it is in
 # sys.modules, its decorators have bound whatever was importable at that moment.
 _HYBRID_MODELING_MODULE = (
@@ -202,24 +213,26 @@ def prepare_hub_kernels(*, force: bool = False) -> None:
     Raises ``RuntimeError`` if the granitemoehybrid modeling module was imported
     first: its decorators would already have bound the PyTorch fallback.
     """
+    import importlib.util
+
+    def _importable(package):
+        if package in sys.modules:
+            return True
+        try:
+            return importlib.util.find_spec(package) is not None
+        except (ImportError, ValueError):
+            return False
+
     missing = [
-        (pkg, repo) for pkg, repo in _REGISTERED_PACKAGES if pkg not in sys.modules
+        (pkg, repo) for pkg, repo in _REGISTERED_PACKAGES if not _importable(pkg)
     ]
     if not missing:
-        return  # already registered (an earlier call, or real pip packages)
+        return  # already registered (an earlier call), or real pip packages installed
 
     try:
         from kernels import get_kernel
     except ImportError:
         return
-
-    if _HYBRID_MODELING_MODULE in sys.modules:
-        raise RuntimeError(
-            f"{_HYBRID_MODELING_MODULE} was imported before prepare_hub_kernels(): its "
-            "mamba/causal-conv1d decorators have already bound the PyTorch fallback, so "
-            "registering the hub kernels now would change nothing. Call "
-            "prepare_hub_kernels() before anything loads a hybrid model."
-        )
 
     try:
         import torch
@@ -230,6 +243,14 @@ def prepare_hub_kernels(*, force: bool = False) -> None:
     if not (has_cuda or force):
         return
     check_arch = has_cuda
+
+    if _HYBRID_MODELING_MODULE in sys.modules:
+        raise RuntimeError(
+            f"{_HYBRID_MODELING_MODULE} was imported before prepare_hub_kernels(): its "
+            "mamba/causal-conv1d decorators have already bound the PyTorch fallback, so "
+            "registering the hub kernels now would change nothing. Call "
+            "prepare_hub_kernels() before anything loads a hybrid model."
+        )
 
     try:
         from huggingface_hub import constants
@@ -242,6 +263,14 @@ def prepare_hub_kernels(*, force: bool = False) -> None:
         if offline:
             make_offline_readable(repo_id)
         module = get_kernel(repo_id, check_arch=check_arch, **kernel_spec(repo_id))
+        # transformers' decorators fall back to PyTorch, with only a warning, for any name
+        # they cannot resolve: a build that lacks one must fail here instead.
+        absent = [n for n in _REQUIRED_NAMES[package] if not hasattr(module, n)]
+        if absent:
+            raise RuntimeError(
+                f"{repo_id} at {kernel_spec(repo_id)} has no {absent}: transformers would "
+                "silently use its PyTorch path for them."
+            )
         sys.modules[package] = module
         if package == "causal_conv1d":
             _shim_legacy_causal_conv1d_cuda(module)

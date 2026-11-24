@@ -124,8 +124,11 @@ def fake_kernels(monkeypatch):
     cc1d = types.ModuleType("causal_conv1d_hub_abc123")
     cc1d.causal_conv1d_interface = iface
     cc1d.causal_conv1d_fn = lambda *a: "conv"
+    cc1d.causal_conv1d_update = lambda *a: "update"
     mamba = types.ModuleType("mamba_ssm_hub_def456")
     mamba.mamba_chunk_scan_combined = lambda *a: "scan"
+    mamba.mamba_split_conv1d_scan_combined = lambda *a: "split"
+    mamba.selective_state_update = lambda *a: "state"
 
     def get_kernel(repo_id, **kw):
         # The load order is the regression: record what was registered at the time.
@@ -386,3 +389,38 @@ def test_the_shell_preflight_makes_the_cache_offline_readable():
     src = _SHELL.read_text(encoding="utf-8")
     assert "make_offline_readable(repo)" in src  # probe, before the offline lookup
     assert "make_offline_readable(repo, path, spec)" in src  # prefetch, after the fetch
+
+
+def test_a_build_missing_a_decorated_name_fails_loudly(fake_kernels):
+    """transformers would bind its PyTorch path for that one function, with a warning."""
+    _, _, _, mamba = fake_kernels
+    del mamba.selective_state_update
+    with pytest.raises(RuntimeError, match="selective_state_update"):
+        prepare_hub_kernels()
+
+
+def test_an_installed_but_unimported_package_is_left_alone(fake_kernels, monkeypatch):
+    import importlib.util as ilu
+
+    loaded, _, _, _ = fake_kernels
+    real_find_spec = ilu.find_spec
+    monkeypatch.setattr(
+        ilu,
+        "find_spec",
+        lambda name, *a: (
+            object() if name == "causal_conv1d" else real_find_spec(name, *a)
+        ),
+    )
+    prepare_hub_kernels()
+    assert [repo for repo, _, _ in loaded] == ["kernels-community/mamba-ssm"]
+
+
+def test_no_cuda_is_a_no_op_even_after_the_modeling_import(fake_kernels):
+    loaded, _, _, _ = fake_kernels
+    sys.modules["torch"].cuda = types.SimpleNamespace(is_available=lambda: False)
+    sys.modules[_MODELING] = types.ModuleType(_MODELING)
+    try:
+        prepare_hub_kernels()  # must not raise
+        assert loaded == []
+    finally:
+        sys.modules.pop(_MODELING, None)

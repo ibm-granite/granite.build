@@ -199,6 +199,11 @@ class TestGenerationFloor:
     def test_the_floor_is_sent_as_min_tokens(self):
         assert self._configured(16).generation_kwargs == {"min_tokens": 16}
 
+    def test_the_sampled_logprob_is_requested(self):
+        """logprobs=0: one entry per token, the sampled one. Without it every token's
+        logprob would be NaN and silently masked out of importance sampling."""
+        assert self._configured(0).logprobs == 0
+
     def test_no_floor_sends_nothing(self):
         assert self._configured(0).generation_kwargs == {}
 
