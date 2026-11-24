@@ -6,17 +6,24 @@ granite.build:
   # generate target, so selecting `officeqa-pro` runs both.
   #
   # LICENSE NOTE: the questions and the parsed corpus are CC-BY-SA-4.0 behind the
-  # Hub's click-through gate, so nothing is baked into the image or mirrored;
-  # each phase fetches the pinned revision at run start (the generate target
-  # also the ~600 MiB parsed corpus, the score target only the two question
-  # CSVs) and verifies it against the pins before running. HF_TOKEN must belong
-  # to an account that has accepted the dataset's terms.
+  # Hub's click-through gate, so nothing is baked into the image or mirrored.
+  # Both phases run offline (hf_offline) against a cache warmed beforehand with
+  # a token that has accepted the dataset's terms (the runbook is in
+  # parameters.yaml); the job itself carries no token, and the adapter verifies
+  # the cached snapshot against the pins before running.
   retries:
     max_retries: $${MAX_RETRIES}
     target_reuse_enabled: true
   targets:
     officeqa-pro-warmcache-generate:
       environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The model as a real HF artifact: the launcher queues an hfpull step
+        # (public model, no token) and stages the download -- offline mode
+        # inside the job must not need the Hub for the model either.
+        model:
+          uri: "hf:///$${MODEL}"
+          type: model
       outputs:
         granite_generation:
           uri: "env://{{ binding.path }}"
@@ -28,7 +35,9 @@ granite.build:
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             benchmark: "officeqa-pro"
             image: "$${IMAGE}"
-            model_path: "$${MODEL_PATH}"
+            # The staged HF artifact path (its basename is not the model name,
+            # so served_model_name pins the name vLLM advertises).
+            model_path: "{{ bindings.model.binding.path }}"
             served_model_name: "$${SERVED_MODEL_NAME}"
             output_root: "$${OUTPUT_ROOT}"
             run_name: "$${RUN_NAME}"
@@ -38,7 +47,7 @@ granite.build:
             options: "$${OPTIONS}"
             phase: "generate"
             tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
-            hf_home: "$${HF_HOME}"
+            hf_home: "$${HF_HOME if HF_HOME else OUTPUT_ROOT ~ '/hf-cache'}"
             hf_offline: "$${HF_OFFLINE}"
             launcher_config:
               resources:
@@ -62,7 +71,8 @@ granite.build:
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             benchmark: "officeqa-pro"
             image: "$${IMAGE_CPU}"
-            model_path: "$${MODEL_PATH}"
+            # Scoring loads no model; the name only labels the run.
+            model_path: "$${MODEL}"
             served_model_name: "$${SERVED_MODEL_NAME}"
             output_root: "$${OUTPUT_ROOT}"
             run_name: "$${RUN_NAME}"
@@ -72,7 +82,7 @@ granite.build:
             options: "$${OPTIONS}"
             phase: "score"
             tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
-            hf_home: "$${HF_HOME}"
+            hf_home: "$${HF_HOME if HF_HOME else OUTPUT_ROOT ~ '/hf-cache'}"
             hf_offline: "$${HF_OFFLINE}"
             launcher_config:
               resources:

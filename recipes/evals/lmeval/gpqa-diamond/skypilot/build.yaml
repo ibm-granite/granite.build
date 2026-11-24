@@ -40,7 +40,7 @@ granite.build:
             options: "$${OPTIONS}"
             phase: "all"
             tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
-            hf_home: "$${HF_HOME}"
+            hf_home: "$${HF_HOME if HF_HOME else OUTPUT_ROOT ~ '/hf-cache'}"
             hf_offline: "$${HF_OFFLINE}"
             launcher_config:
               resources:

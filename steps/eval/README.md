@@ -141,5 +141,9 @@ it into the same cache. Offline also pins the run's data to whatever snapshot
 the cache holds — the warm cache is the revision pin. For a run that must fetch
 a gated dataset online instead, pass the token as a space secret
 (`skypilot.secrets` in the recipe, as the officeqa recipes do) — never in the
-recipe text. The `recipes/evals/lmeval/gpqa-diamond` recipe is the worked
-example.
+recipe text. The `recipes/evals/lmeval/gpqa-diamond` and
+`recipes/evals/officeqa/officeqa-pro-warmcache` recipes are the worked examples:
+they default `HF_HOME` to `$OUTPUT_ROOT/hf-cache` (a recipe-level default, not
+the step's — the step refuses `hf_offline` without `hf_home`), stage the model
+with hfpull, and their runbooks warm that cache with
+`python scripts/prefetch_datasets.py --hf-home <cache> --benchmark <id>`.

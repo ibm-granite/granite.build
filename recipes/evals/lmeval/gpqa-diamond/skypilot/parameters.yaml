@@ -6,19 +6,21 @@
 # is the lm-eval/leaderboard-style number.
 #
 # RUN FROM A WARM HF CACHE. Idavidrein/gpqa is access-gated on the Hub: accept
-# its terms once (huggingface.co/datasets/Idavidrein/gpqa), then warm a shared
-# cache with a token that has access -- the token never enters the repo or the
-# job:
-#   HF_TOKEN=<token> make -C steps/eval prefetch HF_HOME=<shared-cache> --benchmark gpqa
-# and run with --param HF_HOME=<shared-cache> (a writable path the cluster
-# nodes see; datasets takes cache locks). The job runs with HF_HUB_OFFLINE=1:
+# its terms once (huggingface.co/datasets/Idavidrein/gpqa), then warm the cache
+# the job reads -- by default $OUTPUT_ROOT/hf-cache, or any shared cache you pass
+# as HF_HOME -- with a token that has access, from a host that sees the cluster's
+# filesystem; the token never enters the repo or the job:
+#   HF_TOKEN=<token> python steps/eval/scripts/prefetch_datasets.py \
+#     --hf-home <OUTPUT_ROOT>/hf-cache --benchmark gpqa
+# (a writable path the cluster nodes see; datasets takes cache locks). An
+# unwarmed cache fails fast at the dataset load. The job runs with HF_HUB_OFFLINE=1:
 # it never reaches the Hub -- the dataset resolves from the cache (the cache's
 # pinned snapshot is the run's dataset revision), and the model is staged by
 # hfpull (public, no token) rather than downloaded by vLLM.
 #
 # LIMIT is empty: the full benchmark (198 questions). For a quick functional
 # check, score only the first N questions:
-#   gb build start -f recipes/evals/lmeval/gpqa-diamond/skypilot/build.yaml --space <space> --param OUTPUT_ROOT=<root> --param HF_HOME=<warm-cache> --param LIMIT=5
+#   gb build start -f recipes/evals/lmeval/gpqa-diamond/skypilot/build.yaml --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
 # Override any value with --param KEY=VALUE. More bridge options in
 # steps/eval/lmeval/skypilot/USAGE.md.
 
@@ -35,7 +37,9 @@ RUN_NAME: ""
 # Runs land in $OUTPUT_ROOT/$RUN_NAME/lm-eval-gpqa_diamond_zeroshot. Required, no
 # default: pass --param OUTPUT_ROOT=<root>, somewhere the dispatching user can write.
 OUTPUT_ROOT: ""
-# REQUIRED here (see the runbook above): the warm cache, writable by the job.
+# The warm cache the job reads (see the runbook above), writable by the job.
+# Empty = $OUTPUT_ROOT/hf-cache, beside the runs; point it at a cache shared across
+# users to warm a gated dataset once for everyone.
 HF_HOME: ""
 
 # ─── Images (GPU only) ────────────────────────────────────
