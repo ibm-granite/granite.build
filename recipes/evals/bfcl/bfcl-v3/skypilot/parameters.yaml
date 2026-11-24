@@ -21,8 +21,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:PENDING"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:PENDING"
+IMAGE: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:a3f90f00"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:a3f90f00"
 
 # ─── Request format ───────────────────────────────────────────────────
 # fc: function calling through the checkpoint's chat template and vLLM's tool parser
