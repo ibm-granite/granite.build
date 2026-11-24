@@ -21,6 +21,7 @@ from granite_evals.registry import register
 @register
 class McpmarkService(Mcpmark):
     id = "mcpmark"
+    metric = "pass@1"
 
     def __init__(self, config):
         service = config.options.get("service", "").strip()

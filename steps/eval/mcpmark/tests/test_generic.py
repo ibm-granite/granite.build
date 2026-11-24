@@ -23,3 +23,9 @@ def test_service_set(tmp_path):
 
 def test_registry():
     assert get("mcpmark") is generic.McpmarkService
+
+
+def test_declares_its_metric():
+    # `granite-evals list` (run at image build) prints every id's metric; the
+    # Mcpmark base leaves it to the per-service subclasses.
+    assert generic.McpmarkService.metric == "pass@1"
