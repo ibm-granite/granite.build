@@ -71,6 +71,34 @@ files here match it apart from formatting.
 from the source text against stubs, since the module's torch/trl imports are not in the
 granite.build venv.
 
+## Local port: trl 0.26.2 -> 1.18.2 (#676)
+
+The trainer was written against trl 0.26.2's `GOLDTrainer`; the image now runs trl 1.18.2,
+vLLM 0.34.0 and transformers 5.22.2. The port keeps this trainer's behaviour where trl's
+changed, and uses trl's machinery where it does the same job:
+
+- Data path (decision D-1): `_prepare_inputs`, `get_train_dataloader`,
+  `_get_train_sampler` and `get_batch_samples` skip `GOLDTrainer`'s (which buffer one
+  generation per gradient-accumulation window behind a `RepeatSampler`) and return to the
+  Trainer's, so lambda is still drawn per micro-step and `group_by_length` and
+  `overlap_generation` keep working.
+- vLLM: generation and weight sync go through trl's `VLLMGeneration` (`generate`,
+  `sync_weights`), with this trainer's sampling settings set on it once; weight sync runs
+  from a callback, as trl 0.26.2's `GOLDVLLMSyncCallback` did. `MultiVLLMClient` fans both
+  out over several servers.
+- Prompts go to vLLM as the trainer's token IDs (D-5); logprobs are read as trl reads them,
+  the sampled token's at index 0 of the top-k structure (D-2/D-4); a NaN logprob (None from
+  trl's client) masks the token out of importance sampling (D-3).
+- The non-hybrid ULD path (`CustomULDLoss._compute_base_distillation_loss`) and the
+  probability merge (`_merge_probabilities_with_alignment_groups`) are trl 0.26.2's,
+  vendored unchanged (D-7: bit-identical numerics). trl 1.x's base path needs byte offsets
+  this trainer does not pass, and its "observed" merge is unnormalised and needs
+  `token_ids`.
+- `CustomULDLoss._compute_distillation_loss` accepts trl 1.x's byte-offset keywords and
+  ignores them (it aligns from token IDs).
+
+`steps/train/distill/logit-distill/skypilot/test/test_trl1_port.py` pins each of these.
+
 ## A second copy elsewhere
 
 `steps/aux/hf-export/skypilot/src/hf_export_state/` carries its own copies of
