@@ -214,6 +214,8 @@ def read_overall(path: Path) -> dict[str, Any]:
     if len(rows) != 1:
         raise RuntimeError(f"{path}: expected one model row, found {len(rows)}")
     row = rows[0]
+    if None in row:  # BFCL writes unquoted: a "," in a cell shifts every later column
+        raise RuntimeError(f"{path}: more cells than columns (a ',' in the model name?)")
     return {
         "overall": _pct(row["Overall Acc"]) or 0.0,
         "groups": {k: _pct(row[col]) for k, col in OVERALL_GROUPS.items()},
@@ -383,7 +385,9 @@ def child_main(config_path: str) -> None:
 
     MODEL_CONFIG_MAPPING[REGISTRY_NAME] = ModelConfig(
         model_name=cfg["served_model_name"],
-        display_name=f"{cfg['served_model_name']} (FC, granite)",
+        # No "," in the name: BFCL writes its score CSVs unquoted, so one would
+        # shift every column after "Model" in data_overall.csv.
+        display_name=f"{cfg['served_model_name']} (FC granite)",
         url="",
         org="",
         license="",
