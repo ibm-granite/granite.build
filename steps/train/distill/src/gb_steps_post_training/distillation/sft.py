@@ -19,11 +19,6 @@
 # notice above. Local patches are listed in steps/train/distill/src/VENDORED.md.
 
 import atexit
-
-# Workaround: In transformers>=4.57.0, _is_package_available() returns a tuple (bool, version).
-# TRL stores the raw tuple for some packages, making guards truthy even when packages are absent.
-# Patch affected values before any other TRL imports to prevent spurious ModuleNotFoundErrors.
-import importlib
 import json
 import shutil
 from collections.abc import Callable
@@ -31,21 +26,14 @@ from contextlib import nullcontext
 
 from datasets import Dataset, DatasetDict, IterableDataset, load_dataset
 
-# Hybrid (granitemoehybrid) students resolve mamba-ssm and causal-conv1d at load
-# time, and the modeling code asserts on the legacy causal_conv1d_cuda object --
-# the revision pins and the legacy causal_conv1d shim; the kernels themselves load
-# lazily through transformers' lazy_load_kernel. See hub_kernel_pins.py.
+# Hybrid (granitemoehybrid) students need the Mamba2 kernels: transformers binds them at
+# modeling-module import time from the causal_conv1d / mamba_ssm packages, and
+# prepare_hub_kernels registers the pinned hub builds under those names first. It must
+# run before the first model load. See hub_kernel_pins.py.
 from gb_steps_post_training.distillation.hub_kernel_pins import prepare_hub_kernels
 from transformers import AutoTokenizer, GenerationConfig
 
 prepare_hub_kernels()
-
-_trl_import_utils = importlib.import_module("trl.import_utils")
-for _attr in ("_mergekit_available", "_vllm_ascend_available"):
-    _val = getattr(_trl_import_utils, _attr, None)
-    if isinstance(_val, tuple):
-        setattr(_trl_import_utils, _attr, _val[0])
-del _trl_import_utils, _attr, _val
 
 # Workaround: DeepSpeed ZeRO optimizer wrappers don't expose `defaults`
 # from the underlying optimizer. transformers' cosine_with_min_lr scheduler needs it.
@@ -105,6 +93,7 @@ from accelerate import PartialState
 from gb_steps_post_training.distillation import train_manifest
 from gb_steps_post_training.distillation.custom_sft_config import CustomSFTConfig
 from gb_steps_post_training.distillation.utils import (
+    get_kbit_device_map,
     verify_fast_tokenizer,
     verify_tokenizer_consistency,
 )
@@ -115,7 +104,6 @@ from trl import (
     ScriptArguments,
     SFTTrainer,
     TrlParser,
-    get_kbit_device_map,
     get_peft_config,
     get_quantization_config,
 )
@@ -456,6 +444,17 @@ class CustomArguments:
             "passes to wandb.init as `name`). Optional; auto-derived when omitted."
         },
     )
+
+
+def build_labels(example, mask_columns):
+    """trl 1.x's label rule (trl/trainer/sft_trainer.py:1467-1473): a token is a label only
+    where every applicable mask is 1; otherwise -100."""
+    masks = [example[column] for column in mask_columns]
+    labels = [
+        token_id if all(bits) else -100
+        for token_id, *bits in zip(example["input_ids"], *masks, strict=False)
+    ]
+    return {"labels": labels}
 
 
 class KDDataCollator:
@@ -984,8 +983,8 @@ class CustomSFTTrainer(SFTTrainer):
             is_conversational_from_value,
             maybe_convert_to_chatml,
             pack_dataset,
-            truncate_dataset,
         )
+        from trl.experimental.utils import truncate_dataset  # moved there in trl 1.x
         from trl.trainer.sft_trainer import get_dataset_column_names
         from trl.trainer.utils import remove_none_values
 
@@ -1095,6 +1094,12 @@ class CustomSFTTrainer(SFTTrainer):
                             tools=tools,
                             **chat_template_kwargs,
                         )
+                        # transformers 5.x returns a BatchEncoding here (return_dict defaults to
+                        # True, tokenization_utils_base.py:3035), so the list check below never
+                        # fired and len(prompt_ids) counted its keys: the completion mask covered
+                        # only two prompt tokens. trl 1.x reads ["input_ids"] the same way.
+                        if not isinstance(prompt_ids, list):
+                            prompt_ids = prompt_ids["input_ids"]
                         prompt_ids = (
                             prompt_ids[0]
                             if isinstance(prompt_ids[0], list)
@@ -1297,6 +1302,27 @@ class CustomSFTTrainer(SFTTrainer):
                 **map_kwargs,
             )
 
+        # LABELS. trl 0.26.2 applied the masks in its collator (sft_trainer.py:213-222):
+        # `assistant_masks` always, `completion_mask` only with completion_only_loss. trl 1.x
+        # moved that into SFTTrainer._prepare_dataset (sft_trainer.py:1453-1480, `build_labels`),
+        # which this override replaces, and its collator now reads `labels` and ignores the
+        # masks (sft_trainer.py:173). Without this map the collator falls back to
+        # labels == input_ids and the loss silently covers the prompt. Same rule as trl's
+        # build_labels; the mask columns are kept (KD counts assistant tokens from them below)
+        # and pruned before collation by the signature columns.
+        column_names = get_dataset_column_names(dataset)
+        if "labels" not in column_names:
+            mask_columns = []
+            if self.completion_only_loss and "completion_mask" in column_names:
+                mask_columns.append("completion_mask")
+            if "assistant_masks" in column_names:
+                mask_columns.append("assistant_masks")
+            if isinstance(dataset, Dataset):
+                map_kwargs["desc"] = f"Building labels for {dataset_name} dataset"
+            dataset = dataset.map(
+                build_labels, fn_kwargs={"mask_columns": mask_columns}, **map_kwargs
+            )
+
         if packing:
             if args.max_length is None:
                 raise ValueError(
@@ -1305,7 +1331,7 @@ class CustomSFTTrainer(SFTTrainer):
             if isinstance(dataset, Dataset):
                 map_kwargs["desc"] = f"Packing {dataset_name} dataset"
 
-            columns = ["input_ids"]
+            columns = ["input_ids", "labels"]
             if "completion_mask" in get_dataset_column_names(dataset):
                 columns.append("completion_mask")
             if "assistant_masks" in get_dataset_column_names(dataset):
@@ -1349,6 +1375,7 @@ class CustomSFTTrainer(SFTTrainer):
         if args.use_liger_kernel:
             collator_expected_keys = {
                 "input_ids",
+                "labels",
                 "seq_lengths",
                 "completion_mask",
                 "assistant_masks",
@@ -1360,6 +1387,7 @@ class CustomSFTTrainer(SFTTrainer):
         elif kd_mode:
             collator_expected_keys = {
                 "input_ids",
+                "labels",
                 "seq_lengths",
                 "completion_mask",
                 "assistant_masks",
@@ -1445,6 +1473,10 @@ def _compute_sft_cache_dir(script_args, training_args, custom_args, tokenizer):
         "max_length": training_args.max_length,
         "dataset_text_field": training_args.dataset_text_field,
         "assistant_only_loss": getattr(training_args, "assistant_only_loss", False),
+        # Labels are built in the map chain since the trl 1.x port, from the masks and this
+        # switch; a cache written before that has no `labels` column and must not be reused.
+        "completion_only_loss": getattr(training_args, "completion_only_loss", None),
+        "labels_in_cache": True,
         "packing": getattr(training_args, "packing", False),
         "packing_strategy": getattr(training_args, "packing_strategy", None),
         "response_template": custom_args.response_template,
@@ -1619,7 +1651,11 @@ if __name__ == "__main__":
         revision=model_args.model_revision,
         trust_remote_code=model_args.trust_remote_code,
         attn_implementation=model_args.attn_implementation,
-        torch_dtype=model_args.dtype,
+        # `dtype`, not `torch_dtype`: trl 1.x's create_model_from_path reads only `dtype` and
+        # defaults it to "float32" (trl/trainer/utils.py:1342), which would override
+        # `torch_dtype` and load the student in fp32. render_sft_config.py emits dtype=bfloat16
+        # because ModelConfig.dtype now defaults to "float32" too (model_config.py:91).
+        dtype=model_args.dtype,
         use_cache=False if training_args.gradient_checkpointing else True,
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
