@@ -5,7 +5,8 @@ description = "Runtime for a benchmark collection used to evaluate language mode
 authors = [
     { name = "The granite.build authors" }
 ]
-requires-python = ">=3.11"
+# 3.11.5, not 3.11: soupsieve 4, the release with its advisory fixes, needs it.
+requires-python = ">=3.11.5"
 dependencies = [
     "datasets>=3.0",
     "httpx>=0.27",
@@ -146,9 +147,23 @@ override-dependencies = [
 ]
 # Floors at the fix for the fixable HIGH-and-above advisories the dependency and image
 # gates reported (scan-deps, scan-image-* in steps/eval/Makefile), so a later re-lock
-# cannot move a package back below its fix.
+# cannot move a package back below its fix. Not floored, because a harness pins below
+# the fix in one family's fork: filelock (bfcl-eval ==3.20.0, which the advisory does
+# not affect), litellm (tau2 <1.82.7, NeMo-Skills ==1.84.10) and datamodel-code-generator
+# (bfcl-eval ==0.25.7); the accepted ones are listed in ../../scan-ignore.
 constraint-dependencies = [
+    "aiohttp>=3.14.4",
+    "black>=26.10.1",
+    "dnspython>=2.9.2",
+    "gitpython>=3.2.1",
+    "hydra-core>=1.3.8",
     "nltk>=3.10.4",
+    "oauthlib>=4.0.1",
+    "pyasn1>=0.6.5",
+    "pypdf>=6.21.4",
+    "soupsieve>=4.0.0",
+    "virtualenv>=21.14.13",
+    "wandb>=0.31.2",
 ]
 # Each image installs one family's extra (plus serve), so families whose pins
 # clash resolve apart. vllm pins torch, so every fork shares the serve layer.
@@ -157,6 +172,7 @@ conflicts = [
     [{ extra = "swebench" }, { extra = "tau" }],
     # bfcl-eval pins filelock==3.20.0 and more; keep it from downgrading other images.
     [{ extra = "bfcl" }, { extra = "swebench" }],
+    [{ extra = "bfcl" }, { extra = "tau" }],
     # tree-sitter: bfcl-eval pins 0.21.3, NeMo-Skills' compute-eval needs >=0.25.2.
     [{ extra = "bfcl" }, { extra = "bird" }],
     [{ extra = "bfcl" }, { extra = "nemoskills" }],
