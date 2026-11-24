@@ -14,7 +14,7 @@ step — checked directly against the real `uv.lock` files in
 ## Library skew against the CPU image
 
 The two images deliberately carry different versions of the shared libraries
-(transformers 5.8.0 / torch 2.11.0 here, 5.20.2 / 2.14.1 in `../cpu`): each was
+(transformers 5.22.2 / torch 2.14.0 here, 5.20.2 / 2.14.1 in `../cpu`): each was
 pinned for its own workload, and re-aligning them means re-validating the
 Mamba2 kernel cache and vLLM pins this image was built around. The skew was
 end-to-end tested where it crosses: `tokenizer-align` runs on the CPU image and
