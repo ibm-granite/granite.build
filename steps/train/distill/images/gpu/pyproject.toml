@@ -54,9 +54,9 @@ dependencies = [
     #
     # 1.18.2 EXACTLY (#676; was 0.26.2), the latest trl. 0.26.2 requires vllm<0.12, so
     # the vLLM upgrade below forces a trl 1.x. 1.18.2's `vllm` extra declares
-    # vllm>=0.23,<0.34, ONE RELEASE BELOW the vllm 0.34.0 pinned here: the extra is not
-    # installed, so the resolver does not enforce it, but it means trl has not declared
-    # 0.34 supported (no trl release does yet). It needs datasets>=4.7 and accelerate>=1.11
+    # vllm>=0.23,<0.34, which is why vllm is 0.33.0 and not the latest 0.34.0 (the extra is
+    # not installed, so the resolver would not enforce it; the range is trl's statement of
+    # what it supports). It needs datasets>=4.7 and accelerate>=1.11
     # (both satisfied below). Its optional extras ask for deepspeed>=0.18.6 and
     # liger-kernel>=0.8.2; neither extra is installed here (see those pins).
     #
@@ -81,15 +81,16 @@ dependencies = [
     # change. Held exactly because the vLLM pin below has to agree with it and one of them
     # moving alone is the failure mode.
     #
-    # 5.22.2 EXACTLY (#676; was 5.8.0, the recorded environment's version, which also
-    # carried a HIGH advisory fixed in 5.10.0). vllm 0.34.0 requires >=5.16.1,<5.23, and
-    # 5.22.2 is the newest release in that range. The move is NOT a bug-fix release: 5.16
+    # 5.20.2 EXACTLY (#676; was 5.8.0, the recorded environment's version, which also
+    # carried a HIGH advisory fixed in 5.10.0). vllm 0.33.0 requires >=5.16.1,<5.21, and
+    # 5.20.2 is the newest release in that range. The move is NOT a bug-fix release: 5.16
     # changed how the granitemoehybrid modeling code finds the Mamba2 kernels (it binds
     # whatever `causal_conv1d` / `mamba_ssm` package is importable when the module is
     # imported, instead of lazy_load_kernel through _HUB_KERNEL_MAPPING), which is why
     # hub_kernel_pins.py was rewritten, and it requires kernels>=0.17.2,<0.18 (the kernels
-    # pin). What else changed against this code is in the porting map (#676 phase 2).
-    "transformers==5.22.2",
+    # pin). It loads flash-attn2 at major version 3 (5.22 loads 4); gold-kernels.sh reads
+    # that from transformers. What else changed against this code is in the porting map.
+    "transformers==5.20.2",
     # accelerate is the DeepSpeed integration layer here, not a
     # convenience: configs/distillation/deepspeed/accelerate_deepspeed_zero3.yaml is an
     # ACCELERATE config, the launcher invokes `accelerate launch`, and ZeRO-3 checkpoint
@@ -125,15 +126,14 @@ dependencies = [
     # Serves the STUDENT for on-policy rollouts (lmbda > 0), not the teacher -- the teacher
     # is sharded by the trainer's own ZeRO-3.
     #
-    # 0.34.0 EXACTLY (#676; was 0.11.0, which has two CRITICAL advisories: an RCE in video
+    # 0.33.0 EXACTLY (#676; was 0.11.0, which has two CRITICAL advisories: an RCE in video
     # processing, fixed in 0.14.1, and an OpenAI-server auth bypass, fixed in 0.22.0).
-    # 0.34.0 is the latest release, and osv reports no HIGH or CRITICAL advisory for it
-    # (0.26.0, the newest that resolved with transformers 5.8.0, still had 18 HIGH).
-    # It forces most of the moves in this file: torch==2.14.0 (torchvision 0.29.0,
-    # torchaudio 2.11.0), transformers>=5.16.1,<5.23, huggingface_hub>=2.0 and
-    # filelock>=4.2.4 (see the constraints below). trl declares only vllm<0.34 (see the
-    # trl pin); 0.33.0 is the newest release inside that range and resolves too
-    # (transformers<5.21, huggingface_hub>=1.31, filelock>=3.20.3).
+    # 0.33.0 is the newest release inside trl 1.18.2's declared range (vllm>=0.23,<0.34;
+    # see the trl pin), and osv reports no advisory for it (0.26.0, the newest that
+    # resolved with transformers 5.8.0, had 18 HIGH). The latest, 0.34.0, has none either,
+    # but no trl release supports it yet and it needs filelock>=4.2.4: revisit when the
+    # next trl release does. 0.33.0 forces torch==2.14.0 (torchvision 0.29.0, torchaudio
+    # 2.11.0), transformers>=5.16.1,<5.21 and huggingface_hub>=1.31.
     #
     # It is coupled to BOTH neighbours. Downwards: the Mamba2 Hub kernels are resolved
     # per torch/CUDA variant (torch214-cxx11-cu130-x86_64-linux now), so a torch bump
@@ -141,13 +141,13 @@ dependencies = [
     # listed here: the default PyPI torch 2.14.0 wheel is the CUDA 13.0 build vLLM's
     # default wheel is built against, so no index pin is needed to choose its source, and
     # vllm's exact pin already fixes its version. vLLM publishes no cu128 wheel for any
-    # release with the CRITICAL fixes (0.34.0 has only the default CUDA 13 wheel), which
+    # release with the CRITICAL fixes (0.33.0 has only the default CUDA 13 wheel), which
     # is why the image moved to CUDA 13 (Dockerfile). Upwards: gold.py and
     # run_vllm_serve.py patch `GraniteMoeHybridAttention.__init__` and
     # `GraniteDecoderLayer.__init__` inside vllm.model_executor, private surfaces that
     # vLLM reorganises freely; vllm passes `config.rope_parameters` itself now, so those
     # patches are no-ops (patch_targets.py).
-    "vllm==0.34.0",
+    "vllm==0.33.0",
     # Mamba2 mixer kernels for Granite 4 hybrid models, loaded from the Hub by
     # hub_kernel_pins.prepare_hub_kernels at entrypoint import time. The HF cache the step
     # mounts must be warm for the pinned revision and this image's torch/CUDA variant, or
@@ -157,7 +157,7 @@ dependencies = [
     # 0.17.3 EXACTLY (#676 / #763; was 0.12.3). Forced three ways: 0.12.3 requires
     # huggingface_hub<2.0; it reads only the "model" type kernel repositories, which
     # Hugging Face is removing (kernel-type repositories need kernels>=0.14); and
-    # transformers 5.22.2 accepts only kernels>=0.17.2,<0.18. 0.17.3 is the newest in
+    # transformers 5.20.2 accepts only kernels>=0.17.2,<0.18. 0.17.3 is the newest in
     # that range. The private API this code used (`kernels.utils.install_kernel`,
     # `_import_from_path`) no longer exists; hub_kernel_pins.py now calls the public
     # `kernels.get_kernel` and gold-kernels.sh `kernels.install_kernel`. Still exact,
@@ -169,8 +169,8 @@ dependencies = [
     # implementation detail it is insulated from. (This replaces a >=0.25.0 floor that
     # predated the kernel preflight.)
     #
-    # 2.4.0 EXACTLY (#676; was 1.14.0), the latest. vllm 0.34.0 requires >=2.0.0 (datasets
-    # 5.x needs >=1.31, kernels 0.17 >=1.10). A MAJOR version: what 2.x removed against this
+    # 2.4.0 EXACTLY (#676; was 1.14.0), the latest. vllm 0.33.0 and datasets 5.x need
+    # >=1.31, kernels 0.17 >=1.10. A MAJOR version: what 2.x removed against this
     # code is in the porting map.
     "huggingface_hub==2.4.0",
     # Liger fused-linear JSD, for loss_arm=liger_fused_jsd. Optional at runtime for the
@@ -247,9 +247,12 @@ constraint-dependencies = [
     # vllm 0.11.0 capped setuptools<80; vllm now allows <81, so setuptools can take the
     # release that vendors fixed jaraco.context and wheel copies.
     "setuptools>=80.10.2",
-    # filelock is NOT held below 4 any more: vllm 0.34.0 requires filelock>=4.2.4, so the
-    # lock has 4.3.1. 4.x changes UnixFileLock's behaviour on shared lock directories
-    # (4.2.12 refuses, with PermissionError, a lock file another account owns under a
-    # sticky parent), and these steps share one HF cache across accounts on group-shared
-    # filesystems. That needs the cluster test #752 planned, now as part of #676.
+    # A CEILING, not a fix: filelock 4.x changes UnixFileLock's behaviour on shared lock
+    # directories (4.2.12 refuses, with PermissionError, a lock file another account owns
+    # under a sticky parent), and these steps share one HF cache across accounts on
+    # group-shared filesystems. vllm 0.33.0 accepts filelock>=3.20.3 and torch 2.14.0 any,
+    # so without this the resolver is free to take 4.x. Moving to 4.x is its own,
+    # cluster-tested change (#752; see scan-ignore). vllm 0.34.0 requires >=4.2.4, so
+    # the next vllm raise brings that test with it.
+    "filelock<4",
 ]

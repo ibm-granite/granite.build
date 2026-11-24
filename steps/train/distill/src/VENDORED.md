@@ -74,7 +74,7 @@ granite.build venv.
 ## Local port: trl 0.26.2 -> 1.18.2 (#676)
 
 The trainer was written against trl 0.26.2's `GOLDTrainer`; the image now runs trl 1.18.2,
-vLLM 0.34.0 and transformers 5.22.2. The port keeps this trainer's behaviour where trl's
+vLLM 0.33.0 and transformers 5.20.2. The port keeps this trainer's behaviour where trl's
 changed, and uses trl's machinery where it does the same job:
 
 - Data path (decision D-1): `_prepare_inputs`, `get_train_dataloader`,

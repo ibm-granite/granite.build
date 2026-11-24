@@ -22,7 +22,7 @@ NEEDED/MOOT (is the upstream behaviour it works around still there). Run it afte
 dependency bump: MISSING means re-derive the workaround against the new version, MOOT means
 delete it and record why.
 
-THE vLLM 0.34 / trl 1.18 / transformers 5.22 MOVE (#676) DELETED FOUR PATCHES, recorded here
+THE vLLM 0.33 / trl 1.18 / transformers 5.20 MOVE (#676) DELETED FOUR PATCHES, recorded here
 so the reasons outlive the code:
 
   1  trl 0.26.2 stored `_is_package_available()`'s (bool, version) tuple as
@@ -30,7 +30,7 @@ so the reasons outlive the code:
      `_is_package_available` returning a bool and no ascend guard at all.
   2  vLLM 0.11.0's `GraniteMoeHybridAttention` / `GraniteDecoderLayer` read
   2b `config.rope_theta`, which transformers 5.x moved into `config.rope_parameters`.
-     vLLM 0.34.0 passes `config.rope_parameters` itself. A source check below guards that,
+     vLLM 0.33.0 passes `config.rope_parameters` itself. A source check below guards that,
      so the patch's return would be noticed.
   3  trl 0.26.2's `vllm_serve.sanitize_logprob` returned None for a NaN logprob, which its
      response schema rejected (HTTP 500). trl 1.x serves through vLLM's own server; its

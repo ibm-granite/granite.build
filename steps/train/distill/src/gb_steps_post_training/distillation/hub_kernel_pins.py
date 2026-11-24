@@ -2,7 +2,7 @@
 
 """Pin and pre-register the hub kernels a hybrid (granitemoehybrid) model needs.
 
-HOW TRANSFORMERS FINDS THE MAMBA2 KERNELS (5.16 and later; this image pins 5.22.2).
+HOW TRANSFORMERS FINDS THE MAMBA2 KERNELS (5.16 and later; this image pins 5.20.2).
 The granitemoehybrid modeling module decorates its mixer functions with
 ``use_kernel_func_from_hub_with_fallback(<func>, <package>)``. When the module is
 IMPORTED, each decorator tries ``importlib.import_module("causal_conv1d")`` /
@@ -31,12 +31,12 @@ THE REPOSITORIES (#763). Hugging Face is removing the "model" type kernel
 repositories (their model cards: "Starting from September 13, 2026"). The pins
 below are in the "kernel" type repositories of the same names, which have their
 own history, so no SHA carries over. ``kernels`` reads kernel-type repositories
-from 0.14 on; this image pins 0.17.3, the release transformers 5.22.2 accepts
+from 0.14 on; this image pins 0.17.3, the release transformers 5.20.2 accepts
 (``kernels>=0.17.2,<0.18``).
 
 - ``kernels-community/mamba-ssm`` at ``20b2508a`` (v3 branch, 2026-09-08): the
   oldest v3 commit with a ``torch214-cxx11-cu130-x86_64-linux`` build. v3 is the
-  major version transformers 5.22.2's own kernel mapping asks for. The build is
+  major version transformers 5.20.2's own kernel mapping asks for. The build is
   self-contained (it ships its own ``_causal_conv1d``) and imports transformers
   5.x's ``GenerateDecoderOnlyOutput``; its ``decode()`` still names the removed
   ``GreedySearchDecoderOnlyOutput`` at call time, which nothing here calls (and
@@ -82,7 +82,7 @@ _REGISTERED_PACKAGES: tuple[tuple[str, str], ...] = (
     ("mamba_ssm", "kernels-community/mamba-ssm"),
 )
 
-# The names transformers 5.22.2's granitemoehybrid decorators look up in each package
+# The names transformers 5.20.2's granitemoehybrid decorators look up in each package
 # (use_kernel_func_from_hub_with_fallback; checked in the dev image: all five bind).
 _REQUIRED_NAMES: dict[str, tuple[str, ...]] = {
     "causal_conv1d": ("causal_conv1d_fn", "causal_conv1d_update"),
@@ -130,7 +130,7 @@ def kernel_spec(repo_id: str) -> dict[str, str | int]:
 def make_offline_readable(repo_id: str, variant_path=None, spec=None) -> None:
     """Make the cached kernel loadable with ``HF_HUB_OFFLINE=1`` under kernels 0.17.3.
 
-    Two gaps between kernels 0.17.3 (the release transformers 5.22.2 accepts) and
+    Two gaps between kernels 0.17.3 (the release transformers 5.20.2 accepts) and
     huggingface_hub 2.x, which kernels 0.18 closes itself (it tolerates the partial
     snapshot and records refs):
 

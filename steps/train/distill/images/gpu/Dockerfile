@@ -31,7 +31,7 @@
 #
 # Dependency manifest below (pyproject.toml + uv.lock, next to this
 # Dockerfile) started as upstream distill-gold-train's own at the pinned
-# commit (since extended with tqdm, and moved to vllm 0.34.0 / trl 1.18.2 /
+# commit (since extended with tqdm, and moved to vllm 0.33.0 / trl 1.18.2 /
 # torch 2.14.0 in #676 -- see pyproject.toml): it's the fullest GPU dependency
 # set (trl, vllm, deepspeed, kernels) of any step, and every other GPU step's
 # looser range already resolves inside it.
@@ -40,7 +40,7 @@
 # the default PyPI (CUDA 13) build: torch requires cuda-toolkit==13.0.3
 # (nvidia-cublas==13.1.1.3, nvidia-cuda-runtime==13.0.96 etc.). CUDA 13, not
 # 12.8, because vLLM publishes no cu128 wheel for any release that fixes its
-# CRITICAL advisories (0.26.0 had the default CUDA 13 build and +cu129; 0.34.0
+# CRITICAL advisories (0.26.0 had the default CUDA 13 build and +cu129; 0.33.0
 # has only the default CUDA 13 build), so the CUDA 12 toolkit has nothing left
 # to match. Needs an NVIDIA driver >= 580 on
 # the host. deepspeed is sdist-only and compiles its native CUDA extensions

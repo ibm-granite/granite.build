@@ -14,7 +14,7 @@ patches anything. What it used to patch, and where each went (#676):
 1. trl 0.26.2's tuple-valued `_vllm_ascend_available` guard: gone in trl 1.x, whose
    `import_utils` returns plain bools.
 2. / 2b. vLLM 0.11.0 reading `config.rope_theta` in `GraniteMoeHybridAttention` and
-   `GraniteDecoderLayer`: vLLM 0.34.0 reads `config.rope_parameters` itself.
+   `GraniteDecoderLayer`: vLLM 0.33.0 reads `config.rope_parameters` itself.
 3. trl 0.26.2's `sanitize_logprob` turning a NaN logprob into None, which its response
    schema rejected (HTTP 500): vLLM's server serialises NaN, trl's client turns it into
    None, and the trainer masks that token out of its importance-sampling terms.

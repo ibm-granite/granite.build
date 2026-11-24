@@ -26,12 +26,12 @@
 # ]
 # ///
 
-# Two workarounds that lived here are gone with trl 1.x / vLLM 0.34 (#676):
+# Two workarounds that lived here are gone with trl 1.x / vLLM 0.33 (#676):
 # - trl 0.26.2 stored `_is_package_available()`'s (bool, version) tuple raw, so
 #   `_vllm_ascend_available` was truthy and trl imported the absent vllm_ascend. trl 1.x's
 #   import_utils returns a bool and has no ascend check.
 # - vLLM 0.11.0 read `config.rope_theta`, which transformers 5.x moved into
-#   `config.rope_parameters`; vLLM 0.34's granite and granitemoehybrid models read
+#   `config.rope_parameters`; vLLM 0.33's granite and granitemoehybrid models read
 #   rope_parameters themselves.
 # patch_targets.py checks both stay true.
 
