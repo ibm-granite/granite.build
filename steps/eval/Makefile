@@ -47,14 +47,17 @@ gpu_ref = $(REGISTRY)/steps/eval/$(1)/images/gpu:$(IMAGE_VERSION)
 cpu_ref = $(REGISTRY)/steps/eval/$(1)/images/cpu:$(IMAGE_VERSION)
 
 # ---- Image gate ---------------------------------------------------------------
-# scan-image-<family> / scan-image-cpu-<family>: trivy on the built image (saved to a
-# tar under SCAN_CACHE), the fleet's rule: no fixable SCAN_SEVERITY finding, with
-# scan-ignore as the documented exception list. trivy's --severity is a set, not a
-# floor (`--severity HIGH` drops CRITICAL), so the gate is given SCAN_SEVERITY AND
-# ABOVE, plus UNKNOWN so an unscored advisory is not skipped; a report pass prints
-# HIGH and above (fixed and unfixed) first. publish-image-* runs the gate first, so
-# an unscanned tag is never pushed; SKIP_SCAN=true (exactly `true`) skips it.
-SCAN_SEVERITY ?= CRITICAL
+# scan-image-<family> / scan-image-cpu-<family>: scan-deps (below), then trivy on the
+# built image (saved to a tar under SCAN_CACHE), the fleet's rule: no fixable
+# SCAN_SEVERITY finding, with scan-ignore as the documented exception list. trivy's
+# --severity is a set, not a floor (`--severity HIGH` drops CRITICAL), so the gate is
+# given SCAN_SEVERITY AND ABOVE, plus UNKNOWN so an unscored advisory is not skipped; a
+# report pass prints HIGH and above (fixed and unfixed) first. publish-image-* runs the
+# gate first, so an unscanned tag is never pushed; SKIP_SCAN=true (exactly `true`)
+# skips it.
+# HIGH, not CRITICAL: a fixable HIGH ships only if it is recorded in scan-ignore;
+# silence is not acceptance. Same rule as steps/train/distill.
+SCAN_SEVERITY ?= HIGH
 SCAN_CACHE    ?= $(HOME)/.cache/gb-image-scan
 SCAN_IGNORE   ?= scan-ignore
 SKIP_SCAN     ?= false
@@ -105,7 +108,7 @@ define push-image
 	$(DOCKER) push $(1)
 endef
 
-.PHONY: help images-cpu publish-images-cpu $(addprefix image-cpu-,$(CPU_FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES)) images publish-images test-src prefetch check-pins $(addprefix image-,$(FAMILIES)) $(addprefix publish-image-,$(FAMILIES)) $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
+.PHONY: help scan-deps images-cpu publish-images-cpu $(addprefix image-cpu-,$(CPU_FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES)) images publish-images test-src prefetch check-pins $(addprefix image-,$(FAMILIES)) $(addprefix publish-image-,$(FAMILIES)) $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
 
 help:
 	@echo "Targets: images, publish-images, image-<family>, scan-image-<family>, publish-image-<family> (and the -cpu- forms), test-src, prefetch, check-pins, scan-deps"
@@ -125,7 +128,7 @@ $(addprefix image-cpu-,$(CPU_FAMILIES)): image-cpu-%:
 	$(require_registry)
 	$(DOCKER) build --platform $(PLATFORM) -f $*/Dockerfile.cpu . -t $(call cpu_ref,$*)
 
-$(addprefix scan-image-cpu-,$(CPU_FAMILIES)): scan-image-cpu-%:
+$(addprefix scan-image-cpu-,$(CPU_FAMILIES)): scan-image-cpu-%: scan-deps
 	$(require_registry)
 	$(call scan-image,$(call cpu_ref,$*),$*-cpu)
 
@@ -137,7 +140,7 @@ $(addprefix image-,$(FAMILIES)): image-%:
 	$(require_registry)
 	$(DOCKER) build --platform $(PLATFORM) -f $*/Dockerfile.gpu . -t $(call gpu_ref,$*)
 
-$(addprefix scan-image-,$(FAMILIES)): scan-image-%:
+$(addprefix scan-image-,$(FAMILIES)): scan-image-%: scan-deps
 	$(require_registry)
 	$(call scan-image,$(call gpu_ref,$*),$*-gpu)
 
@@ -169,24 +172,31 @@ check-pins:
 # shared uv.lock (every family's forks resolve in it) and every family's nested
 # requirement files (e.g. nemoskills' comet-requirements.txt). Catches the
 # lock-level CVE class (a pinned dependency with a fix available) in seconds,
-# before any image build; the image-level scan (the fleet's gate) stays the
-# backstop for what the lock cannot see: apt packages, vendored harnesses, and
-# bits vendored inside tools (pip's own certifi). Same rule as the image gate:
-# zero fixable CRITICALs; scan-ignore is the documented exception list. trivy
-# recognises a pip requirements file only by the name requirements.txt (any other
-# name is "no supported files", i.e. a silent pass), so each one is scanned from a
-# temp dir under that name.
+# before any image build; the image gate stays the backstop for what the lock
+# cannot see: apt packages, vendored harnesses, and bits vendored inside tools
+# (npm's own dependencies, setuptools' _vendor). Same rule as the image gate (fixable
+# TRIVY_GATE_SEVERITY, scan-ignore the documented exception list), and scan-image-*
+# runs it first. trivy recognises a pip requirements file only by the name
+# requirements.txt (any other name is "no supported files", i.e. a silent pass), so
+# each one is scanned from a temp dir under that name. The lock is scanned whole, so a
+# package one fork pins below its fix fails here even when no image installs that fork
+# (trivy reads no markers).
 scan-deps:
-	@command -v trivy >/dev/null 2>&1 || { echo "trivy is not on PATH; install it first" >&2; exit 1; }
+	$(check-severity)
+	@command -v $(TRIVY) >/dev/null 2>&1 || { echo "$(TRIVY) is not on PATH; install it first" >&2; exit 1; }
+	@mkdir -p "$(SCAN_CACHE)/trivy"
 	@rc=0; \
 	for f in src/core/uv.lock $$(ls */*requirements*.txt 2>/dev/null); do \
-	  echo "== $$f"; \
-	  case "$$f" in *.txt) d=$$(mktemp -d); cp "$$f" "$$d/requirements.txt"; target=$$d;; *) d=; target=$$f;; esac; \
-	  trivy fs --scanners vuln --severity CRITICAL --ignore-unfixed \
-	    --ignorefile scan-ignore --format json --output /tmp/scan-deps.json "$$target" 2>/dev/null; \
+	  echo "== $$f (fixable $(TRIVY_GATE_SEVERITY))"; \
+	  case "$$f" in *.txt) d=$$(mktemp -d) || exit 1; cp "$$f" "$$d/requirements.txt"; target=$$d;; *) d=; target=$$f;; esac; \
+	  $(TRIVY) fs --quiet --cache-dir "$(SCAN_CACHE)/trivy" --scanners vuln --timeout $(TRIVY_TIMEOUT) \
+	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed --ignorefile $(abspath $(SCAN_IGNORE)) \
+	    --exit-code 3 --format table "$$target"; frc=$$?; \
 	  [ -n "$$d" ] && rm -rf "$$d"; \
-	  n=$$(jq "[.Results[]?.Vulnerabilities[]?] | length" /tmp/scan-deps.json 2>/dev/null || echo "?"); \
-	  if [ "$$n" = "0" ]; then echo "OK: no fixable CRITICALs"; \
-	  else echo "SCAN-DEPS FAILED $$f: $$n fixable CRITICALs (trivy fs --severity CRITICAL --ignore-unfixed --ignorefile scan-ignore $$f)"; rc=1; fi; \
+	  case $$frc in \
+	    0) echo "OK: $$f has no fixable $(TRIVY_GATE_SEVERITY) vulnerabilities" ;; \
+	    3) echo "SCAN-DEPS FAILED: $$f has fixable $(TRIVY_GATE_SEVERITY) vulnerabilities (above); raise them or record them in $(SCAN_IGNORE)" >&2; rc=1 ;; \
+	    *) echo "SCAN-DEPS FAILED: trivy did not run on $$f (exit $$frc)" >&2; rc=1 ;; \
+	  esac; \
 	done; \
 	[ $$rc -eq 0 ] && echo "OK: dependencies clean" || exit 1
