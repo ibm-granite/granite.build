@@ -47,7 +47,7 @@ ifbench = [
     "granite-evals[nemoskills]",
     "absl-py==2.5.0",
     "langdetect==1.0.9",
-    "nltk==3.10.3",
+    "nltk==3.10.4",
     "immutabledict==4.3.1",
     "spacy==3.8.16",
     "emoji==2.16.0",
@@ -143,6 +143,12 @@ override-dependencies = [
     # outside requires-python drops them from the resolution.
     "nemo-run ; python_version < '3'",
     "nemo-evaluator-launcher ; python_version < '3'",
+]
+# Floors at the fix for the fixable HIGH-and-above advisories the dependency and image
+# gates reported (scan-deps, scan-image-* in steps/eval/Makefile), so a later re-lock
+# cannot move a package back below its fix.
+constraint-dependencies = [
+    "nltk>=3.10.4",
 ]
 # Each image installs one family's extra (plus serve), so families whose pins
 # clash resolve apart. vllm pins torch, so every fork shares the serve layer.

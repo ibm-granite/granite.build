@@ -99,7 +99,9 @@ for z in punkt:da7ffbd1e6fd6cc5c2f6879c2d4da23c7691944c punkt_tab:5e5ff6137d5ee6
     sha256sum "$D/$name.zip" >> /usr/local/share/nltk_data/GRANITE_EVALS_SHA256
     unzip -q -o "$D/$name.zip" -d "$D"
 done
-chmod -R a+rX /usr/local/share/nltk_data
+# go-w: nltk (3.10.4 on) reads no data from a directory or file that is group- or
+# world-writable, and unzip keeps the zips' own 0775 directory modes.
+chmod -R a+rX,go-w /usr/local/share/nltk_data
 
 # --- WMT24++ (wmt24pp): the COMET scorer's env -------------------------------------
 # ns scores translations with unbabel-comet (XCOMET-XXL), which it pip-installs
