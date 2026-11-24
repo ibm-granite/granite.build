@@ -58,8 +58,9 @@ build test, image 173af080, 2026-11-20). The v3 build no longer imports it, but 
 order costs nothing and keeps a future build from rediscovering that.
 
 THE CACHE GATE. gold-kernels.sh probes and prefetches with ``kernel_spec(repo)``,
-the same arguments this module loads with, so an offline (``HF_HUB_OFFLINE=1``)
-load is an exact cache hit. Repos that are not pinned here resolve the way
+the same arguments this module loads with, and calls ``make_offline_readable`` on the
+result, so an offline (``HF_HUB_OFFLINE=1``) load is an exact cache hit under kernels
+0.17.3 and huggingface_hub 2.x (see that function for the two gaps it closes). Repos that are not pinned here resolve the way
 transformers itself asks for them (``flash-attn2``: the major version from
 ``FLASH_ATTN_KERNEL_VERSIONS``), so the prefetch and the model load agree on those
 too.
@@ -113,6 +114,48 @@ def kernel_spec(repo_id: str) -> dict[str, str | int]:
     if version is not None:
         return {"version": version}
     return {"revision": "main"}
+
+
+def make_offline_readable(repo_id: str, variant_path=None, spec=None) -> None:
+    """Make the cached kernel loadable with ``HF_HUB_OFFLINE=1`` under kernels 0.17.3.
+
+    Two gaps between kernels 0.17.3 (the release transformers 5.22.2 accepts) and
+    huggingface_hub 2.x, which kernels 0.18 closes itself (it tolerates the partial
+    snapshot and records refs):
+
+    1. huggingface_hub 2.x writes the repo's full file listing (``trees/<commit>.json``)
+       on download and, offline, refuses a snapshot that lacks any listed file
+       (``IncompleteSnapshotError``, ``_snapshot_download._raise_if_incomplete_snapshot``).
+       kernels downloads one build variant, so every offline load of a prefetched kernel
+       failed. The listings of this repo are removed, and hub then accepts what is
+       there ("If the tree listing is not cached we cannot tell, so we do nothing").
+    2. A ``version=N`` fetch resolves vN to a commit and downloads by commit, so no
+       ``refs/vN`` is written; offline, kernels resolves vN from ``refs/`` only. Given the
+       fetched ``variant_path`` and its ``spec``, the ref is written.
+
+    Measured in the #676 dev image (CPU host): a prefetch of the pinned causal-conv1d, then
+    an offline get_kernel, raised IncompleteSnapshotError; flash-attn2 at version 4 raised
+    "not available in the local cache". Touches only this repo's cache directory.
+    """
+    import os
+    from pathlib import Path
+
+    from huggingface_hub import constants
+    from huggingface_hub.file_download import repo_folder_name
+
+    cache = os.environ.get("KERNELS_CACHE") or constants.HF_HUB_CACHE
+    repo_dir = Path(cache) / repo_folder_name(repo_id=repo_id, repo_type="kernel")
+    trees = repo_dir / "trees"
+    if trees.is_dir():
+        for listing in trees.glob("*.json"):
+            listing.unlink(missing_ok=True)
+    if variant_path is not None and spec and "version" in spec:
+        commit = Path(
+            variant_path
+        ).parent.parent.name  # snapshots/<commit>/build/<variant>
+        refs = repo_dir / "refs"
+        refs.mkdir(parents=True, exist_ok=True)
+        (refs / f"v{spec['version']}").write_text(commit)
 
 
 def pinned_revision(repo_id: str) -> str:
@@ -188,7 +231,16 @@ def prepare_hub_kernels(*, force: bool = False) -> None:
         return
     check_arch = has_cuda
 
+    try:
+        from huggingface_hub import constants
+
+        offline = bool(constants.HF_HUB_OFFLINE)
+    except ImportError:
+        offline = False
+
     for package, repo_id in missing:
+        if offline:
+            make_offline_readable(repo_id)
         module = get_kernel(repo_id, check_arch=check_arch, **kernel_spec(repo_id))
         sys.modules[package] = module
         if package == "causal_conv1d":

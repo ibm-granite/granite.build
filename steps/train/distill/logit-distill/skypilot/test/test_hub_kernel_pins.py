@@ -330,3 +330,59 @@ def test_prepare_hub_kernels_skips_without_cuda_unless_forced(
         "kernels-community/mamba-ssm",
     ]
     assert all(kw["check_arch"] is False for _, kw, _ in loaded)
+
+
+def _fake_kernel_cache(
+    root, repo_id, commit, variant="torch214-cxx11-cu130-x86_64-linux"
+):
+    """A cache entry as kernels 0.17.3 + huggingface_hub 2.x leave it after a prefetch: one
+    variant downloaded, the repo's full file listing recorded."""
+    repo_dir = root / ("kernels--" + repo_id.replace("/", "--"))
+    variant_path = repo_dir / "snapshots" / commit / "build" / variant
+    variant_path.mkdir(parents=True)
+    (variant_path / "metadata.json").write_text("{}")
+    (repo_dir / "trees").mkdir()
+    (repo_dir / "trees" / f"{commit}.json").write_text(
+        '{"format_version": 1, "files": {}}'
+    )
+    return repo_dir, variant_path
+
+
+def test_make_offline_readable_drops_the_tree_listing(tmp_path, monkeypatch):
+    """huggingface_hub 2.x refuses a snapshot missing any file of the recorded listing,
+    and kernels downloads one variant: the listing must go, nothing else."""
+    pytest.importorskip("huggingface_hub")
+    from gb_steps_post_training.distillation.hub_kernel_pins import (
+        make_offline_readable,
+    )
+
+    monkeypatch.setenv("KERNELS_CACHE", str(tmp_path))
+    repo_dir, variant_path = _fake_kernel_cache(
+        tmp_path, "kernels-community/mamba-ssm", "abc"
+    )
+    make_offline_readable("kernels-community/mamba-ssm")
+    assert not any((repo_dir / "trees").iterdir())
+    assert (variant_path / "metadata.json").exists()
+    assert not (repo_dir / "refs").exists()  # a commit pin needs no ref
+
+
+def test_make_offline_readable_records_the_version_ref(tmp_path, monkeypatch):
+    """A version=N fetch downloads by commit and writes no refs/vN; offline, kernels
+    0.17.3 resolves vN from refs/ only."""
+    pytest.importorskip("huggingface_hub")
+    from gb_steps_post_training.distillation.hub_kernel_pins import (
+        make_offline_readable,
+    )
+
+    monkeypatch.setenv("KERNELS_CACHE", str(tmp_path))
+    repo_dir, variant_path = _fake_kernel_cache(
+        tmp_path, "kernels-community/flash-attn2", "def456"
+    )
+    make_offline_readable("kernels-community/flash-attn2", variant_path, {"version": 4})
+    assert (repo_dir / "refs" / "v4").read_text() == "def456"
+
+
+def test_the_shell_preflight_makes_the_cache_offline_readable():
+    src = _SHELL.read_text(encoding="utf-8")
+    assert "make_offline_readable(repo)" in src  # probe, before the offline lookup
+    assert "make_offline_readable(repo, path, spec)" in src  # prefetch, after the fetch

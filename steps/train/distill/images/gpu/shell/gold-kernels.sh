@@ -66,10 +66,16 @@ from pathlib import Path
 # check the cache entry that will actually be read, not the repo's default. Keeps this
 # shell and the Python pin in sync by construction.
 try:
-    from gb_steps_post_training.distillation.hub_kernel_pins import kernel_spec
+    from gb_steps_post_training.distillation.hub_kernel_pins import (
+        kernel_spec,
+        make_offline_readable,
+    )
 except ImportError:
     def kernel_spec(repo_id):
         return {"revision": "main"}
+
+    def make_offline_readable(repo_id, variant_path=None, spec=None):
+        pass
 # EXIT 2 MEANS "THE PROBE COULD NOT ASK", and it is kept distinct from exit 1 ("asked, and repos
 # are missing") because conflating the two produced a message that named the wrong fix. See the
 # shell below.
@@ -82,6 +88,8 @@ except Exception as e:
 missing = []
 for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
+        # Offline-safe: drops hub 2.x's tree listing so the partial snapshot is accepted.
+        make_offline_readable(repo)
         path = install_kernel(repo, local_files_only=True, **kernel_spec(repo))
         # Layout-tolerant: kernels-community repos carry a variant-root
         # metadata.json only in some revisions -- so validate only when present
@@ -148,14 +156,19 @@ MSG
     echo "GOLD_PREFETCH_KERNELS on (default): downloading now (needs egress to huggingface.co)..."
     HF_HUB_OFFLINE=0 REQUIRED_KERNEL_REPOS="$repo_list" "$pybin" - <<'PY'
 import os
-from gb_steps_post_training.distillation.hub_kernel_pins import kernel_spec
+from gb_steps_post_training.distillation.hub_kernel_pins import (
+    kernel_spec,
+    make_offline_readable,
+)
 import json, os, sys
 from pathlib import Path
 from kernels import install_kernel
 rc = 0
 for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
-        path = install_kernel(repo, **kernel_spec(repo))
+        spec = kernel_spec(repo)
+        path = install_kernel(repo, **spec)
+        make_offline_readable(repo, path, spec)
         # Same layout-tolerant check as the probe above: not every pinned
         # revision carries a variant-root metadata.json, and an unconditional
         # read has failed a prefetch.
