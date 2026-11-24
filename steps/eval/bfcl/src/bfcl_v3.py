@@ -17,8 +17,14 @@ v3 and v4 are one distribution (``bfcl_eval``) at two releases, so v3 lives in
 its own side venv in the bfcl image (``GRANITE_BFCL_V3_PYTHON``, default
 ``/opt/bfcl-v3/bin/python``, hash-locked) and runs as a child process
 (:mod:`bfcl_v3_child`, run with ``python -I`` so the job venv cannot leak in).
-The handler is the same as ``bfcl-v4``'s: FC mode against the vLLM endpoint,
-the checkpoint's own chat template and tool parser, sampling only when set.
+Two request formats (``--option handler=``). ``fc``, the default, is
+``bfcl-v4``'s: FC mode against the vLLM endpoint, the checkpoint's own chat
+template and tool parser, sampling only when set. ``legacy-granite`` is BFCL
+prompt mode with the Granite 4.0 prompt format rendered by the handler and sent
+as text to the completions endpoint, the format Granite 4.0 BFCL v3 numbers were
+produced with (see :func:`bfcl_v3_child.granite4_prompt` for the template's
+source). Both send sampling only when set; ``temperature=0.001`` is BFCL's own
+default, which those runs used.
 No web search, no memory: v3 has neither.
 
 Phases, resume and ``--repeats`` as in ``bfcl-v4``.
@@ -38,9 +44,11 @@ from granite_evals.benchmarks.bfcl import _pct, prune_infra_errors
 from granite_evals.benchmarks.bfcl_v3_child import (
     HARNESS_VERSIONS,
     MISSING_EXIT,
-    REGISTRY_NAME,
+    DEFAULT_HANDLER,
+    REGISTRY_NAMES,
     RESULT_PREFIX,
     missing_results,
+    registry_name,
     result_files,
     selected_ids,
 )
@@ -54,6 +62,11 @@ CHILD = Path(__file__).with_name("bfcl_v3_child.py")
 CHILD_CONFIG = "granite_bfcl_v3_config.json"
 PYTHON_ENV = "GRANITE_BFCL_V3_PYTHON"
 DEFAULT_PYTHON = "/opt/bfcl-v3/bin/python"
+HANDLER_DESCRIPTIONS = {
+    "fc": "OpenAICompletionsHandler (FC) via the checkpoint's chat template and vLLM tool parser",
+    "legacy-granite": "BFCL prompt mode, Granite 4.0 chat-template format (granite-4.0-micro@b77de16e), "
+                      "completions endpoint, <tool_call> text parsed by BFCL",
+}
 
 OVERALL_GROUPS = {
     "non_live_ast": "Non-Live AST Acc",  # AST summary only; Overall uses non_live (below)
@@ -130,6 +143,9 @@ class BFCLv3(Benchmark):
         root = self.config.output_dir / "bfcl"
         root.mkdir(parents=True, exist_ok=True)
         categories = [c for c in self.opt("categories", "all").split(",") if c]
+        handler = self.opt("handler", DEFAULT_HANDLER)
+        if handler not in REGISTRY_NAMES:
+            raise SystemExit(f"{self.id}: unknown handler {handler!r} (one of: {', '.join(REGISTRY_NAMES)})")
         child = {
             "served_model_name": served_model_name,
             "categories": categories,
@@ -138,10 +154,11 @@ class BFCLv3(Benchmark):
             "sampling": self.sampling(),
             "include_input_log": self.opt("include_input_log", "false").lower() == "true",
             "phase": self.phase,
+            "handler": handler,
         }
         (root / CHILD_CONFIG).write_text(json.dumps(child, indent=2))
         if self.generating:
-            for f in result_files(root):
+            for f in result_files(root, handler):
                 if n := prune_infra_errors(f):
                     log.info("%s: %s: retrying %d entries that hit infrastructure errors", self.id, f.name, n)
         env = {
@@ -157,21 +174,21 @@ class BFCLv3(Benchmark):
                  self.config.limit, self.config.workers, child["sampling"] or "generation_config")
         proc = subprocess.run([python, "-I", str(CHILD), str(root / CHILD_CONFIG)], env=env, check=False)
         if proc.returncode == MISSING_EXIT and not self.generating:
-            missing = missing_results(root)
+            missing = missing_results(root, handler)
             raise self.not_generated(f"{len(missing)} test ids (first: {', '.join(missing[:5])})")
         if proc.returncode != 0:
             raise RuntimeError(f"bfcl-v3 child process exited with {proc.returncode}")
         versions_path = root / HARNESS_VERSIONS
         versions = json.loads(versions_path.read_text()) if versions_path.exists() else {}
         if not self.scoring:
-            missing = missing_results(root)
+            missing = missing_results(root, handler)
             generated = len(selected_ids(root)) - len(missing)
             log.info("%s: generated %d entries, %d without a result", self.id, generated, len(missing))
-            return {"n": generated, "missing": len(missing), "categories": categories,
+            return {"n": generated, "missing": len(missing), "categories": categories, "handler": handler,
                     "sampling": child["sampling"] or "checkpoint generation_config", "harness_versions": versions}
 
         score_dir = root / "score"
-        per_category = read_category_scores(score_dir / REGISTRY_NAME)
+        per_category = read_category_scores(score_dir / registry_name(handler))
         overall = read_overall(score_dir)
         for cat, s in per_category.items():
             log.info("%s: %s accuracy=%.4f (%d/%d)", self.id, cat, s["accuracy"], s["correct_count"], s["total_count"])
@@ -184,7 +201,7 @@ class BFCLv3(Benchmark):
             "dataset_revision": self.dataset_revision,
             "harness": f"{HARNESS}=={HARNESS_VERSION}",
             "harness_versions": versions,
-            "handler": "OpenAICompletionsHandler (FC) via vLLM tool parser",
+            "handler": {"name": handler, "how": HANDLER_DESCRIPTIONS[handler]},
             "sampling": child["sampling"] or "checkpoint generation_config",
             "categories": categories,
             "partial": self.config.limit is not None,

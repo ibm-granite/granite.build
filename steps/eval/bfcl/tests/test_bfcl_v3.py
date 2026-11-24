@@ -39,7 +39,7 @@ def test_child_imports_only_stdlib_at_module_level():
             top.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom):
             top.add((node.module or "").split(".")[0])
-    assert top <= {"__future__", "json", "os", "sys", "pathlib", "types", "typing"}, top
+    assert top <= {"__future__", "json", "os", "re", "sys", "pathlib", "types", "typing"}, top
 
 
 def test_select_ids_first_n_per_category():
@@ -48,15 +48,15 @@ def test_select_ids_first_n_per_category():
     assert len(bfcl_v3_child.select_ids(entries, None)["simple"]) == 5
 
 
-def _write_results(root, ids, category="simple"):
-    d = root / "result" / bfcl_v3.REGISTRY_NAME
+def _write_results(root, ids, category="simple", registry=bfcl_v3_child.REGISTRY_NAMES["fc"]):
+    d = root / "result" / registry
     d.mkdir(parents=True, exist_ok=True)
     (d / f"BFCL_v3_{category}_result.json").write_text(
         "".join(json.dumps({"id": i, "result": [{"f": "{}"}]}) + "\n" for i in ids))
 
 
 def _write_scores(root, overall="40.00%"):
-    d = root / "score" / bfcl_v3.REGISTRY_NAME
+    d = root / "score" / bfcl_v3_child.REGISTRY_NAMES["fc"]
     d.mkdir(parents=True, exist_ok=True)
     (d / "BFCL_v3_simple_score.json").write_text(json.dumps({"accuracy": 0.5, "correct_count": 1, "total_count": 2}) + "\n")
     cols = ["Rank", "Overall Acc", "Model", *bfcl_v3.OVERALL_GROUPS.values()]
@@ -71,7 +71,7 @@ def test_read_overall_and_category_scores(tmp_path):
     assert out["overall"] == pytest.approx(0.40)
     assert out["groups"]["non_live_ast"] == pytest.approx(0.5) and out["groups"]["non_live"] == pytest.approx(0.25)
     assert out["groups"]["live"] is None
-    per = bfcl_v3.read_category_scores(tmp_path / "score" / bfcl_v3.REGISTRY_NAME)
+    per = bfcl_v3.read_category_scores(tmp_path / "score" / bfcl_v3_child.REGISTRY_NAMES["fc"])
     assert per == {"simple": {"accuracy": 0.5, "correct_count": 1, "total_count": 2}}
 
 
@@ -138,7 +138,7 @@ def test_score_with_a_missing_generation_fails(tmp_path, monkeypatch, v3_python)
 
 
 def test_generate_prunes_infra_errors_first(tmp_path, monkeypatch, v3_python):
-    d = tmp_path / "out" / "bfcl" / "result" / bfcl_v3.REGISTRY_NAME
+    d = tmp_path / "out" / "bfcl" / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
     d.mkdir(parents=True)
     (d / "BFCL_v3_simple_result.json").write_text(
         json.dumps({"id": "simple_0", "result": "Error during inference: Connection error."}) + "\n"
@@ -169,17 +169,22 @@ def _v3(code: str, root: Path) -> str:
     return subprocess.run([V3_PYTHON, "-I", "-c", code], env=env, check=True, capture_output=True, text=True).stdout
 
 
-def _gold_results(root: Path, category: str, n: int) -> list[str]:
-    """FC-shaped results built from the possible answers (first value of every
-    parameter), which BFCL's AST checker accepts."""
+def _possible_answers(root: Path, category: str, n: int) -> list[dict]:
+    """The first ``n`` possible answers of a v3 category, read in the side venv."""
     code = (
         "import json,sys\n"
         "from bfcl_eval.constants.eval_config import POSSIBLE_ANSWER_PATH as P\n"
         f"lines=(P/'BFCL_v3_{category}.json').read_text().splitlines()\n"
         "print(json.dumps([json.loads(line) for line in lines]))\n"
     )
-    answers = sorted(json.loads(_v3(code, root)), key=lambda a: int(a["id"].rsplit("_", 1)[1]))[:n]
-    d = root / "result" / bfcl_v3.REGISTRY_NAME
+    return sorted(json.loads(_v3(code, root)), key=lambda a: int(a["id"].rsplit("_", 1)[1]))[:n]
+
+
+def _gold_results(root: Path, category: str, n: int) -> list[str]:
+    """FC-shaped results built from the possible answers (first value of every
+    parameter), which BFCL's AST checker accepts."""
+    answers = _possible_answers(root, category, n)
+    d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
     d.mkdir(parents=True, exist_ok=True)
     with (d / f"BFCL_v3_{category}_result.json").open("a") as f:
         for a in answers:
@@ -201,12 +206,12 @@ def test_real_child_scores_with_v3_formula(tmp_path):
     env = {**os.environ, "BFCL_PROJECT_ROOT": str(root), "OPENAI_API_KEY": "EMPTY"}
     assert subprocess.run(child, env=env, check=False).returncode == bfcl_v3_child.MISSING_EXIT
     _gold_results(root, "simple", 2)
-    d = root / "result" / bfcl_v3.REGISTRY_NAME
+    d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
     (d / "BFCL_v3_irrelevance_result.json").write_text(  # one abstention (correct), one call (wrong)
         json.dumps({"id": "irrelevance_0", "result": "I cannot help with that."}) + "\n"
         + json.dumps({"id": "irrelevance_1", "result": [{"f": "{}"}]}) + "\n")
     subprocess.run(child, env=env, check=True)
-    per = bfcl_v3.read_category_scores(root / "score" / bfcl_v3.REGISTRY_NAME)
+    per = bfcl_v3.read_category_scores(root / "score" / bfcl_v3_child.REGISTRY_NAMES["fc"])
     assert per["simple"] == {"accuracy": 1.0, "correct_count": 2, "total_count": 2}
     assert per["irrelevance"] == {"accuracy": 0.5, "correct_count": 1, "total_count": 2}
     out = bfcl_v3.read_overall(root / "score")
@@ -242,3 +247,236 @@ def test_real_handler_sends_served_name_and_only_configured_sampling(tmp_path):
 def test_list_shows_both_versions():
     out = subprocess.run([sys.executable, "-m", "granite_evals.cli", "list"], capture_output=True, text=True, check=True)
     assert "bfcl-v3" in out.stdout and "bfcl-v4" in out.stdout
+
+
+# -- handler=legacy-granite -------------------------------------------------------
+
+TEMPLATE = Path(__file__).parent / "data" / "granite-4.0-micro-b77de16e-chat_template.jinja"
+"""The Granite 4.0 chat template, verbatim: huggingface.co/ibm-granite/granite-4.0-micro,
+chat_template.jinja at revision b77de16e64f1bdb2ad943402334ec3a76947ead4 (Apache-2.0)."""
+
+FUNCS = [
+    {"name": "math.factorial", "description": "Factorial.",
+     "parameters": {"type": "dict", "properties": {"number": {"type": "integer"}}, "required": ["number"]}},
+    {"name": "ls", "description": "List files.", "parameters": {"type": "dict", "properties": {}}},
+]
+CONVERSATIONS = {
+    "user only": [{"role": "user", "content": "What is 5!?"}],
+    "system first": [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "5!?"}],
+    "multi-turn": [
+        {"role": "user", "content": "List, then compute 5!."},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"name": "ls", "arguments": {}}, {"name": "math.factorial", "arguments": {"number": 5}}]},
+        {"role": "tool", "name": "ls", "content": "a.txt"},
+        {"role": "tool", "name": "math.factorial", "content": "120"},
+        {"role": "assistant", "content": "Done: a.txt, 120."},
+        {"role": "user", "content": "And with a string argument?"},
+        {"role": "assistant", "content": "Sure.", "tool_calls": [
+            {"function": {"name": "math.factorial", "arguments": "{\"number\": 3}"}}]},
+        {"role": "tool", "name": "math.factorial", "content": "6"},
+    ],
+}
+
+
+def _render_template(messages, functions):
+    jinja2 = pytest.importorskip("jinja2")
+    env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
+    env.filters["tojson"] = json.dumps  # as BFCL's Granite handlers encode the tools (ASCII-escaped)
+    return env.from_string(TEMPLATE.read_text()).render(messages=messages, tools=functions, add_generation_prompt=True)
+
+
+@pytest.mark.parametrize("name", sorted(CONVERSATIONS))
+@pytest.mark.parametrize("with_tools", [True, False])
+def test_granite4_prompt_is_the_public_template(name, with_tools):
+    functions = FUNCS if with_tools else []
+    messages = CONVERSATIONS[name]
+    assert bfcl_v3_child.granite4_prompt(messages, functions) == _render_template(messages, functions)
+
+
+def test_granite4_prompt_shape():
+    out = bfcl_v3_child.granite4_prompt(CONVERSATIONS["system first"], FUNCS[:1])
+    assert out.startswith("<|start_of_role|>system<|end_of_role|>Be brief.\n\nYou are a helpful assistant with access")
+    assert '\n{"name": "math.factorial", "description": "Factorial.", ' in out
+    assert out.endswith("<|start_of_role|>user<|end_of_role|>5!?<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>")
+    assert out.count("<|start_of_role|>system") == 1
+
+
+def test_extract_tool_calls_and_reasoning():
+    text = ('<tool_call>\n{"name": "math.factorial", "arguments": {"number": 5}}\n</tool_call>\n'
+            '<tool_call>\nnot json\n</tool_call>\n<tool_call>\n{"name": "ls"}\n</tool_call>')
+    assert bfcl_v3_child.extract_tool_calls(text) == [
+        {"name": "math.factorial", "arguments": {"number": 5}}, {"name": "ls", "arguments": {}}]
+    assert bfcl_v3_child.extract_tool_calls("I can't do that.") == []
+    assert bfcl_v3_child.strip_reasoning("<think>\nhm\n</think>\n\nanswer") == "answer"
+    assert bfcl_v3_child.strip_reasoning("answer") == "answer"
+
+
+def test_max_new_tokens_is_bfcls_prompt_mode_budget():
+    assert bfcl_v3_child.max_new_tokens(131072, 1000) == 4096
+    assert bfcl_v3_child.max_new_tokens(4096, 1000) == 4096 - 1000 - 2
+    assert bfcl_v3_child.max_new_tokens(1000, 999) == 1000
+
+
+def test_vllm_tokens_reads_count_and_context(monkeypatch):
+    t = bfcl_v3_child.VLLMTokens("http://srv:8000/v1", "m")
+    seen = []
+
+    def fake_json(url, body=None):
+        seen.append((url, body))
+        return {"data": [{"id": "x", "max_model_len": 1}, {"id": "m", "max_model_len": 8192}]} if body is None else {"count": 7}
+
+    monkeypatch.setattr(t, "_json", fake_json)
+    assert t.context_length() == 8192 and t.context_length() == 8192
+    assert t.count("p") == 7
+    assert seen == [("http://srv:8000/v1/models", None),
+                    ("http://srv:8000/tokenize", {"model": "m", "prompt": "p", "add_special_tokens": False})]
+
+
+def test_handler_option_selects_registry_and_is_validated(tmp_path, monkeypatch, v3_python):
+    seen = []
+
+    def run(cmd, env, check):
+        root = tmp_path / "out" / "bfcl"
+        cfg = json.loads((root / bfcl_v3.CHILD_CONFIG).read_text())
+        seen.append(cfg["handler"])
+        (root / bfcl_v3_child.TEST_IDS_FILE).write_text(json.dumps({"simple": ["simple_0"]}))
+        _write_results(root, ["simple_0"], registry=bfcl_v3_child.REGISTRY_NAMES[cfg["handler"]])
+        return type("P", (), {"returncode": 0})()
+
+    monkeypatch.setattr(bfcl_v3.subprocess, "run", run)
+    cfg = RunConfig(model="m", output_dir=tmp_path / "out", phase="generate", options={"handler": "legacy-granite"})
+    out = bfcl_v3.BFCLv3(cfg).run("http://s", "m")
+    assert seen == ["legacy-granite"] and (out["n"], out["missing"], out["handler"]) == (1, 0, "legacy-granite")
+    with pytest.raises(SystemExit, match="unknown handler 'chat'"):
+        bfcl_v3.BFCLv3(RunConfig(model="m", output_dir=tmp_path / "o2", options={"handler": "chat"})).run("http://s", "m")
+
+
+@needs_v3_venv
+def test_real_legacy_handler_request(tmp_path):
+    """The legacy-granite handler in the side venv: the prompt it sends for a BFCL
+    entry, the served name, BFCL's token budget, and no sampling unless set."""
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "import json, bfcl_v3_child as c\n"
+        "H = c.make_legacy_granite_handler('served', %s, {'done': 0, 'total': 0})\n"
+        "h = H('granite-legacy', 0.001)\n"
+        "h.tokens.context_length = lambda: 8192\n"
+        "h.tokens.count = lambda p: 100\n"
+        "sent = {}\n"
+        "class R: pass\n"
+        "h.client.completions.create = lambda **kw: sent.update(kw) or R()\n"
+        "entry = {'id': 'simple_0', 'question': [[{'role': 'user', 'content': 'hi'}]], 'function': %s}\n"
+        "data = h._pre_query_processing_prompting(entry)\n"
+        "data['message'] = entry['question'][0]\n"
+        "h._query_prompting(data)\n"
+        "sent.pop('timeout')\n"
+        "print(json.dumps({'sent': sent, 'funcs': data['function'], 'ast': h.decode_ast(%r)}))\n"
+    )
+    src = str(bfcl_v3.CHILD.parent)
+    call = '<tool_call>\n{"name": "math.factorial", "arguments": {"number": 5}}\n</tool_call>'
+    out = json.loads(_v3(code % (src, "{}", json.dumps(FUNCS[:1]), call), tmp_path))
+    # The functions as BFCL pre-processes them for the category (a Python-syntax note).
+    assert "Python 3 syntax" in out["funcs"][0]["description"]
+    prompt = bfcl_v3_child.granite4_prompt([{"role": "user", "content": "hi"}], out["funcs"])
+    assert out["sent"] == {"model": "served", "prompt": prompt, "max_tokens": 4096}
+    assert out["ast"] == [{"math.factorial": {"number": 5}}]
+    out = json.loads(_v3(code % (src, "{'temperature': 0.001}", json.dumps(FUNCS[:1]), call), tmp_path))
+    assert out["sent"]["temperature"] == 0.001
+
+
+@needs_v3_venv
+def test_real_child_scores_legacy_text_results(tmp_path):
+    """BFCL v3's evaluator on legacy-granite results: <tool_call> text, functions
+    under their own (dotted) names."""
+    root = tmp_path / "bfcl"
+    root.mkdir()
+    cfg = {"served_model_name": "m", "categories": ["simple"], "limit": 2, "num_threads": 1, "sampling": {},
+           "include_input_log": False, "phase": "score", "handler": "legacy-granite"}
+    (root / bfcl_v3.CHILD_CONFIG).write_text(json.dumps(cfg))
+    answers = _possible_answers(root, "simple", 2)
+    d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["legacy-granite"]
+    d.mkdir(parents=True)
+    lines = []
+    for a in answers:
+        (name, params), = a["ground_truth"][0].items()
+        args = {k: v[0] for k, v in params.items() if v[0] != ""}
+        text = "<tool_call>\n" + json.dumps({"name": name, "arguments": args}) + "\n</tool_call>"
+        lines.append(json.dumps({"id": a["id"], "result": text}))
+    (d / "BFCL_v3_simple_result.json").write_text("\n".join(lines) + "\n")
+    env = {**os.environ, "BFCL_PROJECT_ROOT": str(root), "OPENAI_API_KEY": "EMPTY"}
+    subprocess.run([V3_PYTHON, "-I", str(bfcl_v3.CHILD), str(root / bfcl_v3.CHILD_CONFIG)], env=env, check=True)
+    per = bfcl_v3.read_category_scores(root / "score" / bfcl_v3_child.REGISTRY_NAMES["legacy-granite"])
+    assert per["simple"] == {"accuracy": 1.0, "correct_count": 2, "total_count": 2}
+
+
+@pytest.fixture
+def fake_vllm():
+    """A stand-in OpenAI-compatible server: /v1/models, /tokenize, /v1/completions
+    and /v1/chat/completions, every answer a refusal (no tool call), every request kept."""
+    import http.server
+    import threading
+
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self._send({"object": "list", "data": [{"id": "m", "object": "model", "max_model_len": 32768}]})
+
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append((self.path, req))
+            usage = {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+            if self.path == "/tokenize":
+                return self._send({"count": 10, "max_model_len": 32768, "tokens": []})
+            if self.path == "/v1/completions":
+                return self._send({"id": "c", "object": "text_completion", "created": 0, "model": "m", "usage": usage,
+                                   "choices": [{"index": 0, "text": "I cannot help.", "finish_reason": "stop"}]})
+            return self._send({"id": "c", "object": "chat.completion", "created": 0, "model": "m", "usage": usage,
+                               "choices": [{"index": 0, "finish_reason": "stop",
+                                            "message": {"role": "assistant", "content": "I cannot help."}}]})
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}/v1", seen
+    server.shutdown()
+
+
+@needs_v3_venv
+@pytest.mark.parametrize("handler", ["fc", "legacy-granite"])
+def test_real_child_generates_and_scores_end_to_end(tmp_path, fake_vllm, handler):
+    """BFCL v3's own generation loop (single- and multi-turn) and evaluation, with
+    each handler, against the stand-in server: every entry gets a result and a score."""
+    base_url, seen = fake_vllm
+    root = tmp_path / "bfcl"
+    root.mkdir()
+    cfg = {"served_model_name": "m", "categories": ["simple", "multi_turn_base"], "limit": 1, "num_threads": 2,
+           "sampling": {}, "include_input_log": False, "phase": "all", "handler": handler}
+    (root / bfcl_v3.CHILD_CONFIG).write_text(json.dumps(cfg))
+    env = {**os.environ, "BFCL_PROJECT_ROOT": str(root), "OPENAI_API_KEY": "EMPTY", "OPENAI_BASE_URL": base_url}
+    subprocess.run([V3_PYTHON, "-I", str(bfcl_v3.CHILD), str(root / bfcl_v3.CHILD_CONFIG)], env=env, check=True)
+    assert bfcl_v3_child.missing_results(root, handler) == []
+    per = bfcl_v3.read_category_scores(root / "score" / bfcl_v3_child.REGISTRY_NAMES[handler])
+    assert set(per) == {"simple", "multi_turn_base"} and all(s["total_count"] == 1 for s in per.values())
+    paths = {p for p, _ in seen}
+    if handler == "fc":
+        assert paths == {"/v1/chat/completions"}
+        assert all(r["model"] == "m" and "temperature" not in r for _, r in seen)
+    else:
+        assert paths == {"/v1/completions", "/tokenize"}
+        prompts = [r["prompt"] for p, r in seen if p == "/v1/completions"]
+        assert all(p.startswith("<|start_of_role|>system<|end_of_role|>You are a helpful assistant with access")
+                   and p.endswith("<|start_of_role|>assistant<|end_of_role|>") for p in prompts)
+        # Multi-turn: later turns carry the earlier answers in the prompt.
+        assert any(p.count("<|start_of_role|>assistant<|end_of_role|>I cannot help.") >= 1 for p in prompts)
+        assert all(r["max_tokens"] == 4096 and "temperature" not in r for p, r in seen if p == "/v1/completions")
