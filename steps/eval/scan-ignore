@@ -230,7 +230,9 @@ GHSA-g7cr-3p24-7wf7 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
 GHSA-78g4-xqwv-q3g8 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
 
 # ---- datamodel-code-generator 0.25.7: bfcl ------------------------------------------------
-# HIGH, fixed in 0.60.1-0.64.0. bfcl-eval 2026.3.23 pins datamodel-code-generator==0.25.7.
+# HIGH, fixed in 0.60.1-0.64.0. bfcl-eval 2026.3.23 pins datamodel-code-generator==0.25.7,
+# and so does 2025.8.6.2 in the bfcl-v3 side venv (/opt/bfcl-v3, bfcl-v3-requirements.txt),
+# where too only the MiniCPM handler calls it.
 # Overriding it was tried: bfcl-eval still imports with any fixed release, but its
 # MiniCPM handler's jsonschema_to_code fails on all of them (DataModelType.
 # PydanticBaseModel is gone), so the harness would not work as shipped. Not reachable:
