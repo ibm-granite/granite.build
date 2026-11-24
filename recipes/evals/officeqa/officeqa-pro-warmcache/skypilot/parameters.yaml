@@ -39,10 +39,11 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-# Fill with the tag of a built + pushed family image before the first run:
+# Pinned by tag to a published image (public on quay.io/granitebuild; the tag is the
+# short SHA of the commit the image was built from). To run your own build instead:
 #   make -C steps/eval image-officeqa REGISTRY=quay.io/granitebuild publish-image-officeqa REGISTRY=...
 #   make -C steps/eval image-cpu-officeqa REGISTRY=... publish-image-cpu-officeqa REGISTRY=...
-# (the tag defaults to the building checkout's git short SHA). The family image adds
+# (the tag defaults to the building checkout's git short SHA), then repoint here. The family image adds
 # only pandas and lxml (both BSD-3) on top of granite-evals, so any officeqa image
 # tag is license-clean to redistribute; the gated dataset is never baked in.
 IMAGE: "quay.io/granitebuild/steps/eval/officeqa/images/gpu:2a94aa3c"

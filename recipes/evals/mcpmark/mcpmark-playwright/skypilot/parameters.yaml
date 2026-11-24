@@ -22,9 +22,10 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Image (GPU only) ────────────────────────────────────
-# Fill with the tag of a built + pushed family image before the first run:
+# Pinned by tag to a published image (public on quay.io/granitebuild; the tag is the
+# short SHA of the commit the image was built from). To run your own build instead:
 #   make -C steps/eval image-mcpmark REGISTRY=quay.io/granitebuild publish-image-mcpmark REGISTRY=...
-# (the tag defaults to the building checkout's git short SHA).
+# (the tag defaults to the building checkout's git short SHA), then repoint here.
 IMAGE: "quay.io/granitebuild/steps/eval/mcpmark/images/gpu:136b0f80"
 
 # ─── Scale ────────────────────────────────────────────────────────────

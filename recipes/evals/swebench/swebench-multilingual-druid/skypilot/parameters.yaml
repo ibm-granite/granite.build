@@ -29,7 +29,9 @@ IMAGE_CPU: "quay.io/granitebuild/steps/eval/swebench/images/cpu:2a94aa3c"
 LIMIT: ""
 REPEATS: ""
 WORKERS: 8
-OPTIONS: "instances=^apache__druid"
+# Extra options; the apache/druid subset itself (instances=^apache__druid) is
+# fixed in build.yaml, which appends it to these.
+OPTIONS: ""
 
 # ─── Dataset (the bridge's required pin) ─────────────────────────────
 DATASET: "SWE-bench/SWE-bench_Multilingual"

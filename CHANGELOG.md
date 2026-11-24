@@ -78,12 +78,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (which answers an anonymous check of a missing repository with 401) works after a plain
   `podman login`.
 
-- **granite-evals** — benchmark evaluation suite: 41 benchmarks across 9 harness families
-  (bfcl, bird, ifbench, judged, lmeval, nemoskills, swebench, tau, tbench), one image and
-  one sourced step per family under `steps/eval/`, with dispatch recipes under
-  `recipes/evals/` that split GPU generate from CPU score. No benchmark data is committed:
-  dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
-  time (#460).
+- **granite-evals** — benchmark evaluation suite: 57 curated benchmarks across 11 harness
+  families (bfcl, bird, ifbench, judged, lmeval, mcpmark, nemoskills, officeqa, swebench, tau,
+  tbench), plus a generic bridge id in six of them (`lm-eval`, `nemoskills`, `tau3`, `mcpmark`,
+  `swebench`, `terminal-bench`) that runs any benchmark of its kind the family's pinned harness
+  knows, selected by the recipe's options. One image (GPU, plus CPU for the eight families that
+  split generate from score) and one sourced step per family under `steps/eval/`, with 70
+  dispatch recipes under `recipes/evals/` that split GPU generate from CPU score. No benchmark
+  data is committed: dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or
+  image-build time (#460, #586).
 
 - **`single_node` step flag (#651)** — `environment_configs.Skypilot.single_node: true` makes
   gbserver resolve `num_nodes` from every layer the launch reads (`compute_config`, the step's

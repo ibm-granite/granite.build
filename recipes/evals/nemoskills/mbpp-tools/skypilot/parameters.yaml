@@ -27,11 +27,11 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-# Fill with the tag of a built + pushed family image before the first run (this benchmark's
-# module is new, so existing nemoskills tags predate it):
+# Pinned by tag to a published image (public on quay.io/granitebuild; the tag is the
+# short SHA of the commit the image was built from). To run your own build instead:
 #   make -C steps/eval image-nemoskills REGISTRY=quay.io/granitebuild publish-image-nemoskills REGISTRY=...
 #   make -C steps/eval image-cpu-nemoskills REGISTRY=... publish-image-cpu-nemoskills REGISTRY=...
-# (the tag defaults to the building checkout's git short SHA).
+# (the tag defaults to the building checkout's git short SHA), then repoint here.
 IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:a3e62a3b"
 IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:a3e62a3b"
 
