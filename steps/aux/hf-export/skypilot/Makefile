@@ -62,6 +62,9 @@ lock: ## Recompile requirements.lock (hashed) from requirements.in for linux x86
 
 SCAN_SEVERITY ?= HIGH
 SCAN_CACHE    ?= $(HOME)/.cache/gb-image-scan
+# trivy's own default (5m) is too short for the multi-GB GPU images and fails the scan
+# (closed) with "context deadline exceeded".
+TRIVY_TIMEOUT ?= 30m
 SCAN_IGNORE   ?= scan-ignore
 SKIP_SCAN     ?= false
 TRIVY_IMAGE   ?= ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
@@ -116,10 +119,10 @@ scan-image: scan-lock
 		ign="-v $(abspath $(SCAN_IGNORE)):/scan/ignore:ro,Z"; \
 		echo "[scan] accepting the advisories listed in $(SCAN_IGNORE)"; fi; \
 	trivy() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
-		$(TRIVY_IMAGE) image --input /scan/image.tar --scanners vuln --ignore-unfixed --quiet \
+		$(TRIVY_IMAGE) image --input /scan/image.tar --timeout $(TRIVY_TIMEOUT) --scanners vuln --ignore-unfixed --quiet \
 		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
 	trivy_all() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
-		$(TRIVY_IMAGE) image --input /scan/image.tar --scanners vuln --quiet \
+		$(TRIVY_IMAGE) image --input /scan/image.tar --timeout $(TRIVY_TIMEOUT) --scanners vuln --quiet \
 		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
 	echo "[scan] trivy report ($(TRIVY_REPORT_SEVERITY), fixed and unfixed) for $(IMAGE_REF)"; \
 	trivy_all --severity $(TRIVY_REPORT_SEVERITY) --format table; rc=$$?; \

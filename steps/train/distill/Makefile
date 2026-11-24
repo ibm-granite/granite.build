@@ -88,6 +88,9 @@ SEVERITY_UP_LOW      := LOW,MEDIUM,HIGH,CRITICAL
 TRIVY_GATE_SEVERITY   = UNKNOWN,$(SEVERITY_UP_$(SCAN_SEVERITY))
 check-severity = $(if $(SEVERITY_UP_$(SCAN_SEVERITY)),,$(error SCAN_SEVERITY=$(SCAN_SEVERITY) is not one of CRITICAL HIGH MEDIUM LOW))
 SCAN_CACHE        ?= $(HOME)/.cache/gb-image-scan
+# trivy's own default (5m) is too short for the multi-GB GPU images and fails the scan
+# (closed) with "context deadline exceeded".
+TRIVY_TIMEOUT     ?= 30m
 TRIVY_IMAGE       ?= ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
 SKIP_SCAN         ?= false
 OSV_IMAGE         ?= ghcr.io/google/osv-scanner:v2.7.1@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde
@@ -176,10 +179,10 @@ $(addprefix scan-image-,$(IMAGES)): scan-image-%: scan-lock-%
 		ign="-v $(CURDIR)/images/$*/scan-ignore:/scan/ignore:ro,Z"; \
 		echo "[scan] accepting the advisories listed in images/$*/scan-ignore"; fi; \
 	trivy() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
-		$(TRIVY_IMAGE) image --input /scan/image.tar --scanners vuln --ignore-unfixed --quiet \
+		$(TRIVY_IMAGE) image --input /scan/image.tar --timeout $(TRIVY_TIMEOUT) --scanners vuln --ignore-unfixed --quiet \
 		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
 	trivy_all() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
-		$(TRIVY_IMAGE) image --input /scan/image.tar --scanners vuln --quiet \
+		$(TRIVY_IMAGE) image --input /scan/image.tar --timeout $(TRIVY_TIMEOUT) --scanners vuln --quiet \
 		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
 	echo "[scan] trivy report (HIGH,CRITICAL, fixed and unfixed) for $(call image_ref,$*)"; \
 	trivy_all --severity HIGH,CRITICAL --format table; rc=$$?; \
