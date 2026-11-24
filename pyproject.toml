@@ -1,28 +1,14 @@
 [project]
 name = "granite.build"
 dynamic = ["version"]
-authors = [
-    { name = "Akash Nayak", email = "akash.nayak1@ibm.com" },
-    { name = "Alexei Karve", email = "karve@us.ibm.com" },
-    { name = "Anubhav Jana", email = "Anubhav.Jana97@ibm.com" },
-    { name = "Ashok Pon Kumar", email = "ashokponkumar@in.ibm.com" },
-    { name = "Constantin Adam", email = "cmadam@us.ibm.com" },
-    { name = "David Wood", email = "dawood@us.ibm.com" },
-    { name = "Harikrishnan Balagopal", email = "harikrishnan.balagopal@ibm.com" },
-    { name = "Kimberly Lang", email = "kclang@us.ibm.com" },
-    { name = "Petros Zerfos", email = "pzerfos@us.ibm.com" },
-    { name = "Taiga Nakamura", email = "taiga@us.ibm.com" },
-    { name = "Yan Koyfman", email = "koyfman@us.ibm.com" },
-    { name = "Yuan Chi Chang", email = "yuanchi@us.ibm.com" },
-]
+authors = [{ name = "Granite.Build Authors" }]
 description = "LLM.Build / Granite.Build orchestration server and CLI"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 # <3.14 otherwise cmake seems to be invoked (on mac) - 2/18/26
 requires-python = ">=3.11,<3.14"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
 
@@ -212,7 +198,7 @@ Homepage = "https://github.com/ibm-granite/granite.build"
 Issues = "https://github.com/ibm-granite/granite.build/issues"
 
 [build-system]
-requires = ["setuptools", "setuptools_scm", "wheel"]
+requires = ["setuptools>=77", "setuptools_scm", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
