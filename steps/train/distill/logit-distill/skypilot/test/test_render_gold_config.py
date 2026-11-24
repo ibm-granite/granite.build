@@ -160,6 +160,7 @@ class TestOnPolicyBlockGating:
 
     ONLINE_KEYS = (
         "vllm_num_servers",
+        "vllm_mode",
         "top_p",
         "use_sampled_opd_loss",
         "last_message_only",
@@ -337,7 +338,8 @@ class TestSchemaMatchesTheValidatedConfigs:
         "num_train_epochs",
         "dataset_num_proc",
         "learning_rate",
-        "warmup_ratio",
+        # warmup_ratio until transformers 5.16 removed it; see TestTrl1Defaults.
+        "warmup_steps",
         "lr_scheduler_type",
         "lr_scheduler_kwargs",
         "per_device_train_batch_size",
@@ -354,9 +356,12 @@ class TestSchemaMatchesTheValidatedConfigs:
         "beta",
         "use_liger_fused_jsd",
         "response_template",
+        # Not in the validated trl 0.26.2 configs: trl 1.x defaults it to float32.
+        "dtype",
     }
     ONLINE_ONLY = {
         "vllm_num_servers",
+        "vllm_mode",
         "top_p",
         "use_sampled_opd_loss",
         "last_message_only",
@@ -599,11 +604,12 @@ class TestLossArms:
     @pytest.mark.parametrize("lmbda", ["0.25", "1.0"])
     def test_lmbda_without_a_server_is_refused(self, tmp_path, lmbda):
         """lmbda > 0 at vllm_num_servers 0 routes generation through TRL's in-process
-        generate_on_policy_outputs, which masks by token value and so drops the EOS
-        whenever pad == eos. The renderer refuses it rather than train that."""
+        generate_on_policy_outputs inside the training ranks, a path nothing here has run.
+        The renderer keeps rollouts on a vLLM server rather than adopt it unvalidated.
+        """
         result = _render(tmp_path, extra=["--lmbda", lmbda], expect_rc=2)
         assert "vllm_num_servers is 0" in result.stderr
-        assert "pad == eos" in result.stderr
+        assert "generate_on_policy_outputs" in result.stderr
 
     def test_lmbda_zero_without_a_server_still_renders(self, tmp_path):
         assert _render(tmp_path, extra=["--lmbda", "0.0"])["lmbda"] == 0.0
@@ -853,11 +859,10 @@ class TestOnPolicyShapingKeys:
 
 class TestTrainerKeyCheck:
     """--verify-trainer-accepts-keys imports the delivered CustomGOLDConfig, and through it
-    TRL. Faked here so the suite needs neither: the fake TRL keeps the (bool, version) tuple
-    TRL 0.26 stores for _vllm_ascend_available under transformers>=4.57, and the fake
-    trainer imports vllm_ascend behind that guard the way trl.extras.vllm_client does.
-    Without the unwrap, the import fails and the renderer misreports it as the package
-    being missing -- what killed the ck2500 lmbda-ramp arms (fe650626, ae922fd7)."""
+    TRL. Faked here so the suite needs neither. The fake TRL stores a plain bool guard, as
+    trl 1.x does: trl 0.26's (bool, version) tuple for _vllm_ascend_available, which made
+    the import fail and read as a missing package (the ck2500 lmbda-ramp arms, fe650626,
+    ae922fd7), is gone upstream, and the renderer no longer unwraps it (#676)."""
 
     _RAMP = [
         "--vllm-num-servers",
@@ -873,7 +878,7 @@ class TestTrainerKeyCheck:
     ]
 
     @staticmethod
-    def _fake_packages(root, ascend_flag='(False, "N/A")', fields=None):
+    def _fake_packages(root, ascend_flag="False", fields=None):
         fields = fields or {"lmbda_schedule": '"constant"', "lmbda_init": "0.0"}
         (root / "trl").mkdir(parents=True)
         (root / "trl" / "__init__.py").write_text("")
@@ -911,8 +916,7 @@ class TestTrainerKeyCheck:
         )
         return result, out
 
-    def test_a_tuple_guard_does_not_masquerade_as_a_missing_package(self, tmp_path):
-        """The regression: the exact environment of the delivered image."""
+    def test_a_trainer_with_the_fields_passes(self, tmp_path):
         pkgs = self._fake_packages(tmp_path / "pkgs")
         result, out = self._render_with(tmp_path, pkgs, self._RAMP)
         assert result.returncode == 0, result.stderr
@@ -920,14 +924,8 @@ class TestTrainerKeyCheck:
         assert config["lmbda_schedule"] == "linear"
         assert config["lmbda_init"] == pytest.approx(0.25)
 
-    def test_a_plain_bool_guard_still_passes(self, tmp_path):
-        """TRL versions that store a bool must not be disturbed by the unwrap."""
-        pkgs = self._fake_packages(tmp_path / "pkgs", ascend_flag="False")
-        result, _ = self._render_with(tmp_path, pkgs, self._RAMP)
-        assert result.returncode == 0, result.stderr
-
     def test_a_trainer_without_the_fields_is_still_refused(self, tmp_path):
-        """The unwrap must not turn the check into a pass: it exists to refuse this."""
+        """The check exists to refuse this."""
         pkgs = self._fake_packages(
             tmp_path / "pkgs", fields={"lmbda_schedule": '"constant"'}
         )
@@ -1178,3 +1176,93 @@ def test_the_template_passes_the_batch_shape_to_the_renderer():
         "gold_config.response_template",
         "gold_config.save_steps",
     } <= keys
+
+
+class TestTrl1Defaults:
+    """Fields trl 1.x / transformers 5.16+ changed under us, stated explicitly (#676)."""
+
+    def test_student_and_teacher_dtype_is_bfloat16(self, tmp_path):
+        # ModelConfig.dtype defaults to "float32" in trl 1.x; gold.py loads both models with it.
+        assert _render(tmp_path)["dtype"] == "bfloat16"
+        on = _render(tmp_path, extra=["--vllm-num-servers", "1", "--lmbda", "1.0"])
+        assert on["dtype"] == "bfloat16"
+
+    def test_on_policy_states_server_mode(self, tmp_path):
+        # trl 1.x defaults vllm_mode to "colocate"; every on-policy topology here uses a
+        # separate server (in-allocation nodes or an external target).
+        config = _render(tmp_path, extra=["--vllm-num-servers", "1", "--lmbda", "1.0"])
+        assert config["vllm_mode"] == "server"
+
+    def test_external_server_states_server_mode(self, tmp_path):
+        config = _render(
+            tmp_path,
+            total_nodes=1,
+            extra=[
+                "--vllm-num-servers",
+                "1",
+                "--lmbda",
+                "1.0",
+                "--vllm-server-url",
+                "http://10.0.0.1:8001",
+            ],
+        )
+        assert config["vllm_mode"] == "server"
+
+    def test_off_policy_does_not_emit_a_mode(self, tmp_path):
+        # use_vllm is False off-policy, so the mode is never read.
+        assert "vllm_mode" not in _render(tmp_path)
+
+    def test_warmup_ratio_is_emitted_as_fractional_warmup_steps(self, tmp_path):
+        config = _render(tmp_path, extra=["--warmup-ratio", "0.03"])
+        assert "warmup_ratio" not in config
+        assert config["warmup_steps"] == 0.03
+        assert isinstance(config["warmup_steps"], float)
+
+    def test_default_warmup_is_the_reference_ratio(self, tmp_path):
+        assert _render(tmp_path)["warmup_steps"] == 0.05
+
+    @pytest.mark.parametrize("ratio", ["1.0", "2", "-0.1"])
+    def test_a_ratio_outside_the_unit_interval_is_refused(self, tmp_path, ratio):
+        # warmup_steps >= 1 means a step count: a ratio of 1 would become ONE step.
+        result = _render(tmp_path, extra=["--warmup-ratio", ratio], expect_rc=2)
+        assert "warmup_ratio must be in [0, 1)" in result.stderr
+
+    def test_every_emitted_upstream_key_exists_in_the_trl_and_transformers_dataclasses(
+        self, tmp_path
+    ):
+        """TrlParser rejects unknown top-level keys, after the models load. Checked against
+        the installed trl/transformers when they are importable (the step image), so a
+        future removal like warmup_ratio fails here instead."""
+        pytest.importorskip("trl")
+        import dataclasses
+
+        from transformers import TrainingArguments
+        from trl import ModelConfig, ScriptArguments
+        from trl.experimental.gold import GOLDConfig
+
+        known = set()
+        for cls in (TrainingArguments, ModelConfig, ScriptArguments, GOLDConfig):
+            known |= {f.name for f in dataclasses.fields(cls)}
+        try:
+            from gb_steps_post_training.distillation.custom_gold_config import (
+                CustomGOLDConfig,
+            )
+
+            known |= {f.name for f in dataclasses.fields(CustomGOLDConfig)}
+            custom_known = True
+        except ImportError:
+            custom_known = False
+        on = _render(tmp_path, extra=["--vllm-num-servers", "1", "--lmbda", "1.0"])
+        unknown = set(on) - known
+        if not custom_known:
+            # Our extension keys need the in-repo CustomGOLDConfig to resolve.
+            unknown -= {
+                "use_liger_fused_jsd",
+                "response_template",
+                "vllm_num_servers",
+                "use_sampled_opd_loss",
+                "last_message_only",
+                "clip_alpha",
+                "opd_importance_sampling",
+            }
+        assert not unknown, f"keys no dataclass defines: {sorted(unknown)}"

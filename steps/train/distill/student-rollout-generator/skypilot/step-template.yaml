@@ -233,6 +233,10 @@ environment_configs:
             # The generate and weight-update endpoints carry no auth, so the
             # server must not listen where the allocation's network doesn't
             # require reaching it; the health probe below uses the same address.
+            # run_vllm_serve hands off to trl's `vllm-serve`, which (trl 1.x) execs
+            # vLLM's own OpenAI-compatible server: same PID, so SERVER_PID and the
+            # kill -0 check below still track it, and its readiness route is
+            # /health (trl 0.26's own FastAPI server answered /health/).
             "$PYBIN" -m gb_steps_post_training.distillation.run_vllm_serve \
               --host "$ADDR" \
               --port "$PORT" \
@@ -260,7 +264,7 @@ environment_configs:
               if "$PYBIN" -c "
             import sys, urllib.request
             try:
-                urllib.request.urlopen('http://$ADDR:$PORT/health/', timeout=5)
+                urllib.request.urlopen('http://$ADDR:$PORT/health', timeout=5)
             except Exception:
                 sys.exit(1)
             " 2>/dev/null; then
