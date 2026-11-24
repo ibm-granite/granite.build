@@ -68,6 +68,8 @@ environment_configs:
             SKYPILOT_DOCKER_SERVER: "022767362696.dkr.ecr.us-east-2.amazonaws.com"
           run: |
             set -e
+            # pipefail: the eval pipeline below takes the eval script's exit status.
+            set -o pipefail
             echo "=== Sage Evaluation on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -123,9 +125,27 @@ environment_configs:
             export TMP="$TMPDIR"
             export TEMP="$TMPDIR"
 
+            # The results search below is anchored at /${EXPERIMENT}/. An empty value
+            # matches nothing, and a glob character such as '*' reaches find -path and
+            # matches other experiments in the shared bucket. These checks fail the
+            # step at creation, before the cluster is provisioned; the bash checks
+            # after the export are a backstop with the same rules.
+            {%- set experiment = config.sage_eval_config.experiment | string %}
+            {%- if not experiment %}{{ raise_error("sage-eval: sage_eval_config.experiment is required; the results search is anchored at /<experiment>/.") }}{% endif %}
+            {%- for segment in experiment.split("/") %}
+            {%- if segment in ["", ".", ".."] or segment.strip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") %}{{ raise_error("sage-eval: sage_eval_config.experiment '" ~ experiment ~ "' must be one or more '/'-separated names of letters, digits, '.', '_' and '-', with no '.' or '..' name.") }}{% endif %}
+            {%- endfor %}
+
             # Standard vars consumed by sage gb_scripts
             export MODEL_PATH="{{ config.sage_eval_config.model_path }}"
             export EXPERIMENT="{{ config.sage_eval_config.experiment }}"
+            [ -n "$EXPERIMENT" ] || { echo "ERROR: sage_eval_config.experiment is empty"; exit 1; }
+            case "/$EXPERIMENT/" in
+              *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*|*//*|*/./*|*/../*)
+                echo "ERROR: sage_eval_config.experiment '$EXPERIMENT' must be one or more '/'-separated names of letters, digits, '.', '_' and '-', with no '.' or '..' name"
+                exit 1
+                ;;
+            esac
             export OUTPUT_BASE_PATH="{{ config.sage_eval_config.output_dir }}"
             export NUM_GPUS={{ config.sage_eval_config.num_gpus }}
             export BATCH_SIZE={{ config.sage_eval_config.batch_size }}
@@ -154,13 +174,23 @@ environment_configs:
                 /workspace/bigcode-evaluation-harness/bigcode_eval/tasks/multiple.py
             fi
 
-            # Run the evaluation script
+            # The fallback search below matches only files newer than this marker.
+            # It is touched before the eval: tee writes /tmp/sage-eval.log until the
+            # eval ends, so no file the eval writes is newer than the log.
+            EVAL_START_MARKER="$TMPDIR/sage-eval.start"
+            touch "$EVAL_START_MARKER"
+
+            # Run the evaluation script. Under set -e and pipefail a non-zero exit
+            # from the script stops the step here.
             bash /workspace/sage/sage/cluster/gb/scripts/${GB_SCRIPT} 2>&1 | tee /tmp/sage-eval.log
 
-            # Emit artifact for gbserver
-            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*${EXPERIMENT}*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' \) -print -quit)
+            # Emit artifact for gbserver. Both searches are anchored at /${EXPERIMENT}/
+            # so exp-ckpt_1000 cannot match exp-ckpt_10000 in the shared bucket.
+            # base_set-result.json is SALAD-Bench's result (#482). '|| true': a find
+            # error must reach the ERROR below, not abort the step under set -e.
+            RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*-result.json' \) -print -quit || true)
             if [ -z "$RESULT_FILE" ]; then
-              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*.csv' \) -newer /tmp/sage-eval.log -print -quit 2>/dev/null || true)
+              RESULT_FILE=$(find "$OUTPUT_BASE_PATH" -path "*/${EXPERIMENT}/*" -type f \( -name 'results*.json' -o -name 'metrics*.json' -o -name 'metrics*.jsonl' -o -name '*-result.json' -o -name '*.csv' \) -newer "$EVAL_START_MARKER" -print -quit 2>/dev/null || true)
             fi
             if [ -n "$RESULT_FILE" ]; then
               echo "GB_ARTIFACT_ID:sage_eval_results GB_ARTIFACT_PATH:${RESULT_FILE}"

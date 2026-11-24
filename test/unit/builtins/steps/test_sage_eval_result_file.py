@@ -20,12 +20,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+from gbserver.utils.template import fill_template
+
+from .sage_eval_steps import one_script
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 ENVS = REPO_ROOT / "configurations/assets/environments/skypilot"
 
-# The steps under test, and the variable each roots its search at. aws/sage-eval
-# carries the same search but is not changed until it can be tested on AWS.
+# The steps under test, and the variable each roots its search at.
 STEPS = {
+    "aws/steps/sage-eval": "OUTPUT_BASE_PATH",
     "steps/sage-eval": "OUTPUT_BASE_PATH",
 }
 
@@ -33,24 +37,12 @@ EXPERIMENT = "exp-ckpt_1000"
 SALAD = "safety-eval/salad-bench/export-1000/base_set-result.json"
 
 
-def _strings(node):
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for v in node.values():
-            yield from _strings(v)
-    elif isinstance(node, list):
-        for v in node:
-            yield from _strings(v)
-
-
 def _search_block(step: str) -> str:
     """The step's run-script lines from the first results search to the emit's `fi`."""
-    cfg = yaml.safe_load((ENVS / step / "step.yaml").read_text())
-    (run,) = [s for s in _strings(cfg) if "GB_ARTIFACT_ID:sage_eval_results" in s]
+    run = one_script(ENVS / step / "step.yaml", "GB_ARTIFACT_ID:sage_eval_results")
     lines = run.splitlines()
-    start = next(i for i, l in enumerate(lines) if "RESULT_FILE=$(find" in l)
-    emit = next(i for i, l in enumerate(lines) if 'if [ -n "$RESULT_FILE" ]' in l)
+    start = next(i for i, line in enumerate(lines) if "RESULT_FILE=$(find" in line)
+    emit = next(i for i, line in enumerate(lines) if 'if [ -n "$RESULT_FILE" ]' in line)
     indent = len(lines[emit]) - len(lines[emit].lstrip())
     end = next(
         i
@@ -68,11 +60,15 @@ def _emitted(step: str, root: Path, tmp_path: Path) -> str | None:
     log = tmp_path / "sage-eval.log"
     log.write_text("")
     os.utime(log, (LOG_MTIME, LOG_MTIME))
-    # The fallback search compares against the eval's log; point it at a private copy.
+    # The fallback search compares against a file touched before the eval: the
+    # eval's log on LSF, a start marker on AWS. Point either at a private copy.
     block = _search_block(step)
-    assert "/tmp/sage-eval.log" in block
-    block = block.replace("/tmp/sage-eval.log", str(log))
     env = {**os.environ, STEPS[step]: str(root), "EXPERIMENT": EXPERIMENT}
+    if "/tmp/sage-eval.log" in block:
+        block = block.replace("/tmp/sage-eval.log", str(log))
+    else:
+        assert '-newer "$EVAL_START_MARKER"' in block
+        env["EVAL_START_MARKER"] = str(log)
     # -e as in the step's run script. check=False: an empty tree is meant to exit 1;
     # the emitted line is what counts.
     out = subprocess.run(
@@ -137,6 +133,124 @@ def test_the_fallback_ignores_a_sibling_rungs_new_result(step, tmp_path):
     _touch(root, "summary.csv", experiment="exp-ckpt_2000", mtime=NEW)
     (root / EXPERIMENT / "logs-dir").mkdir(parents=True)
     assert _emitted(step, root, tmp_path) is None
+
+
+def _line_index(lines: list[str], needle: str) -> int:
+    """Return the index of the first line that contains ``needle``."""
+    return next(i for i, line in enumerate(lines) if needle in line)
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_an_empty_experiment_fails_before_the_eval(step):
+    """An empty experiment makes the anchored search match nothing; refuse it early.
+
+    The check runs before ``mkdir -p "$OUTPUT_BASE_PATH"``, so nothing is created
+    in the bucket, and before the eval.
+    """
+    run = one_script(ENVS / step / "step.yaml", "GB_ARTIFACT_ID:sage_eval_results")
+    lines = run.splitlines()
+    check = _line_index(lines, '[ -n "$EXPERIMENT" ]')
+    assert check < _line_index(lines, 'mkdir -p "$OUTPUT_BASE_PATH"')
+    assert check < _line_index(lines, "/sage/cluster/gb/scripts/")
+    env = {**os.environ, "EXPERIMENT": ""}
+    r = subprocess.run(
+        ["bash", "-ec", f"{lines[check]}\necho REACHED"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode == 1 and "REACHED" not in r.stdout
+    assert "experiment is empty" in r.stdout
+
+
+AWS_STEP = "aws/steps/sage-eval"
+
+# Names the AWS step accepts, and names it refuses because a glob character or a
+# '.'/'..' name would let the anchored search match outside the experiment.
+GOOD_EXPERIMENTS = ["exp-ckpt_1000", "eval-l40s-350m-s7500", "team/exp.v2"]
+BAD_EXPERIMENTS = [
+    "*",
+    "exp-*",
+    "exp?",
+    "exp[12]",
+    "..",
+    "team/../other",
+    "./exp",
+    "/exp",
+    "exp/",
+    "team//exp",
+    "exp 1",
+    "exp$HOME",
+]
+
+
+def _aws_config(experiment: str) -> dict:
+    """The AWS step's default config with ``experiment`` set."""
+    cfg = yaml.safe_load((ENVS / AWS_STEP / "step.yaml").read_text(encoding="utf-8"))
+    config = cfg["config"]
+    config["sage_eval_config"]["experiment"] = experiment
+    return config
+
+
+def _render_aws_run(experiment: str) -> str:
+    """Fill the AWS run script as the launcher does at step creation."""
+    run = one_script(ENVS / AWS_STEP / "step.yaml", "GB_ARTIFACT_ID:sage_eval_results")
+    return fill_template(run, {"config": _aws_config(experiment)}, strict=True)
+
+
+@pytest.mark.parametrize("experiment", GOOD_EXPERIMENTS)
+def test_the_aws_step_renders_with_a_safe_experiment(experiment):
+    """A safe name renders, and the run script exports it unchanged."""
+    assert f'export EXPERIMENT="{experiment}"' in _render_aws_run(experiment)
+
+
+@pytest.mark.parametrize("experiment", ["", *BAD_EXPERIMENTS])
+def test_the_aws_step_refuses_an_unsafe_experiment_at_creation(experiment):
+    """An empty or unsafe name fails the template fill, before anything launches."""
+    with pytest.raises(Exception) as exc:
+        _render_aws_run(experiment)
+    causes = []
+    err: BaseException | None = exc.value
+    while err is not None:
+        causes.append(str(err))
+        err = err.__cause__
+    assert any("sage_eval_config.experiment" in c for c in causes), causes
+
+
+def _aws_name_check() -> str:
+    """The AWS run script's bash checks on EXPERIMENT, from ``[ -n`` to ``esac``."""
+    run = one_script(ENVS / AWS_STEP / "step.yaml", "GB_ARTIFACT_ID:sage_eval_results")
+    lines = run.splitlines()
+    start = _line_index(lines, '[ -n "$EXPERIMENT" ]')
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == "esac")
+    assert end < _line_index(lines, 'mkdir -p "$OUTPUT_BASE_PATH"')
+    return "\n".join(lines[start : end + 1])
+
+
+def _run_name_check(experiment: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-ec", f"{_aws_name_check()}\necho REACHED"],
+        env={**os.environ, "EXPERIMENT": experiment},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("experiment", GOOD_EXPERIMENTS)
+def test_the_aws_bash_check_accepts_a_safe_experiment(experiment):
+    """The backstop passes the names the template accepts."""
+    r = _run_name_check(experiment)
+    assert r.returncode == 0 and "REACHED" in r.stdout, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("experiment", BAD_EXPERIMENTS)
+def test_the_aws_bash_check_refuses_an_unsafe_experiment(experiment):
+    """The backstop refuses the names the template refuses."""
+    r = _run_name_check(experiment)
+    assert r.returncode == 1 and "REACHED" not in r.stdout, r.stdout + r.stderr
+    assert "sage_eval_config.experiment" in r.stdout
 
 
 @pytest.mark.parametrize("step", STEPS)
