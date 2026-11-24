@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# granite-evals image for the `bfcl` benchmark family: BFCL v4 (gorilla) function calling.
+# granite-evals image for the `bfcl` benchmark family: BFCL v3 and v4 (gorilla) function calling.
 #
 # One image per benchmark family, because the upstream harnesses' own dependencies
 # conflict with one another (see [tool.uv] conflicts in src/core/pyproject.toml).
@@ -22,7 +22,8 @@
 # CPU sibling of the GPU image for `--phase score` (grading, no model served):
 # no vLLM. The image carries the shared granite_evals core
 # (src/core) overlaid with this family's benchmark modules (bfcl/src), the
-# family's pinned harness (the `bfcl` extra) and the enroot CLI for benchmarks
+# family's pinned v4 harness (the `bfcl` extra), the v3 harness in its own venv
+# (/opt/bfcl-v3, bfcl/extras.sh) and the enroot CLI for benchmarks
 # that sandbox each task in a container. Nothing is cloned or mounted at launch;
 # datasets come from the mounted HF cache (see scripts/prefetch_datasets.py).
 # System packages are installed in a throwaway stage and shipped as ONE plain layer.
@@ -91,6 +92,12 @@ ENV UV_PROJECT_ENVIRONMENT=${EVALS_HOME}/.venv \
 # come first so code edits don't reinstall them. --chmod: the build host's checkout may be
 # unreadable to other users, which COPY would preserve.
 COPY --chmod=755 src/core/pyproject.toml src/core/uv.lock ./
+# Family-specific setup (bfcl/extras.sh: the BFCL v3 side venv), bind-mounted so nothing
+# is left behind in a layer. UV_NO_CONFIG: the script runs from WORKDIR, and uv would
+# otherwise apply this project's [tool.uv] settings to the separate env it builds.
+RUN --mount=type=bind,source=bfcl/extras.sh,target=/tmp/extras/bfcl.sh \
+    --mount=type=bind,source=bfcl/bfcl-v3-requirements.txt,target=/tmp/extras/bfcl-v3-requirements.txt \
+    UV_NO_CONFIG=1 bash -euxo pipefail /tmp/extras/bfcl.sh
 
 RUN uv sync --locked --no-install-project --no-dev --extra bfcl
 # The shared core first, then the family's modules merged into the same package.
