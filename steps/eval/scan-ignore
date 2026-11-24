@@ -26,7 +26,7 @@
 # multimodal shared-memory handle reaching pickle.loads, EPS image decoding through
 # Ghostscript). The eval steps serve a text model on 127.0.0.1 inside the job
 # (granite_evals/serving.py), and its only caller is the harness, sending the pinned
-# benchmarks' text prompts. Issue: #764 (follow-up to open: the vLLM uplift).
+# benchmarks' text prompts. Issue: #768 (the vLLM uplift, which re-baselines the evals).
 # Until 2027-05-31.
 CVE-2026-114053 exp:2027-05-31
 GHSA-h3rc-6mm3-gc2m exp:2027-05-31
@@ -49,8 +49,8 @@ PYSEC-2026-4346 exp:2027-05-31
 # simulator among them). Not reachable: every advisory is in the LiteLLM proxy server
 # (its authentication, /prompts/test, /user/update, the MCP and guardrail endpoints,
 # vertex_ai_credentials of a proxy user). The harnesses use litellm as a client library
-# and none starts the proxy. Issue: #764 (follow-ups to open: the tau2-bench, MCPMark
-# and NeMo-Skills refreshes). Until 2027-05-31.
+# and none starts the proxy. Issues: #770 (tau2-bench and MCPMark refreshes) and #769
+# (the NeMo-Skills bump). Until 2027-05-31.
 CVE-2026-35029 exp:2027-05-31
 GHSA-53mr-6c8q-9789 exp:2027-05-31
 PYSEC-2026-2597 exp:2027-05-31
@@ -100,8 +100,8 @@ GHSA-g5ff-637f-6q2m exp:2027-05-31
 # writes: untrusted in principle, but the input is the benchmark's and the model's own,
 # in a job that exposes no service. The SciCode sandbox runs the model's code
 # against SciCode's pinned test data, and that code can do anything the sandbox allows
-# regardless of pillow. Issue: #764 (follow-ups to open: moviepy relaxing its pillow
-# cap for stirrup; the SciCode sandbox moving to Python 3.11 with NeMo-Skills).
+# regardless of pillow. Issue: #770 (moviepy relaxing its pillow cap for stirrup; the
+# SciCode sandbox moving to Python 3.11 with NeMo-Skills).
 # Until 2027-05-31.
 CVE-2026-112390 exp:2027-05-31
 GHSA-22hg-r758-rrw9 exp:2027-05-31
@@ -220,8 +220,8 @@ GHSA-78g4-xqwv-q3g8 exp:2027-05-31
 # PydanticBaseModel is gone), so the harness would not work as shipped. Not reachable:
 # only that MiniCPM handler calls it, to turn the benchmark's own function schemas into
 # code; the bfcl step runs the model through the OpenAI-compatible handlers and never
-# selects it. The advisories need attacker-written schemas or URLs. Issue: #764
-# (follow-up to open: a bfcl-eval release that lifts the pin). Until 2027-05-31.
+# selects it. The advisories need attacker-written schemas or URLs. Issue: #770
+# (a bfcl-eval release that lifts the pin). Until 2027-05-31.
 CVE-2026-54621 exp:2027-05-31
 GHSA-j884-q54q-mmx3 exp:2027-05-31
 PYSEC-2026-3561 exp:2027-05-31
@@ -254,8 +254,8 @@ PYSEC-2026-3557 exp:2027-05-31
 # Not reachable: the env only runs wmt24pp's COMET scorer, loading the pinned
 # Unbabel/XCOMET-XXL checkpoint from the HF cache. transformers' advisories need a
 # crafted checkpoint or chat template name (save_pretrained, LightGlue, remote code),
-# protobuf's a crafted JSON message. Issue: #764 (follow-up to open: a COMET release on
-# transformers 5). Until 2027-05-31.
+# protobuf's a crafted JSON message. Issue: #770 (a COMET release on transformers 5).
+# Until 2027-05-31.
 CVE-2026-0994 exp:2027-05-31
 GHSA-7gcm-g887-7qv7 exp:2027-05-31
 PYSEC-2026-1805 exp:2027-05-31
