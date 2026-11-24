@@ -8,135 +8,25 @@
 # and re-review it when the date passes -- an entry with no removal issue and no
 # expiry is a finding nobody is tracking.
 
+# ---- accepted exposure, no advisory id (#676) ----
+# The on-policy rollout server is vLLM's own OpenAI-compatible server: trl 1.x's
+# `trl vllm-serve` (run_vllm_serve.py) execs `vllm serve` with VLLM_SERVER_DEV_MODE=1 and
+# no --api-key. For the job's lifetime its routes are reachable, unauthenticated, from the
+# cluster network, including by other users' jobs: the trainer that calls it runs in a
+# different allocation (student-rollout-generator/skypilot/step-template.yaml). A caller
+# can generate with the student (/v1/completions, /v1/chat/completions, /tokenize), push
+# weights into it (/init_weight_transfer_engine, /update_weights: the served model is then
+# the caller's), call into the workers (/collective_rpc), pause, sleep or reset it, and
+# with --enable-scale-out (trl passes it on vLLM >= 0.30) use /inference/v1/generate.
+# --api-key would not close this: vLLM guards only /v1, /v2, /inference and /cohere paths,
+# and trl's client sends no key. Accepted for now: the server holds only the student this
+# build trained, and the exposure ends with the job. No vLLM 0.34.0 advisory remains
+# below; re-judge any future one against this server.
 
-# ---- accepted HIGH advisories in vllm 0.26.0 (#676) ----
-# vllm is pinned exactly at 0.26.0, the newest release that resolves with the image's other
-# pins (0.27 needs torch 2.13, 0.28 needs huggingface_hub>=1.27, 0.32 needs
-# transformers>=5.16; see pyproject.toml). The fixes below are in 0.27.0-0.32.0, so each
-# entry is removed by a vllm raise that moves one of those pins too. Until 2027-05-31 for
-# every entry in this section.
-#
-# Every id in this section was taken from the advisory records' aliases (osv.dev, the
-# database osv-scanner queries), CVE + GHSA + PYSEC per advisory, so trivy (which reports
-# by CVE) and osv-scanner (GHSA/PYSEC) both match. Do not derive one id from another.
-#
-# DRAFT, REVIEW WITH #676 PHASE 2. The old reachability argument ("the rollout server is
-# trl's own FastAPI app, which never mounts vLLM's /v1/* routes") does not hold for trl
-# 1.17.1: its `trl vllm-serve` (trl/scripts/vllm_serve.py, wrapped by run_vllm_serve.py)
-# now execs vLLM's own `vllm serve` with VLLM_SERVER_DEV_MODE=1, so the rollout server IS
-# vLLM's OpenAI-compatible server, unauthenticated unless --api-key is passed, and
-# reachable from the cluster network (student-rollout-generator/skypilot/step-template.yaml
-# runs the trainer in a different allocation). Which server phase 2 ships decides the first
-# group's reachability; the other groups do not depend on it.
-
-# Server request handling. Reachable through vLLM's OpenAI server if phase 2 runs it as
-# trl 1.17.1 does; to be re-judged against that server.
-# /v1/embeddings and /pooling accept negative token ids (pooling endpoints; fixed in 0.28.0).
-CVE-2026-93592
-GHSA-25q3-v2hm-8vpf
-PYSEC-2026-3997
-# Rust frontend: Gemma4UnifiedParser DoS (fixed in 0.27.0).
-CVE-2026-103241
-PYSEC-2026-4186
-# Rust frontend: unbounded Prometheus label cardinality from raw HTTP method tokens (0.30.0).
-CVE-2026-105759
-GHSA-5fj9-pfhr-6j48
-PYSEC-2026-4325
-# Remote/inline media fetched in full before the size and per-prompt limits apply (0.30.0).
-CVE-2026-100650
-GHSA-p6g9-7v3x-m8mv
-PYSEC-2026-4184
-# Shared cache-key collisions through EXIF ImageID or cache_salt (0.31.0).
-CVE-2026-114054
-GHSA-rh6f-3x46-j33q
-PYSEC-2026-4362
-
-# Not reachable: multimodal models or processors only. The student is a text-only Granite
-# model, so no image/audio/video processor runs.
-# mm_processor_kwargs.code_revision selects remote processor code (needs a processor with
-# dynamic auto_map and --trust-remote-code; fixed in 0.31.0).
-CVE-2026-114053
-GHSA-h3rc-6mm3-gc2m
-# mm_processor_kwargs DoS in multimodal image processors (0.31.0).
-CVE-2026-114055
-GHSA-gx7p-2j49-hfq4
-# Forged shared-memory addresses in multimodal features, scale-out mm caching (0.32.0).
-CVE-2026-115912
-GHSA-6757-hggm-hp2w
-PYSEC-2026-4345
-# ImageMediaIO lets Pillow pick any decoder (0.32.0).
-CVE-2026-115915
-GHSA-h3rc-j82p-2c3h
-PYSEC-2026-4346
-# MOSS-Audio processor cache grows per mm_processor_kwargs value, via /tokenize (0.31.0).
-CVE-2026-114052
-GHSA-823j-m4cj-hmjf
-PYSEC-2026-4361
-
-# Not reachable: disaggregated serving (NIXL connector, KV transfer, P2P offload), which the
-# rollout server never configures.
-CVE-2026-94622
-PYSEC-2026-4004
-CVE-2026-94623
-PYSEC-2026-4005
-CVE-2026-94626
-PYSEC-2026-4008
-CVE-2026-94624
-GHSA-frvg-qw88-hww9
-PYSEC-2026-4006
-CVE-2026-93436
-PYSEC-2026-3996
-# Inconsistent multimodal metadata to the disaggregated /inference/v1/generate endpoint
-# crashes Qwen2.5-VL position construction (0.30.0).
-CVE-2026-116178
-GHSA-34qw-q2h2-jp3m
-PYSEC-2026-4353
-
-# Model loading: reachable only through a model this build does not serve. The server loads
-# the student this build trained, from this build's own outputs.
-# LlavaOnevision2 processor loader ignores trust_remote_code (0.28.0).
-CVE-2026-90553
-GHSA-3c86-2m5g-59q7
-PYSEC-2026-3985
-# --revision / --code-revision not propagated for FunAudioChat and Tarsier2 artifacts (0.28.0).
-CVE-2026-100653
-GHSA-hhv2-872h-628q
-PYSEC-2026-4324
-
-# ---- accepted HIGH advisories outside #676 (tracked in #752) ----
-# #676 (the vLLM upgrade) does not remove these: each needs its own raise, named per entry
-# and tracked in #752. Until 2027-05-31 for every entry below; delete an entry
-# when its raise lands, not when #676 does.
-
-# fsspec 2025.10.0 (fixed in 2026.6.0): datasets==4.8.5 caps fsspec[http]<=2026.2.0, so
-# the raise is unsatisfiable under the datasets pin. Removed by raising datasets to a
-# release whose cap admits fsspec>=2026.6.0 (5.1.0 or later, which also needs
-# huggingface_hub>=1.31; #752).
-CVE-2026-104851
-GHSA-27vj-qcqg-25rc
-PYSEC-2026-4217
-
-# transformers 5.8.0 (fixed in 5.10.0): pinned exactly for the 5.x properties the
-# vendored trainer depends on; #676 keeps it at 5.8.0. Removed by a tested transformers
-# raise (#752).
-CVE-2026-9856
-GHSA-xrqw-3rrv-vx5w
-PYSEC-2026-3929
-
-# Transitive dependencies:
-
-# filelock 3.32.4: the fix is 4.2.1, a major-version move. filelock 4.x changes
-# UnixFileLock's behaviour on shared lock directories (4.2.12 refuses, with
-# PermissionError, a lock file another account owns under a sticky parent), and these
-# steps share one HF cache across accounts on group-shared filesystems. That move belongs
-# in its own change, tested on the cluster (#752); pyproject.toml holds it with a
-# filelock<4 constraint. Not reachable: the flaw is only in ReadWriteLock /
-# AsyncReadWriteLock (the SQLite-backed lock, added in 3.20.4), and nothing in the image
-# uses them -- no module in the venv outside filelock itself names ReadWriteLock (checked
-# in the vllm 0.26.0 / torch 2.11.0 image, 2026-11-23), and the distill code has none.
-# Until 2027-05-31.
-CVE-2026-112940
-GHSA-v4x8-3wr5-3wq8
+# ---- accepted HIGH advisories (tracked in #752) ----
+# The vllm 0.34.0 lock (#676) has no HIGH or CRITICAL advisory in osv: vllm, torch,
+# transformers, accelerate, fsspec, filelock and setuptools all moved to fixed releases,
+# and ray is no longer installed. What remains is what only trivy sees, inside a binary.
 
 # wandb-core, the Go binary inside the wandb 0.28.2 wheel (Go stdlib 1.26.5, grpc 1.83.0,
 # x/net 0.57.0); trivy reports these, osv-scanner cannot see inside the binary. wandb is
@@ -144,7 +34,7 @@ GHSA-v4x8-3wr5-3wq8
 # turns tracking on. wandb is this image's own exact pin (no other package caps it); the
 # raise is #752.
 # Ids from trivy's report on the c1069dfd and 173af080 images, unchanged on the #676 dev
-# image. Until 2027-05-31.
+# images. Until 2027-05-31.
 CVE-2026-111943
 CVE-2026-33818
 CVE-2026-39821
