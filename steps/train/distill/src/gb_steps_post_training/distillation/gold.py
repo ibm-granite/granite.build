@@ -352,9 +352,11 @@ if __name__ == "__main__":
     # `dtype`, not `torch_dtype`: trl 1.x's create_model_from_path reads only `dtype` and
     # defaults it to "float32" (trl/trainer/utils.py), which would override torch_dtype.
     # The student revision is ModelConfig's: trl 1.x removed GOLDConfig.student_model_revision.
+    # trust_remote_code is the training config's: trl 1.x moved it off ModelConfig (onto
+    # SFTConfig, which GOLDConfig extends), so `model_args.trust_remote_code` raised.
     model_kwargs = dict(
         revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
         attn_implementation=model_args.attn_implementation,
         dtype=model_args.dtype,
         use_cache=False if training_args.gradient_checkpointing else True,
@@ -372,7 +374,7 @@ if __name__ == "__main__":
         )
     teacher_model_kwargs = dict(
         revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
         attn_implementation=custom_args.teacher_attn_implementation
         or model_args.attn_implementation,
         dtype=model_args.dtype,
@@ -384,7 +386,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
         padding_side="left",
     )
     verify_fast_tokenizer(
@@ -401,7 +403,7 @@ if __name__ == "__main__":
     ), "--teacher_model_name_or_path missing"
     teacher_tokenizer = AutoTokenizer.from_pretrained(
         training_args.teacher_model_name_or_path,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
     )
     verify_fast_tokenizer(
         teacher_tokenizer,
@@ -562,7 +564,7 @@ if __name__ == "__main__":
 
         def _log_config(label, model_path):
             cfg = AutoConfig.from_pretrained(
-                model_path, trust_remote_code=model_args.trust_remote_code
+                model_path, trust_remote_code=training_args.trust_remote_code
             )
             print(f"\n{'='*60}")
             print(f"  {label} config: {model_path}")
@@ -578,7 +580,9 @@ if __name__ == "__main__":
 
     if training_args.eval_strategy != "no":
         generation_config = GenerationConfig(
-            max_new_tokens=training_args.max_new_tokens,
+            # GOLDConfig has no max_new_tokens (neither 0.26.2 nor 1.x); its completion
+            # budget is max_completion_length.
+            max_new_tokens=training_args.max_completion_length,
             do_sample=True,
             temperature=training_args.temperature,
         )

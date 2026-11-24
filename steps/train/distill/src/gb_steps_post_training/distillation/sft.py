@@ -1647,9 +1647,11 @@ if __name__ == "__main__":
     # Model & Tokenizer
     ################
     quantization_config = get_quantization_config(model_args)
+    # trust_remote_code is SFTConfig's: trl 1.x moved it off ModelConfig, so
+    # `model_args.trust_remote_code` raised AttributeError on every rank.
     model_kwargs = dict(
         revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
         attn_implementation=model_args.attn_implementation,
         # `dtype`, not `torch_dtype`: trl 1.x's create_model_from_path reads only `dtype` and
         # defaults it to "float32" (trl/trainer/utils.py:1342), which would override
@@ -1665,7 +1667,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
         padding_side="right",
     )
     verify_fast_tokenizer(
@@ -1698,7 +1700,7 @@ if __name__ == "__main__":
             precompute_tok_path = meta["tokenizer_name_or_path"]
             precompute_tok = AutoTokenizer.from_pretrained(
                 precompute_tok_path,
-                trust_remote_code=model_args.trust_remote_code,
+                trust_remote_code=training_args.trust_remote_code,
             )
             verify_fast_tokenizer(
                 precompute_tok,
