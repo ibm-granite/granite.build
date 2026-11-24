@@ -125,12 +125,27 @@ environment_configs:
             export TMP="$TMPDIR"
             export TEMP="$TMPDIR"
 
+            # The results search below is anchored at /${EXPERIMENT}/. An empty value
+            # matches nothing, and a glob character such as '*' reaches find -path and
+            # matches other experiments in the shared bucket. These checks fail the
+            # step at creation, before the cluster is provisioned; the bash checks
+            # after the export are a backstop with the same rules.
+            {%- set experiment = config.sage_eval_config.experiment | string %}
+            {%- if not experiment %}{{ raise_error("sage-eval: sage_eval_config.experiment is required; the results search is anchored at /<experiment>/.") }}{% endif %}
+            {%- for segment in experiment.split("/") %}
+            {%- if segment in ["", ".", ".."] or segment.strip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") %}{{ raise_error("sage-eval: sage_eval_config.experiment '" ~ experiment ~ "' must be one or more '/'-separated names of letters, digits, '.', '_' and '-', with no '.' or '..' name.") }}{% endif %}
+            {%- endfor %}
+
             # Standard vars consumed by sage gb_scripts
             export MODEL_PATH="{{ config.sage_eval_config.model_path }}"
             export EXPERIMENT="{{ config.sage_eval_config.experiment }}"
-            # The results search below is anchored at /${EXPERIMENT}/; an empty value
-            # would match nothing and fail only after a full eval.
             [ -n "$EXPERIMENT" ] || { echo "ERROR: sage_eval_config.experiment is empty"; exit 1; }
+            case "/$EXPERIMENT/" in
+              *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*|*//*|*/./*|*/../*)
+                echo "ERROR: sage_eval_config.experiment '$EXPERIMENT' must be one or more '/'-separated names of letters, digits, '.', '_' and '-', with no '.' or '..' name"
+                exit 1
+                ;;
+            esac
             export OUTPUT_BASE_PATH="{{ config.sage_eval_config.output_dir }}"
             export NUM_GPUS={{ config.sage_eval_config.num_gpus }}
             export BATCH_SIZE={{ config.sage_eval_config.batch_size }}

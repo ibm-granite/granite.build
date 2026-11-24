@@ -95,7 +95,7 @@ def _eval_and_emit_block(step: str) -> str:
     under the step's own shell options."""
     script = _run_script(step)
     lines = script.splitlines()
-    start = next(i for i, l in enumerate(lines) if "EVAL_START_MARKER=" in l)
+    start = next(i for i, line in enumerate(lines) if "EVAL_START_MARKER=" in line)
     _, end = _if_block(lines, start, 'if [ -n "$RESULT_FILE" ]')
     block = "\n".join(lines[start : end + 1])
     assert "{{" not in block and "{%" not in block, block
@@ -221,7 +221,7 @@ def _bcb_eval_block(step: str) -> str:
     """
     run = one_script(ENVS / step / "step.yaml", BCB_EVAL_CALL)
     lines = run.splitlines()
-    start = next(i for i, l in enumerate(lines) if l.strip() == BCB_EVAL_CALL)
+    start = next(i for i, line in enumerate(lines) if line.strip() == BCB_EVAL_CALL)
     block = "\n".join(lines[start:])
     assert "{{" not in block and "{%" not in block, block
     return block
@@ -348,3 +348,23 @@ def test_a_failed_log_write_does_not_fail_a_passing_eval(step, tmp_path):
     assert "DONE: ifeval" in result.stdout
     assert "count=0 names=" in result.stdout
     assert (output / "ifeval.done").exists()
+
+
+@pytest.mark.parametrize("step", GROUPED_STEPS)
+@pytest.mark.parametrize("eval_rc", [0, 7])
+def test_a_failed_log_write_is_reported(step, eval_rc, tmp_path):
+    """The step warns that the log did not reach the bucket, whatever the eval's
+    status."""
+    result, _ = _run_grouped(step, tmp_path, eval_rc=eval_rc, tee_fails=True)
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: writing" in result.stdout
+    assert "ifeval.log failed (tee exit code: 1)" in result.stdout
+
+
+@pytest.mark.parametrize("step", GROUPED_STEPS)
+@pytest.mark.parametrize("eval_rc", [0, 7])
+def test_a_successful_log_write_is_not_reported(step, eval_rc, tmp_path):
+    """No warning when tee writes the log."""
+    result, _ = _run_grouped(step, tmp_path, eval_rc=eval_rc)
+    assert result.returncode == 0, result.stderr
+    assert "WARNING" not in result.stdout

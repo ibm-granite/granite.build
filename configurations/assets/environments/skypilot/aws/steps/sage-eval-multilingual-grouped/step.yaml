@@ -114,11 +114,17 @@ environment_configs:
               # rc is the eval's own status. Under pipefail the pipeline's status is the
               # rightmost failure, which is tee's if the log write to the S3 mount fails.
               # PIPESTATUS still holds the condition's pipeline as the else branch starts.
+              # A failed log write does not fail the eval, but the log is then missing
+              # from the bucket, so the step says so.
               if bash /workspace/sage/sage/cluster/gb/scripts/${gb_script} \
                   2>&1 | tee ${OUTPUT_PATH}/${eval_name}.log; then
-                rc=0
+                st=(0 0)
               else
-                rc=${PIPESTATUS[0]}
+                st=("${PIPESTATUS[@]}")
+              fi
+              rc=${st[0]}
+              if [[ ${st[1]} -ne 0 ]]; then
+                echo "[$(date)] WARNING: writing ${OUTPUT_PATH}/${eval_name}.log failed (tee exit code: ${st[1]})"
               fi
               if [[ $rc -eq 0 ]]; then
                 echo "$(date)" > ${OUTPUT_PATH}/${eval_name}.done
