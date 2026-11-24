@@ -75,8 +75,10 @@ was ported from. Each difference is a defect found while porting, not a preferen
      (which never raises and records a dirty tree, which a bare `git rev-parse HEAD` does not).
 
 WHAT WAS KEPT DELIBERATELY, because it is right and non-obvious:
-  * TP within a node, DP across nodes, over a 2-D device mesh. transformers extracts mesh["tp"]
-    and only uses that submesh, so the "dp" axis costs nothing and lets each node own a data slice.
+  * TP within a node, one node per job (shard mode for more). Under transformers 5.8 this was a
+    2-D ("dp", "tp") mesh whose "tp" submesh transformers used; 5.16+ builds its own mesh over the
+    whole world, so the teacher is placed by teacher_load_kwargs and a multi-node rendezvous is
+    refused there.
   * The lm_head PROBE. Under tp_plan="auto" a column-sharded lm_head would give each rank a slice
     of the vocabulary, and topk over a slice returns rank-local ids that mean nothing. The probe
     compares the projection's output width against vocab_size and refuses rather than writing
@@ -806,6 +808,42 @@ def _ensure_process_group(torch, world_size, *, env=None, emit=print):
     return True
 
 
+def teacher_load_kwargs(dtype, *, tp_size: int, mesh_dp: int, device) -> dict:
+    """from_pretrained keywords that put the teacher on this rank's GPU(s).
+
+    transformers 5.16+ (the image has 5.20.2) turns a bare ``tp_plan`` into
+    ``DistributedConfig(tp_plan=..., tp_size=None)``, discards a caller's ``device_mesh``
+    and builds its own ``("pp", "fsdp", "tp")`` mesh over the WHOLE world
+    (modeling_utils.from_pretrained, distributed/mixin.prepare_distribute_model). At
+    tp_size 1 it returns before placing anything, so with ``tp_plan="auto"`` alone the
+    model stayed on the CPU: the teacher-logits build test (dev-676-5e931046, one GPU)
+    died in the lm_head probe with "mat2 is on cpu". transformers 5.8.0 placed the
+    shards on the given mesh even at TP 1.
+
+    So: one GPU per rank -> ``device_map`` to it; several -> ``DistributedConfig`` with
+    ``tp_size`` = this node's GPUs, which transformers lays over the world, i.e. this node.
+    A multi-node rendezvous (``mesh_dp > 1``) cannot be expressed that way any more (the
+    world would be dp x tp, and transformers' only data-parallel axis is FSDP), so it is
+    refused; the step runs one node per job (shard mode for more).
+    """
+    kwargs = dict(dtype=dtype, trust_remote_code=True)
+    if mesh_dp != 1:
+        raise RuntimeError(
+            f"a {mesh_dp}-node rendezvous is not supported with transformers 5.16+'s tensor "
+            "parallel loading (its mesh spans the whole world); run single-node jobs, with "
+            "--shard-count/--shard-index for more than one node."
+        )
+    if tp_size == 1:
+        kwargs["device_map"] = {"": device}
+    else:
+        from transformers import DistributedConfig
+
+        kwargs["distributed_config"] = DistributedConfig(
+            tp_plan="auto", tp_size=tp_size
+        )
+    return kwargs
+
+
 def run_precompute(args):
     """The GPU pass. Imports torch et al. HERE; see DTYPE_NAMES for why."""
     import torch
@@ -815,7 +853,6 @@ def run_precompute(args):
         verify_fast_tokenizer,
         verify_tokenizer_consistency,
     )
-    from torch.distributed.device_mesh import init_device_mesh
     from tqdm import tqdm
     from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
@@ -961,19 +998,15 @@ def run_precompute(args):
 
     torch_dtype = dtypes[args.dtype]
 
-    # ---- Teacher. 2-D mesh ("dp", "tp"): transformers uses mesh["tp"] for its collectives and
-    # never touches "dp", which is what lets each node process its own slice independently.
+    # ---- Teacher. Tensor parallel across this node's GPUs, placed by transformers.
     if rank == 0:
         print(f"Loading model: {args.teacher_model}")
     _ensure_process_group(torch, world_size)
-    mesh = init_device_mesh(
-        "cuda", (mesh_dp, local_world_size), mesh_dim_names=("dp", "tp")
-    )
-    model_kwargs = dict(
-        torch_dtype=torch_dtype,
-        trust_remote_code=True,
-        tp_plan="auto",
-        device_mesh=mesh,
+    model_kwargs = teacher_load_kwargs(
+        torch_dtype,
+        tp_size=local_world_size,
+        mesh_dp=mesh_dp,
+        device=state.device,
     )
     try:
         model = AutoModelForCausalLM.from_pretrained(
@@ -998,9 +1031,7 @@ def run_precompute(args):
                 flush=True,
             )
         model = AutoModelForCausalLM.from_pretrained(args.teacher_model, **model_kwargs)
-    model = (
-        model.eval()
-    )  # NOT .to(device): tp_plan="auto" has already placed the shards
+    model = model.eval()  # NOT .to(device): teacher_load_kwargs has placed it
     attn_impl = getattr(model.config, "_attn_implementation", "unknown")
 
     vocab_size = int(model.config.vocab_size)
