@@ -1,38 +1,39 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The hub-kernel pins: what they pin, and that the loaders call them.
+"""The hub-kernel pins: what they pin, in what order they load, and that the loaders call them.
 
-mamba-ssm is pinned because transformers 5.8.0's default mapping resolves it at
-``version=1`` -- the kernels-community repo's v1 branch -- whose build imports
-``GreedySearchDecoderOnlyOutput``, a symbol transformers 5.x renamed. Every fresh
-hybrid (granitemoehybrid) model load dies on that import mid-load. Every revision
-up to and including v0.0.3 has it (measured 2026-11-20 on BlueVela, image 91cb624c,
-teacher-divergence build test; an earlier reading that v0.0.3 was clean was wrong,
-see c6f3a799). ``v0.0.4`` was the compatible revision under torch 2.8 / cu128. The
-broken import is per build variant: the torch 2.11 / CUDA 13 image (#676) pins
-7e8bf9ea, the oldest v1-branch commit with a torch211-cxx11-cu130 build, whose
-build imports the transformers 5.x name.
+transformers 5.16+ binds the Mamba2 mixer functions when the granitemoehybrid modeling
+module is imported, from whatever ``causal_conv1d`` / ``mamba_ssm`` package is
+importable then, and falls back to slow PyTorch code (which raises on packed sequences)
+otherwise. ``prepare_hub_kernels`` loads both kernels from the kernel-type Hub repos at
+pinned commits (#763) and registers them under those package names first.
 
-causal-conv1d is pinned for revision AGREEMENT: transformers resolves it at the
-v1 branch while the preflight's unpinned fallback is ``main``, and under
-``HF_HUB_OFFLINE=1`` the trainer cannot resolve the uncached ref (measured
-2026-11-20, image 939685f2: student-sft failed with ``OfflineModeIsEnabled`` on
-causal-conv1d/refs seconds after the preflight downloaded the repo at ``main``).
+Two lessons from the transformers 5.8.0 era still hold and stay pinned here:
 
-See ``hub_kernel_pins.py`` for the full measurements.
+- LOAD ORDER. The model-type mamba-ssm builds imported ``causal_conv1d`` at module load;
+  loading one before the legacy names existed bound ``causal_conv1d_cuda = None`` for good
+  and every hybrid load died (student-sft build test, BlueVela, image 173af080,
+  2026-11-20). causal-conv1d must be registered before mamba-ssm is loaded.
+- REVISION AGREEMENT. Under ``HF_HUB_OFFLINE=1`` the trainer can only read the cache entry
+  the preflight wrote (student-sft failed with ``OfflineModeIsEnabled`` on
+  causal-conv1d/refs when the two disagreed; image 939685f2). gold-kernels.sh must fetch
+  with the same ``kernel_spec`` the loader uses.
 
-The mapping tests run against an injected stand-in module so they cover the pin's
-logic in any environment; one test additionally runs against the real transformers
-when it is installed (the repo venv does not ship it -- the step images do).
+See ``hub_kernel_pins.py`` for the full reasoning. The loader tests run against injected
+stand-ins for ``kernels`` and transformers, so they cover the logic in any environment;
+two tests additionally read the real transformers when it is installed (the repo venv
+does not ship it -- the step images do).
 """
 
+import importlib.util
 import sys
 import types
 from pathlib import Path
 
 import pytest
+from gb_steps_post_training.distillation import hub_kernel_pins
 from gb_steps_post_training.distillation.hub_kernel_pins import (
     PINNED_KERNEL_REVISIONS,
-    pin_hub_kernels,
+    kernel_spec,
     pinned_revision,
     prepare_hub_kernels,
 )
@@ -45,153 +46,57 @@ _ENTRYPOINTS = [
     _SRC / "preflight-check" / "skypilot" / "src" / "distill_probe.py",
 ]
 _SHELL = _SRC / "images" / "gpu" / "shell" / "gold-kernels.sh"
+_MODELING = "transformers.models.granitemoehybrid.modeling_granitemoehybrid"
 
 
-def _default_mapping() -> dict:
-    """A stand-in for transformers 5.8.0's default mapping (verbatim shapes)."""
-    return {
-        "causal-conv1d": {"repo_id": "kernels-community/causal-conv1d", "version": 1},
-        "mamba-ssm": {"repo_id": "kernels-community/mamba-ssm", "version": 1},
-        "falcon_mamba-ssm": {"repo_id": "kernels-community/mamba-ssm", "version": 1},
-        "sonic-moe": {
-            "repo_id": "kernels-community/sonic-moe",
-            "revision": "ep-support",
-        },
-    }
-
-
-@pytest.fixture()
-def fake_mapping(monkeypatch):
-    """Inject a stand-in transformers.integrations.hub_kernels and return its mapping."""
-    module = types.ModuleType("transformers.integrations.hub_kernels")
-    module._HUB_KERNEL_MAPPING = _default_mapping()
-    # The pin imports `from transformers.integrations import hub_kernels`, so the
-    # stand-in needs its parent packages in sys.modules too, or that import raises
-    # ImportError and the pin no-ops.
-    transformers = types.ModuleType("transformers")
-    integrations = types.ModuleType("transformers.integrations")
-    integrations.hub_kernels = module
-    transformers.integrations = integrations
-    monkeypatch.setitem(sys.modules, "transformers", transformers)
-    monkeypatch.setitem(sys.modules, "transformers.integrations", integrations)
-    monkeypatch.setitem(sys.modules, "transformers.integrations.hub_kernels", module)
-    return module._HUB_KERNEL_MAPPING
-
-
-def test_pin_rewrites_mamba_ssm_onto_the_pinned_revision(fake_mapping):
-    assert fake_mapping["mamba-ssm"].get("version") == 1  # the broken default
-
-    pin_hub_kernels()
-
-    entry = fake_mapping["mamba-ssm"]
-    assert entry["revision"] == PINNED_KERNEL_REVISIONS["kernels-community/mamba-ssm"]
-    # version must be GONE, not just overridden: get_kernel refuses a call that
-    # passes both revision and version.
-    assert "version" not in entry
-
-
-def test_pin_covers_the_falcon_variant_of_the_same_repo(fake_mapping):
-    pin_hub_kernels()
-
-    entry = fake_mapping["falcon_mamba-ssm"]
-    assert entry["revision"] == PINNED_KERNEL_REVISIONS["kernels-community/mamba-ssm"]
-    assert "version" not in entry
-
-
-def test_pin_rewrites_causal_conv1d_onto_the_pinned_revision(fake_mapping):
-    assert fake_mapping["causal-conv1d"].get("version") == 1  # the v1-branch default
-
-    pin_hub_kernels()
-
-    entry = fake_mapping["causal-conv1d"]
-    assert (
-        entry["revision"] == PINNED_KERNEL_REVISIONS["kernels-community/causal-conv1d"]
-    )
-    # version must be GONE for the same reason as mamba-ssm: get_kernel refuses
-    # a call that passes both revision and version.
-    assert "version" not in entry
-
-
-def test_pin_leaves_unpinned_kernels_alone(fake_mapping):
-    pin_hub_kernels()
-
-    assert fake_mapping["sonic-moe"] == {
-        "repo_id": "kernels-community/sonic-moe",
-        "revision": "ep-support",
-    }
-
-
-def test_pin_is_idempotent(fake_mapping):
-    pin_hub_kernels()
-    first = dict(fake_mapping["mamba-ssm"])
-    pin_hub_kernels()
-    assert fake_mapping["mamba-ssm"] == first
-
-
-def test_pin_respects_a_revision_transformers_set_itself(fake_mapping):
-    fake_mapping["mamba-ssm"]["revision"] = "their-own-fix"
-
-    pin_hub_kernels()
-
-    # setdefault, not assignment: a transformers that pins its own revision has
-    # done the work, and this pin must not fight it.
-    assert fake_mapping["mamba-ssm"]["revision"] == "their-own-fix"
-
-
-def test_pin_is_a_no_op_without_transformers(monkeypatch):
-    """CPU-only entrypoints may run where transformers is absent; the pin must not raise."""
-    monkeypatch.setitem(sys.modules, "transformers.integrations.hub_kernels", None)
-    pin_hub_kernels()  # must not raise
-
-
-def test_pin_against_the_real_transformers():
-    """The same assertions against the installed transformers, when there is one.
-
-    The repo venv does not ship transformers (the step images do); this runs on a
-    machine that has it and skips elsewhere.
-    """
-    pytest.importorskip("transformers")
-    from transformers.integrations import hub_kernels
-
-    before = {k: dict(v) for k, v in hub_kernels._HUB_KERNEL_MAPPING.items()}
-    try:
-        pin_hub_kernels()
-        entry = hub_kernels._HUB_KERNEL_MAPPING["mamba-ssm"]
-        assert (
-            entry.get("revision")
-            == PINNED_KERNEL_REVISIONS["kernels-community/mamba-ssm"]
-        )
-        assert "version" not in entry
-        entry = hub_kernels._HUB_KERNEL_MAPPING["causal-conv1d"]
-        assert (
-            entry.get("revision")
-            == PINNED_KERNEL_REVISIONS["kernels-community/causal-conv1d"]
-        )
-        assert "version" not in entry
-    finally:
-        hub_kernels._HUB_KERNEL_MAPPING.clear()
-        hub_kernels._HUB_KERNEL_MAPPING.update(before)
-
-
-def test_pinned_revision_helper():
-    # Both pinned by commit SHA: a branch or tag can move. mamba-ssm's is the oldest
-    # v1-branch commit with a torch211-cxx11-cu130-x86_64-linux build.
+def test_pinned_revisions():
+    # Commit SHAs in the kernel-type repos: a branch moves, a commit does not.
+    # mamba-ssm: oldest v3 commit with a torch214-cxx11-cu130-x86_64-linux build.
+    # causal-conv1d: oldest v1 commit with that build.
     assert (
         pinned_revision("kernels-community/mamba-ssm")
-        == "7e8bf9ea951cf17e161bd82e44ecf2d95d8bc484"
+        == "20b2508ad12ae40260291539bf45183000451850"
     )
     assert (
         pinned_revision("kernels-community/causal-conv1d")
-        == "6e9a58272220a363dc50e59cba737abcedd7b59f"
+        == "adc40e4163fbac573adb44ea47b2c8d9080f13bc"
     )
-    # Unlisted repos keep their default resolution.
     assert pinned_revision("kernels-community/flash-attn2") == "main"
+
+
+@pytest.fixture()
+def fake_fa_versions(monkeypatch):
+    """A stand-in transformers.modeling_flash_attention_utils with its version table."""
+    module = types.ModuleType("transformers.modeling_flash_attention_utils")
+    module.FLASH_ATTN_KERNEL_VERSIONS = {"kernels-community/flash-attn2": 4}
+    monkeypatch.setitem(
+        sys.modules, "transformers.modeling_flash_attention_utils", module
+    )
+    return module
+
+
+def test_kernel_spec_uses_the_pin(fake_fa_versions):
+    for repo, sha in PINNED_KERNEL_REVISIONS.items():
+        assert kernel_spec(repo) == {"revision": sha}
+
+
+def test_kernel_spec_follows_transformers_for_unpinned_repos(fake_fa_versions):
+    # flash-attn2 is loaded by transformers itself, at the major version it names;
+    # the prefetch must fetch that, not main.
+    assert kernel_spec("kernels-community/flash-attn2") == {"version": 4}
+    assert kernel_spec("kernels-community/something-else") == {"revision": "main"}
+
+
+def test_kernel_spec_without_transformers(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "transformers.modeling_flash_attention_utils", None
+    )
+    assert kernel_spec("kernels-community/flash-attn2") == {"revision": "main"}
 
 
 @pytest.mark.parametrize("path", _ENTRYPOINTS, ids=lambda p: p.name)
 def test_every_hybrid_model_entrypoint_calls_the_pin(path):
-    """The pin (and the legacy-name shim around it) only helps if it runs before
-    the first model load.
+    """The registration only helps if it runs before the first model load.
 
     These four entrypoints instantiate hybrid (granitemoehybrid) models; the
     teacher-logits step loads only the dense teacher, and vLLM resolves its own
@@ -206,99 +111,222 @@ def test_every_hybrid_model_entrypoint_calls_the_pin(path):
 
 
 @pytest.fixture()
-def fake_lazy_loader(fake_mapping, monkeypatch):
-    """A stand-in lazy_load_kernel on the stand-in hub_kernels module.
+def fake_kernels(monkeypatch):
+    """A stand-in ``kernels.get_kernel`` that records every load, in order.
 
-    Records which kernels prepare_hub_kernels asks for, and returns a fake hub
-    causal-conv1d build exposing the new cpp_functions-style interface.
+    Returns hub-build stand-ins: causal-conv1d with the cpp_functions-style
+    interface, mamba-ssm with the scan ops.
     """
     loaded = []
     iface = types.ModuleType("causal_conv1d_interface")
     iface.causal_conv1d_fwd_function = lambda *a: "fwd"
     iface.causal_conv1d_bwd_function = lambda *a: "bwd"
-    cc1d = types.ModuleType("hub_causal_conv1d_abc123")
+    cc1d = types.ModuleType("causal_conv1d_hub_abc123")
     cc1d.causal_conv1d_interface = iface
+    cc1d.causal_conv1d_fn = lambda *a: "conv"
+    mamba = types.ModuleType("mamba_ssm_hub_def456")
+    mamba.mamba_chunk_scan_combined = lambda *a: "scan"
 
-    def lazy_load_kernel(name):
-        loaded.append(name)
-        return cc1d if name == "causal-conv1d" else types.ModuleType(name)
-
-    # A stand-in kernels package too: the 173af080 pre-load bypassed
-    # lazy_load_kernel and went through kernels.utils.install_kernel directly.
-    def install_kernel(repo_id, **kw):
-        loaded.append(f"install_kernel:{repo_id}")
-        return repo_id.split("/")[-1], f"/cache/{repo_id}"
-
-    def _import_from_path(package_name, variant_path):
-        loaded.append(f"import_from_path:{package_name}")
-        return types.ModuleType(package_name)
+    def get_kernel(repo_id, **kw):
+        # The load order is the regression: record what was registered at the time.
+        loaded.append((repo_id, kw, "causal_conv1d" in sys.modules))
+        return cc1d if repo_id.endswith("causal-conv1d") else mamba
 
     kernels_pkg = types.ModuleType("kernels")
-    kernels_utils = types.ModuleType("kernels.utils")
-    kernels_utils.install_kernel = install_kernel
-    kernels_utils._import_from_path = _import_from_path
-    kernels_pkg.utils = kernels_utils
+    kernels_pkg.get_kernel = get_kernel
     monkeypatch.setitem(sys.modules, "kernels", kernels_pkg)
-    monkeypatch.setitem(sys.modules, "kernels.utils", kernels_utils)
-
-    hub_kernels = sys.modules["transformers.integrations.hub_kernels"]
-    hub_kernels._KERNEL_MODULE_MAPPING = {}
-    monkeypatch.setattr(
-        hub_kernels, "lazy_load_kernel", lazy_load_kernel, raising=False
+    # A stand-in torch that reports a CUDA device, so the loader runs on any test host.
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: True)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    for name in (
+        "causal_conv1d",
+        "causal_conv1d.causal_conv1d_interface",
+        "mamba_ssm",
+        _MODELING,
+    ):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    # Pinned repos never consult transformers; keep the real one out of the way.
+    monkeypatch.setitem(
+        sys.modules, "transformers.modeling_flash_attention_utils", None
     )
-    monkeypatch.delitem(sys.modules, "causal_conv1d", raising=False)
-    monkeypatch.delitem(
-        sys.modules, "causal_conv1d.causal_conv1d_interface", raising=False
-    )
-    return loaded, cc1d, iface
+    yield loaded, cc1d, iface, mamba
+    for name in ("causal_conv1d", "causal_conv1d.causal_conv1d_interface", "mamba_ssm"):
+        sys.modules.pop(name, None)
 
 
-def test_prepare_hub_kernels_loads_nothing_but_causal_conv1d(fake_lazy_loader):
-    """The regression this pins: mamba-ssm's build imports causal_conv1d at module
-    load, so anything that loads mamba-ssm before the legacy names exist binds
-    causal_conv1d_cuda = None for good. On the 173af080 image a cache pre-load did
-    exactly that and every hybrid load died (student-sft build test, BlueVela,
-    2026-11-20). prepare_hub_kernels must load causal-conv1d and nothing else."""
-    loaded, _, _ = fake_lazy_loader
-
-    prepare_hub_kernels()
-
-    assert loaded == ["causal-conv1d"], (
-        "prepare_hub_kernels loaded more than causal-conv1d's lazy load: "
-        f"{loaded}. Loading mamba-ssm before the legacy names exist breaks every "
-        "hybrid load; see the NO CACHE PRE-LOAD note in hub_kernel_pins.py."
-    )
-    hub_kernels = sys.modules["transformers.integrations.hub_kernels"]
-    assert hub_kernels._KERNEL_MODULE_MAPPING == {}
-
-
-def test_prepare_hub_kernels_registers_the_legacy_causal_conv1d_names(
-    fake_lazy_loader,
+def test_prepare_hub_kernels_registers_causal_conv1d_before_loading_mamba_ssm(
+    fake_kernels,
 ):
-    """The modeling code asserts on the legacy causal_conv1d_cuda object; the hub
-    build only has the new interface (measured 2026-11-20, image 2990684b, student-sft
-    build test)."""
-    _, cc1d, iface = fake_lazy_loader
+    """The 173af080 regression, restated for the 5.16+ loader: causal-conv1d is loaded
+    and registered first, mamba-ssm second, and nothing else is loaded."""
+    loaded, _, _, _ = fake_kernels
 
     prepare_hub_kernels()
 
+    assert [repo for repo, _, _ in loaded] == [
+        "kernels-community/causal-conv1d",
+        "kernels-community/mamba-ssm",
+    ], f"unexpected load order or extra loads: {loaded}"
+    # causal_conv1d was not registered when it was loaded, and was when mamba-ssm was.
+    assert [registered for _, _, registered in loaded] == [False, True]
+
+
+def test_prepare_hub_kernels_loads_the_pinned_revisions(fake_kernels):
+    loaded, _, _, _ = fake_kernels
+
+    prepare_hub_kernels()
+
+    for repo, kw, _ in loaded:
+        assert kw["revision"] == PINNED_KERNEL_REVISIONS[repo]
+        assert "version" not in kw  # get_kernel refuses both
+
+
+def test_prepare_hub_kernels_registers_the_package_names(fake_kernels):
+    _, cc1d, _, mamba = fake_kernels
+
+    prepare_hub_kernels()
+
+    # transformers' fallback decorators import exactly these names.
     assert sys.modules["causal_conv1d"] is cc1d
+    assert sys.modules["mamba_ssm"] is mamba
+
+
+def test_prepare_hub_kernels_registers_the_legacy_causal_conv1d_names(fake_kernels):
+    """Older modeling code and the model-type mamba-ssm builds asserted on the legacy
+    causal_conv1d_cuda object; the hub build only has the new interface (measured
+    2026-11-20, image 2990684b, student-sft build test)."""
+    _, _, iface, _ = fake_kernels
+
+    prepare_hub_kernels()
+
     assert sys.modules["causal_conv1d.causal_conv1d_interface"] is iface
     assert iface.causal_conv1d_cuda.causal_conv1d_fwd() == "fwd"
     assert iface.causal_conv1d_cuda.causal_conv1d_bwd() == "bwd"
 
 
-def test_the_shell_preflight_reads_the_same_pin():
-    """gold-kernels.sh probes and prefetches the revision the trainer will resolve.
+def test_prepare_hub_kernels_is_idempotent(fake_kernels):
+    loaded, _, _, _ = fake_kernels
 
-    If the shell hardcoded a different revision than the Python pin, the out-of-band
+    prepare_hub_kernels()
+    prepare_hub_kernels()
+
+    assert len(loaded) == 2
+
+
+def test_prepare_hub_kernels_leaves_an_installed_package_alone(fake_kernels):
+    loaded, _, _, _ = fake_kernels
+    real = types.ModuleType("causal_conv1d")
+    sys.modules["causal_conv1d"] = real
+
+    prepare_hub_kernels()
+
+    assert sys.modules["causal_conv1d"] is real
+    assert [repo for repo, _, _ in loaded] == ["kernels-community/mamba-ssm"]
+
+
+def test_prepare_hub_kernels_refuses_after_the_modeling_import(fake_kernels):
+    """Too late is silent in transformers (the decorators already bound the PyTorch
+    fallback), so it must be loud here."""
+    loaded, _, _, _ = fake_kernels
+    sys.modules[_MODELING] = types.ModuleType(_MODELING)
+    try:
+        with pytest.raises(RuntimeError, match="before prepare_hub_kernels"):
+            prepare_hub_kernels()
+        assert loaded == []
+    finally:
+        sys.modules.pop(_MODELING, None)
+
+
+def test_prepare_hub_kernels_is_a_no_op_without_kernels(monkeypatch):
+    """CPU-only entrypoints may run where kernels is absent; the call must not raise."""
+    monkeypatch.setitem(sys.modules, "kernels", None)
+    prepare_hub_kernels()  # must not raise
+
+
+def test_the_real_transformers_imports_these_package_names():
+    """The registration targets transformers' fallback imports by name. Read the real
+    modeling source (without importing it, which would bind the decorators in this
+    process) and check the names have not moved."""
+    pytest.importorskip("transformers")
+    spec = importlib.util.find_spec(_MODELING)
+    assert spec is not None and spec.origin
+    src = Path(spec.origin).read_text(encoding="utf-8")
+    assert (
+        'use_kernel_func_from_hub_with_fallback("causal_conv1d_fn", "causal_conv1d")'
+        in src
+    )
+    assert (
+        'use_kernel_func_from_hub_with_fallback("mamba_chunk_scan_combined", "mamba_ssm")'
+        in src
+    )
+    # The 5.8.0-era mapping entries are gone, which is why the mapping rewrite was removed.
+    from transformers.integrations import hub_kernels
+
+    assert "mamba-ssm" not in getattr(hub_kernels, "_HUB_KERNEL_MAPPING", {})
+
+
+def test_the_real_transformers_names_a_flash_attn2_version():
+    """kernel_spec follows transformers for flash-attn2; that only works while
+    transformers says which major version it loads."""
+    pytest.importorskip("transformers")
+    from transformers.modeling_flash_attention_utils import FLASH_ATTN_KERNEL_VERSIONS
+
+    assert isinstance(
+        FLASH_ATTN_KERNEL_VERSIONS.get("kernels-community/flash-attn2"), int
+    )
+    assert (
+        hub_kernel_pins._transformers_kernel_version("kernels-community/flash-attn2")
+        is not None
+    )
+
+
+def test_the_shell_preflight_reads_the_same_pin():
+    """gold-kernels.sh probes and prefetches what the loader will resolve.
+
+    If the shell fetched a different revision than the Python loader, the out-of-band
     prefetch would warm a cache entry the trainer never reads, and the first hybrid
-    load would download inside the allocation -- exactly what the preflight exists
+    load would fail offline inside the allocation -- exactly what the preflight exists
     to prevent.
     """
     src = _SHELL.read_text(encoding="utf-8")
-    assert "pinned_revision(repo)" in src
+    assert "kernel_spec(repo)" in src
     assert 'revision="main"' not in src, (
         "gold-kernels.sh hardcodes revision=main; it must resolve through "
-        "pinned_revision() so the prefetch matches the trainer's pin"
+        "kernel_spec() so the prefetch matches the trainer's pin"
     )
+    assert "kernels.utils" not in src, "kernels >= 0.14 has no kernels.utils module"
+
+
+def test_prepare_hub_kernels_after_the_modeling_import_is_fine_once_registered(
+    fake_kernels,
+):
+    """A second entrypoint module in the same process calls it again after a model load:
+    nothing left to register, so nothing to refuse."""
+    loaded, _, _, _ = fake_kernels
+    prepare_hub_kernels()
+    sys.modules[_MODELING] = types.ModuleType(_MODELING)
+    try:
+        prepare_hub_kernels()
+        assert len(loaded) == 2
+    finally:
+        sys.modules.pop(_MODELING, None)
+
+
+def test_prepare_hub_kernels_skips_without_cuda_unless_forced(
+    fake_kernels, monkeypatch
+):
+    """CUDA kernels on a CPU host are useless; importing an entrypoint there (tests,
+    preflights) must not fetch them. The kernel probe forces the load."""
+    loaded, _, _, _ = fake_kernels
+    sys.modules["torch"].cuda = types.SimpleNamespace(is_available=lambda: False)
+
+    prepare_hub_kernels()
+    assert loaded == []
+
+    prepare_hub_kernels(force=True)
+    assert [repo for repo, _, _ in loaded] == [
+        "kernels-community/causal-conv1d",
+        "kernels-community/mamba-ssm",
+    ]
+    assert all(kw["check_arch"] is False for _, kw, _ in loaded)
