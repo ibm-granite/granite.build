@@ -44,13 +44,15 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from granite_evals.benchmarks.bfcl import _pct, prune_infra_errors
+from granite_evals.benchmarks.bfcl import _pct, infra_error_message, prune_infra_errors
 from granite_evals.benchmarks.bfcl_v3_child import (
     HARNESS_VERSIONS,
+    INFRA_EXIT,
     MISSING_EXIT,
     DEFAULT_HANDLER,
     REGISTRY_NAMES,
     RESULT_PREFIX,
+    infra_error_ids,
     missing_results,
     registry_name,
     result_files,
@@ -182,6 +184,9 @@ class BFCLv3(Benchmark):
         if proc.returncode == MISSING_EXIT and not self.generating:
             missing = missing_results(root, handler)
             raise self.not_generated(f"{len(missing)} test ids (first: {', '.join(missing[:5])})")
+        if proc.returncode == INFRA_EXIT:
+            raise RuntimeError(infra_error_message(self.id, infra_error_ids(root, handler),
+                                                   self.scoring and not self.generating))
         if proc.returncode != 0:
             raise RuntimeError(f"bfcl-v3 child process exited with {proc.returncode}")
         versions_path = root / HARNESS_VERSIONS

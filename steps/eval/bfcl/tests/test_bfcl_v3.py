@@ -172,6 +172,45 @@ def test_generate_prunes_infra_errors_first(tmp_path, monkeypatch, v3_python):
     assert [json.loads(line)["id"] for line in (d / "BFCL_v3_simple_result.json").read_text().splitlines()] == ["simple_1"]
 
 
+INFRA = "Error during inference: Connection error."
+
+
+def test_child_infra_error_is_bfcls():
+    """The stdlib-only child's copy of the infrastructure-error pattern."""
+    assert bfcl_v3_child.INFRA_ERROR.pattern == bfcl.INFRA_ERROR.pattern
+
+
+def test_infra_error_ids_counts_selected_infra_errors_only(tmp_path):
+    root = tmp_path / "bfcl"
+    d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
+    d.mkdir(parents=True)
+    (root / bfcl_v3_child.TEST_IDS_FILE).write_text(json.dumps({"simple": ["simple_0", "simple_1", "simple_2"]}))
+    (d / "BFCL_v3_simple_result.json").write_text("".join(json.dumps(r) + "\n" for r in (
+        {"id": "simple_0", "result": INFRA},
+        {"id": "simple_1", "result": "Error during inference: bad JSON"},  # a model failure: scored
+        {"id": "simple_2", "result": [{"f": "{}"}]},
+        {"id": "simple_9", "result": INFRA},  # not selected by this run's --limit
+    )))
+    assert bfcl_v3_child.infra_error_ids(root) == ["simple_0"]
+    assert bfcl_v3_child.infra_error_ids(root, "legacy-granite") == []
+
+
+@pytest.mark.parametrize("phase, what", [("generate", "generation incomplete"), ("score", "refusing to score")])
+def test_infra_errors_fail_the_phase(tmp_path, monkeypatch, v3_python, phase, what):
+    root = tmp_path / "out" / "bfcl"
+
+    def run(cmd, env, check):
+        (root / bfcl_v3_child.TEST_IDS_FILE).write_text(json.dumps({"simple": ["simple_0"]}))
+        d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "BFCL_v3_simple_result.json").write_text(json.dumps({"id": "simple_0", "result": INFRA}) + "\n")
+        return type("P", (), {"returncode": bfcl_v3_child.INFRA_EXIT})()
+
+    monkeypatch.setattr(bfcl_v3.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match=f"{what}: 1 results hold infrastructure errors .first: simple_0"):
+        bfcl_v3.BFCLv3(RunConfig(model="m", output_dir=tmp_path / "out", phase=phase)).run("http://s", "m")
+
+
 def test_needs_the_side_venv(tmp_path, monkeypatch):
     monkeypatch.setenv(bfcl_v3.PYTHON_ENV, str(tmp_path / "nope"))
     with pytest.raises(SystemExit, match="no BFCL v3 interpreter"):
@@ -565,6 +604,30 @@ def test_real_child_both_handlers_share_a_run_dir(tmp_path, fake_vllm):
         assert bfcl_v3.read_overall(scores)["groups"]["irrelevance"] is None  # one row, its own model
         assert [p.name for p in scores.iterdir() if p.is_dir()] == [bfcl_v3_child.REGISTRY_NAMES[handler]]
     assert set(bfcl_v3_child.missing_results(root, "fc") + bfcl_v3_child.missing_results(root, "legacy-granite")) == set()
+
+
+@needs_v3_venv
+def test_real_child_infra_errors_fail_generate_and_score_until_retried(tmp_path, fake_vllm, monkeypatch):
+    """Through the parent, with BFCL v3's own generation: an unreachable endpoint
+    fails generate (no target-level retry would fire otherwise), the score phase
+    refuses those results, and the next generate retries them."""
+    monkeypatch.setenv(bfcl_v3.PYTHON_ENV, V3_PYTHON)
+    opts = {"categories": "simple"}
+
+    def run(phase, base_url):
+        cfg = RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase=phase, workers=2, options=opts)
+        return bfcl_v3.BFCLv3(cfg).run(base_url, "m")
+
+    with pytest.raises(RuntimeError, match="generation incomplete: 2 results hold infrastructure errors"):
+        run("generate", _closed_port_url())
+    with pytest.raises(RuntimeError, match="refusing to score: 2 results hold infrastructure errors"):
+        run("score", "")
+    root = tmp_path / "out" / "bfcl"
+    assert not list(bfcl_v3_child.score_dir(root).rglob("*_score.json"))
+    assert run("generate", fake_vllm.base_url)["missing"] == 0
+    assert bfcl_v3_child.infra_error_ids(root) == []
+    out = run("score", "")
+    assert out["per_category"]["simple"] == {"accuracy": 0.0, "correct_count": 0, "total_count": 2}  # refusals
 
 
 @needs_v3_venv

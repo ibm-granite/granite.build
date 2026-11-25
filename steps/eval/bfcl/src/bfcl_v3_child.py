@@ -49,7 +49,13 @@ DEFAULT_HANDLER = "fc"
 TEST_IDS_FILE = "test_case_ids_to_generate.json"  # BFCL's TEST_IDS_TO_GENERATE_PATH, under BFCL_PROJECT_ROOT
 HARNESS_VERSIONS = "harness_versions.json"
 MISSING_EXIT = 3
+INFRA_EXIT = 4  # results still hold infrastructure errors (bfcl.INFRA_EXIT)
 RESULT_PREFIX = "BFCL_v3_"
+# bfcl.INFRA_ERROR, copied: this module cannot import granite_evals (a test keeps them equal).
+INFRA_ERROR = re.compile(
+    r"Connection error|APIConnectionError|APITimeoutError|Request timed out|InternalServerError"
+    r"|Error code: 5\d\d|ServiceUnavailable|RemoteProtocolError",
+)
 
 
 def registry_name(handler: str) -> str:
@@ -82,6 +88,29 @@ def missing_results(root: Path, handler: str = DEFAULT_HANDLER) -> list[str]:
     for path in result_files(root, handler):
         present.update(json.loads(line)["id"] for line in path.read_text().splitlines() if line.strip())
     return [i for i in selected_ids(root) if i not in present]
+
+
+def infra_error_ids(root: Path, handler: str = DEFAULT_HANDLER) -> list[str]:
+    """Selected test ids whose result is an infrastructure error (what
+    bfcl.prune_infra_errors drops). Neither generate nor score may finish while
+    any remain: scored, they would count as model answers."""
+    selected = set(selected_ids(root))
+    out = []
+    for path in result_files(root, handler):
+        for line in path.read_text().splitlines():
+            rec = json.loads(line) if line.strip() else {}
+            res = rec.get("result")
+            if (rec.get("id") in selected and isinstance(res, str) and res.startswith("Error during inference")
+                    and INFRA_ERROR.search(res)):
+                out.append(rec["id"])
+    return out
+
+
+def exit_on_infra_errors(root: Path, handler: str) -> None:
+    if bad := infra_error_ids(root, handler):
+        print(f"bfcl-v3: {len(bad)} results hit infrastructure errors (first: {', '.join(bad[:5])}); "
+              "re-run --phase generate on this output dir to retry them", flush=True)
+        sys.exit(INFRA_EXIT)
 
 
 def select_ids(entries_by_category: dict[str, list[dict]], limit: int | None) -> dict[str, list[str]]:
@@ -485,6 +514,7 @@ def child_main(config_path: str) -> None:
         if missing := missing_results(root, cfg["handler"]):
             print(f"bfcl-v3: {len(missing)} test ids have no result (run --phase generate)", flush=True)
             sys.exit(MISSING_EXIT)
+        exit_on_infra_errors(root, cfg["handler"])
         evaluate(cfg)
         return
 
@@ -496,6 +526,7 @@ def child_main(config_path: str) -> None:
         skip_server_setup=True, local_model_path=None, result_dir=None, allow_overwrite=False,
         run_ids=True,
     ))
+    exit_on_infra_errors(root, cfg["handler"])  # fail the job, so the target retry resumes and retries them
     if cfg["phase"] == "generate":
         return
     evaluate(cfg)

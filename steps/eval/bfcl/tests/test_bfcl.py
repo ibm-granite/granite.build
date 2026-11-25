@@ -2,6 +2,7 @@
 the MCP web-search backend, with fakes (no model, no network)."""
 
 import json
+import os
 import subprocess
 import sys
 
@@ -346,6 +347,91 @@ def test_child_score_phase_evaluates_saved_results_only(tmp_path, harness_env):
     # The groups parse at their own columns: no category of the live group ran, which
     # BFCL reports as 0.00%, not N/A (a shifted row would read the previous column's N/A).
     assert bfcl.read_overall(root / "score" / "data_overall.csv")["groups"]["live"] == 0.0
+
+
+INFRA = "Error during inference: Connection error."
+
+
+def test_infra_error_ids_counts_selected_entries_and_memory_prereqs(tmp_path):
+    root = tmp_path / "bfcl"
+    (root / "result" / bfcl.REGISTRY_NAME / "agentic" / "memory" / "kv").mkdir(parents=True)
+    (root / bfcl.TEST_IDS_FILE).write_text(json.dumps(
+        {"simple_python": ["simple_python_0", "simple_python_1"], "memory_kv": ["memory_kv_prereq_0-a-0"]}))
+    d = root / "result" / bfcl.REGISTRY_NAME / "non_live"
+    d.mkdir(parents=True)
+    (d / "BFCL_v4_simple_python_result.json").write_text("".join(json.dumps(r) + "\n" for r in (
+        {"id": "simple_python_0", "result": INFRA},
+        {"id": "simple_python_1", "result": "Error during inference: bad JSON"},  # a model failure: scored
+        {"id": "simple_python_7", "result": INFRA},  # not selected by this run's --limit
+    )))
+    (root / "result" / bfcl.REGISTRY_NAME / "agentic" / "memory" / "kv" / "BFCL_v4_memory_kv_prereq_result.json"
+     ).write_text(json.dumps({"id": "memory_kv_prereq_0-a-0", "result": INFRA}) + "\n")
+    assert bfcl.infra_error_ids(root) == ["memory_kv_prereq_0-a-0", "simple_python_0"]
+
+
+@pytest.mark.parametrize("phase, what", [("generate", "generation incomplete"), ("score", "refusing to score")])
+def test_infra_errors_fail_the_phase(tmp_path, monkeypatch, phase, what):
+    from granite_evals.registry import RunConfig
+
+    root = tmp_path / "out" / "bfcl"
+
+    def run(cmd, env, check):
+        (root / bfcl.TEST_IDS_FILE).write_text(json.dumps({"simple_python": ["simple_python_0"]}))
+        d = root / "result" / bfcl.REGISTRY_NAME / "non_live"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "BFCL_v4_simple_python_result.json").write_text(json.dumps({"id": "simple_python_0", "result": INFRA}) + "\n")
+        return type("P", (), {"returncode": bfcl.INFRA_EXIT})()
+
+    monkeypatch.setattr(bfcl.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match=f"{what}: 1 results hold infrastructure errors .first: simple_python_0"):
+        bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", phase=phase)).run("http://s", "m")
+
+
+def _closed_port_url():
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{s.getsockname()[1]}/v1"
+
+
+def _child(root, phase, categories, base_url=None):
+    cfg = {"served_model_name": "m", "categories": categories, "limit": 1, "num_threads": 1, "sampling": {},
+           "search_mcp_url": "http://127.0.0.1:9/mcp", "include_input_log": False, "phase": phase}
+    root.mkdir(exist_ok=True)
+    (root / bfcl.CHILD_CONFIG).write_text(json.dumps(cfg))
+    env = {**os.environ, **({"OPENAI_BASE_URL": base_url} if base_url else {})}
+    return subprocess.run([sys.executable, "-m", "granite_evals.benchmarks.bfcl", str(root / bfcl.CHILD_CONFIG)],
+                          env=env, capture_output=True, text=True, check=False)
+
+
+def test_child_infra_errors_fail_generate_and_score(tmp_path, harness_env):
+    """The real child: an unreachable endpoint fails generate instead of handing
+    the errors to a score phase, and the score phase refuses them."""
+    root = tmp_path / "bfcl"
+    proc = _child(root, "generate", ["simple_python"], _closed_port_url())
+    assert proc.returncode == bfcl.INFRA_EXIT, proc.stderr[-2000:]
+    assert "1 results hit infrastructure errors (first: simple_python_0)" in proc.stdout
+    assert bfcl.infra_error_ids(root) == ["simple_python_0"]
+    assert _child(root, "score", ["simple_python"]).returncode == bfcl.INFRA_EXIT
+    assert not list((root / "score").rglob("*_score.json"))
+
+
+def test_child_regenerates_a_memory_category_with_infra_errors(tmp_path, harness_env):
+    """Memory prereq chains are never partly regenerated: an infrastructure error
+    anywhere in a memory category drops its results, prereqs and snapshot."""
+    root = tmp_path / "bfcl"
+    d = root / "result" / bfcl.REGISTRY_NAME / "agentic" / "memory" / "kv"
+    d.mkdir(parents=True)
+    (d / "BFCL_v4_memory_kv_prereq_result.json").write_text(json.dumps({"id": "memory_kv_prereq_0-a-0", "result": INFRA}) + "\n")
+    (d / "BFCL_v4_memory_kv_result.json").write_text(json.dumps({"id": "memory_kv_0", "result": [{"f": "{}"}]}) + "\n")
+    snapshot = root / "result" / bfcl.REGISTRY_NAME / "memory_snapshot" / "memory_kv"
+    snapshot.mkdir(parents=True)
+    (snapshot / "stale-marker").write_text("")
+    proc = _child(root, "generate", ["memory_kv"], _closed_port_url())
+    assert "memory_kv: regenerating the category, 1 entries hit infrastructure errors" in proc.stdout, proc.stderr[-2000:]
+    assert not (snapshot / "stale-marker").exists()
+    assert proc.returncode == bfcl.INFRA_EXIT  # the endpoint is still down: the regenerated chain failed again
 
 
 def test_read_overall_refuses_a_shifted_row(tmp_path):
