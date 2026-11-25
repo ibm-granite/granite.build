@@ -41,7 +41,11 @@ from libgbtest.step_templates import render_step_template as _load_renderer
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 STEPS_DIR = REPO_ROOT / "steps"
+COMMON_MK = STEPS_DIR / "common.mk"
 ASSETS_DIR = REPO_ROOT / "configurations" / "assets" / "environments"
+# common.mk's PUBLISH_TEST_DIR / PUBLISH_TESTDATA_DIR roots.
+PUBLISHED_TESTS_DIR = REPO_ROOT / "test" / "steps"
+PUBLISHED_TESTDATA_DIR = REPO_ROOT / "test-data" / "steps"
 
 render_step_template = _load_renderer()
 
@@ -153,6 +157,168 @@ def test_the_published_copies_match_their_sources(name, env, template, asset):
         f"{name} ({env}): published copies differ from their sources: "
         f"{', '.join(stale)}\n"
         f"  published under: {asset.parent.relative_to(REPO_ROOT)}\n"
+        f"Run `make publish-step` in steps/{name}/{env}/ and commit the result "
+        "(`make check-published` there shows the diff)."
+    )
+
+
+# What `make publish-step` copies into the top-level test trees (common.mk): each
+# per-cluster SUBDIR of the step's test/ into test/steps/<path>/<env>/, and each subdir
+# of its test-data/ into test-data/steps/<path>/<env>/. Loose files in test/ and
+# test-data/ are not copied, and neither are hidden subdirs (the recipe globs `*/`).
+# __pycache__ is pruned after the copy. Each copied buildtest.yaml then has its LOCAL
+# space_uri rewritten to MODE2_SPACE_URI by a two-expression `sed -E`, mirrored below
+# from common.mk's SPACE_URI_VALUE_RE / FILE_SPACE_URI_RE / REMOTE_SPACE_URI_RE
+# (_MIRRORED_FROM_COMMON_MK pins that source text). [[:space:]] is POSIX whitespace; a sed
+# line never holds the newline, so that drops out.
+_SPACE_URI_VALUE = rb"^space_uri:[ \t\r\f\v]*[\"']?"
+_FILE_SPACE_URI = re.compile(_SPACE_URI_VALUE + rb"file://")
+_REMOTE_SPACE_URI = re.compile(
+    _SPACE_URI_VALUE
+    + rb"([a-zA-Z][a-zA-Z0-9+.-]*://|[a-zA-Z0-9_][a-zA-Z0-9._-]*@[a-zA-Z0-9.-]+:)"
+)
+# The substitution both sed expressions make: s#^space_uri:.*#space_uri: <uri>#
+_SPACE_URI_LINE = re.compile(rb"^space_uri:.*")
+
+
+def _mode2_space_uri(name, env):
+    """common.mk's MODE2_SPACE_URI: one `../` per dir of the copied buildtest.yaml.
+
+    MODE2_PARENTS := test-data steps $(subst /, ,$(STEP_PATH)) $(STEP_ENV) cluster
+    """
+    depth = 2 + len(name.split("/")) + 1 + 1
+    return "../" * depth + "configurations/spaces/local"
+
+
+def _rewrite_space_uri(text, uri):
+    """The publish-step sed over one buildtest.yaml, line by line.
+
+    1. a file:// space_uri line is rewritten;
+    2. then every space_uri line that is NOT remote is rewritten -- so a bare path is
+       too, and a remote URI (git+ssh://, https://, user@host:path) is left alone.
+    """
+    line_with_uri = b"space_uri: " + uri.encode()
+    out = []
+    for line in text.split(b"\n"):
+        if _FILE_SPACE_URI.match(line):
+            line = _SPACE_URI_LINE.sub(lambda _: line_with_uri, line, count=1)
+        if not _REMOTE_SPACE_URI.match(line):
+            line = _SPACE_URI_LINE.sub(lambda _: line_with_uri, line, count=1)
+        out.append(line)
+    return b"\n".join(out)
+
+
+def _copied_subdirs(root):
+    """{relative path: bytes} for `cp -R root/*/ dest/`: non-hidden subdirs only."""
+    copied = {}
+    if not root.is_dir():
+        return copied
+    for sub in sorted(root.iterdir()):
+        # A test/__pycache__/ is matched by `*/` too; publish-step prunes it after the copy.
+        if (
+            sub.is_dir()
+            and not sub.name.startswith(".")
+            and sub.name not in _SKIP_PARTS
+        ):
+            copied.update(
+                {f"{sub.name}/{rel}": data for rel, data in _tree(sub).items()}
+            )
+    return copied
+
+
+def _build_test_copies(name, env, template):
+    """(label, wanted tree, published dir) for the two build-test copies publish-step makes."""
+    step_dir = template.parent
+    uri = _mode2_space_uri(name, env)
+    fixtures = {
+        rel: (
+            _rewrite_space_uri(data, uri)
+            if rel.rsplit("/", 1)[-1] == "buildtest.yaml"
+            else data
+        )
+        for rel, data in _copied_subdirs(step_dir / "test-data").items()
+    }
+    return [
+        ("test/steps/", _copied_subdirs(step_dir / "test"), PUBLISHED_TESTS_DIR),
+        ("test-data/steps/", fixtures, PUBLISHED_TESTDATA_DIR),
+    ]
+
+
+# The common.mk text the helpers above transcribe. If publish-step changes any of it, the
+# mirror here is stale: update both together (whitespace-insensitive match).
+_MIRRORED_FROM_COMMON_MK = (
+    """SPACE_URI_VALUE_RE := ^space_uri:[[:space:]]*["'"'"']?""",
+    "FILE_SPACE_URI_RE := $(SPACE_URI_VALUE_RE)file://",
+    "REMOTE_SPACE_URI_RE := $(SPACE_URI_VALUE_RE)([a-zA-Z][a-zA-Z0-9+.-]*://"
+    "|[a-zA-Z0-9_][a-zA-Z0-9._-]*@[a-zA-Z0-9.-]+:)",
+    "MODE2_PARENTS := test-data steps $(subst /, ,$(STEP_PATH)) $(STEP_ENV) cluster",
+    "MODE2_SPACE_URI ?= $(MODE2_DOTDOT)configurations/spaces/local",
+    "PUBLISH_TEST_DIR ?= $(REPO_ROOT)/test/steps/$(STEP_PATH)/$(STEP_ENV)",
+    "PUBLISH_TESTDATA_DIR ?= $(REPO_ROOT)/test-data/steps/$(STEP_PATH)/$(STEP_ENV)",
+    "TEST_DIR ?= test",
+    "for d in $(TEST_DIR)/*/; do",
+    "for d in test-data/*/; do",
+    "-name __pycache__ -type d -prune -exec rm -rf {} +",
+    '@find "$(PUBLISH_TESTDATA_DIR)" -name buildtest.yaml -exec',
+    "-e '\\#$(FILE_SPACE_URI_RE)#s#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#'",
+    "-e '\\#$(REMOTE_SPACE_URI_RE)#!s#^space_uri:.*#space_uri: $(MODE2_SPACE_URI)#'",
+)
+
+
+def test_publish_step_still_does_what_this_file_mirrors():
+    common_mk = " ".join(COMMON_MK.read_text(encoding="utf-8").split())
+    missing = [
+        text
+        for text in _MIRRORED_FROM_COMMON_MK
+        if " ".join(text.split()) not in common_mk
+    ]
+    assert not missing, (
+        "steps/common.mk's publish-step no longer contains what this file mirrors, so "
+        f"the build-test drift check may be comparing the wrong thing: {missing}"
+    )
+
+
+def test_the_space_uri_rewrite_mirrors_publish_step():
+    """The sed mirror, on the cases common.mk's comment names."""
+    uri = "../../../../../configurations/spaces/local"
+    want = f"space_uri: {uri}".encode()
+    for local in (
+        b"space_uri: ../../space",
+        b"space_uri: 'file://../../space'",
+        b'space_uri:\t"file:///abs/space"',
+        b"space_uri: ../../a@b:c/space",
+        b"space_uri: ../x://y",
+    ):
+        assert _rewrite_space_uri(local, uri) == want, local
+    for unchanged in (
+        b"space_uri: git+ssh://git@example.com/org/repo.git",
+        b"space_uri: 'https://example.com/space'",
+        b"space_uri: git@example.com:org/repo.git",
+        b"  space_uri: ../../space",
+        b"# space_uri: ../../space",
+        b"name: space_uri",
+    ):
+        assert _rewrite_space_uri(unchanged, uri) == unchanged, unchanged
+    assert _rewrite_space_uri(b"a: 1\nspace_uri: ../s\nb: 2\n", uri) == (
+        b"a: 1\n" + want + b"\nb: 2\n"
+    )
+
+
+@pytest.mark.parametrize("name,env,template,asset", PAIRS)
+def test_the_published_build_tests_match_their_sources(name, env, template, asset):
+    stale = []
+    for label, want, published_root in _build_test_copies(name, env, template):
+        published = published_root / name / env
+        have = _tree(published) if published.is_dir() else {}
+        stale += [
+            f"{label}{name}/{env}/{rel}"
+            for rel in sorted(want.keys() | have.keys())
+            if want.get(rel) != have.get(rel)
+        ]
+
+    assert not stale, (
+        f"{name} ({env}): published build tests or fixtures differ from their "
+        f"sources (after publish-step's space_uri rewrite): {', '.join(stale)}\n"
         f"Run `make publish-step` in steps/{name}/{env}/ and commit the result "
         "(`make check-published` there shows the diff)."
     )

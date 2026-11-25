@@ -11,6 +11,7 @@ is why the renderer exists as a testable script rather than a shell heredoc.
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1051,3 +1052,129 @@ class TestLossArmRequirementsUnderARamp:
             expect_rc=2,
         )
         assert "linear from lmbda_init=1.0" in result.stderr
+
+
+# ------------------------------------------- the template's defaults are the renderer's
+#
+# student-sft's parity tests compare this renderer's argparse defaults with student-sft's,
+# but a recipe never reaches those: it gets step-template.yaml's values, which the run block
+# passes to this renderer as flags. These tests read the flags from the run block rather
+# than restating them, and check that each template default parses to the renderer's own --
+# so the comparison of the two renderers' defaults is also a comparison of what recipes run.
+
+_STEP_TEMPLATE = _RENDER.parent.parent / "step-template.yaml"
+
+# `--flag {{ config.<section>.<key> [| default(...)] }}`, optionally quoted.
+_CONFIG_FLAG = re.compile(
+    r"""(--[a-z][a-z0-9-]*)\s+(["']?)(\{\{\s*config\.(\w+)\.(\w+)[^}]*\}\})\2(?=\s|$)"""
+)
+
+_GOLD_REQUIRED_ARGS = [
+    "--output",
+    "/o",
+    "--total-nodes",
+    "1",
+    "--model-name-or-path",
+    "/m",
+    "--teacher-model-name-or-path",
+    "/t",
+    "--dataset-name",
+    "/d",
+]
+
+# Renderer flags with a default that the template does not pass from its config, and why.
+_RENDERER_DEFAULTS_THE_TEMPLATE_DOES_NOT_PASS = {
+    # Passed, but from the `vllm` input binding (empty when unbound), not from config.
+    "--vllm-server-url",
+}
+
+# Template defaults that deliberately differ from the renderer's, as (template, renderer).
+# render_gold_config.check_trainer_accepts's docstring: "Off in this script's own
+# argparse and ON in the step's config ... the step's image carries the package on every
+# run, while a direct invocation (a unit test rendering a key in isolation) has no package
+# to ask."
+_DOCUMENTED_TEMPLATE_DIVERGENCES = {
+    "gold_config.verify_trainer_accepts_keys": (True, False),
+}
+
+
+def _gold_module():
+    import render_gold_config  # noqa: PLC0415  (conftest puts ../src on sys.path)
+
+    return render_gold_config
+
+
+def _jinja(source, step):
+    """Render a template fragment the way gbserver fills a step (StrictUndefined)."""
+    from jinja2 import StrictUndefined  # noqa: PLC0415
+    from jinja2.sandbox import SandboxedEnvironment  # noqa: PLC0415
+
+    env = SandboxedEnvironment(undefined=StrictUndefined)
+    return env.from_string(source).render(config=step["config"])
+
+
+def _template_flags():
+    """[(template key, [flag, value])] for each config value the run block passes the
+    renderer, in the renderer invocation only (the run block passes some of the same keys
+    to other scripts too)."""
+    step = yaml.safe_load(_STEP_TEMPLATE.read_text())
+    run_block = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+        "run"
+    ]
+    joined = re.sub(r"\\\n", " ", run_block)
+    [command] = [
+        line for line in joined.splitlines() if "/render_gold_config.py" in line
+    ]
+    flags = []
+    for match in _CONFIG_FLAG.finditer(command):
+        flag, quote, expr, section, key = match.groups()
+        value = _jinja(expr, step)
+        # An unquoted value reaches the renderer as one word only if it is one word.
+        assert quote or (value and not value.split()[1:]), (flag, value)
+        flags.append((f"{section}.{key}", [flag, value]))
+    # Every config reference in the command has the form above, so none is skipped.
+    assert len(re.findall(r"\bconfig\.\w+\.\w+", command)) == len(flags), command
+    return flags
+
+
+def _dest(flag):
+    """argparse's dest for a long option declared without an explicit dest=."""
+    return flag[2:].replace("-", "_")
+
+
+def test_the_template_defaults_are_the_renderers_defaults():
+    """Every config value the template passes parses, in the renderer, to the renderer's own
+    default -- except the documented divergences above."""
+    module = _gold_module()
+    defaults = vars(module._parse_args(_GOLD_REQUIRED_ARGS))
+    differ = {}
+    for key, tokens in _template_flags():
+        dest = _dest(tokens[0])
+        assert dest in defaults, f"{tokens[0]} does not set {dest}; map it explicitly"
+        got = vars(module._parse_args(_GOLD_REQUIRED_ARGS + tokens))[dest]
+        if got != defaults[dest]:
+            differ[key] = (got, defaults[dest])
+    assert differ == _DOCUMENTED_TEMPLATE_DIVERGENCES
+
+
+def test_every_defaulted_renderer_flag_is_accounted_for():
+    """Guards the test above from going vacuous: a renderer option with a default is either
+    passed from the template's config or listed, with its reason, as not passed."""
+    required = {_dest(flag) for flag in _GOLD_REQUIRED_ARGS[::2]}
+    defaulted = set(vars(_gold_module()._parse_args(_GOLD_REQUIRED_ARGS))) - required
+    passed = {_dest(tokens[0]) for _, tokens in _template_flags()}
+    excused = {_dest(flag) for flag in _RENDERER_DEFAULTS_THE_TEMPLATE_DOES_NOT_PASS}
+    assert defaulted - passed == excused
+
+
+def test_the_template_passes_the_batch_shape_to_the_renderer():
+    keys = {key for key, _ in _template_flags()}
+    assert {
+        "gold_config.gradient_accumulation_steps",
+        "gold_config.learning_rate",
+        "gold_config.max_length",
+        "gold_config.num_train_epochs",
+        "gold_config.per_device_train_batch_size",
+        "gold_config.response_template",
+        "gold_config.save_steps",
+    } <= keys
