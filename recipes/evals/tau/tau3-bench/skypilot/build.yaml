@@ -35,7 +35,7 @@ granite.build:
                   - env_name: EVAL_USER_API_KEY
             launcher_config:
               resources:
-                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                accelerators: "$${EVAL_ACCELERATOR}:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
                 zone: "$${EVAL_PARTITION}"
                 memory: $${GPU_MEMORY}

@@ -44,9 +44,9 @@ TENSOR_PARALLEL_SIZE: 1
 MAX_MODEL_LEN: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
-# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) comes from the site
-# file passed with --param-file; recipes/evals/site.example.yaml lists every key, and
-# none may also be set here.
+# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) and on which GPU
+# model (EVAL_ACCELERATOR) come from the site file passed with --param-file;
+# recipes/evals/site.example.yaml lists every key, and none may also be set here.
 # Above the filesystem service: the restored category DBs live in the cluster's
 # data dir on node-local scratch alongside vLLM's memory.
 GPU_MEMORY: 128

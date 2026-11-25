@@ -36,9 +36,9 @@ TENSOR_PARALLEL_SIZE: 1
 SEARCH_MCP_URL: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
-# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) comes from the site
-# file passed with --param-file; recipes/evals/site.example.yaml lists every key, and
-# none may also be set here.
+# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) and on which GPU
+# model (EVAL_ACCELERATOR) come from the site file passed with --param-file;
+# recipes/evals/site.example.yaml lists every key, and none may also be set here.
 GPU_MEMORY: 256
 SCORE_CPUS: 8
 SCORE_MEMORY: 64

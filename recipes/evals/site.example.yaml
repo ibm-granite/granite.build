@@ -75,6 +75,11 @@ ENVIRONMENT_URI: "space://environments/skypilot-local/slurm-example"
 # rest: every target runs on CLUSTER, the CPU-only score targets on CPU_PARTITION.
 EVAL_PARTITION: "gpu-preemptible"
 
+# ─── Recipes: compute ────────────────────────────────────────────────
+# Accelerator model for the GPU generate targets (recipes append ":<TENSOR_PARALLEL_SIZE>").
+# With GPU_CONSTRAINT set, name the model that constraint selects.
+EVAL_ACCELERATOR: "A100"
+
 # ─── Recipes: judged/multi-challenge build-local.yaml only ───────────
 # The login host build-local.yaml copies the generate output from, as the gbserver
 # user's ssh config (SCORE_SSH_CONFIG) names it. "" (or leaving the key out) uses

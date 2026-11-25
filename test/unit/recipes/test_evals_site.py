@@ -2,10 +2,10 @@
 
 """recipes/evals/: every eval recipe takes where it runs from a site file.
 
-The site keys (the environment, the cluster and the partitions) live only in a
-private site file, whose keys and fake values recipes/evals/site.example.yaml
-lists; no recipe's parameters.yaml may define one. The recipes are rendered the
-way `gb build start -f <build> --param-file <site>` renders them: the recipe's
+The site keys (the environment, the cluster, the partitions and the GPU model)
+live only in a private site file, whose keys and fake values
+recipes/evals/site.example.yaml lists; no recipe's parameters.yaml may define
+one. The recipes are rendered the way `gb build start -f <build> --param-file <site>` renders them: the recipe's
 parameters.yaml, then the site file, through gbcli's own loader and renderer.
 
 The keys share their names with recipes/distill/site.example.yaml and the SLURM
@@ -34,14 +34,16 @@ _EVALS = REPO_ROOT / "recipes" / "evals"
 _SITE = _EVALS / "site.example.yaml"
 _DISTILL_SITE = REPO_ROOT / "recipes" / "distill" / "site.example.yaml"
 
-# The keys the eval recipes read from the site file. SCORE_REMOTE_HOST is
-# optional: build-local.yaml falls back to CLUSTER without it.
+# The keys the eval recipes read from the site file: where the targets run and
+# the GPU model they ask for. SCORE_REMOTE_HOST is optional: build-local.yaml
+# falls back to CLUSTER without it.
 _SITE_KEYS = {
     "ENVIRONMENT_URI",
     "CLUSTER",
     "EVAL_PARTITION",
     "CPU_PARTITION",
     "SCORE_REMOTE_HOST",
+    "EVAL_ACCELERATOR",
 }
 _OPTIONAL_SITE_KEYS = {"SCORE_REMOTE_HOST"}
 # The names these keys had before the site file, which must not come back.
@@ -153,6 +155,10 @@ def test_recipe_renders_with_the_site_file(build, site, tmp_path):
             assert (
                 res["zone"] == values["EVAL_PARTITION" if gpu else "CPU_PARTITION"]
             ), name
+            if gpu:
+                model, _, count = res["accelerators"].partition(":")
+                assert model == values["EVAL_ACCELERATOR"], name
+                assert count.isdigit(), name
 
 
 @pytest.mark.parametrize("build", _SITE_BUILDS, ids=_rel)
