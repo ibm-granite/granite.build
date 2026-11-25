@@ -54,7 +54,7 @@ RESULT_PREFIX = "BFCL_v3_"
 # bfcl.INFRA_ERROR, copied: this module cannot import granite_evals (a test keeps them equal).
 INFRA_ERROR = re.compile(
     r"Connection error|APIConnectionError|APITimeoutError|Request timed out|InternalServerError"
-    r"|Error code: 5\d\d|ServiceUnavailable|RemoteProtocolError",
+    r"|Error code: 5\d\d|ServiceUnavailable|RemoteProtocolError|vLLM endpoint error",
 )
 
 
@@ -214,10 +214,12 @@ def max_new_tokens(context_length: int, prompt_tokens: int) -> int:
 
 
 class EndpointError(RuntimeError):
-    """The serving vLLM failed a /tokenize or /v1/models call for a transient
-    reason (5xx, connection, timeout) on every attempt. The message starts with a
-    phrase ``bfcl.INFRA_ERROR`` matches, so the entry BFCL records as "Error during
-    inference: ..." is retried on resume instead of being scored as a wrong answer."""
+    """The serving vLLM failed a /tokenize or /v1/models call: a transient failure
+    (5xx, connection, timeout, a reply that is not JSON) on every attempt, or a 4xx.
+    Every message holds a phrase ``INFRA_ERROR`` matches, so the entry BFCL records
+    as "Error during inference: ..." is an infrastructure error, never a scored
+    answer: generate exits non-zero and its retry prunes the entry and tries again
+    (where the startup probe fails the job loudly if the endpoint is gone)."""
 
 
 class VLLMTokens:
@@ -236,8 +238,8 @@ class VLLMTokens:
 
     def _json(self, url: str, body: dict | None = None) -> Any:
         """One JSON call, retried on transient failures. A 4xx is not transient (an
-        endpoint the server does not have): it is raised at once, and :meth:`probe`
-        turns it into a startup failure."""
+        endpoint the server does not have, or no longer has): it is raised at once,
+        and :meth:`probe` turns it into a startup failure."""
         import http.client
         import time
         import urllib.error
@@ -248,10 +250,10 @@ class VLLMTokens:
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
-                    return json.loads(resp.read())
+                    reply = resp.read()
             except urllib.error.HTTPError as e:
                 if e.code < 500:
-                    raise
+                    raise EndpointError(f"vLLM endpoint error: HTTP {e.code} {e.reason} from {url}") from e
                 err = f"Error code: {e.code} from {url}"
             except (OSError, http.client.HTTPException) as e:  # URLError, TimeoutError, ConnectionError
                 reason = getattr(e, "reason", e)
@@ -259,6 +261,11 @@ class VLLMTokens:
                     err = f"Request timed out: {url}"
                 else:
                     err = f"Connection error: {url}: {type(reason).__name__}: {reason}"
+            else:
+                try:
+                    return json.loads(reply)
+                except ValueError:
+                    err = f"vLLM endpoint error: a reply that is not JSON from {url}: {reply[:80]!r}"
             if attempt < self.ATTEMPTS:
                 time.sleep(self.RETRY_WAIT * attempt)
         raise EndpointError(f"{err} ({self.ATTEMPTS} attempts)")

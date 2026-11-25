@@ -85,9 +85,10 @@ categories), still selectable with an explicit --option categories=."""
 
 # An inference error with one of these in its message is an infrastructure
 # failure, not a model failure: drop it on restart so the entry is regenerated.
+# "vLLM endpoint error" marks bfcl-v3 legacy-granite's own vLLM calls (bfcl_v3_child).
 INFRA_ERROR = re.compile(
     r"Connection error|APIConnectionError|APITimeoutError|Request timed out|InternalServerError"
-    r"|Error code: 5\d\d|ServiceUnavailable|RemoteProtocolError",
+    r"|Error code: 5\d\d|ServiceUnavailable|RemoteProtocolError|vLLM endpoint error",
 )
 
 

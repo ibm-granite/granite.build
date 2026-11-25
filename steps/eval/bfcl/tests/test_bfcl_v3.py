@@ -498,7 +498,14 @@ def fake_vllm():
         def _failed(self):
             time.sleep(delay.get(self.path, 0))
             if fail.get(self.path):
-                self._send({"detail": "injected"}, fail[self.path].pop(0))
+                item = fail[self.path].pop(0)
+                if isinstance(item, bytes):  # a 200 whose body is not JSON
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(item)))
+                    self.end_headers()
+                    self.wfile.write(item)
+                else:
+                    self._send({"detail": "injected"}, item)
                 return True
             return False
 
@@ -567,13 +574,17 @@ def test_vllm_tokens_failures_are_retried_on_resume(tmp_path, fake_vllm, quick_r
     assert bfcl.prune_infra_errors(result) == 1, str(err.value)
 
 
-def test_vllm_tokens_does_not_retry_a_missing_endpoint(fake_vllm, quick_retries):
-    import urllib.error
-
-    fake_vllm.fail["/tokenize"] = [404]
-    with pytest.raises(urllib.error.HTTPError, match="404"):
+@pytest.mark.parametrize("failure", ["404", "not json"])
+def test_vllm_tokens_mid_run_failures_are_infra_errors(tmp_path, fake_vllm, quick_retries, failure):
+    """After a passing startup probe: a 4xx (not retried) or a reply that is not
+    JSON (retried) is an infrastructure error, not a silently scored wrong answer."""
+    fake_vllm.fail["/tokenize"] = [404] if failure == "404" else [b"<html>proxy error</html>"] * 3
+    with pytest.raises(bfcl_v3_child.EndpointError, match="vLLM endpoint error") as err:
         bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m").count("p")
-    assert len(fake_vllm.seen) == 1
+    assert len(fake_vllm.seen) == (1 if failure == "404" else 3)
+    result = tmp_path / "BFCL_v3_simple_result.json"
+    result.write_text(json.dumps({"id": "simple_0", "result": f"Error during inference: {err.value}"}) + "\n")
+    assert bfcl.prune_infra_errors(result) == 1, str(err.value)
 
 
 @pytest.mark.parametrize("path", ["/tokenize", "/v1/models"])
