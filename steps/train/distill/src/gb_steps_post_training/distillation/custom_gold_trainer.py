@@ -3654,7 +3654,7 @@ class CustomGOLDTrainer(GOLDTrainer):
                         # `tools` REACHES THIS LINE IN THREE SHAPES, and the original assumed one.
                         #
                         #   JSON STRING  -- upstream en_sft_4.1 stores it as the string "[]".
-                        #   LIST         -- our own distill-corpus-prep parsed it in order to
+                        #   LIST         -- our own data-prep parsed it in order to
                         #                   render and then emitted the parsed list
                         #                   (prep_corpus.py:423), so `json.loads(a list)` raised
                         #                     TypeError: the JSON object must be str, bytes or

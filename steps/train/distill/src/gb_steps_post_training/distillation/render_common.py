@@ -2,8 +2,8 @@
 
 """Config validation shared by every training step's config renderer.
 
-WHY THIS MODULE EXISTS. `distill-gold-train` and `distill-sft-baseline` are separate steps
-with separate images, and `distill-sft-baseline`'s README states the rule they follow:
+WHY THIS MODULE EXISTS. `logit-distill` and `student-sft` are separate steps
+with separate images, and `student-sft`'s README states the rule they follow:
 SHARE THE CODE, NOT THE STEP. The two steps must stay separate -- a control that shares a
 step with the treatment is a control you can silently mis-configure into the treatment -- but
 their *validation* must not diverge, because a control validated by a second, slightly
@@ -40,10 +40,10 @@ def corpus_tokenizer_identity(corpus_path: Path) -> str | None:
     """Return the tokenizer identity recorded in the corpus manifest, or None.
 
     THE CORPUS IS NOT TOKENIZED, and an earlier version of this docstring said it was.
-    distill-corpus-prep emits a TEXT-level JSONL of `messages` conversations, and the trainer
+    data-prep emits a TEXT-level JSONL of `messages` conversations, and the trainer
     tokenizes at train time. So the file holds no token ids at all.
 
-    It is still tokenizer-SPECIFIC, which is why this comparison exists: corpus-prep drops
+    It is still tokenizer-SPECIFIC, which is why this comparison exists: data-prep drops
     conversations that exceed max_length, and that length is measured with a specific
     tokenizer. Swap the tokenizer and the filtering decisions become wrong -- silently, since
     nothing downstream re-checks lengths. The pre_tokenizer difference between the two
@@ -81,7 +81,7 @@ def corpus_tokenizer_hash(corpus_path: Path) -> str | None:
 
     Three sources, in descending order of trust, because corpora built at different times
     record different things:
-      1. `tokenizer_sha256`, which distill-corpus-prep writes from 2026-09-21 on.
+      1. `tokenizer_sha256`, which data-prep writes from 2026-09-21 on.
       2. `tokenizer_identity`, WHEN it is already hash-form -- which is every corpus prepped
          from a student that carried no tokenizer_identity.json, i.e. every corpus on disk
          before that date.
@@ -114,7 +114,7 @@ def student_tokenizer_identity(student_path: Path) -> str | None:
     """The student's tokenizer identity: recorded name if present, else a content hash.
 
     Delegated to the shared helper so that the side WRITING an identity
-    (distill-tokenizer-align) and the side READING it here cannot drift; a guard whose two
+    (tokenizer-align) and the side READING it here cannot drift; a guard whose two
     halves compute identity differently is worse than no guard, because it either fires on
     matching tokenizers or passes on mismatched ones.
 
@@ -181,7 +181,7 @@ def validate_student_against_corpus(
     student = Path(student_path)
     if not (student / "chat_template.jinja").is_file():
         raise ConfigError(
-            f"{student}/chat_template.jinja is missing. distill-tokenizer-align installs "
+            f"{student}/chat_template.jinja is missing. tokenizer-align installs "
             "it; a student without it will not segment prompt from completion correctly."
         )
 
@@ -190,7 +190,7 @@ def validate_student_against_corpus(
 
     # COMPARE THE HASHES, REPORT THE NAMES. The identities above are the legible form and
     # they are not always the same KIND of value on both sides: a corpus prepped before
-    # distill-tokenizer-align began writing tokenizer_identity.json carries a content hash,
+    # tokenizer-align began writing tokenizer_identity.json carries a content hash,
     # while a student retagged after that carries a name, and comparing those two refuses a
     # byte-identical pair. Measured on the bullet-4 pair, 2026-09-21 -- see
     # tokenizer_identity.comparable_hash for the numbers. The hash is symmetric by
@@ -203,7 +203,7 @@ def validate_student_against_corpus(
                 f"corpus was tokenized with {corpus_tok!r} ({corpus_sha}) but the student's "
                 f"tokenizer is {student_tok!r} ({student_sha}). The corpus is "
                 "tokenizer-specific and cannot be reused across tokenizers; rebuild it with "
-                "distill-corpus-prep against this student."
+                "data-prep against this student."
             )
         return
 
@@ -216,7 +216,7 @@ def validate_student_against_corpus(
             f"corpus was tokenized with {corpus_tok!r} but the student's tokenizer is "
             f"{student_tok!r}, and neither side records a tokenizer sha to compare instead. "
             "The corpus is tokenizer-specific and cannot be reused across tokenizers; "
-            "rebuild it with distill-corpus-prep against this student."
+            "rebuild it with data-prep against this student."
         )
 
 

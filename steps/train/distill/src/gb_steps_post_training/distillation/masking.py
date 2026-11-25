@@ -13,7 +13,7 @@ matches nothing, `CustomDataCollatorForChatML` (utils.py:465-500) leaves every l
 student. There is no post-condition on that path (unlike sft.py:896 and
 custom_gold_trainer.py:1785, which raise).
 
-So `distill-tokenizer-align` -- the step that INSTALLS the chat template -- also emits
+So `tokenizer-align` -- the step that INSTALLS the chat template -- also emits
 `masking.json` describing what the template implies for masking, and the configs point at it.
 One step owns it; nothing is scattered.
 

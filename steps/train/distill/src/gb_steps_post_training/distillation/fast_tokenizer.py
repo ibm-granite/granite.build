@@ -15,7 +15,7 @@ override.
 `PreTrainedTokenizerFast(tokenizer_file=...)` loads the serialized tokenizer and nothing
 else, so it is immune BY CONSTRUCTION rather than by remembering to pass the right
 directory. `retag_student.py` and `prep_corpus.py` each arrived at this independently; the
-third consumer (`distill-eval`'s divergence metrics) is where it became worth sharing, and
+third consumer (`teacher-divergence`'s divergence metrics) is where it became worth sharing, and
 the SECOND time it was worth sharing -- an earlier exploratory JSD script called
 `AutoTokenizer.from_pretrained` and would have carried the bug into the ported step.
 
@@ -51,7 +51,7 @@ def load(tokenizer_dir, *, require_chat_template: bool = True):
     if not tok_file.is_file():
         raise TokenizerLoadError(
             f"{tok_file} is missing, so there is no fast tokenizer to load. Pass a model "
-            "directory or one of distill-tokenizer-align's outputs (retagged_student, "
+            "directory or one of tokenizer-align's outputs (retagged_student, "
             "teacher_overlay, student_overlay)."
         )
     tok = PreTrainedTokenizerFast(tokenizer_file=str(tok_file))
@@ -83,6 +83,6 @@ def load(tokenizer_dir, *, require_chat_template: bool = True):
         raise TokenizerLoadError(
             f"no chat template in {tokenizer_dir} (looked for chat_template.jinja and an "
             "inline chat_template in tokenizer_config.json). Rendering conversations is not "
-            "possible without one; distill-tokenizer-align installs it via --chat-template."
+            "possible without one; tokenizer-align installs it via --chat-template."
         )
     return tok, ""

@@ -3,7 +3,7 @@
 """Entrypoint: measure divergence and/or entropy of a student against a teacher on a corpus.
 
 Invoked as `python -m gb_steps_post_training.distillation.run_divergence`, the same convention
-as build_overlay/retag_student (see steps/distill-tokenizer-align/src/run-align.sh).
+as build_overlay/retag_student (see steps/train/distill/tokenizer-align/skypilot/src/run-align.sh).
 
 REPLACES two earlier exploratory scripts (a JSD script and an entropy script) and their shell
 wrappers. The scripts themselves were already argparse-driven and path-clean; the hardcoding
@@ -40,8 +40,8 @@ def parse_args(argv=None):
         "--student-model",
         required=True,
         help="Model whose distribution is measured. For a distillation run this "
-        "is the checkpoint under test (distill-hf-export's export), or "
-        "distill-tokenizer-align's retagged_student for a t=0 baseline.",
+        "is the checkpoint under test (hf-export's export), or "
+        "tokenizer-align's retagged_student for a t=0 baseline.",
     )
     ap.add_argument(
         "--teacher-model",
@@ -51,7 +51,7 @@ def parse_args(argv=None):
     ap.add_argument(
         "--corpus",
         required=True,
-        help="JSONL of {messages: [...]} records -- distill-corpus-prep's output. "
+        help="JSONL of {messages: [...]} records -- data-prep's output. "
         "Use its eval split, not the split the student trained on.",
     )
     ap.add_argument(
@@ -275,7 +275,7 @@ def run(args, metrics: list[str], records: list[dict], ident: dict) -> dict:
                 + f"  A record is skipped when the prompt alone fills --max-length, leaving no "
                 f"assistant tokens. Raise --max-length above {median} (ideally to the training "
                 f"run's value), or confirm the corpus ends each conversation on an assistant "
-                f"message -- distill-corpus-prep guarantees that, a raw corpus may not. "
+                f"message -- data-prep guarantees that, a raw corpus may not. "
                 f"--max-incomplete-fraction does not apply here: it selects among records that "
                 f"were measured at all, and none were."
             )
