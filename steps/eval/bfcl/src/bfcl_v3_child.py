@@ -226,9 +226,10 @@ class VLLMTokens:
     """Prompt token counts and the context length from the serving vLLM itself
     (its /tokenize and /v1/models), so no tokenizer is loaded here."""
 
-    ATTEMPTS = 3
-    RETRY_WAIT = 2.0  # seconds, times the attempt number
-    TIMEOUT = 600.0
+    # Waits between attempts (s): about a minute in all, long enough for a vLLM
+    # restart. Both calls are fast (no generation), so a hang is cut off early.
+    RETRY_WAITS = (5.0, 15.0, 45.0)
+    TIMEOUT = 60.0
 
     def __init__(self, base_url: str, model: str):
         self.base_url = base_url.rstrip("/")
@@ -246,7 +247,8 @@ class VLLMTokens:
         import urllib.request
 
         data = None if body is None else json.dumps(body).encode()
-        for attempt in range(1, self.ATTEMPTS + 1):
+        attempts = len(self.RETRY_WAITS) + 1
+        for attempt in range(1, attempts + 1):
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
@@ -266,9 +268,9 @@ class VLLMTokens:
                     return json.loads(reply)
                 except ValueError:
                     err = f"vLLM endpoint error: a reply that is not JSON from {url}: {reply[:80]!r}"
-            if attempt < self.ATTEMPTS:
-                time.sleep(self.RETRY_WAIT * attempt)
-        raise EndpointError(f"{err} ({self.ATTEMPTS} attempts)")
+            if attempt < attempts:
+                time.sleep(self.RETRY_WAITS[attempt - 1])
+        raise EndpointError(f"{err} ({attempts} attempts)")
 
     def probe(self) -> None:
         """Fail the job now, not every entry later, if the endpoint cannot serve

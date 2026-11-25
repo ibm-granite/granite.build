@@ -537,8 +537,27 @@ def fake_vllm():
 
 @pytest.fixture
 def quick_retries(monkeypatch):
-    monkeypatch.setattr(bfcl_v3_child.VLLMTokens, "RETRY_WAIT", 0.0)
+    monkeypatch.setattr(bfcl_v3_child.VLLMTokens, "RETRY_WAITS", (0.0, 0.0, 0.0))
     monkeypatch.setattr(bfcl_v3_child.VLLMTokens, "TIMEOUT", 0.5)
+
+
+def test_vllm_tokens_retry_budget(monkeypatch):
+    """Exponential backoff long enough for a vLLM restart (5/15/45 s) and a short
+    per-call timeout, so a hung /tokenize is cut off in about 5 minutes, not 30."""
+    import time
+    import urllib.request
+
+    waits, timeouts = [], []
+    monkeypatch.setattr(time, "sleep", waits.append)
+
+    def refuse(req, timeout):
+        timeouts.append(timeout)
+        raise ConnectionRefusedError(111, "Connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    with pytest.raises(bfcl_v3_child.EndpointError, match=r"Connection error: .*\(4 attempts\)"):
+        bfcl_v3_child.VLLMTokens("http://srv/v1", "m").count("p")
+    assert waits == [5.0, 15.0, 45.0] and timeouts == [60.0] * 4
 
 
 def test_vllm_tokens_retries_transient_failures(fake_vllm, quick_retries):
@@ -561,14 +580,14 @@ def test_vllm_tokens_failures_are_retried_on_resume(tmp_path, fake_vllm, quick_r
     "Error during inference" record is pruned before the next generate."""
     base_url = fake_vllm.base_url
     if failure == "503":
-        fake_vllm.fail["/tokenize"] = [503] * 3
+        fake_vllm.fail["/tokenize"] = [503] * 4
     elif failure == "timeout":
         fake_vllm.delay["/tokenize"] = 1.0
     else:
         base_url = _closed_port_url()
     with pytest.raises(bfcl_v3_child.EndpointError) as err:
         bfcl_v3_child.VLLMTokens(base_url, "m").count("p")
-    assert "(3 attempts)" in str(err.value)
+    assert "(4 attempts)" in str(err.value)
     result = tmp_path / "BFCL_v3_simple_result.json"
     result.write_text(json.dumps({"id": "simple_0", "result": f"Error during inference: {err.value}"}) + "\n")
     assert bfcl.prune_infra_errors(result) == 1, str(err.value)
@@ -578,10 +597,10 @@ def test_vllm_tokens_failures_are_retried_on_resume(tmp_path, fake_vllm, quick_r
 def test_vllm_tokens_mid_run_failures_are_infra_errors(tmp_path, fake_vllm, quick_retries, failure):
     """After a passing startup probe: a 4xx (not retried) or a reply that is not
     JSON (retried) is an infrastructure error, not a silently scored wrong answer."""
-    fake_vllm.fail["/tokenize"] = [404] if failure == "404" else [b"<html>proxy error</html>"] * 3
+    fake_vllm.fail["/tokenize"] = [404] if failure == "404" else [b"<html>proxy error</html>"] * 4
     with pytest.raises(bfcl_v3_child.EndpointError, match="vLLM endpoint error") as err:
         bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m").count("p")
-    assert len(fake_vllm.seen) == (1 if failure == "404" else 3)
+    assert len(fake_vllm.seen) == (1 if failure == "404" else 4)
     result = tmp_path / "BFCL_v3_simple_result.json"
     result.write_text(json.dumps({"id": "simple_0", "result": f"Error during inference: {err.value}"}) + "\n")
     assert bfcl.prune_infra_errors(result) == 1, str(err.value)
