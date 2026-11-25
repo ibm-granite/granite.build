@@ -24,7 +24,7 @@ steps:
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a selection option (`tasks=`, `domains=`, `service=`, `categories=`, `benchmark=`) suffixes it as one path segment, e.g. `…/lm-eval-hellaswag` (see steps/eval/README.md, The generic bridges). |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a run that selects (`benchmark=`, `service=`, `task_suite=`, `domains=`, `categories=`, `tasks=`, `exclude=`, `instances=`, `split=`, or a dataset-pinned bridge's `dataset`) writes `…/<benchmark>@<key>=<value>…` instead, every selection value escaped into one path segment, e.g. `…/lm-eval@tasks=hellaswag` (see steps/eval/README.md, The generic bridges). |
 | `run_name` | basename of `model_path` | Run directory under `output_root`. |
 | `limit` | `""` (all runnable tasks) | **Smoke knob:** first N tasks by name. |
 | `repeats` | `""` (1) | Independent agent runs per task (avg-of-k). |

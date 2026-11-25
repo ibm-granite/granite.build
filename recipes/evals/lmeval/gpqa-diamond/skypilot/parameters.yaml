@@ -37,7 +37,7 @@ SERVED_MODEL_NAME: "granite-4.2-3b"
 # artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
 # Empty derives it from MODEL's basename (the step's own defaulting).
 RUN_NAME: ""
-# Runs land in $OUTPUT_ROOT/$RUN_NAME/lm-eval-gpqa_diamond_zeroshot. Required, no
+# Runs land in $OUTPUT_ROOT/$RUN_NAME/lm-eval@tasks=gpqa_diamond_zeroshot. Required, no
 # default: pass --param OUTPUT_ROOT=<root>, somewhere the dispatching user can write.
 OUTPUT_ROOT: ""
 # The warm cache the job reads (see the runbook above), writable by the job.

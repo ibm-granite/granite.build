@@ -107,16 +107,22 @@ exists on the curated ids: `bfcl`'s `categories=` (`bfcl/bfcl-multiturn`,
 `bird`, `ifbench` and `judged/gdpval` (the recipes' `DATASET` / `DATASET_REVISION`
 parameters).
 
-**Run dirs.** A bridge runs many benchmarks through one id, so the composed
-output dir is suffixed with what the recipe selected: `tasks=`, `domains=`,
-`service=`, `categories=` or `benchmark=` give
-`$OUTPUT_ROOT/$RUN_NAME/<id>-<value>` (`lm-eval-hellaswag`,
-`tau3-airline-retail`), and the two dataset-pinned bridges take the dataset's
-basename (`swebench-SWE-bench_Multilingual`, `terminal-bench-2.0`). The value
-becomes one path segment — commas turn into `-`, anything outside
-`[A-Za-z0-9._-]` into `_` — and the options are read without glob expansion. A
-benchmark run without a selection option (every curated recipe) keeps
-`$OUTPUT_ROOT/$RUN_NAME/<id>`.
+**Run dirs.** A bridge runs many benchmarks through one id, so a run that
+selects gets a dir named after every selection value:
+`$OUTPUT_ROOT/$RUN_NAME/<id>@<key>=<value>[@<key>=<value>...]`. The keys, in this
+fixed order: the dataset-pinned bridges' (`swebench`, `terminal-bench`,
+`nemoskills`) `dataset` and `dataset_revision`, then the options `benchmark=`,
+`service=`, `task_suite=`, `domains=`, `categories=`, `tasks=`, `exclude=`,
+`instances=`, `split=` (a repeated option counts once, its last value, as the
+harness reads it). So `lm-eval@tasks=hellaswag`, `tau3@domains=airline,retail`,
+`mcpmark@service=filesystem@task_suite=easy`. No curated id contains `@`, so a
+bridge run never shares a curated recipe's dir (`tau3@domains=airline` is not
+`tau3-airline`). Each value is escaped into one path segment: `[A-Za-z0-9._,-]`
+stay, every other byte becomes `~XX` (hex: a `/` is `~2F`, a `*` is `~2A`), so
+distinct selections never map to one dir; a name over 200 bytes is cut to 180
+plus `~h` and 16 hex of its sha256. The options are read without glob expansion.
+A benchmark run without a selection (every curated recipe, a dataset swap on a
+curated id included) keeps `$OUTPUT_ROOT/$RUN_NAME/<id>`.
 
 ## The warm HF cache
 

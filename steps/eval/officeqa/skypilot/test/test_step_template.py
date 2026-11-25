@@ -249,32 +249,76 @@ def test_a_curated_benchmark_keeps_its_own_dir(step, tmp_path, options):
 
 
 @pytest.mark.parametrize(
-    ("options", "suffix"),
+    ("options", "name"),
     [
-        ("tasks=hellaswag,arc_easy", "lm-eval-hellaswag-arc_easy"),
-        ("domains=airline,retail", "lm-eval-airline-retail"),
-        ("service=filesystem task_suite=easy", "lm-eval-filesystem"),
-        ("categories=web_search,memory", "lm-eval-web_search-memory"),
-        ("benchmark=math-500", "lm-eval-math-500"),
+        ("tasks=hellaswag,arc_easy", "lm-eval@tasks=hellaswag,arc_easy"),
+        ("domains=airline,retail", "lm-eval@domains=airline,retail"),
+        (
+            "service=filesystem task_suite=easy",
+            "lm-eval@service=filesystem@task_suite=easy",
+        ),
+        (
+            "task_suite=easy service=filesystem",
+            "lm-eval@service=filesystem@task_suite=easy",
+        ),
+        ("categories=web_search,memory", "lm-eval@categories=web_search,memory"),
+        ("benchmark=math-500 split=test", "lm-eval@benchmark=math-500@split=test"),
+        ("tasks=x exclude=y", "lm-eval@tasks=x@exclude=y"),
+        ("instances=^apache__druid", "lm-eval@instances=~5Eapache__druid"),
+        ("tasks=a tasks=b", "lm-eval@tasks=b"),  # the harness reads the last
+        ("tasks=hellaswag metric=acc_norm", "lm-eval@tasks=hellaswag"),
     ],
 )
-def test_a_bridge_selection_suffixes_the_dir(step, tmp_path, options, suffix):
+def test_a_selection_names_the_dir(step, tmp_path, options, name):
+    # Every selection value, in a fixed key order; other options do not count.
     proc = _run_until_output_dir(step, tmp_path, benchmark="lm-eval", options=options)
-    assert _out(proc)["OUT"] == str(tmp_path / "out" / "model-x" / suffix)
+    assert _out(proc)["OUT"] == str(tmp_path / "out" / "model-x" / name)
+
+
+def test_distinct_selections_never_share_a_dir(step, tmp_path):
+    # Values that a lossy mapping would merge (a / or a glob character into
+    # _, a comma into -), and a bridge selection that names a curated id's
+    # dir (mcpmark service=filesystem vs the curated mcpmark-filesystem).
+    runs = [
+        ("lm-eval", "tasks=a_b"),
+        ("lm-eval", "tasks=a*b"),
+        ("lm-eval", "tasks=a?b"),
+        ("lm-eval", "tasks=a/b"),
+        ("lm-eval", "tasks=a,b"),
+        ("lm-eval", "tasks=a-b"),
+        ("lm-eval", "tasks=a~2Ab"),
+        ("lm-eval", "tasks=a domains=b"),
+        ("lm-eval", "tasks=a@domains=b"),
+        ("mcpmark", "service=filesystem"),
+        ("mcpmark", "service=filesystem task_suite=easy"),
+        ("mcpmark-filesystem", ""),
+        ("tau3", "domains=airline"),
+        ("tau3-airline", ""),
+    ]
+    dirs = []
+    for i, (benchmark, options) in enumerate(runs):
+        sub = tmp_path / str(i)
+        sub.mkdir()
+        proc = _run_until_output_dir(step, sub, benchmark=benchmark, options=options)
+        out = Path(_out(proc)["OUT"])
+        assert out.parent == sub / "out" / "model-x"
+        dirs.append(out.name)
+    assert len(set(dirs)) == len(dirs), dirs
 
 
 @pytest.mark.parametrize(
-    ("options", "suffix"),
+    ("options", "name"),
     [
-        ("tasks=glob*", "lm-eval-glob_"),
-        ("tasks=../../etc/x", "lm-eval-.._.._etc_x"),
-        ("tasks=a/b,c?d", "lm-eval-a_b-c_d"),
+        ("tasks=glob*", "lm-eval@tasks=glob~2A"),
+        ("tasks=../../etc/x", "lm-eval@tasks=..~2F..~2Fetc~2Fx"),
+        ("tasks=a/b,c?d", "lm-eval@tasks=a~2Fb,c~3Fd"),
+        ("tasks=café", "lm-eval@tasks=caf~C3~A9"),
     ],
 )
-def test_a_selection_is_one_literal_path_segment(step, tmp_path, options, suffix):
+def test_a_selection_is_one_literal_path_segment(step, tmp_path, options, name):
     proc = _run_until_output_dir(step, tmp_path, benchmark="lm-eval", options=options)
     out = _out(proc)["OUT"]
-    assert out == str(tmp_path / "out" / "model-x" / suffix)
+    assert out == str(tmp_path / "out" / "model-x" / name)
     assert Path(out).parent == tmp_path / "out" / "model-x"
 
 
@@ -288,21 +332,69 @@ def test_options_are_split_but_never_globbed(step, tmp_path):
     assert "${OPT_WORDS[@]}" in _launcher(step)["run"].split("OPTS=()", 1)[1]
 
 
+def test_a_long_selection_is_shortened_but_stays_distinct(step, tmp_path):
+    names = []
+    for i, last in enumerate("xy"):
+        sub = tmp_path / str(i)
+        sub.mkdir()
+        tasks = ",".join(f"task_{n}" for n in range(40)) + last
+        proc = _run_until_output_dir(
+            step, sub, benchmark="lm-eval", options=f"tasks={tasks}"
+        )
+        names.append(Path(_out(proc)["OUT"]).name)
+    for name in names:
+        assert len(name) == 180 + 2 + 16 and name[180:182] == "~h"
+    assert names[0][:180] == names[1][:180] and names[0] != names[1]
+
+
 @pytest.mark.parametrize(
-    ("benchmark", "dataset", "suffix"),
+    ("benchmark", "dataset", "revision", "options", "name"),
     [
         (
             "swebench",
             "SWE-bench/SWE-bench_Multilingual",
-            "swebench-SWE-bench_Multilingual",
+            "846e647b9f33c0b51b739d005d13d85493c9af09",
+            "instances=^apache__druid",
+            "swebench@dataset=SWE-bench~2FSWE-bench_Multilingual"
+            "@dataset_revision=846e647b9f33c0b51b739d005d13d85493c9af09"
+            "@instances=~5Eapache__druid",
         ),
-        ("terminal-bench", "harborframework/terminal-bench-2.0", "terminal-bench-2.0"),
-        ("swebench-verified", "SWE-bench/SWE-bench_Verified", "swebench-verified"),
+        (
+            "terminal-bench",
+            "harborframework/terminal-bench-2.1",
+            "",
+            "",
+            "terminal-bench@dataset=harborframework~2Fterminal-bench-2.1@dataset_revision=",
+        ),
+        (
+            "nemoskills",
+            "https://example.org/t.jsonl",
+            "sha256:00",
+            "benchmark=math-500",
+            "nemoskills@dataset=https~3A~2F~2Fexample.org~2Ft.jsonl"
+            "@dataset_revision=sha256~3A00@benchmark=math-500",
+        ),
+        (
+            "swebench-verified",
+            "SWE-bench/SWE-bench_Verified",
+            "x",
+            "",
+            "swebench-verified",
+        ),
     ],
 )
-def test_a_dataset_pinned_bridge_takes_the_dataset_basename(
-    step, tmp_path, benchmark, dataset, suffix
+def test_a_dataset_pinned_bridge_names_its_pin(
+    step, tmp_path, benchmark, dataset, revision, options, name
 ):
-    # Only the two dataset-pinned bridges; a curated id with a dataset swap keeps its dir.
-    proc = _run_until_output_dir(step, tmp_path, benchmark=benchmark, dataset=dataset)
-    assert _out(proc)["OUT"] == str(tmp_path / "out" / "model-x" / suffix)
+    # The dataset-pinned bridges' data is a selection too (the bridge's
+    # terminal-bench-2.1 is not the curated terminal-bench-2.1 dir); a curated
+    # id with a dataset swap keeps its dir.
+    proc = _run_until_output_dir(
+        step,
+        tmp_path,
+        benchmark=benchmark,
+        dataset=dataset,
+        dataset_revision=revision,
+        options=options,
+    )
+    assert _out(proc)["OUT"] == str(tmp_path / "out" / "model-x" / name)
