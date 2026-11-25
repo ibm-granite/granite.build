@@ -1,4 +1,4 @@
-# mcpmark-playwright on BlueVela (SkyPilot / SLURM), mcpmark family image.
+# mcpmark-playwright on SkyPilot/SLURM, mcpmark family image.
 # Harness + task definitions: github.com/eval-sys/mcpmark @ cd45b7f57923b9b3985467f5139927575f83141c
 # (pinned in the image's code; Apache-2.0). The four standard tasks drive the LIVE
 # public web with in-image chromium (no easy suite exists): expect run-to-run variance
@@ -6,7 +6,7 @@
 #
 # LIMIT is empty: the full 4-task standard suite. For a quick functional check, the
 # first task (there is no easy suite to shrink to):
-#   gb build start -f recipes/evals/mcpmark/mcpmark-playwright/skypilot/build.yaml \
+#   gb build start -f recipes/evals/mcpmark/mcpmark-playwright/skypilot/build.yaml --param-file <site.yaml> \
 #     --space <space> --param RUN_NAME=<unique> --param LIMIT=1
 # Override any value with --param KEY=VALUE.
 

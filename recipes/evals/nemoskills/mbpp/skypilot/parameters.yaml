@@ -1,4 +1,4 @@
-# mbpp on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# mbpp on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/google-research-datasets/mbpp @ 4bb6404fdc6cacfda99d4ac4205087b89d32030c
 # config `sanitized` (the 257 manually-verified problems the MBPP paper evaluates on — the
 # same sanitized set evalplus's MBPP+ builds on; CC-BY-4.0, not gated; pinned in the image's
@@ -9,7 +9,7 @@
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/nemoskills/mbpp/skypilot/build.yaml --space <space> --param LIMIT=5
+#   gb build start -f recipes/evals/nemoskills/mbpp/skypilot/build.yaml --param-file <site.yaml> --space <space> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────

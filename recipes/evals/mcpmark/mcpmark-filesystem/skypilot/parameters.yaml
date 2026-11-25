@@ -1,4 +1,4 @@
-# mcpmark-filesystem on BlueVela (SkyPilot / SLURM), mcpmark family image.
+# mcpmark-filesystem on SkyPilot/SLURM, mcpmark family image.
 # Harness + task definitions: github.com/eval-sys/mcpmark @ cd45b7f57923b9b3985467f5139927575f83141c
 # (pinned in the image's code; Apache-2.0). Task state (the per-category zips) is NOT
 # baked: the harness downloads it at run time from storage.mcpmark.ai, and results.json
@@ -7,7 +7,7 @@
 #
 # LIMIT is empty: the full 30-task standard (MCPMark Verified) suite. For a quick
 # functional check, the first N tasks of the easy suite:
-#   gb build start -f recipes/evals/mcpmark/mcpmark-filesystem/skypilot/build.yaml \
+#   gb build start -f recipes/evals/mcpmark/mcpmark-filesystem/skypilot/build.yaml --param-file <site.yaml> \
 #     --space <space> --param RUN_NAME=<unique> --param LIMIT=5 --param "OPTIONS=task_suite=easy"
 # Override any value with --param KEY=VALUE.
 

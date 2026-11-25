@@ -1,4 +1,4 @@
-# officeqa-full on BlueVela (SkyPilot / SLURM), officeqa family image.
+# officeqa-full on SkyPilot/SLURM, officeqa family image.
 #
 # Data: huggingface.co/datasets/databricks/OfficeQA @ 763a8366abf2a3605c381d53586d844dc60fa756
 # — the 246 officeqa_full.csv questions plus the parsed U.S. Treasury Bulletin
@@ -19,10 +19,10 @@
 #
 # LIMIT is empty: the full benchmark (246 questions). For a quick functional
 # check, score only the first N questions (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/officeqa/officeqa-full/skypilot/build.yaml --space <space> --param LIMIT=3
+#   gb build start -f recipes/evals/officeqa/officeqa-full/skypilot/build.yaml --param-file <site.yaml> --space <space> --param LIMIT=3
 # For a model-free plumbing check (fetch, pins, page extraction, scorer), score
 # the gold answers through the same path:
-#   gb build start -f recipes/evals/officeqa/officeqa-full/skypilot/build.yaml --space <space> \
+#   gb build start -f recipes/evals/officeqa/officeqa-full/skypilot/build.yaml --param-file <site.yaml> --space <space> \
 #     --param MODEL_PATH=none --param OPTIONS=answers=gold
 # Override any value with --param KEY=VALUE.
 

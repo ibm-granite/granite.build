@@ -1,4 +1,4 @@
-# human-eval on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# human-eval on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/openai/openai_humaneval @ 7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544
 # (164 problems, MIT, not gated; pinned in the image's code — fetch it into the HF cache with
 # `make -C steps/eval prefetch HF_HOME=<cache>`). Scoring runs HumanEval's own execution harness
@@ -7,7 +7,7 @@
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/nemoskills/human-eval/skypilot/build.yaml --space <space> --param LIMIT=5
+#   gb build start -f recipes/evals/nemoskills/human-eval/skypilot/build.yaml --param-file <site.yaml> --space <space> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────

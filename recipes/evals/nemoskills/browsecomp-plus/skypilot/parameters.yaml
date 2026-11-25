@@ -1,11 +1,11 @@
-# browsecomp-plus on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# browsecomp-plus on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/Tevatron/browsecomp-plus @ 144cff8e35b5eaef7e526346aa60774a9deb941f
 # (pinned in the image's code; canary-decrypted at run time; fetch it into the HF cache with
 # `make -C steps/eval prefetch HF_HOME=<cache>`).
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/nemoskills/browsecomp-plus/skypilot/build.yaml --space <space> --param LIMIT=5
+#   gb build start -f recipes/evals/nemoskills/browsecomp-plus/skypilot/build.yaml --param-file <site.yaml> --space <space> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────

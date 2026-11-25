@@ -1,10 +1,10 @@
-# imo-answerbench on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# imo-answerbench on SkyPilot/SLURM, nemoskills family image.
 # Data: google-deepmind/superhuman's imobench/answerbench_v2.csv, downloaded at run time from the
 # commit-pinned URL, sha256-pinned in the image's code (https://github.com/google-deepmind/superhuman).
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/nemoskills/imo-answerbench/skypilot/build.yaml --space <space> --param LIMIT=5
+#   gb build start -f recipes/evals/nemoskills/imo-answerbench/skypilot/build.yaml --param-file <site.yaml> --space <space> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────

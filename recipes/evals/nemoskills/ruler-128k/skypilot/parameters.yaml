@@ -3,7 +3,7 @@
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/nemoskills/ruler-128k/skypilot/build.yaml --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
+#   gb build start -f recipes/evals/nemoskills/ruler-128k/skypilot/build.yaml --param-file <site.yaml> --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────
