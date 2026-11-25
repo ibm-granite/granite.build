@@ -1,6 +1,7 @@
 # terminal-bench (the generic bridge) on the official Terminal-Bench 2.0 mirror -- BlueVela (SkyPilot / SLURM), tbench family image.
-# Data: https://huggingface.co/datasets/harborframework/terminal-bench-2.1 @ 3e235dff6880252a587fa479c09bcb1e16edf2eb
-# (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
+# Data: https://huggingface.co/datasets/harborframework/terminal-bench-2.0 @ f2e8c75e23add71613117eecc9498f53bcd7e04e
+# (the recipe's pin, DATASET/DATASET_REVISION below; the job downloads it at run start.
+# The prefetch has no entry for it, and terminal-bench does not run under hf_offline).
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
