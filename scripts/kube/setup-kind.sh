@@ -15,7 +15,8 @@
 #      without which SkyPilot leaves the Kubernetes cloud disabled. `make
 #      kube-setup` runs install-prereqs.sh first, which installs kind, socat and
 #      GNU netcat when it can, so this check mostly catches docker and kubectl
-#   2. Runs `sky local up --no-gpus`, which creates (or reuses) the kind cluster
+#   2. Starts the SkyPilot API server with sky_patches, then runs `sky local up
+#      --no-gpus`, which creates (or reuses) the kind cluster
 #   3. Verifies the API server answers, runs `sky check kubernetes` (sky local up
 #      skips it when the cluster already exists) and fails unless Kubernetes is
 #      enabled, then prints each node's allocatable CPU and memory, which is what
@@ -116,6 +117,16 @@ fi
 previous_context="$(kubectl config current-context 2>/dev/null || true)"
 
 # ---- 2. Create (or reuse) the cluster ----
+# Else `sky local up` starts the API server without the sky_patches plugin.
+python -c '
+import sys
+from gbserver.environment.skypilot import _ensure_skypilot_api_running
+try:
+    _ensure_skypilot_api_running()
+except Exception as e:
+    sys.exit(f"setup-kind: ERROR {e}")
+'
+
 echo "setup-kind: running 'sky local up --no-gpus --name ${KIND_CLUSTER_NAME}'"
 sky local up --no-gpus --name "${KIND_CLUSTER_NAME}"
 

@@ -19,7 +19,11 @@ from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
 )
-from gbserver.types.errors import SkypilotConfigCollisionError, StepCertExpiredError
+from gbserver.types.errors import (
+    SkypilotConfigCollisionError,
+    SkypilotConfigUnsupportedError,
+    StepCertExpiredError,
+)
 
 
 def _host(alias="clusterA", **directives):
@@ -216,29 +220,39 @@ class TestCloudConfig:
         return yaml.safe_load((tmp_path / ".sky" / "config.yaml").read_text())
 
     def test_writes_into_sky_config(self, tmp_path):
-        sc.merge_cloud_config({"lsf": {"a": 1}}, "envA", home=tmp_path)
-        assert self._sky_config(tmp_path) == {"lsf": {"a": 1}}
+        sc.merge_cloud_config({"slurm": {"a": 1}}, "envA", home=tmp_path)
+        assert self._sky_config(tmp_path) == {"slurm": {"a": 1}}
 
     def test_deep_merge_preserves_unrelated_keys(self, tmp_path):
         dest = tmp_path / ".sky" / "config.yaml"
         dest.parent.mkdir(parents=True)
-        dest.write_text("kubernetes:\n  remote_identity: sa\nlsf:\n  x: 1\n")
-        sc.merge_cloud_config({"lsf": {"y": 2}}, "envA", home=tmp_path)
+        dest.write_text("kubernetes:\n  remote_identity: sa\nslurm:\n  x: 1\n")
+        sc.merge_cloud_config({"slurm": {"y": 2}}, "envA", home=tmp_path)
         cfg = self._sky_config(tmp_path)
         assert cfg["kubernetes"] == {"remote_identity": "sa"}  # untouched
-        assert cfg["lsf"] == {"x": 1, "y": 2}  # merged
+        assert cfg["slurm"] == {"x": 1, "y": 2}  # merged
 
     def test_env_value_wins_on_conflict(self, tmp_path):
         dest = tmp_path / ".sky" / "config.yaml"
         dest.parent.mkdir(parents=True)
-        dest.write_text("lsf:\n  cluster_configs:\n    bv:\n      queue: g\n")
+        dest.write_text("slurm:\n  cluster_configs:\n    bv:\n      queue: g\n")
         sc.merge_cloud_config(
-            {"lsf": {"cluster_configs": {"bv": {"queue": "grp_preemptable"}}}},
+            {"slurm": {"cluster_configs": {"bv": {"queue": "grp_preemptable"}}}},
             "envA",
             home=tmp_path,
         )
         cfg = self._sky_config(tmp_path)
-        assert cfg["lsf"]["cluster_configs"]["bv"]["queue"] == "grp_preemptable"
+        assert cfg["slurm"]["cluster_configs"]["bv"]["queue"] == "grp_preemptable"
+
+    def test_section_skypilot_rejects_is_not_written(self, tmp_path):
+        pytest.importorskip("sky")
+        dest = tmp_path / ".sky" / "config.yaml"
+        dest.parent.mkdir(parents=True)
+        dest.write_text("slurm:\n  x: 1\n")
+        with pytest.raises(SkypilotConfigUnsupportedError, match="'not_a_cloud'"):
+            sc.merge_cloud_config({"not_a_cloud": {"a": 1}}, "envA", home=tmp_path)
+        assert self._sky_config(tmp_path) == {"slurm": {"x": 1}}
+        assert not (tmp_path / ".sky" / ".gbserver-cloud-config.yaml").exists()
 
 
 class TestCloudConfigLastWriterWins:
@@ -266,15 +280,18 @@ class TestCloudConfigLastWriterWins:
     def test_next_env_replaces_previous_envs_keys(self, tmp_path):
         self._user_file(tmp_path, "kubernetes:\n  remote_identity: sa\n")
         assert sc.merge_cloud_config(self.PIN, "kube-local", home=tmp_path)
-        assert sc.merge_cloud_config({"lsf": {"q": 1}}, "lsf-env", home=tmp_path)
+        assert sc.merge_cloud_config({"slurm": {"q": 1}}, "slurm-env", home=tmp_path)
         # The pin and its context entry are gone; the user's key and the new
         # env's block remain.
         assert self._sky_config(tmp_path) == {
             "kubernetes": {"remote_identity": "sa"},
-            "lsf": {"q": 1},
+            "slurm": {"q": 1},
         }
         record = yaml.safe_load(self._record(tmp_path).read_text())
-        assert record == {"environment": "lsf-env", "cloud_config": {"lsf": {"q": 1}}}
+        assert record == {
+            "environment": "slurm-env",
+            "cloud_config": {"slurm": {"q": 1}},
+        }
 
     def test_env_without_cloud_config_removes_previous_and_record(self, tmp_path):
         sc.merge_cloud_config(self.PIN, "kube-local", home=tmp_path)
@@ -780,7 +797,7 @@ class TestNoTeardownAndConcurrency:
     def test_materialize_all_sections(self, tmp_path):
         ssh = ClusterSshConfigs(slurm=[_host(HostName="h")])
         aws = [AwsCredentialProfile(profile="default", aws_access_key_id="K")]
-        sc.materialize("envA", ssh, {"lsf": {"q": 1}}, aws, {}, home=tmp_path)
+        sc.materialize("envA", ssh, {"slurm": {"q": 1}}, aws, {}, home=tmp_path)
         assert (tmp_path / ".slurm" / "config").exists()
         assert (tmp_path / ".aws" / "credentials").exists()
         assert (tmp_path / ".sky" / "config.yaml").exists()

@@ -779,6 +779,8 @@ def _apply_cloud_config(env_name: str, cloud_config: Optional[Dict]) -> None:
 
     :param env_name: The environment's name (recorded with its config).
     :param cloud_config: The environment's ``cloud_config``, or ``None``.
+    :raises SkypilotConfigUnsupportedError: If SkyPilot rejects ``cloud_config``; nothing is
+        written or reloaded.
     """
     global _LOADED_CLOUD_CONFIG  # pylint: disable=global-statement
     from gbserver.environment.skypilot_config import merge_cloud_config
@@ -802,6 +804,8 @@ def _launch_with_cloud_config(
     :param args: Positional arguments for ``sky.launch``.
     :param kwargs: Keyword arguments for ``sky.launch``.
     :returns: ``sky.launch``'s request id.
+    :raises SkypilotConfigUnsupportedError: If SkyPilot rejects ``cloud_config``; nothing is
+        launched.
     """
     with _CLOUD_CONFIG_LOCK:
         _apply_cloud_config(env_name, cloud_config)
@@ -3034,6 +3038,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
 
         :raises SkypilotConfigCollisionError: If a section conflicts with config
             already materialized by another environment in this process/host.
+        :raises SkypilotConfigUnsupportedError: If SkyPilot rejects the ``cloud_config``.
         """
         if self._inline_configs_done:
             return
@@ -3644,6 +3649,7 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         :param setup_id: Setup identifier minted by ``Environment.setup``.
         :param runmetadata: Run metadata injected by ``Run._add_to_run_kwargs``.
         :returns: Setup config dict (empty when ``shared_workdir`` is unset).
+        :raises SkypilotConfigUnsupportedError: If SkyPilot rejects the env's ``cloud_config``.
         """
         # Materialize inline config as early as possible (before the
         # shared_workdir early-return below).
@@ -4451,6 +4457,8 @@ class Skypilot(SkypilotLaunchConfigCheck, Environment):
         (sky.launch → wait until job starts) but releases before
         ``monitor_skypilot_monitor`` runs, so post-launch polling for
         all targets continues in parallel.
+
+        :raises SkypilotConfigUnsupportedError: If SkyPilot rejects the env's ``cloud_config``.
         """
         # Resolve a SLURM image to its shared .sqsh BEFORE taking a bring-up
         # slot: a cache miss waits on an import job (minutes to tens of

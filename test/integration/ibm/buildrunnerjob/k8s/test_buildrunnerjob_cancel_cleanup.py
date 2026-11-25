@@ -39,6 +39,7 @@ class TestBuildRunnerJobCancelCleanup:
             runner.namespace = "test-ns"
             runner.monitoring_interval = 0.01
             runner.is_stop_requested = False
+            runner.is_detach_requested = False
             runner.is_running = False
 
             # Mock the K8s API methods

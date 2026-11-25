@@ -55,7 +55,11 @@ from gbserver.types.environmentconfig import (
     AwsCredentialProfile,
     ClusterSshConfigs,
 )
-from gbserver.types.errors import SkypilotConfigCollisionError, StepCertExpiredError
+from gbserver.types.errors import (
+    SkypilotConfigCollisionError,
+    SkypilotConfigUnsupportedError,
+    StepCertExpiredError,
+)
 from gbserver.utils.logger import get_logger
 from gbserver.utils.ssh_keys import write_private_key_file
 
@@ -997,6 +1001,35 @@ def _remove_recorded(base: Dict, recorded: Dict) -> None:
             del base[key]
 
 
+def validate_cloud_config(cloud_config: Optional[Dict], env_name: str) -> None:
+    """Raise if the installed SkyPilot would reject ``cloud_config``.
+
+    SkyPilot validates ``~/.sky/config.yaml`` on every load, so writing a section
+    it rejects breaks every later SkyPilot call on the host, not just this launch.
+
+    :param cloud_config: The environment's ``cloud_config``, or ``None``.
+    :param env_name: The environment name, for the error.
+    :raises SkypilotConfigUnsupportedError: If SkyPilot's config schema rejects it.
+    """
+    if not cloud_config:
+        return
+    try:
+        from sky import exceptions as sky_exceptions
+        from sky.utils import common_utils, schemas
+    except ImportError:  # no SkyPilot to load the file either
+        return
+    try:
+        common_utils.validate_schema(
+            cloud_config, schemas.get_config_schema(), skip_none=False
+        )
+    except sky_exceptions.InvalidSkyPilotConfigError as e:
+        # Not chained: failure reasons report the root cause, which must be this.
+        raise SkypilotConfigUnsupportedError(
+            f"environment '{env_name}' has a "
+            f"{SkypilotConfigUnsupportedError.MARKER}: {e}"
+        ) from None
+
+
 def merge_cloud_config(
     cloud_config: Optional[Dict], env_name: str, home: Optional[Path] = None
 ) -> bool:
@@ -1022,7 +1055,10 @@ def merge_cloud_config(
     :param env_name: The contributing environment name (recorded and logged).
     :param home: Home dir override (tests).
     :returns: Whether ``~/.sky/config.yaml`` changed.
+    :raises SkypilotConfigUnsupportedError: If SkyPilot rejects ``cloud_config``;
+        nothing is written.
     """
+    validate_cloud_config(cloud_config, env_name)
     cloud_config = cloud_config or {}
     home_path = _home(home)
     dest = home_path / ".sky" / "config.yaml"
@@ -1306,6 +1342,7 @@ def materialize(
     :param aws_credentials: Inline AWS credential profiles, or ``None``.
     :param secrets: Secret name -> value mapping for field resolution.
     :param home: Home dir override (tests).
+    :raises SkypilotConfigUnsupportedError: If SkyPilot rejects ``cloud_config``.
     """
     if ssh:
         for cloud in ("slurm", "lsf"):
