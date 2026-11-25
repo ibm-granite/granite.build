@@ -1342,6 +1342,7 @@ def materialize(
     :param aws_credentials: Inline AWS credential profiles, or ``None``.
     :param secrets: Secret name -> value mapping for field resolution.
     :param home: Home dir override (tests).
+    :raises SkypilotConfigUnsupportedError: If SkyPilot rejects ``cloud_config``.
     """
     if ssh:
         for cloud in ("slurm", "lsf"):
