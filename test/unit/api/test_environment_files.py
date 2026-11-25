@@ -39,7 +39,7 @@ from gbserver.api.environment_files_paths import (
     parse_gecos_email,
     parse_group_members,
 )
-from gbserver.api.lsf_tunnel import LsfTunnelConfig
+from gbserver.api.login_tunnel import LsfTunnelConfig
 from gbserver.types.constants import EnvironmentFilesConfig
 
 # The one supported environment (today) and a configured stand-in for it.
