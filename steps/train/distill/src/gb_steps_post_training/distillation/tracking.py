@@ -67,6 +67,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit
 
 # The config surface. These names are fields on gold.py's `CustomArguments`, and this tuple is
 # the single source of truth for them: the launcher's preflight reads the yaml through THIS
@@ -425,6 +426,38 @@ def clearml_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, s
     return False, "no CLEARML_API_* env vars and no clearml.conf with a key pair"
 
 
+# wandb >= 0.31's default server, and the W&B API host behind each CoreWeave Forge host
+# (wandb/sdk/lib/urls.py, DEFAULT_BASE_URL and FORGE_HOSTS, in wandb 0.31.2).
+WANDB_DEFAULT_BASE_URL = "https://api.forge.coreweave.com"
+WANDB_FORGE_HOSTS = {
+    "forge.coreweave.com": "api.wandb.ai",
+    "qa.forge.coreweave.com": "api.qa.wandb.ai",
+}
+
+
+def wandb_netrc_machines(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """The ~/.netrc machines wandb reads an API key from, in the order it tries them.
+
+    wandb 0.31.2 (wbnetrc.read_netrc_auth_with_source) looks up the netloc of its base_url,
+    then, for a Forge base_url, the W&B API host behind it. `wandb login` writes the entry
+    under the base_url's netloc, so since wandb 0.31 a fresh login writes
+    `machine api.forge.coreweave.com`, while one made before it wrote `machine api.wandb.ai`;
+    wandb accepts either. base_url comes from WANDB_BASE_URL here; a base_url set only in a
+    wandb settings file is not read.
+    """
+    base = (environ.get("WANDB_BASE_URL") or "").strip() or WANDB_DEFAULT_BASE_URL
+    parts = urlsplit(base)
+    netloc = parts.netloc
+    # urls.normalize_forge_base_url: the Forge proxy form is the api. host.
+    if parts.hostname in WANDB_FORGE_HOSTS and parts.path.rstrip("/") == "/api/wandb":
+        netloc = f"api.{parts.hostname}"
+    machines = [netloc] if netloc else []
+    for forge, upstream in WANDB_FORGE_HOSTS.items():
+        if netloc == f"api.{forge}":
+            machines.append(upstream)
+    return tuple(machines)
+
+
 def wandb_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, str]:
     if environ.get("WANDB_API_KEY"):
         return True, "WANDB_API_KEY in the environment"
@@ -433,12 +466,13 @@ def wandb_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, str
         text = netrc.read_text(errors="replace")
     except OSError:
         text = ""
-    # `machine api.wandb.ai` followed by a password somewhere in the same entry.
-    if re.search(r"machine\s+api\.wandb\.ai", text) and re.search(
-        r'password\s+"?[^"\s]', text
-    ):
-        return True, f"{netrc} (machine api.wandb.ai)"
-    return False, "no WANDB_API_KEY and no ~/.netrc entry for api.wandb.ai"
+    machines = wandb_netrc_machines(environ)
+    # `machine <host>` followed by a password somewhere in the same entry.
+    if re.search(r'password\s+"?[^"\s]', text):
+        for m in machines:
+            if re.search(rf"machine\s+{re.escape(m)}(?!\S)", text):
+                return True, f"{netrc} (machine {m})"
+    return False, f"no WANDB_API_KEY and no ~/.netrc entry for {' or '.join(machines)}"
 
 
 def is_offline(backend: str, environ: Mapping[str, str]) -> bool:
@@ -976,6 +1010,21 @@ def self_test() -> int:
         ok, where = wandb_credentials({}, h)
         check(
             "netrc entry for api.wandb.ai is detected", ok and ".netrc" in where, where
+        )
+        # wandb >= 0.31's `wandb login` writes its default server's host, not api.wandb.ai.
+        (h / ".netrc").write_text(
+            "machine api.forge.coreweave.com\n  login user\n  password abc123\n"
+        )
+        ok, where = wandb_credentials({}, h)
+        check(
+            "netrc entry for api.forge.coreweave.com is detected",
+            ok and "api.forge.coreweave.com" in where,
+            where,
+        )
+        # ...but not when WANDB_BASE_URL names api.wandb.ai: wandb then reads only that entry.
+        check(
+            "forge netrc entry is not credentials for WANDB_BASE_URL=https://api.wandb.ai",
+            not wandb_credentials({"WANDB_BASE_URL": "https://api.wandb.ai"}, h)[0],
         )
         (h / ".netrc").write_text(
             "machine example.com\n  login user\n  password abc123\n"
