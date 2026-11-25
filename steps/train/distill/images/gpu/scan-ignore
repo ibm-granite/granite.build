@@ -220,6 +220,12 @@ CVE-2026-78669
 CVE-2026-84304
 CVE-2026-84445
 CVE-2026-97031
+# GO-2026-5932: golang.org/x/crypto/openpgp is unmaintained (Go vuln DB; no CVE alias,
+# no severity score, so trivy reports it as UNKNOWN; the "fix" is a deprecation
+# pseudo-version of x/crypto). Found once the trivy gate also checked UNKNOWN. Whether
+# wandb-core imports openpgp at all is not verified; accepted on the same grounds as the
+# ids above, and removed by the same raise (#752). Until 2027-05-31.
+GO-2026-5932
 
 # ray 2.58.0 (a vllm 0.11.0 dependency) vendors aiohttp 3.14.3 in
 # ray/_private/runtime_env/agent/thirdparty_files and Java jars (jackson 2.18.8, guava

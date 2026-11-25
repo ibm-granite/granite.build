@@ -53,9 +53,29 @@ unreachable, it skips.
 
 ```bash
 make lock                                  # after editing requirements.in
-make image publish-image IMAGE_VERSION=<v> # build and push gb-step-hf-export:<v>
+make scan-lock                             # osv-scanner on requirements.lock; no build needed
+make image scan-image IMAGE_VERSION=<v>    # build, then scan-lock + trivy on the built image
+make image publish-image IMAGE_VERSION=<v> # build, scan, push quay.io/granitebuild/steps/aux/hf-export:<v>
 make publish-step IMAGE_VERSION=<v>        # write configurations/.../steps/aux/hf-export
 ```
 
 Bump `IMAGE_VERSION` in the Makefile with each image change; `publish-image` refuses to
 overwrite an existing tag.
+
+`publish-image` runs `scan-lock` and `scan-image` first and pushes only if both pass, so an
+unscanned tag is never pushed (`SKIP_SCAN=true` skips them). The gate is the one the
+distillation images use (`steps/train/distill/Makefile`): it fails on a fixable vulnerability
+at `SCAN_SEVERITY` (default `HIGH`) or above, and on a fixable one with no score. Both
+scanners run as containers pinned by digest (osv-scanner, and trivy 0.76.2); trivy's database
+is cached under `SCAN_CACHE`. Before the gate, trivy prints a report of every `HIGH` and
+above finding, fixed or not. Accepted findings go in [`scan-ignore`](scan-ignore), one id per
+line with the reason, the issue that removes it and an expiry; both scanners read it. Neither
+the Makefile nor `scan-ignore` is published, so changing them needs no `make publish-step`.
+
+`scan-image` scans whatever image is tagged `$(IMAGE_REF)` in local storage. Because
+`IMAGE_VERSION` is pinned, a local `make image` takes the published tag's name; to scan the
+published image instead, pull it first:
+
+```bash
+podman pull quay.io/granitebuild/steps/aux/hf-export:<IMAGE_VERSION> && make scan-image
+```
