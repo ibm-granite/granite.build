@@ -107,6 +107,7 @@ endef
 # push-image <image-ref>: only a tag the registry reports absent; `unknown` is refused
 # too, so a broken check never turns into an overwrite.
 define push-image
+	@$(if $(filter true,$(SKIP_SCAN)),echo "[publish] SKIP_SCAN=true: pushing $(1) without scanning it",true)
 	@status=$$($(TAG_STATUS) "$(1)"); \
 	case "$$status" in \
 		absent) echo "[publish] $(1) is a new tag." ;; \
