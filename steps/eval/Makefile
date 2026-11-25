@@ -25,6 +25,7 @@
 #   make scan-image-nemoskills REGISTRY=...       the image gate on a built image (scan-image-cpu-<family>)
 #   make publish-image-nemoskills REGISTRY=...    scan, then push one, refusing an existing tag
 #   make publish-images REGISTRY=...              the same for all (needs a prior `podman login`)
+#   make scan-images REGISTRY=...                 the image gate on every built image (scan-images-cpu: the CPU ones)
 #   make test-src                                 run the vendored unit tests (no GPU, no network)
 #   make prefetch HF_HOME=/path/to/hf-cache       download the pinned HF datasets into a cache
 #   make check-pins                               verify the dataset pins against the source
@@ -77,6 +78,11 @@ check-severity = $(if $(SEVERITY_UP_$(SCAN_SEVERITY)),,$(error SCAN_SEVERITY=$(S
 # Does a tag exist on its registry (present / absent / unknown)? Manifest only, no pull.
 TAG_STATUS    := $(CURDIR)/../scripts/registry-tag-status.sh
 
+# Shell: set ign to scan-ignore's absolute path if the file exists, else to empty. The
+# recipes pass it quoted, so a SCAN_IGNORE path may hold spaces.
+find-ignore = ign=""; case "$(SCAN_IGNORE)" in /*) ign="$(SCAN_IGNORE)";; *) ign="$(CURDIR)/$(SCAN_IGNORE)";; esac; \
+	if [ -f "$$ign" ]; then echo "[scan] accepting the advisories listed in $$ign"; else ign=""; fi
+
 # scan-image <image-ref> <label>
 define scan-image
 	$(check-severity)
@@ -85,11 +91,9 @@ define scan-image
 	@tar="$(SCAN_CACHE)/$(2)-$(IMAGE_VERSION).tar"; rm -f "$$tar"; \
 	echo "[scan] saving $(1)"; \
 	$(DOCKER) save -o "$$tar" $(1) || { rm -f "$$tar"; exit 1; }; \
-	ign=""; if [ -f $(SCAN_IGNORE) ]; then \
-		ign="-v $(abspath $(SCAN_IGNORE)):/scan/ignore:ro,Z"; \
-		echo "[scan] accepting the advisories listed in $(SCAN_IGNORE)"; fi; \
-	t() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
-		$(TRIVY_IMAGE) image --quiet --input /scan/image.tar --scanners vuln --timeout $(TRIVY_TIMEOUT) \
+	$(find-ignore); \
+	t() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" \
+		$${ign:+-v "$$ign:/scan/ignore:ro,Z"} $(TRIVY_IMAGE) image --quiet --input /scan/image.tar --scanners vuln --timeout $(TRIVY_TIMEOUT) \
 		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
 	echo "[scan] trivy report ($(TRIVY_REPORT_SEVERITY), fixed and unfixed) for $(1)"; \
 	t --severity $(TRIVY_REPORT_SEVERITY) --format table; rc=$$?; \
@@ -117,10 +121,10 @@ define push-image
 	$(DOCKER) push $(1)
 endef
 
-.PHONY: help scan-deps images-cpu publish-images-cpu $(addprefix image-cpu-,$(CPU_FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES)) images publish-images test-src prefetch check-pins $(addprefix image-,$(FAMILIES)) $(addprefix publish-image-,$(FAMILIES)) $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
+.PHONY: help scan-deps scan-images scan-images-cpu images-cpu publish-images-cpu $(addprefix image-cpu-,$(CPU_FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES)) images publish-images test-src prefetch check-pins $(addprefix image-,$(FAMILIES)) $(addprefix publish-image-,$(FAMILIES)) $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
 
 help:
-	@echo "Targets: images, publish-images, image-<family>, scan-image-<family>, publish-image-<family> (and the -cpu- forms), test-src, prefetch, check-pins, scan-deps"
+	@echo "Targets: images, scan-images, publish-images, image-<family>, scan-image-<family>, publish-image-<family> (and the -cpu- forms), test-src, prefetch, check-pins, scan-deps"
 	@echo "Families: $(FAMILIES)"
 	@echo "Set REGISTRY (e.g. quay.io/myorg); IMAGE_VERSION defaults to the git short SHA ($(IMAGE_VERSION))."
 
@@ -131,6 +135,8 @@ endef
 images: $(addprefix image-,$(FAMILIES)) $(addprefix image-cpu-,$(CPU_FAMILIES))
 images-cpu: $(addprefix image-cpu-,$(CPU_FAMILIES))
 publish-images-cpu: $(addprefix publish-image-cpu-,$(CPU_FAMILIES))
+scan-images: $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
+scan-images-cpu: $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
 publish-images: $(addprefix publish-image-,$(FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES))
 
 $(addprefix image-cpu-,$(CPU_FAMILIES)): image-cpu-%:
@@ -197,15 +203,13 @@ scan-deps:
 	$(check-severity)
 	@mkdir -p "$(SCAN_CACHE)/trivy"
 	@rc=0; \
-	ign=""; if [ -f $(SCAN_IGNORE) ]; then \
-		ign="-v $(abspath $(SCAN_IGNORE)):/scan/ignore:ro,Z"; \
-		echo "[scan] accepting the advisories listed in $(SCAN_IGNORE)"; fi; \
+	$(find-ignore); \
 	for f in src/core/uv.lock $$(ls */*requirements*.txt 2>/dev/null); do \
 	  echo "== $$f (fixable $(TRIVY_GATE_SEVERITY))"; \
 	  d=$$(mktemp -d "$(SCAN_CACHE)/deps.XXXXXX") || exit 1; \
 	  case "$$f" in *.txt) cp "$$f" "$$d/requirements.txt";; *) cp "$$f" "$$d/";; esac || { rm -rf "$$d"; exit 1; }; \
-	  $(DOCKER) run --rm -v "$$d:/scan/src:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
-	    $(TRIVY_IMAGE) fs --quiet --scanners vuln --timeout $(TRIVY_TIMEOUT) \
+	  $(DOCKER) run --rm -v "$$d:/scan/src:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" \
+	    $${ign:+-v "$$ign:/scan/ignore:ro,Z"} $(TRIVY_IMAGE) fs --quiet --scanners vuln --timeout $(TRIVY_TIMEOUT) \
 	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed $${ign:+--ignorefile /scan/ignore} \
 	    --exit-code 3 --format table /scan/src; frc=$$?; \
 	  rm -rf "$$d"; \
