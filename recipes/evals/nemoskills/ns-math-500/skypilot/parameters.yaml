@@ -29,7 +29,9 @@ IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:1ed3f370"
 LIMIT: ""
 REPEATS: ""
 WORKERS: 32
-OPTIONS: "benchmark=math-500"
+# Extra options; the ns benchmark itself (benchmark=math-500) is fixed in
+# build.yaml, which appends it to these.
+OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Dataset (the bridge's required pin) ─────────────────────────────

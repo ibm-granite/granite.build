@@ -35,8 +35,9 @@ REPEATS: ""
 # Upstream's pipeline runs one service's tasks serially (the module validates
 # workers to 1); run the three services as separate targets for parallelism.
 WORKERS: 1
-# e.g. "task_suite=easy" (the 10-task suite), "timeout=1800" (seconds per task).
-OPTIONS: "service=filesystem task_suite=easy"
+# Extra options, e.g. "timeout=1800" (seconds per task); the selection itself
+# (service=filesystem task_suite=easy) is fixed in build.yaml, which appends it to these.
+OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 # The agent requests max_tokens=32768 per turn; leave headroom for the prompt +
 # tools schema. Empty = vLLM's model default.

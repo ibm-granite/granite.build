@@ -28,7 +28,9 @@ IMAGE_CPU: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:136b0f80"
 LIMIT: ""
 REPEATS: ""
 WORKERS: 8
-OPTIONS: "categories=multi_turn"
+# Extra options; the categories themselves (categories=multi_turn) are fixed in
+# build.yaml, which appends them to these.
+OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Web search ───────────────────────────────────────────────────────
