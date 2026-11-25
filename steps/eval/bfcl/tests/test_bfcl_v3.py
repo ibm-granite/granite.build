@@ -56,24 +56,46 @@ def _write_results(root, ids, category="simple", registry=bfcl_v3_child.REGISTRY
         "".join(json.dumps({"id": i, "result": [{"f": "{}"}]}) + "\n" for i in ids))
 
 
-def _write_scores(root, overall="40.00%"):
-    d = root / "score" / bfcl_v3_child.REGISTRY_NAMES["fc"]
+def _write_scores(root, overall="40.00%", handler="fc"):
+    scores = bfcl_v3_child.score_dir(root, handler)
+    d = scores / bfcl_v3_child.REGISTRY_NAMES[handler]
     d.mkdir(parents=True, exist_ok=True)
     (d / "BFCL_v3_simple_score.json").write_text(json.dumps({"accuracy": 0.5, "correct_count": 1, "total_count": 2}) + "\n")
     cols = ["Rank", "Overall Acc", "Model", *bfcl_v3.OVERALL_GROUPS.values()]
-    (root / "score" / "data_overall.csv").write_text(
+    (scores / "data_overall.csv").write_text(
         ",".join(cols) + "\n" + ",".join(["1", overall, "m", "50.00%", "N/A", "N/A", "N/A", "N/A"]) + "\n")
-    (root / "score" / "data_non_live.csv").write_text("Rank,Model,Non_Live Overall Acc\n1,m,25.00%\n")
+    (scores / "data_non_live.csv").write_text("Rank,Model,Non_Live Overall Acc\n1,m,25.00%\n")
 
 
 def test_read_overall_and_category_scores(tmp_path):
     _write_scores(tmp_path)
-    out = bfcl_v3.read_overall(tmp_path / "score")
+    scores = bfcl_v3_child.score_dir(tmp_path)
+    assert scores == tmp_path / "score" / "fc"
+    out = bfcl_v3.read_overall(scores)
     assert out["overall"] == pytest.approx(0.40)
     assert out["groups"]["non_live_ast"] == pytest.approx(0.5) and out["groups"]["non_live"] == pytest.approx(0.25)
     assert out["groups"]["live"] is None
-    per = bfcl_v3.read_category_scores(tmp_path / "score" / bfcl_v3_child.REGISTRY_NAMES["fc"])
+    per = bfcl_v3.read_category_scores(scores / bfcl_v3_child.REGISTRY_NAMES["fc"])
     assert per == {"simple": {"accuracy": 0.5, "correct_count": 1, "total_count": 2}}
+
+
+def test_each_handler_scores_in_its_own_dir(tmp_path, monkeypatch, v3_python):
+    """Both handlers' results in one run dir (an old-layout score dir too): each
+    score phase reads only its own handler's scores."""
+    root = tmp_path / "out" / "bfcl"
+    old = root / "score" / bfcl_v3_child.REGISTRY_NAMES["fc"]  # the layout before score/<handler>/
+    old.mkdir(parents=True)
+    (old / "BFCL_v3_simple_score.json").write_text(json.dumps({"accuracy": 0.0, "correct_count": 0, "total_count": 2}))
+    for handler, overall in (("fc", "10.00%"), ("legacy-granite", "20.00%")):
+        _write_results(root, ["simple_0", "simple_1"], registry=bfcl_v3_child.REGISTRY_NAMES[handler])
+        _write_scores(root, overall, handler)
+    (root / bfcl_v3_child.TEST_IDS_FILE).write_text(json.dumps({"simple": ["simple_0", "simple_1"]}))
+    monkeypatch.setattr(bfcl_v3.subprocess, "run", lambda cmd, env, check: type("P", (), {"returncode": 0})())
+    for handler, value in (("fc", 0.1), ("legacy-granite", 0.2)):
+        cfg = RunConfig(model="m", output_dir=tmp_path / "out", phase="score", options={"handler": handler})
+        out = bfcl_v3.BFCLv3(cfg).run("", "m")
+        assert out["value"] == pytest.approx(value) and out["handler"]["name"] == handler
+        assert out["per_category"]["simple"]["accuracy"] == 0.5
 
 
 def test_prune_and_missing_use_the_flat_v3_layout(tmp_path):
@@ -212,10 +234,10 @@ def test_real_child_scores_with_v3_formula(tmp_path):
         json.dumps({"id": "irrelevance_0", "result": "I cannot help with that."}) + "\n"
         + json.dumps({"id": "irrelevance_1", "result": [{"f": "{}"}]}) + "\n")
     subprocess.run(child, env=env, check=True)
-    per = bfcl_v3.read_category_scores(root / "score" / bfcl_v3_child.REGISTRY_NAMES["fc"])
+    per = bfcl_v3.read_category_scores(bfcl_v3_child.score_dir(root) / bfcl_v3_child.REGISTRY_NAMES["fc"])
     assert per["simple"] == {"accuracy": 1.0, "correct_count": 2, "total_count": 2}
     assert per["irrelevance"] == {"accuracy": 0.5, "correct_count": 1, "total_count": 2}
-    out = bfcl_v3.read_overall(root / "score")
+    out = bfcl_v3.read_overall(bfcl_v3_child.score_dir(root))
     # v3: Overall = mean(live, non-live, multi-turn); non-live = unweighted mean of
     # simple (mean of python/java/js), multiple, parallel, parallel multiple and
     # irrelevance; missing categories count as 0.
@@ -406,7 +428,7 @@ def test_real_child_scores_legacy_text_results(tmp_path):
     (d / "BFCL_v3_simple_result.json").write_text("\n".join(lines) + "\n")
     env = {**os.environ, "BFCL_PROJECT_ROOT": str(root), "OPENAI_API_KEY": "EMPTY"}
     subprocess.run([V3_PYTHON, "-I", str(bfcl_v3.CHILD), str(root / bfcl_v3.CHILD_CONFIG)], env=env, check=True)
-    per = bfcl_v3.read_category_scores(root / "score" / bfcl_v3_child.REGISTRY_NAMES["legacy-granite"])
+    per = bfcl_v3.read_category_scores(bfcl_v3_child.score_dir(root, "legacy-granite") / bfcl_v3_child.REGISTRY_NAMES["legacy-granite"])
     assert per["simple"] == {"accuracy": 1.0, "correct_count": 2, "total_count": 2}
 
 
@@ -525,6 +547,27 @@ def test_vllm_tokens_probe_fails_loudly_without_vllms_endpoints(fake_vllm, quick
 
 
 @needs_v3_venv
+def test_real_child_both_handlers_share_a_run_dir(tmp_path, fake_vllm):
+    """fc, then legacy-granite, then fc again into one run dir (the default
+    RUN_NAME): BFCL scores every model under its score dir, so each handler
+    scores in its own, with one model row in its data_overall.csv."""
+    root = tmp_path / "bfcl"
+    root.mkdir()
+    env = {**os.environ, "BFCL_PROJECT_ROOT": str(root), "OPENAI_API_KEY": "EMPTY", "OPENAI_BASE_URL": fake_vllm.base_url}
+    for handler, phase in (("fc", "all"), ("legacy-granite", "all"), ("fc", "score")):
+        cfg = {"served_model_name": "m", "categories": ["irrelevance"], "limit": 2, "num_threads": 1,
+               "sampling": {}, "include_input_log": False, "phase": phase, "handler": handler}
+        (root / bfcl_v3.CHILD_CONFIG).write_text(json.dumps(cfg))
+        proc = subprocess.run([V3_PYTHON, "-I", str(bfcl_v3.CHILD), str(root / bfcl_v3.CHILD_CONFIG)], env=env,
+                              capture_output=True, text=True, check=False)
+        assert proc.returncode == 0, (handler, phase, proc.stderr[-2000:])
+        scores = bfcl_v3_child.score_dir(root, handler)
+        assert bfcl_v3.read_overall(scores)["groups"]["irrelevance"] is None  # one row, its own model
+        assert [p.name for p in scores.iterdir() if p.is_dir()] == [bfcl_v3_child.REGISTRY_NAMES[handler]]
+    assert set(bfcl_v3_child.missing_results(root, "fc") + bfcl_v3_child.missing_results(root, "legacy-granite")) == set()
+
+
+@needs_v3_venv
 def test_real_legacy_child_refuses_a_server_without_tokenize(tmp_path, fake_vllm):
     """An OpenAI-compatible server that is not vLLM: the generating child fails at
     startup and writes no results (no wrong answers, no plausible score)."""
@@ -557,7 +600,7 @@ def test_real_child_generates_and_scores_end_to_end(tmp_path, fake_vllm, handler
     env = {**os.environ, "BFCL_PROJECT_ROOT": str(root), "OPENAI_API_KEY": "EMPTY", "OPENAI_BASE_URL": base_url}
     subprocess.run([V3_PYTHON, "-I", str(bfcl_v3.CHILD), str(root / bfcl_v3.CHILD_CONFIG)], env=env, check=True)
     assert bfcl_v3_child.missing_results(root, handler) == []
-    per = bfcl_v3.read_category_scores(root / "score" / bfcl_v3_child.REGISTRY_NAMES[handler])
+    per = bfcl_v3.read_category_scores(bfcl_v3_child.score_dir(root, handler) / bfcl_v3_child.REGISTRY_NAMES[handler])
     assert set(per) == {"simple", "multi_turn_base"} and all(s["total_count"] == 1 for s in per.values())
     gets = {p for p, r in seen if r is None}
     assert gets == (set() if handler == "fc" else {"/v1/models"})  # max_model_len, read once at startup

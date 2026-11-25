@@ -61,6 +61,14 @@ def result_files(root: Path, handler: str = DEFAULT_HANDLER) -> list[Path]:
     return sorted((root / "result" / registry_name(handler)).glob(f"{RESULT_PREFIX}*_result.json"))
 
 
+def score_dir(root: Path, handler: str = DEFAULT_HANDLER) -> Path:
+    """BFCL's score dir for one handler: score/<handler>/, holding <model>/ and the
+    CSVs. BFCL scores every model under its score dir into one data_overall.csv,
+    so handlers that share a run dir must not share a score dir."""
+    registry_name(handler)
+    return root / "score" / handler
+
+
 def selected_ids(root: Path) -> list[str]:
     ids = json.loads((root / TEST_IDS_FILE).read_text())
     return [i for cat_ids in ids.values() for i in cat_ids]
@@ -426,7 +434,9 @@ def evaluate(cfg: dict) -> None:
 
     if cfg["limit"] is not None:
         restrict_evaluation_to(set(cfg["selected"]))
-    evaluation_main([registry_name(cfg["handler"])], cfg["categories"], None, None)
+    scores = score_dir(Path(os.environ["BFCL_PROJECT_ROOT"]), cfg["handler"])
+    scores.mkdir(parents=True, exist_ok=True)
+    evaluation_main([registry_name(cfg["handler"])], cfg["categories"], None, str(scores))
 
 
 def child_main(config_path: str) -> None:

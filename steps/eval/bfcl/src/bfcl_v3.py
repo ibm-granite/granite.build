@@ -3,7 +3,7 @@
 The v3 leaderboard's own harness, data and formula: ``bfcl-eval==2025.8.6.2``,
 the last PyPI release before BFCL V4 (2025.8.25). Its 17 categories (4,441
 entries: non-live AST, live AST, relevance / irrelevance, multi-turn) and its
-"Overall Acc" (score/data_overall.csv) define the number: the unweighted mean
+"Overall Acc" (score/<handler>/data_overall.csv) define the number: the unweighted mean
 of the live overall (entry-weighted over the six live categories), the
 non-live overall (unweighted over simple, multiple, parallel, parallel
 multiple and irrelevance) and the multi-turn overall (unweighted over four).
@@ -50,6 +50,7 @@ from granite_evals.benchmarks.bfcl_v3_child import (
     missing_results,
     registry_name,
     result_files,
+    score_dir,
     selected_ids,
 )
 from granite_evals.registry import Benchmark, pass_at_k_record, register
@@ -187,9 +188,9 @@ class BFCLv3(Benchmark):
             return {"n": generated, "missing": len(missing), "categories": categories, "handler": handler,
                     "sampling": child["sampling"] or "checkpoint generation_config", "harness_versions": versions}
 
-        score_dir = root / "score"
-        per_category = read_category_scores(score_dir / registry_name(handler))
-        overall = read_overall(score_dir)
+        scores = score_dir(root, handler)
+        per_category = read_category_scores(scores / registry_name(handler))
+        overall = read_overall(scores)
         for cat, s in per_category.items():
             log.info("%s: %s accuracy=%.4f (%d/%d)", self.id, cat, s["accuracy"], s["correct_count"], s["total_count"])
         log.info("%s: overall_accuracy=%.4f", self.id, overall["overall"])
