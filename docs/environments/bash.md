@@ -17,7 +17,7 @@ environment is named `bash`.
 > **Standalone only.** Because the step runs as a process on the gbserver host itself, the bash
 > environment is available only on a standalone server (`GB_ENVIRONMENT=STANDALONE`), which runs on
 > your own machine. On any other server a build whose target uses it fails with
-> `BashEnvironmentNotAllowed`; use a container or cluster environment (docker, k8s, skypilot, lsf)
+> `BashEnvironmentNotAllowed`; use a container or cluster environment (docker, k8s, skypilot)
 > instead.
 
 ## `environment.yaml`

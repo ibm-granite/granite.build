@@ -99,7 +99,7 @@ launcher vars are standardized on the `GB_` prefix; for backwards compatibility 
 
 Declare the space secrets a step needs under `config.docker.secrets`; each is resolved in the build
 server and passed to the container as an environment variable. Only declared secrets are injected,
-as on LSF, SkyPilot and K8s (unlike [bash](bash.md), which exports every space secret), and a
+as on SkyPilot and K8s (unlike [bash](bash.md), which exports every space secret), and a
 declared secret missing from the space fails the launch. `secret_name` defaults to `env_name`
 verbatim. A `config.docker.env` or launcher `env` entry of the same name wins over the secret.
 

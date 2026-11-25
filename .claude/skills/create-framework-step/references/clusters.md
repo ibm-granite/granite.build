@@ -10,7 +10,6 @@ For a variant on the same cluster, suffix the dir: `slurm-pii`, `aws-tok`.
 | `slurm` | `space://environments/skypilot/slurm/local` | `../../space` | `pytest.mark.skypilot_integration` | `_slurm_cluster_reachable()` from `integration.environment.test_skypilot_slurm_e2e` | `test-setup` → `$(MAKE) -C $(REPO_ROOT) slurm-setup` | Local Docker SLURM. **No Pyxis**: custom-image steps can't run. `hf://` input is a separate hfpull step (+1 `step_count`). Each step is its own node, so cross-step paths must be shared (`env:///shared/...`). |
 | `aws` | `space://environments/skypilot/aws` | `../../space` | `pytest.mark.skypilot_integration` | `aws_credentials_present()` from `gbserver.environment.skypilot` | export AWS creds | Real EC2 (costs money). `hf://` pull is **inline** (no extra step). Custom-image steps OK (image must be in a pullable registry). |
 | `kube` | `space://environments/skypilot/kubernetes/local` | `../../space` | `pytest.mark.skypilot_integration` | `kind_cluster_reachable()`, reason `kind_skip_reason()`, plus `@KUBE_XDIST_GROUP` (all from `libgbtest.kube`) | `test-setup-kube` → `$(MAKE) -C $(REPO_ROOT) kube-setup` | Local kind cluster. Shared volume at `/shared`. hfpull is separate. |
-| `lsf-bluevela` | `space://environments/skypilot/lsf/ibm-bluevela` | `../../space` | `pytest.mark.ibm` | `RUNNING_IN_CICD` skip (see below) + `@pytest.mark.xdist_group(name="buildtest_bv")` | `~/.ssh/ibm-bluevela.key` locally | IBM infra through the local space, so still `ibm`. Enroot for images. |
 | `slurm-bluevela` | `space://environments/skypilot/slurm/bluevela` (or `file:.` for a custom copy, see below) | `../../space` | `[pytest.mark.skypilot_integration, pytest.mark.ibm]` | `RUNNING_IN_CICD` skip + an SSH-key `skipif`; **no** `xdist_group` (`skypilot_integration` already serializes it, and another group is a `UsageError` under `--dist=loadgroup`) | `~/.ssh/ibm-bluevela.key` locally | The step resolves from **your source**. To test environment changes, ship a copy as a custom test environment. CPU-only steps need `zone: cpu` + `launcher_config.sbatch_options.constraint: null` (gpu-mid rejects GPU-less jobs). Shared partition queueing, so use a long `timeout_minutes` and the timeout override. hfpull is separate. |
 
 **`hf://` outputs, on every cluster.** Each one is pushed by its own hfpush step, so the
@@ -30,8 +29,8 @@ from libgbtest.kube import KUBE_XDIST_GROUP, kind_cluster_reachable, kind_skip_r
 
 **BlueVela memory.** BlueVela enforces per-job memory. On SLURM gbserver sends
 `compute_config.total_memory_per_node` as `--mem` only on clusters that track memory (BlueVela
-does); without it SkyPilot defaults to 1 GB per CPU (4 GB per CPU with GPUs). LSF never applies
-it. Pin the request in the fixture's step config, which wins on every cluster:
+does); without it SkyPilot defaults to 1 GB per CPU (4 GB per CPU with GPUs). Pin the
+request in the fixture's step config, which wins on every cluster:
 `launcher_config: {resources: {memory: "16"}}` (bare GiB, as a string). See
 `docs/environments/skypilot-slurm.md#step-memory-total_memory_per_node`.
 

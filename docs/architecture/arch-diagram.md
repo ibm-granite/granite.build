@@ -35,13 +35,11 @@ flowchart TB
     subgraph Environments["Environment Layer"]
         ENV["Environment\n«abstract»\nlaunch / monitor / cleanup\nloadasset / pushasset"]
         K8S["K8s\nJob pods, kubectl"]
-        LSF["LSF\nbsub, SSH tunnel"]
         DOCKER["Docker"]
         BASH["Bash"]
         RUNPOD["RunPod"]
         SKYPILOT["SkyPilot"]
         ENV --> K8S
-        ENV --> LSF
         ENV --> DOCKER
         ENV --> BASH
         ENV --> RUNPOD
@@ -89,7 +87,6 @@ flowchart TB
     subgraph External["External Systems"]
         GH["GitHub Enterprise\nPR comments, status"]
         K8SAPI["Kubernetes API"]
-        LSFAPI["LSF Cluster"]
         HFHUB["HuggingFace Hub"]
         IBMCOS["IBM COS"]
     end
@@ -109,7 +106,6 @@ flowchart TB
     ENV -->|"load/push assets"| ASB
     T -->|"has"| ENV
     K8S -->|"submits jobs"| K8SAPI
-    LSF -->|"submits jobs"| LSFAPI
     HFS -->|"fetch/push models"| HFHUB
     COS -->|"read/write objects"| IBMCOS
     BRJ -->|"dispatches pod"| K8SAPI
@@ -127,11 +123,11 @@ flowchart TB
     class BW,ABR,BRJ,BRP,BR orchestration
     class B,T,TS,S definition
     class BRUN,TR,TSR runtime
-    class ENV,K8S,LSF,DOCKER,BASH,RUNPOD,SKYPILOT environment
+    class ENV,K8S,DOCKER,BASH,RUNPOD,SKYPILOT environment
     class ASSET,ASB,FS,GS,COS,HFS,LHS,ENVS asset
     class SAS,SB,STR,SSTR,SQLB,SQLITEB storage
     class EQ,BE event
-    class GH,K8SAPI,LSFAPI,HFHUB,IBMCOS external
+    class GH,K8SAPI,HFHUB,IBMCOS external
 ```
 
 ## Key Interaction Flows

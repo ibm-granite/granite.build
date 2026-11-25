@@ -21,7 +21,7 @@ What decides which environments a `steps/` folder serves is the folder that hold
 - **An environment's own `steps/`.**  A `steps/` folder next to an `environment.yaml` holds that environment's own steps, and serves **only that environment**: the one whose directory it is.  `configurations/assets/environments/skypilot/aws/steps/` serves `skypilot/aws` and no other environment, wherever it is listed and even if another environment has the same class and sub-type.  It is **not inherited** by environments nested below it either: `skypilot/kubernetes` is itself an environment, so a `kubernetes/steps/` would serve it and not `skypilot/kubernetes/local`.
 - **A shared `steps/`.**  Any other `steps/` folder — a base's top-level `steps/` (the builtins, a generated step space, a shared step repo), or one in a folder that isn't an environment's, such as `configurations/assets/environments/skypilot/steps/` — is shared.  It serves every environment whose class (and sub-type, below) the step's own `environment_configs` admit.
 
-Every step needs `environment_configs` listing the active environment's class to be a candidate, wherever it lives.  A step with no `environment_configs` has no launcher for any environment: the build picks the launcher from the step's own `environment_configs`, so the basestep's `k8s` and `Lsf` entries don't supply one.  Such a step is never selected and the URI is reported as unresolvable.
+Every step needs `environment_configs` listing the active environment's class to be a candidate, wherever it lives.  A step with no `environment_configs` has no launcher for any environment: the build picks the launcher from the step's own `environment_configs`, so the basestep's own entries don't supply one.  Such a step is never selected and the URI is reported as unresolvable.
 
 So to share one step among several environments, put it in a shared folder and let its `environment_configs` (class, and `subtypes` if needed) say which environments it serves; to give one environment its own variant, put it in that environment's `steps/`:
 
@@ -44,40 +44,39 @@ configurations/assets/environments/skypilot/      # no environment.yaml: its ste
 
 A shared step serves **every** environment of a class its `environment_configs` list.  When environments differ only in compute endpoint they often share one class (all skypilot endpoints are class `Skypilot`), so the class alone can't restrict a shared step to some of them.  An optional **sub-type** provides that discriminator:
 
-- An `environment.yaml` may declare an optional `subtype` — any free-form string (no predefined set; the skypilot endpoints use `kubernetes`/`slurm`/`aws`/`lsf` by convention, mirroring `config.default_cloud`).
-- A step's `environment_configs.<Class>` may declare an optional `subtypes` list.  **Empty (the default) = universal**, matching any env of that class (so builtins and general shared steps keep resolving everywhere).  A **non-empty** list restricts the step to environments whose `subtype` is one of the listed values (exact string match); an env with no `subtype` does not match such a step.  This applies wherever the step lives, including an environment's own `steps/` (where a mismatch is an error, above).  A step in one environment's own `steps/` doesn't need `subtypes` at all: its folder already limits it to that environment, which is how the steps under `skypilot/aws/steps/` and `skypilot/lsf/ibm-bluevela/steps/` are scoped.
+- An `environment.yaml` may declare an optional `subtype` — any free-form string (no predefined set; the skypilot endpoints use `kubernetes`/`slurm`/`aws` by convention, mirroring `config.default_cloud`).
+- A step's `environment_configs.<Class>` may declare an optional `subtypes` list.  **Empty (the default) = universal**, matching any env of that class (so builtins and general shared steps keep resolving everywhere).  A **non-empty** list restricts the step to environments whose `subtype` is one of the listed values (exact string match); an env with no `subtype` does not match such a step.  This applies wherever the step lives, including an environment's own `steps/` (where a mismatch is an error, above).  A step in one environment's own `steps/` doesn't need `subtypes` at all: its folder already limits it to that environment, which is how the steps under `skypilot/aws/steps/` are scoped.
 
 ```yaml
 # environments/skypilot/steps/digit/step.yaml — shared by kubernetes + slurm only
 environment_configs:
   Skypilot:
-    subtypes: [kubernetes, slurm]   # aws / lsf endpoints are excluded
+    subtypes: [kubernetes, slurm]   # aws endpoints are excluded
     ...
 ```
 
-So a single shared `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm/local` but is unresolvable for `skypilot/aws` and `skypilot/lsf/...`.  The filter is applied wherever a copy is found (space root, the ordered search, and the env-agnostic fallback), so a copy excluded by sub-type is never a candidate, whichever base it is in.
+So a single shared `skypilot/steps/digit` is resolved by `skypilot/kubernetes` and `skypilot/slurm/local` but is unresolvable for `skypilot/aws`.  The filter is applied wherever a copy is found (space root, the ordered search, and the env-agnostic fallback), so a copy excluded by sub-type is never a candidate, whichever base it is in.
 
 ## Env-class matching against existing `environment_configs`
 
-The resolver picks a step variant by the env's class name (`Bash`, `Docker`, `K8s`, `Lsf`, `Runpod`, `Skypilot`, ...), read from each candidate `step.yaml`'s existing `environment_configs` keys.  No new field on `step.yaml` is required.  The class-name match is **case-insensitive** (env class `K8s` matches an `environment_configs` key `k8s`).
+The resolver picks a step variant by the env's class name (`Bash`, `Docker`, `K8s`, `Runpod`, `Skypilot`, ...), read from each candidate `step.yaml`'s existing `environment_configs` keys.  No new field on `step.yaml` is required.  The class-name match is **case-insensitive** (env class `K8s` matches an `environment_configs` key `k8s`).
 
 The builtins keep one variant per env class, in an env-class folder `steps/<env-class-lowercase>/<name>/` ([Step names](#step-names-the-env-class-folder-may-be-left-out)):
 
 ```
 src/gbserver/builtins/steps/
 ├── k8s/s3push/step.yaml      # only environment_configs.K8s
-├── lsf/s3push/step.yaml      # only environment_configs.Lsf
 ├── skypilot/s3push/step.yaml # only environment_configs.Skypilot
 └── ...
 ```
 
-When the active env class is `K8s`, `space://steps/s3push` resolves to `steps/k8s/s3push/step.yaml`; when `Lsf`, to `steps/lsf/s3push/step.yaml`.
+When the active env class is `K8s`, `space://steps/s3push` resolves to `steps/k8s/s3push/step.yaml`; when `Skypilot`, to `steps/skypilot/s3push/step.yaml`.
 
 **Within one base, the most specific copy wins.**  When a base has more than one shared copy of a name that admits the active environment, the one whose `environment_configs` declare the **fewest** classes wins, so a per-class copy (`steps/k8s/s3push`, declaring only `K8s`) beats a catch-all beside it that also lists `K8s`.  Two copies in one base that are equally specific raise `Ambiguous space uri` — they are never picked between silently by path.  This applies to every base, not only the builtins.
 
 ## Step names: the env-class folder may be left out
 
-A step's name is its folder path below `steps/`: `<base>/steps/train/openinstruct-sft/` is `space://steps/train/openinstruct-sft`.  The one folder a URI may leave out is an **env-class folder** directly under `steps/`, one of `bash`, `docker`, `k8s`, `lsf`, `runpod`, `skypilot` or `skypilot_managed`.  Any other folder, such as a category (`train/`, `data/`, `distill/`), is part of the name and must be in the URI.
+A step's name is its folder path below `steps/`: `<base>/steps/train/openinstruct-sft/` is `space://steps/train/openinstruct-sft`.  The one folder a URI may leave out is an **env-class folder** directly under `steps/`, one of `bash`, `docker`, `k8s`, `runpod`, `skypilot` or `skypilot_managed`.  Any other folder, such as a category (`train/`, `data/`, `distill/`), is part of the name and must be in the URI.
 
 | Step's folder | URIs that match it |
 |---|---|
