@@ -29,8 +29,11 @@ class pins ``datasets.load_dataset`` on hub ids, ``huggingface_hub``'s
 its header values forwarded, never printed), and a refusal of remote
 ``data_files``/``data_dir`` (``hf://``, ``https://``, ...) given to the local
 ``load_dataset`` builders (``json``, ``csv``, ``parquet``, ...). A checked read
-the recipe does not pin fails the prepare, naming only its http(s) URL. After
-the prepare the run fails unless the recorded reads include the recipe's pin.
+the recipe does not pin fails the prepare, naming only its http(s) URL; an
+uncaught error in prepare.py (a failed ``subprocess.run(..., check=True)``
+prints its argv) is printed with the values of secret-looking environment
+variables and of Authorization/Bearer headers redacted. After the prepare the
+run fails unless the recorded reads include the recipe's pin.
 
 Not intercepted: ``requests``, ``httpx``, the ``wget`` Python package, ``git``,
 ``curl`` and any other subprocess. A prepare that fetches that way still runs,
@@ -259,11 +262,35 @@ def check_local_builder(path, args, kwargs):
             )
 
 
+SECRET_ENV_WORDS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH")
+
+
+def redact(text):
+    """``text`` without the values of secret-looking environment variables
+    (HF_TOKEN, *_API_KEY, ...) and without Authorization/Bearer values: a
+    failed ``subprocess.run(..., check=True)`` in prepare.py prints its argv,
+    and mmau-pro's carries ``Authorization: Bearer $HF_TOKEN``."""
+    import re
+
+    for key, value in os.environ.items():
+        if len(value) >= 8 and any(w in key.upper() for w in SECRET_ENV_WORDS):
+            text = text.replace(value, "<redacted>")
+    text = re.sub(r"(?i)(authorization:\s*)(\w+\s+)?[^\s'\",\]]+", r"\1\2<redacted>", text)
+    return re.sub(r"(?i)(bearer\s+)[^\s'\",\]]+", r"\1<redacted>", text)
+
+
+def redacting_excepthook(kind, value, tb):
+    import traceback
+
+    sys.stderr.write(redact("".join(traceback.format_exception(kind, value, tb))))
+
+
 def install_guards():
     if "GRANITE_NS_READS" not in os.environ:
         return
     import urllib.request
 
+    sys.excepthook = redacting_excepthook
     urllib.request.urlopen = guarded_urlopen
     try:
         import datasets

@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import http.server
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -275,6 +276,51 @@ def test_wget_shim_never_prints_a_secret(tmp_path, monkeypatch, served, argv):
     assert proc.returncode != 0
     assert "granite:" in proc.stderr
     assert SECRET not in proc.stderr + proc.stdout
+
+
+MMAU_PREPARE = (
+    "import os, subprocess\n"
+    "token = os.environ['HF_TOKEN']\n"
+    "subprocess.run(['wget', '--header', f'Authorization: Bearer {token}',\n"
+    "    'https://h.example/data.zip', '-O', 'data.zip'], check=True)\n"
+)
+
+
+def test_a_failed_prepare_never_prints_the_token(tmp_path, monkeypatch, served):
+    """mmau-pro's shape end to end: the shim refuses the unpinned URL, and the
+    prepare's own CalledProcessError (whose message is the wget argv, token
+    included) is printed through the guards' redacting excepthook."""
+    url, _, sha = served
+    out = {}
+
+    def run(ddir):
+        out["proc"] = subprocess.run(
+            [sys.executable, "-c", MMAU_PREPARE],
+            cwd=ddir,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HF_TOKEN": SECRET},
+        )
+        return [{"url": url}]
+
+    _with_prepare(monkeypatch, run)
+    _bench(
+        tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    proc = out["proc"]
+    assert proc.returncode != 0
+    assert "CalledProcessError" in proc.stderr and "<redacted>" in proc.stderr
+    assert SECRET not in proc.stderr + proc.stdout
+
+
+def test_redact(monkeypatch):
+    redact = generic.guard["redact"]
+    monkeypatch.setenv("SOME_API_KEY", "k-0123456789")
+    text = "['wget', '--header', 'Authorization: Bearer abc.def', 'x'] k-0123456789 token=bearer zzz"
+    assert redact(text) == (
+        "['wget', '--header', 'Authorization: Bearer <redacted>', 'x'] <redacted> "
+        "token=bearer <redacted>"
+    )
 
 
 def test_wget_shim_forwards_headers(tmp_path, monkeypatch, served):
