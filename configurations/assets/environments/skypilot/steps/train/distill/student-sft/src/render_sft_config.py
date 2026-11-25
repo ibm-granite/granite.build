@@ -316,6 +316,19 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         # the scratchpad configs never set this key, so relying on the ModelConfig default
         # (None -> whatever transformers picks) is how that check fires on a correct config.
         "attn_implementation": args.attn_implementation,
+        # The student's load dtype, explicit since trl 1.x: ModelConfig.dtype now defaults to
+        # "float32" (trl/trainer/model_config.py:91), where trl 0.26.2 left it None and the
+        # checkpoint's own bfloat16 applied.
+        "dtype": "bfloat16",
+        # What the loss covers, set explicitly through trl's own switches so a trl default
+        # cannot move it. These reproduce the trl 0.26.2 labels: `assistant_masks` (from the
+        # generation markers in KD mode, else the response-template scan) always masks the
+        # loss to assistant tokens, and `completion_mask` (prompt/completion corpora only)
+        # masks the prompt. assistant_only_loss stays False on purpose: True would switch the
+        # non-KD mask to the generation markers, which cover one more token per turn than
+        # the response-template scan, and would make trl swap in its own training template.
+        "completion_only_loss": True,
+        "assistant_only_loss": False,
     }
 
     # use_liger_swiglu_mlp is deliberately NOT emitted: validate() refuses it outright, and
