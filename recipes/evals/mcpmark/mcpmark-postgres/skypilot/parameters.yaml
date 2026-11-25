@@ -10,7 +10,7 @@
 # LIMIT is empty: the full 21-task standard (MCPMark Verified) suite. For a quick
 # functional check, the first N tasks of the easy suite:
 #   gb build start -f recipes/evals/mcpmark/mcpmark-postgres/skypilot/build.yaml --param-file <site.yaml> \
-#     --space <space> --param RUN_NAME=<unique> --param LIMIT=5 --param "OPTIONS=task_suite=easy"
+#     --space <space> --param OUTPUT_ROOT=<root> --param RUN_NAME=<unique> --param LIMIT=5 --param "OPTIONS=task_suite=easy"
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────

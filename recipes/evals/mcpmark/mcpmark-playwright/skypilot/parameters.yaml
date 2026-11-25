@@ -7,7 +7,7 @@
 # LIMIT is empty: the full 4-task standard suite. For a quick functional check, the
 # first task (there is no easy suite to shrink to):
 #   gb build start -f recipes/evals/mcpmark/mcpmark-playwright/skypilot/build.yaml --param-file <site.yaml> \
-#     --space <space> --param RUN_NAME=<unique> --param LIMIT=1
+#     --space <space> --param OUTPUT_ROOT=<root> --param RUN_NAME=<unique> --param LIMIT=1
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────
