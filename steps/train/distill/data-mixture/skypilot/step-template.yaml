@@ -50,7 +50,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/cpu:f8dc46e5"
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/cpu:ebb5a61c"
           # Cloud-agnostic: the build supplies cpus/memory via
           # config.compute_config and config.launcher_config.resources.
           resources: {}
