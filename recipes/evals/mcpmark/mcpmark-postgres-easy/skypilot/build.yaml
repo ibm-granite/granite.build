@@ -1,6 +1,7 @@
 granite.build:
   name: eval-mcpmark-postgres-easy
-  # mcpmark-postgres (mcpmark family). One GPU target: verification runs inline
+  # mcpmark (the generic bridge, mcpmark family) on postgres, easy suite. One GPU
+  # target: verification runs inline
   # with generation (--phase all), so there is no CPU score target.
   retries:
     max_retries: $${MAX_RETRIES}

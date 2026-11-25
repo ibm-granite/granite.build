@@ -1,9 +1,10 @@
 granite.build:
   name: eval-officeqa-pro-warmcache
-  # officeqa-pro (officeqa family). Two targets on one output dir:
-  # `officeqa-pro-generate` holds a GPU only while the model generates, and
-  # `officeqa-pro` grades that output on a CPU node (no vLLM), binding the
-  # generate target, so selecting `officeqa-pro` runs both.
+  # officeqa-pro (officeqa family) from a warm HF cache. Two targets on one
+  # output dir: `officeqa-pro-warmcache-generate` holds a GPU only while the
+  # model generates, and `officeqa-pro-warmcache` grades that output on a CPU
+  # node (no vLLM), binding the generate target, so selecting
+  # `officeqa-pro-warmcache` runs both.
   #
   # LICENSE NOTE: the questions and the parsed corpus are CC-BY-SA-4.0 behind the
   # Hub's click-through gate, so nothing is baked into the image or mirrored.

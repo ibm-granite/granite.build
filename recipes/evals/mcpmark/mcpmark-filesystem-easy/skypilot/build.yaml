@@ -1,6 +1,7 @@
 granite.build:
   name: eval-mcpmark-filesystem-easy
-  # mcpmark-filesystem (mcpmark family). One GPU target: verification runs inline
+  # mcpmark (the generic bridge, mcpmark family) on filesystem, easy suite. One GPU
+  # target: verification runs inline
   # with generation (--phase all), so there is no CPU score target.
   retries:
     max_retries: $${MAX_RETRIES}

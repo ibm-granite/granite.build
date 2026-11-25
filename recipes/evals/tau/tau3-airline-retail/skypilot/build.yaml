@@ -1,6 +1,6 @@
 granite.build:
   name: eval-tau3-airline-retail
-  # tau3-retail (tau family). Two targets on one output dir: `tau3-retail-generate` holds a GPU only while the model generates, and `tau3-retail` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `tau3-retail` runs both.
+  # tau3 (the generic bridge, tau family) on the airline and retail domains. Two targets on one output dir: `tau3-airline-retail-generate` holds a GPU only while the model generates, and `tau3-airline-retail` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `tau3-airline-retail` runs both.
   retries:
     max_retries: $${MAX_RETRIES}
     target_reuse_enabled: true

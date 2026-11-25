@@ -1,6 +1,6 @@
 granite.build:
   name: eval-bfcl-agentic
-  # bfcl-v4 (bfcl family). Two targets on one output dir: `bfcl-v4-generate` holds a GPU only while the model generates, and `bfcl-v4` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `bfcl-v4` runs both.
+  # bfcl-v4 (bfcl family) on the web_search and memory categories. Two targets on one output dir: `bfcl-agentic-generate` holds a GPU only while the model generates, and `bfcl-agentic` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `bfcl-agentic` runs both.
   retries:
     max_retries: $${MAX_RETRIES}
     target_reuse_enabled: true

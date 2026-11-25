@@ -1,6 +1,6 @@
 granite.build:
   name: eval-bfcl-live
-  # bfcl-v4 (bfcl family). Two targets on one output dir: `bfcl-v4-generate` holds a GPU only while the model generates, and `bfcl-v4` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `bfcl-v4` runs both.
+  # bfcl-v4 (bfcl family) on the live categories. Two targets on one output dir: `bfcl-live-generate` holds a GPU only while the model generates, and `bfcl-live` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `bfcl-live` runs both.
   retries:
     max_retries: $${MAX_RETRIES}
     target_reuse_enabled: true

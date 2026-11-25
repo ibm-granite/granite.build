@@ -1,6 +1,6 @@
 granite.build:
   name: eval-ns-math-500
-  # math-500 (nemoskills family). Two targets on one output dir: `math-500-generate` holds a GPU only while the model generates, and `math-500` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `math-500` runs both.
+  # nemoskills (the generic bridge, nemoskills family) on ns's own math-500 protocol, its download pinned by DATASET/DATASET_REVISION. Two targets on one output dir: `ns-math-500-generate` holds a GPU only while the model generates, and `ns-math-500` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `ns-math-500` runs both.
   retries:
     max_retries: $${MAX_RETRIES}
     target_reuse_enabled: true
