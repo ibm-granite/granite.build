@@ -988,6 +988,11 @@ class CustomSFTTrainer(SFTTrainer):
         from trl.trainer.sft_trainer import get_dataset_column_names
         from trl.trainer.utils import remove_none_values
 
+        # trl 0.26.2's _prepare_dataset started the same way, so every map below reads its
+        # rows with the None values Arrow fills into nested structs (a message without
+        # `tool_calls`, say) stripped. trl 1.18.2 no longer does ("intentionally not used
+        # internally", trl/trainer/utils.py) and refuses a dataset that carries a transform;
+        # it is kept here for the map inputs only and dropped from the output below.
         if isinstance(dataset, Dataset):
             dataset = dataset.with_transform(remove_none_values)
 
@@ -1399,6 +1404,16 @@ class CustomSFTTrainer(SFTTrainer):
             dataset = dataset.select_columns(
                 collator_expected_keys.intersection(column_names)
             )
+
+        if isinstance(dataset, Dataset):
+            # datasets keeps the transform from the top on the output of every map,
+            # select_columns, truncate_dataset and pack_dataset above, and datasets 5.2.0's
+            # save_to_disk refuses it ("The format kwargs must be JSON serializable, but key
+            # 'transform' isn't"), which killed the cache-MISS path. Drop it: the columns
+            # are already built from the None-stripped rows, and trl 1.18.2's own
+            # _prepare_dataset returns a dataset with no transform, so the trainer sees the
+            # same kind of dataset on the cached and uncached paths, and on a cache HIT.
+            dataset = dataset.with_format(None)
 
         return dataset
 
