@@ -335,6 +335,28 @@ def test_attn_implementation_is_always_emitted():
     assert render(parse())["attn_implementation"] == "flash_attention_2"
 
 
+def test_student_dtype_is_emitted_as_bfloat16():
+    """trl 1.x's ModelConfig.dtype defaults to "float32" and create_model_from_path applies
+    it, so a config that leaves dtype out trains the student in fp32. trl 0.26.2 loaded it
+    in the checkpoint's bfloat16."""
+    cfg = render(parse())
+    assert cfg["dtype"] == "bfloat16"
+    assert "torch_dtype" not in cfg
+
+
+def test_loss_switches_are_emitted_explicitly():
+    """completion_only_loss=True, assistant_only_loss=False reproduce the trl 0.26.2 labels
+    (sft.py builds them from the masks with trl's rule). assistant_only_loss=True would move
+    the non-KD mask to the generation markers, one token per turn more than the
+    response-template scan."""
+    cfg = render(parse())
+    assert cfg["completion_only_loss"] is True
+    assert cfg["assistant_only_loss"] is False
+    kd = render(parse("--precomputed-logits-dir", "/logits"))
+    assert kd["completion_only_loss"] is True
+    assert kd["assistant_only_loss"] is False
+
+
 def test_response_template_survives_its_trailing_newline():
     """The ChatML opener is "<|im_start|>assistant\\n". The newline is part of the literal
     that is searched for in the rendered ids; losing it makes the fallback boundary miss.

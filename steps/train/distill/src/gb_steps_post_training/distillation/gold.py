@@ -26,62 +26,17 @@
 # ]
 # ///
 
+# Two workarounds that lived here are gone with trl 1.x / vLLM 0.33 (#676):
+# - trl 0.26.2 stored `_is_package_available()`'s (bool, version) tuple raw, so
+#   `_vllm_ascend_available` was truthy and trl imported the absent vllm_ascend. trl 1.x's
+#   import_utils returns a bool and has no ascend check.
+# - vLLM 0.11.0 read `config.rope_theta`, which transformers 5.x moved into
+#   `config.rope_parameters`; vLLM 0.33's granite and granitemoehybrid models read
+#   rope_parameters themselves.
+# patch_targets.py checks both stay true.
+
 import atexit
-
-# Workaround: In transformers>=4.57.0, _is_package_available() returns a tuple (bool, version).
-# TRL stores the raw tuple for some packages, making guards truthy even when packages are absent.
-# Patch affected values before any other TRL imports to prevent spurious ModuleNotFoundErrors.
-import importlib
 import shutil
-
-_trl_import_utils = importlib.import_module("trl.import_utils")
-for _attr in ("_mergekit_available", "_vllm_ascend_available"):
-    _val = getattr(_trl_import_utils, _attr, None)
-    if isinstance(_val, tuple):
-        setattr(_trl_import_utils, _attr, _val[0])
-del _trl_import_utils, _attr, _val
-
-# Workaround: vLLM 0.11.0 accesses config.rope_theta directly, but transformers 5.x
-# stores it inside config.rope_parameters dict instead. Inject the attribute on-the-fly.
-# Remove this patch once vLLM is updated to handle transformers 5.x configs natively.
-_vllm_gmh = importlib.import_module("vllm.model_executor.models.granitemoehybrid")
-_orig_gmh_attn_init = _vllm_gmh.GraniteMoeHybridAttention.__init__
-
-
-def _patched_gmh_attn_init(self, config, *args, _orig=_orig_gmh_attn_init, **kwargs):
-    if not hasattr(config, "rope_theta"):
-        rp = getattr(config, "rope_parameters", None)
-        if isinstance(rp, dict) and "rope_theta" in rp:
-            config.rope_theta = rp["rope_theta"]
-        else:
-            config.rope_theta = 10000
-    _orig(self, config, *args, **kwargs)
-
-
-_vllm_gmh.GraniteMoeHybridAttention.__init__ = _patched_gmh_attn_init
-del _vllm_gmh, _orig_gmh_attn_init
-
-# Same issue for regular GraniteForCausalLM (not MoeHybrid).
-# GraniteDecoderLayer.__init__ reads config.rope_theta with a fallback to 10000,
-# which is wrong for models like granite-4.1-20b that have rope_theta=50000000.
-_vllm_granite = importlib.import_module("vllm.model_executor.models.granite")
-_orig_granite_layer_init = _vllm_granite.GraniteDecoderLayer.__init__
-
-
-def _patched_granite_layer_init(
-    self, config, *args, _orig=_orig_granite_layer_init, **kwargs
-):
-    if not hasattr(config, "rope_theta"):
-        rp = getattr(config, "rope_parameters", None)
-        if isinstance(rp, dict) and "rope_theta" in rp:
-            config.rope_theta = rp["rope_theta"]
-        else:
-            config.rope_theta = 10000
-    _orig(self, config, *args, **kwargs)
-
-
-_vllm_granite.GraniteDecoderLayer.__init__ = _patched_granite_layer_init
-del _vllm_granite, _orig_granite_layer_init
 
 # Workaround: DeepSpeed ZeRO optimizer wrappers don't expose `defaults`
 # from the underlying optimizer. transformers' cosine_with_min_lr scheduler needs it.
@@ -122,8 +77,8 @@ activate_swa_arm()
 
 import sys as _sys
 
-# Hybrid-model kernel compatibility -- the mamba-ssm/causal-conv1d pins and the
-# legacy causal_conv1d / causal_conv1d_cuda shim the modeling code asserts on.
+# Hybrid-model kernels -- the pinned mamba-ssm/causal-conv1d hub builds, registered
+# as the causal_conv1d / mamba_ssm packages transformers binds at modeling import.
 # The machinery lives in hub_kernel_pins.py (prepare_hub_kernels) so every
 # hybrid-model entrypoint -- gold, sft, divergence, the preflight probe -- gets
 # the same treatment.
@@ -158,6 +113,7 @@ from gb_steps_post_training.distillation.custom_gold_config import CustomGOLDCon
 from gb_steps_post_training.distillation.custom_gold_trainer import CustomGOLDTrainer
 from gb_steps_post_training.distillation.utils import (
     CustomDataCollatorForChatML,
+    get_kbit_device_map,
     verify_fast_tokenizer,
     verify_tokenizer_consistency,
 )
@@ -167,13 +123,11 @@ from trl import (
     ModelConfig,
     ScriptArguments,
     TrlParser,
-    get_kbit_device_map,
     get_peft_config,
     get_quantization_config,
 )
 from trl.experimental.gold.gold_config import GOLDConfig
 from trl.experimental.gold.gold_trainer import GOLDTrainer
-from trl.trainer.utils import DataCollatorForChatML
 
 
 @dataclass
@@ -254,18 +208,18 @@ class CustomArguments:
             "Note ClearML ignores TrainingArguments.run_name entirely."
         },
     )
-    # `wandb_entity` and `wandb_project` are DELIBERATELY ABSENT here. They are already fields of
-    # upstream `GOLDConfig` (trl/experimental/gold/gold_config.py:339,343), which CustomGOLDConfig
-    # inherits, so declaring them again made TrlParser raise before parsing a single argument:
-    #
-    #     argparse.ArgumentError: argument --wandb_entity/--wandb-entity: conflicting option strings
-    #
-    # i.e. gold.py could not start AT ALL. Measured: trl declares those three (`wandb_run_group`
-    # too) and READS none of them anywhere in the package -- inert config surface. So the right
-    # move is to use them rather than shadow them: the names are the ones a trl user expects, the
-    # rendered yaml key is unchanged, and the resolution below now reads them off `training_args`.
-    # W&B's run name is NOT among them -- upstream has `wandb_run_group`, a different coordinate --
-    # so `wandb_run_name` stays here.
+    # `wandb_entity` and `wandb_project` were fields of trl 0.26.2's GOLDConfig
+    # (gold_config.py:339,343), so they could not be declared here: TrlParser raised
+    # "conflicting option strings" before parsing anything. trl 1.x removed them from
+    # GOLDConfig, so they are declared here now, under the same names and yaml keys.
+    wandb_entity: str | None = field(
+        default=None,
+        metadata={"help": "W&B entity (-> WANDB_ENTITY). Optional."},
+    )
+    wandb_project: str | None = field(
+        default=None,
+        metadata={"help": "W&B project (-> WANDB_PROJECT). Optional."},
+    )
     wandb_run_name: str | None = field(
         default=None,
         metadata={
@@ -322,11 +276,11 @@ if __name__ == "__main__":
     if "--config" in _sys.argv:
         _cfg_path = _sys.argv[_sys.argv.index("--config") + 1]
 
-    # Two objects, because the five fields have two owners: `clearml_*` and `wandb_run_name` are
-    # ours (CustomArguments), `wandb_entity`/`wandb_project` are upstream GOLDConfig's and arrive on
-    # training_args. `custom_args` is asked FIRST and only falls through when it has no such
-    # attribute, so a field that ever moves between the two keeps working rather than silently
-    # resolving to None -- which for tracking means "off", the failure mode that is invisible.
+    # Two objects: every tracking field is CustomArguments' now (trl 1.x dropped
+    # wandb_entity/wandb_project from GOLDConfig), but `custom_args` is asked first and
+    # `training_args` second, so a field that moves between the two keeps working rather than
+    # silently resolving to None -- which for tracking means "off", the failure mode that is
+    # invisible.
     def _track_field(name):
         for obj in (custom_args, training_args):
             if hasattr(obj, name):
@@ -395,11 +349,16 @@ if __name__ == "__main__":
     # Model & Tokenizer
     ################
     quantization_config = get_quantization_config(model_args)
+    # `dtype`, not `torch_dtype`: trl 1.x's create_model_from_path reads only `dtype` and
+    # defaults it to "float32" (trl/trainer/utils.py), which would override torch_dtype.
+    # The student revision is ModelConfig's: trl 1.x removed GOLDConfig.student_model_revision.
+    # trust_remote_code is the training config's: trl 1.x moved it off ModelConfig (onto
+    # SFTConfig, which GOLDConfig extends), so `model_args.trust_remote_code` raised.
     model_kwargs = dict(
-        revision=training_args.student_model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        revision=model_args.model_revision,
+        trust_remote_code=training_args.trust_remote_code,
         attn_implementation=model_args.attn_implementation,
-        torch_dtype=model_args.dtype,
+        dtype=model_args.dtype,
         use_cache=False if training_args.gradient_checkpointing else True,
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
@@ -415,10 +374,10 @@ if __name__ == "__main__":
         )
     teacher_model_kwargs = dict(
         revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
         attn_implementation=custom_args.teacher_attn_implementation
         or model_args.attn_implementation,
-        torch_dtype=model_args.dtype,
+        dtype=model_args.dtype,
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
     )
@@ -427,7 +386,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
         padding_side="left",
     )
     verify_fast_tokenizer(
@@ -444,7 +403,7 @@ if __name__ == "__main__":
     ), "--teacher_model_name_or_path missing"
     teacher_tokenizer = AutoTokenizer.from_pretrained(
         training_args.teacher_model_name_or_path,
-        trust_remote_code=model_args.trust_remote_code,
+        trust_remote_code=training_args.trust_remote_code,
     )
     verify_fast_tokenizer(
         teacher_tokenizer,
@@ -575,37 +534,9 @@ if __name__ == "__main__":
         data_collator=data_collator,
     )
 
-    if getattr(training_args, "vllm_mode", None) == "server":
-        _probe_failure = None
-        if (
-            trainer.accelerator.is_main_process
-            and getattr(trainer, "vllm_client", None) is not None
-        ):
-            for _probe in ("a\n\nb", "public.roads2", "1200"):
-                _local_ids = tokenizer.encode(_probe, add_special_tokens=False)
-                _vllm_resp = trainer.vllm_client.generate(
-                    prompts=[_probe],
-                    n=1,
-                    max_tokens=1,
-                    temperature=0.0,
-                )
-                _vllm_prompt_ids = _vllm_resp["prompt_ids"][0]
-                if _vllm_prompt_ids != _local_ids:
-                    _probe_failure = (
-                        f"[trainer→vllm] tokenization drift on probe {_probe!r}:\n"
-                        f"  trainer-local ids: {_local_ids}\n"
-                        f"  vllm prompt_ids:   {_vllm_prompt_ids}\n"
-                        f"  student dir:       {model_args.model_name_or_path}\n"
-                        "See docs/tokenizer_mismatch.md → 'Which tokenizer was "
-                        "the teacher trained with?' for root cause."
-                    )
-                    break
-        trainer.accelerator.wait_for_everyone()
-        from accelerate.utils import broadcast_object_list as _bcast
-
-        _probe_list = _bcast([_probe_failure], from_process=0)
-        if _probe_list[0] is not None:
-            raise RuntimeError(_probe_list[0])
+    # No trainer-vs-vLLM tokenisation probe any more: the trainer sends prompts to vLLM as
+    # token IDs (custom_gold_trainer._generate_on_policy_outputs_vllm), so vLLM never
+    # tokenises them and the drift that probe looked for cannot reach training (#676 D-5).
 
     # Log student/teacher model configs for debugging
     if state.is_main_process:
@@ -633,7 +564,7 @@ if __name__ == "__main__":
 
         def _log_config(label, model_path):
             cfg = AutoConfig.from_pretrained(
-                model_path, trust_remote_code=model_args.trust_remote_code
+                model_path, trust_remote_code=training_args.trust_remote_code
             )
             print(f"\n{'='*60}")
             print(f"  {label} config: {model_path}")
@@ -649,7 +580,9 @@ if __name__ == "__main__":
 
     if training_args.eval_strategy != "no":
         generation_config = GenerationConfig(
-            max_new_tokens=training_args.max_new_tokens,
+            # GOLDConfig has no max_new_tokens (neither 0.26.2 nor 1.x); its completion
+            # budget is max_completion_length.
+            max_new_tokens=training_args.max_completion_length,
             do_sample=True,
             temperature=training_args.temperature,
         )

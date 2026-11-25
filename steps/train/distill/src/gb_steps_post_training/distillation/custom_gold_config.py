@@ -439,6 +439,13 @@ class CustomGOLDConfig(GOLDConfig):
 
     def __post_init__(self):
         super().__post_init__()
+        # trl 1.x's ULDLoss (what use_old_uld_loss keeps) needs byte offsets from its own
+        # collator, which this trainer does not pass: it raises at the first ULD step.
+        if self.use_uld_loss and self.use_old_uld_loss:
+            raise ValueError(
+                "use_old_uld_loss needs trl 1.x's byte-offset ULD inputs, which this trainer "
+                "does not produce; use CustomULDLoss (use_old_uld_loss: false)."
+            )
 
         # Validate alpha is non-negative
         if not (0.0 <= self.alpha <= 1.0):

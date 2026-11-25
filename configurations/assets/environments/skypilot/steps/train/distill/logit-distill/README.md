@@ -61,7 +61,7 @@ think-filtered** (`*_nothink.jsonl`): an assistant completion containing an inli
 | `data_seed` | integer | Seed for the training data sampler only. `-1` leaves the key out, so the sampler follows the trainer's `seed` (42). Set it when initialising from another run's checkpoint over the same corpus, or the new run draws the very batches the old one trained on. `0` is a valid seed. Default: `-1`. |
 | `learning_rate` | number | Peak learning rate. Rendered as a YAML float. Default: `1.0e-05`. |
 | `min_lr` | number | Floor of the `cosine_with_min_lr` schedule; rendered under `lr_scheduler_kwargs`, not at the top level. Default: `1.0e-06`. |
-| `warmup_ratio` | number | Warmup fraction of the schedule. Default: `0.05`. |
+| `warmup_ratio` | number | Warmup fraction of the schedule, in `[0, 1)`. Rendered as the trainer's `warmup_steps`, which reads a value below 1 as a ratio (transformers 5.16 removed `warmup_ratio`). Default: `0.05`. |
 | `adam_beta2` | number | Adam's `beta2`, in `(0, 1)`. `-1` leaves the key out and the trainer keeps `0.999` (a second-moment horizon of ~1,000 steps; `0.95` is ~20). Default: `-1.0`. |
 | `train_sampling_strategy` | string | The training sampler: `random`, `sequential` or `group_by_length`. Empty leaves the key out (the trainer's `random`). `sequential` feeds the corpus in file order, the only way a corpus whose row order is part of its design reaches the trainer in that order. Default: `""`. |
 | `lr_scheduler_type` | string | Scheduler. Default: `cosine_with_min_lr`. |
@@ -120,7 +120,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | Field | Type | Purpose |
 |---|---|---|
 | `vllm_num_servers` | integer | `> 0` selects on-policy, and is required by `lmbda > 0` (the renderer refuses `lmbda > 0` with `0`). Without the optional `vllm` input bound, dedicates the **last** N nodes of the allocation to serving the student under vLLM and trains on the rest. Default: `0`. |
-| `vllm_mode` | string | `server` = talk to a vLLM HTTP server (the reference launcher's value). Passed to the trainer only on the external-server path. Default: `server`. |
+| `vllm_mode` | string | `server` = talk to a vLLM HTTP server (the reference launcher's value). Passed to the trainer on the external-server path; every on-policy config also states `vllm_mode: server`, because trl 1.x's own default is `colocate`. Default: `server`. |
 | `vllm_sync_frequency` | integer | How often, in optimizer steps, the trainer pushes updated weights to the server; a larger value samples from a staler policy. Passed to the trainer only on the external-server path. Default: `1`. |
 | `top_p` | number | Rollout sampling `top_p`; emitted only on-policy. Default: `0.95`. |
 | `use_sampled_opd_loss` | boolean | Sampled on-policy-distillation loss; emitted only on-policy. Prefer `loss_arm: sampled_opd`, which enforces its requirements. Default: `false`. |
@@ -619,6 +619,13 @@ against `student-rollout-generator` with all 362 parameter tensors synced across
 allocations (`n_sync_params: 362`). The renderer refuses the `vllm` input with `vllm_num_servers: 0` (the run
 would train off-policy while a server sat idle) or with `lmbda: 0` (the student would never
 generate).
+
+The in-allocation server (no `vllm` input) passes no `--host`, so trl's `vllm-serve` binds
+its default, `0.0.0.0`: every interface of the serving node, with no API key. For the
+job's lifetime anyone who can reach that node can generate with the student, push weights
+into it or call into its workers. The image's `images/gpu/scan-ignore` records this as an
+accepted exposure, until 2027-05-31; #775 tracks binding it to the
+node's address or to loopback.
 
 ## Running as root
 

@@ -97,10 +97,10 @@ OSV_IMAGE         ?= ghcr.io/google/osv-scanner:v2.7.1@sha256:a70ffffc2bfd334829
 
 image_ref = $(REGISTRY)/$(IMAGE_PREFIX)/$(1):$(IMAGE_VERSION)
 
-.PHONY: repin help images publish-images scan-images scan-locks fix-locks $(addprefix fix-lock-,$(IMAGES)) $(addprefix image-,$(IMAGES)) $(addprefix publish-image-,$(IMAGES)) $(addprefix scan-image-,$(IMAGES)) $(addprefix scan-lock-,$(IMAGES))
+.PHONY: repin help test-in-image images publish-images scan-images scan-locks fix-locks $(addprefix fix-lock-,$(IMAGES)) $(addprefix image-,$(IMAGES)) $(addprefix publish-image-,$(IMAGES)) $(addprefix scan-image-,$(IMAGES)) $(addprefix scan-lock-,$(IMAGES))
 
 help:
-	@echo "Targets: images, scan-locks, fix-locks, scan-images, publish-images, repin, image-<x>, scan-lock-<x>, fix-lock-<x>, scan-image-<x>, publish-image-<x> (x: $(IMAGES))"
+	@echo "Targets: images, scan-locks, fix-locks, scan-images, publish-images, repin, test-in-image, image-<x>, scan-lock-<x>, fix-lock-<x>, scan-image-<x>, publish-image-<x> (x: $(IMAGES))"
 	@echo "Set REGISTRY (e.g. quay.io/granitebuild); IMAGE_VERSION defaults to the git short SHA ($(IMAGE_VERSION))."
 
 define require_registry
@@ -196,6 +196,42 @@ $(addprefix scan-image-,$(IMAGES)): scan-image-%: scan-lock-%
 		*) echo "[scan] trivy did not run (exit $$rc); see the error above" >&2; exit $$rc ;; \
 	esac; \
 	echo "[scan] $(call image_ref,$*): no fixable $(TRIVY_GATE_SEVERITY) vulnerabilities"
+
+# ---- the step unit suites, inside the GPU image ----------------------------------------
+# Most of the trainer's tests (trl 1.x, the loss numerics, the label and cache paths) skip in
+# a step's `make test`, because the repo venv has no torch or trl. This runs every GPU step's
+# unit suites inside a GPU image instead, on the CPU (CUDA_VISIBLE_DEVICES empty): the
+# image's own venv and its baked trainer package (/opt/distill/src), with the tests read
+# from this checkout. test_step_template.py is left out, and conftest.py with it
+# (--noconftest): both need gbserver's test helpers, which only the repo venv has, and the
+# step's `make test` runs them. pytest is installed into /tmp in the container (needs the
+# network). MOUNT_SRC=1 mounts this checkout's src/ over the baked package, to test changed
+# trainer code against an existing image.
+#   make test-in-image IMAGE=quay.io/granitebuild/steps/train/distill/images/gpu:<tag>
+TEST_IN_IMAGE_STEPS  ?= logit-distill student-sft teacher-logits teacher-divergence repetition-check preflight-check
+TEST_IN_IMAGE_PYTEST ?= pytest==9.1.1
+TEST_IN_IMAGE_SRC_MOUNT = $(if $(filter 1,$(MOUNT_SRC)),-v "$(CURDIR)/src/gb_steps_post_training:/opt/distill/src/gb_steps_post_training:ro$(comma)Z")
+comma := ,
+define TEST_IN_IMAGE_SCRIPT
+uv pip install -q --target /tmp/pt "$$PYTEST_PIN" >/dev/null 2>&1 || { echo "[test-in-image] could not install $$PYTEST_PIN" >&2; exit 2; }
+python -c 'import gb_steps_post_training as p; print("[test-in-image] trainer package:", p.__path__[0])'
+rc=0
+for s in $$STEPS; do
+  files=$$(ls /w/$$s/skypilot/test/test_*.py | grep -v /test_step_template.py)
+  echo "[test-in-image] $$s"
+  (cd /tmp && PYTHONPATH="/tmp/pt:/w/$$s/skypilot/src:/w/$$s/skypilot/test:$$PYTHONPATH" python -m pytest -q -p no:cacheprovider --noconftest -rs $$files) || rc=1
+done
+exit $$rc
+endef
+export TEST_IN_IMAGE_SCRIPT
+
+test-in-image:
+	@[ -n "$(IMAGE)" ] || { echo "[test-in-image] set IMAGE=<GPU image ref>" >&2; exit 2; }
+	$(DOCKER) run --rm --network=host -v "$(CURDIR):/w:ro,Z" \
+		$(TEST_IN_IMAGE_SRC_MOUNT) \
+		-e CUDA_VISIBLE_DEVICES= -e TRL_EXPERIMENTAL_SILENCE=1 -e HF_HOME=/tmp/hf \
+		-e STEPS="$(TEST_IN_IMAGE_STEPS)" -e PYTEST_PIN="$(TEST_IN_IMAGE_PYTEST)" \
+		$(IMAGE) bash -c "$$TEST_IN_IMAGE_SCRIPT"
 
 $(addprefix fix-lock-,$(IMAGES)): fix-lock-%:
 	@command -v uvx >/dev/null 2>&1 || { echo "[fix-lock] uvx is not on PATH (https://docs.astral.sh/uv/)" >&2; exit 1; }

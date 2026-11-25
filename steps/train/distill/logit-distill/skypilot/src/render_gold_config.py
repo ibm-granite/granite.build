@@ -21,7 +21,7 @@ producing an error, and each is handled badly by a shell heredoc:
   and teacher have already loaded.
 * Booleans must be lower-case YAML. ``safe_dump`` does that by construction;
   templating emits ``True`` unless every site remembers to lower-case it.
-* The six on-policy keys must be emitted **only** when ``vllm_num_servers > 0``.
+* The on-policy keys must be emitted **only** when ``vllm_num_servers > 0``.
   That is one testable branch here, versus ``{% if %}`` nested inside a quoted
   heredoc inside a YAML literal block — and it is exactly the seam the on-policy
   phase will reopen.
@@ -53,6 +53,13 @@ import yaml
 # trainer read to decide whether to expect a vLLM server at all.
 _ONLINE_ONLY = (
     "vllm_num_servers",
+    # trl 1.x's GOLDConfig defaults vllm_mode to "colocate" (trl 0.26.2's default was
+    # "server"). Every on-policy topology here serves the student from a SEPARATE vLLM
+    # server -- the last vllm_num_servers nodes, or an external target -- so the mode is
+    # stated rather than inherited; colocate would instead start a vLLM engine inside
+    # every trainer process. Off-policy (vllm_num_servers 0) runs with use_vllm False, so
+    # the mode is never read there and is not emitted.
+    "vllm_mode",
     "top_p",
     "use_sampled_opd_loss",
     "last_message_only",
@@ -437,8 +444,21 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
             "off-policy; set vllm_num_servers > 0 or leave it 0"
         )
 
+    # warmup_steps reads a value >= 1 as a step COUNT, so a ratio of 1 or more would
+    # silently become one warmup step (see the warmup_steps key below).
+    if not 0.0 <= args.warmup_ratio < 1.0:
+        raise ValueError(
+            f"warmup_ratio must be in [0, 1); got {args.warmup_ratio}. It is emitted as "
+            "warmup_steps, which reads a value >= 1 as a number of steps"
+        )
+
     config: Dict[str, Any] = {
         "model_name_or_path": args.model_name_or_path,
+        # The dtype gold.py loads the student AND the teacher in (ModelConfig.dtype, read
+        # into both models' init kwargs). trl 1.x defaults it to "float32"; trl 0.26.2
+        # defaulted it to None, which let transformers 5.x load each checkpoint in its
+        # own dtype -- bfloat16 for every Granite checkpoint this step trains.
+        "dtype": "bfloat16",
         "teacher_model_name_or_path": args.teacher_model_name_or_path,
         "dataset_name": args.dataset_name,
         "num_train_epochs": float(args.num_train_epochs),
@@ -470,7 +490,12 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
             else {}
         ),
         "learning_rate": _lr(args.learning_rate),
-        "warmup_ratio": float(args.warmup_ratio),
+        # The template's knob is still warmup_ratio, but transformers 5.16 removed the
+        # TrainingArguments field (TrlParser would reject the key). warmup_steps takes a
+        # float, and a value in [0, 1) is a ratio of the total steps
+        # (TrainingArguments.get_warmup_steps: ceil(total * ratio)); transformers 5.8.0
+        # copied warmup_ratio into warmup_steps the same way, so the schedule is unchanged.
+        "warmup_steps": float(args.warmup_ratio),
         "lr_scheduler_type": args.lr_scheduler_type,
         # min_lr belongs to the SCHEDULER, not the top level. The trainer parses
         # its config with TRL's parse_args_and_config, which rejects unknown
@@ -546,18 +571,19 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
     )
 
     # lmbda > 0 without a vLLM server does not train off-policy: the trainer falls back to
-    # TRL's in-process generate_on_policy_outputs, which masks labels by token VALUE
-    # (labels == pad_token_id). gold.py sets pad_token = eos_token when a tokenizer has no
-    # pad, so on that path every generated EOS is masked and the student never gets a KD
-    # signal for stopping. The vLLM path here masks positionally; the in-process one is
-    # TRL's code, unvalidated in this collection, and refused rather than patched. Checked
-    # after _validate_arm so an arm's own, more specific refusal is the one reported.
+    # TRL's in-process generate_on_policy_outputs, which generates with the ZeRO-3-sharded
+    # student inside every training rank. That path is TRL's code and is unvalidated in
+    # this collection: no recipe has run it, its labels are built differently from the
+    # vLLM path's (trl 1.x masks after the first EOS and by the prompt mask), and no
+    # numerics test covers it. Refused rather than adopted, so the topology stays the one
+    # that has run: rollouts come from a vLLM server. Checked after _validate_arm so an
+    # arm's own, more specific refusal is the one reported.
     if args.lmbda > 0 and not online:
         raise ValueError(
             f"lmbda is {args.lmbda} but vllm_num_servers is 0: the student would generate "
-            "through TRL's in-process path, which masks padding by token value and so "
-            "drops every generated EOS when pad == eos (gold.py's fallback for tokenizers "
-            "without a pad token). Set vllm_num_servers > 0 for on-policy, or lmbda 0 for "
+            "through TRL's in-process generate_on_policy_outputs inside the training ranks, "
+            "a path no recipe here has run or validated (its completion labels differ from "
+            "the vLLM path's). Set vllm_num_servers > 0 for on-policy, or lmbda 0 for "
             "off-policy"
         )
 
@@ -565,6 +591,7 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
         config.update(
             {
                 "vllm_num_servers": args.vllm_num_servers,
+                "vllm_mode": "server",
                 "top_p": float(args.top_p),
                 "use_sampled_opd_loss": args.use_sampled_opd_loss,
                 "last_message_only": args.last_message_only,
@@ -651,33 +678,6 @@ _TRAINER_EXTENSION_KEYS = frozenset(
 )
 
 
-def _unwrap_trl_availability_flags() -> None:
-    """Undo TRL's tuple-valued package guards before anything imports the GOLD trainer.
-
-    transformers>=4.57 makes _is_package_available() return (bool, version), and TRL 0.26
-    stores that tuple raw as _vllm_ascend_available. A non-empty tuple is truthy, so
-    is_vllm_ascend_available() reports the absent package as present, and importing
-    trl.experimental.gold (whose __init__ pulls in gold_trainer -> extras.vllm_client)
-    runs `from vllm_ascend ... import`. That raises ModuleNotFoundError, which the import
-    below would misreport as gb_steps_post_training not being importable -- it cost the
-    ck2500 lmbda-ramp arms (fe650626, ae922fd7) four allocations on 2026-10-05.
-
-    The trainer's own entry point (gb_steps_post_training/distillation/gold.py) applies this
-    same unwrap before its TRL imports; this script imports the package without going
-    through it, so it has to apply it itself. getattr with a default because the attribute
-    is gone on TRL main, where there is nothing to unwrap.
-    """
-    try:
-        import trl.import_utils as trl_import_utils  # noqa: PLC0415
-    except ImportError:
-        # No TRL at all: the CustomGOLDConfig import below reports that, by name.
-        return
-    for attr in ("_mergekit_available", "_vllm_ascend_available"):
-        value = getattr(trl_import_utils, attr, None)
-        if isinstance(value, tuple):
-            setattr(trl_import_utils, attr, value[0])
-
-
 def check_trainer_accepts(config: Dict[str, Any]) -> None:
     """Refuse to emit a key the delivered trainer's dataclass does not define.
 
@@ -706,7 +706,6 @@ def check_trainer_accepts(config: Dict[str, Any]) -> None:
     if not requested:
         return
 
-    _unwrap_trl_availability_flags()
     try:
         from gb_steps_post_training.distillation.custom_gold_config import (  # noqa: PLC0415
             CustomGOLDConfig,

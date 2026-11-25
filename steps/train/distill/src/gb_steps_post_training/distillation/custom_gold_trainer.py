@@ -59,7 +59,6 @@ from transformers.trainer_callback import TrainerCallback, TrainerControl, Train
 from transformers.trainer_utils import EvalPrediction
 from transformers.utils import (
     is_flash_attn_2_available,
-    is_liger_kernel_available,
     is_peft_available,
     is_rich_available,
 )
@@ -67,33 +66,19 @@ from trl.data_utils import (
     is_conversational,
     maybe_convert_to_chatml,
     pack_dataset,
-    truncate_dataset,
 )
+from trl.experimental.utils import empty_cache, truncate_dataset
 from trl.extras.profiling import profiling_decorator
-from trl.extras.vllm_client import VLLMClient
-
-# Patch VLLMClient to read group_port from VLLM_NCCL_COORDINATOR_PORT env var
-# instead of using the hardcoded default (51216), which causes port collisions
-# on shared nodes.
-_orig_vllm_client_init = VLLMClient.__init__
-
-
-def _patched_vllm_client_init(self, *args, **kwargs):
-    if "group_port" not in kwargs:
-        kwargs["group_port"] = int(
-            os.environ.get("VLLM_NCCL_COORDINATOR_PORT", "51216")
-        )
-    _orig_vllm_client_init(self, *args, **kwargs)
-
-
-VLLMClient.__init__ = _patched_vllm_client_init
+from trl.generation.vllm_client import VLLMClient
 
 
 class MultiVLLMClient:
-    """Wraps N independent VLLMClient instances for parallel generation and weight sync.
+    """N trl VLLMClients behind the one-client interface trl's VLLMGeneration uses.
 
-    Splits prompt batches evenly across servers, generates in parallel using
-    ThreadPoolExecutor, and synchronizes weights to all servers in parallel.
+    generate() splits the prompts evenly across the servers and merges the results in prompt
+    order; update_named_params() streams every tensor to every server's weight-transfer group,
+    one weight update per server (trl 1.x's VLLMClient.weight_update), so each server prepares
+    and finalizes its model once per sync.
     """
 
     def __init__(self, clients: list[VLLMClient]):
@@ -102,19 +87,18 @@ class MultiVLLMClient:
         self.clients = clients
         self._streams = [torch.cuda.Stream() for _ in clients]
 
+    @property
+    def base_url(self) -> str:
+        return self.clients[0].base_url
+
     def init_communicator(self, **kwargs):
         for client in self.clients:
             client.init_communicator(**kwargs)
 
-    def generate(self, **kwargs) -> dict[str, list]:
-        prompts = kwargs.pop("prompts")
+    def generate(self, prompts, **kwargs) -> dict[str, list]:
         n_servers = len(self.clients)
-        n_prompts = len(prompts)
-
-        # Split prompts as evenly as possible across servers
-        base, remainder = divmod(n_prompts, n_servers)
-        chunks = []
-        offset = 0
+        base, remainder = divmod(len(prompts), n_servers)
+        chunks, offset = [], 0
         for i in range(n_servers):
             size = base + (1 if i < remainder else 0)
             chunks.append(prompts[offset : offset + size])
@@ -123,56 +107,56 @@ class MultiVLLMClient:
         from concurrent.futures import ThreadPoolExecutor
 
         def _gen(client, chunk):
-            if not chunk:
-                return {"prompt_ids": [], "completion_ids": [], "logprobs": []}
-            return client.generate(prompts=chunk, **kwargs)
+            return client.generate(prompts=chunk, **kwargs) if chunk else None
 
         with ThreadPoolExecutor(max_workers=n_servers) as pool:
-            futures = [pool.submit(_gen, c, ch) for c, ch in zip(self.clients, chunks)]
-            results = [f.result() for f in futures]
+            results = list(pool.map(_gen, self.clients, chunks))
 
-        # prompt_ids is merged too: the tokenization probe in gold.py reads it from the
-        # response, and with it dropped here a multi-server run died with KeyError on
-        # rank 0 before step 0 while the other ranks waited at the barrier. Chunks are
-        # contiguous slices in prompt order, so extending in result order keeps all
-        # three lists aligned with the prompts.
-        merged = {"prompt_ids": [], "completion_ids": [], "logprobs": []}
+        # Chunks are contiguous slices in prompt order, so extending in result order keeps every
+        # list aligned with the prompts. prompt_ids is merged too: callers read it.
+        keys = ("prompt_ids", "completion_ids", "logprobs", "logprob_token_ids")
+        merged = {k: [] for k in keys}
         for r in results:
-            merged["prompt_ids"].extend(r["prompt_ids"])
-            merged["completion_ids"].extend(r["completion_ids"])
-            merged["logprobs"].extend(r["logprobs"])
+            if r is None:
+                continue
+            for k in keys:
+                if r.get(k) is None:
+                    merged[k] = None
+                elif merged[k] is not None:
+                    merged[k].extend(r[k])
         return merged
 
-    def update_named_param(self, name: str, weights: torch.Tensor):
+    def update_named_params(self, metadata, named_params):
         from concurrent.futures import ThreadPoolExecutor
+        from contextlib import ExitStack
 
-        def _sync(client, stream):
+        def _send(client, stream, meta, item):
             torch.cuda.set_stream(stream)
-            client.update_named_param(name, weights)
+            client.update_named_params([meta], iter([item]))
 
-        with ThreadPoolExecutor(max_workers=len(self.clients)) as pool:
-            futures = [
-                pool.submit(_sync, c, s) for c, s in zip(self.clients, self._streams)
-            ]
-            for f in futures:
-                f.result()
-
-        # Wait for all NCCL broadcasts to complete before returning so that
-        # DeepSpeed's free_param() doesn't free the buffer while broadcasts
-        # are still in flight on a non-default stream.
-        for s in self._streams:
-            s.synchronize()
-
-    def update_model_params(self, model):
-        for client in self.clients:
-            client.update_model_params(model)
+        with (
+            ExitStack() as stack,
+            ThreadPoolExecutor(max_workers=len(self.clients)) as pool,
+        ):
+            for client in self.clients:
+                stack.enter_context(client.weight_update())
+            for meta, item in zip(metadata, named_params, strict=True):
+                futures = [
+                    pool.submit(_send, c, st, meta, item)
+                    for c, st in zip(self.clients, self._streams)
+                ]
+                for f in futures:
+                    f.result()
+                # The broadcasts run on side streams: finish them before the caller's gather
+                # context releases (and DeepSpeed frees) the tensor.
+                for st in self._streams:
+                    st.synchronize()
 
     def reset_prefix_cache(self):
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=len(self.clients)) as pool:
-            futures = [pool.submit(c.reset_prefix_cache) for c in self.clients]
-            for f in futures:
+            for f in [pool.submit(c.reset_prefix_cache) for c in self.clients]:
                 f.result()
 
     def close_communicator(self):
@@ -180,16 +164,12 @@ class MultiVLLMClient:
             client.close_communicator()
 
 
-from trl.import_utils import is_vllm_available
 from trl.models import prepare_deepspeed
 from trl.models.utils import unwrap_model_for_generation
 from trl.trainer.sft_trainer import SFTTrainer
 from trl.trainer.utils import (
-    DataCollatorForChatML,
     create_model_from_path,
     disable_dropout_in_model,
-    empty_cache,
-    ensure_master_addr_port,
     pad,
 )
 
@@ -198,13 +178,6 @@ if is_peft_available():
 
 if is_wandb_available():
     import wandb
-
-if is_vllm_available():
-    from vllm import LLM, SamplingParams
-    from vllm.sampling_params import GuidedDecodingParams
-
-if is_liger_kernel_available():
-    from liger_kernel.chunked_loss import LigerFusedLinearJSDLoss
 
 if is_rich_available():
     from rich.console import Console
@@ -215,8 +188,7 @@ if is_rich_available():
 if is_bitsandbytes_available():
     import bitsandbytes as bnb
 
-# from trl.experimental.gold.gold_trainer import GOLDTrainer, build_teacher_inputs_from_texts, ULDLoss
-from trl.experimental.gold.gold_trainer import *
+from trl.experimental.gold.gold_trainer import GOLDTrainer, ULDLoss
 
 
 def mask_pad_labels_by_value(
@@ -678,6 +650,18 @@ def _row_teacher_enable_thinking(msgs) -> bool:
     return isinstance(content, str) and content.lstrip().startswith("<think>")
 
 
+def _is_weight_stats(weights: torch.Tensor) -> dict:
+    """mean/std/min/max of the importance weights that exist (NaN tokens already dropped)."""
+    if weights.numel() == 0:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+    return {
+        "mean": weights.mean().item(),
+        "std": weights.std().item() if weights.numel() > 1 else 0.0,
+        "min": weights.min().item(),
+        "max": weights.max().item(),
+    }
+
+
 class CustomULDLoss(ULDLoss):
     """ULDLoss that fixes the EOS bug for empty completions.
 
@@ -825,6 +809,21 @@ class CustomULDLoss(ULDLoss):
                 self._vocab_mapping[self._teacher_eos_id] = self._student_eos_id
                 self._teacher_matched_ids.add(self._teacher_eos_id)
                 self._student_matched_ids.add(self._student_eos_id)
+                # trl 1.x also keeps the mapping as a tensor, built in super() before this
+                # addition. Nothing here reads it, but keep it equal to the dict.
+                mt = getattr(self, "mapping_tensor", None)
+                if mt is not None:
+                    if self._teacher_eos_id >= mt.numel():
+                        mt = torch.cat(
+                            [
+                                mt,
+                                mt.new_full(
+                                    (self._teacher_eos_id + 1 - mt.numel(),), -1
+                                ),
+                            ]
+                        )
+                    mt[self._teacher_eos_id] = self._student_eos_id
+                    self.mapping_tensor = mt
                 print(
                     f"Forced EOS mapping: teacher {self._teacher_eos_id} -> student {self._student_eos_id}"
                 )
@@ -1476,15 +1475,10 @@ class CustomULDLoss(ULDLoss):
         if vllm_lp_per_pos is not None and group_vllm_lps:
             # Per-token IS weights (mirrors non-hybrid sampled_opd_loss)
             is_weights_per_pos = torch.exp(s_lp_per_pos.detach() - vllm_lp_per_pos)
-
-            # Collect stats before masking
-            total_tokens = is_weights_per_pos.numel()
-            is_stats = {
-                "mean": is_weights_per_pos.mean().item(),
-                "std": is_weights_per_pos.std().item() if total_tokens > 1 else 0.0,
-                "min": is_weights_per_pos.min().item(),
-                "max": is_weights_per_pos.max().item(),
-            }
+            # A token whose vLLM logprob was NaN (trl's client returns None; see
+            # _sampled_token_logprobs) has no IS weight: masked out below, and out of the stats.
+            finite_per_pos = torch.isfinite(is_weights_per_pos)
+            is_stats = _is_weight_stats(is_weights_per_pos[finite_per_pos])
 
             # Per-token truncation mask
             eps_lo = (
@@ -1497,8 +1491,10 @@ class CustomULDLoss(ULDLoss):
                 if self._trainer
                 else 2.0
             )
-            is_mask_per_pos = (is_weights_per_pos >= eps_lo) & (
-                is_weights_per_pos <= eps_hi
+            is_mask_per_pos = (
+                finite_per_pos
+                & (is_weights_per_pos >= eps_lo)
+                & (is_weights_per_pos <= eps_hi)
             )
             is_stats["masked_fraction"] = 1.0 - is_mask_per_pos.float().mean().item()
 
@@ -1777,7 +1773,7 @@ class CustomULDLoss(ULDLoss):
             u_sum = u_sum + us
         return m_sum, u_sum, n_1to1, n_groups
 
-    def _compute_distillation_loss(
+    def _compute_base_distillation_loss(
         self,
         student_logits,
         teacher_logits,
@@ -1786,6 +1782,181 @@ class CustomULDLoss(ULDLoss):
         student_input_ids,
         teacher_input_ids,
     ):
+        """The non-hybrid ULD loss: trl 0.26.2's ULDLoss._compute_distillation_loss, vendored
+        unchanged (#676 decision D-7: bit-identical numerics).
+
+        Copied from trl v0.26.2 trl/experimental/gold/gold_trainer.py:325-423. trl 1.x replaced
+        it with a byte-offset alignment that raises on token-ID inputs without offsets, which
+        is all this trainer passes. It calls this class's _build_alignment_groups_from_ids
+        and the vendored merge below, as it called them under 0.26.2.
+        """
+        # Get answer regions (same as original)
+        student_answer_index, student_answer_size = self._get_start_and_size_answers(
+            student_labels
+        )
+        teacher_answer_index, teacher_answer_size = self._get_start_and_size_answers(
+            teacher_labels
+        )
+
+        if self.skip_student_eos:
+            student_answer_size = [size - 1 for size in student_answer_size]
+        if self.skip_teacher_eos:
+            teacher_answer_size = [size - 1 for size in teacher_answer_size]
+
+        # Handle edge case where all answer sizes are 0
+        if (
+            not student_answer_size
+            or not teacher_answer_size
+            or max(max(student_answer_size), max(teacher_answer_size)) <= 0
+        ):
+            return (
+                torch.zeros(1, device=student_logits.device, requires_grad=True)
+                * student_logits.sum()
+                * 1e-8
+            )
+
+        batch_size = student_logits.size(0)
+        distillation_losses = []
+
+        for i in range(batch_size):
+            # Get answer regions for this batch item
+            student_start = student_answer_index[i]
+            student_size = student_answer_size[i]
+            teacher_start = teacher_answer_index[i]
+            teacher_size = teacher_answer_size[i]
+
+            if student_size <= 0 or teacher_size <= 0:
+                loss_i = student_logits[i].sum() * 0.0
+                distillation_losses.append(loss_i)
+                continue
+
+            # Extract answer logits
+            student_answer_logits = student_logits[
+                i, student_start : student_start + student_size
+            ]
+            teacher_answer_logits = teacher_logits[
+                i, teacher_start : teacher_start + teacher_size
+            ]
+
+            # Convert to probabilities
+            student_probs = F.softmax(
+                student_answer_logits / self.student_temperature, dim=-1
+            )
+            teacher_probs = F.softmax(
+                teacher_answer_logits / self.teacher_temperature, dim=-1
+            )
+
+            # Get token IDs for mapping (always use actual input_ids)
+            student_token_ids = student_input_ids[
+                i, student_start : student_start + student_size
+            ].tolist()
+            teacher_token_ids = teacher_input_ids[
+                i, teacher_start : teacher_start + teacher_size
+            ].tolist()
+
+            if self.use_extended_uld:
+                # Build alignment groups directly from token ids using greedy text matching
+                student_alignment_groups, teacher_alignment_groups = (
+                    self._build_alignment_groups_from_ids(
+                        student_token_ids, teacher_token_ids
+                    )
+                )
+
+                # Merge student probabilities using student alignment groups
+                student_aligned = self._merge_probabilities_with_alignment_groups(
+                    student_probs, student_alignment_groups
+                )
+
+                # Merge teacher probabilities using teacher alignment groups
+                teacher_aligned = self._merge_probabilities_with_alignment_groups(
+                    teacher_probs, teacher_alignment_groups
+                )
+            else:
+                min_length = min(len(student_token_ids), len(teacher_token_ids))
+                student_aligned = student_probs[:min_length, :]
+                teacher_aligned = teacher_probs[:min_length, :]
+
+            # Apply ULD loss computation
+            if self.use_hybrid_loss and self._vocab_mapping is not None:
+                # Use hybrid approach: direct comparison for matched tokens, sorting for unmatched
+                aligned_loss = self._compute_hybrid_uld_loss(
+                    student_aligned, teacher_aligned
+                )
+            else:
+                # Original approach: sort all probabilities
+                student_sorted = student_aligned.sort(dim=-1, descending=True).values
+                teacher_sorted = teacher_aligned.sort(dim=-1, descending=True).values
+
+                # Pad vocabularies to same size
+                student_vocab_size = student_sorted.size(-1)
+                teacher_vocab_size = teacher_sorted.size(-1)
+                max_vocab_size = max(student_vocab_size, teacher_vocab_size)
+
+                if student_vocab_size < max_vocab_size:
+                    student_sorted = F.pad(
+                        student_sorted, (0, max_vocab_size - student_vocab_size)
+                    )
+                if teacher_vocab_size < max_vocab_size:
+                    teacher_sorted = F.pad(
+                        teacher_sorted, (0, max_vocab_size - teacher_vocab_size)
+                    )
+
+                # Compute L1 distance (ULD approach)
+                aligned_loss = F.l1_loss(
+                    student_sorted, teacher_sorted, reduction="sum"
+                )
+                aligned_loss /= student_aligned.size(0)  # Normalize by sequence length
+            distillation_losses.append(aligned_loss)
+
+        distillation_loss = torch.stack(distillation_losses).mean()
+        return self.distillation_weight * distillation_loss
+
+    def _merge_probabilities_with_alignment_groups(
+        self, probs, alignment_groups, token_ids=None
+    ):
+        """trl 0.26.2's merge, vendored unchanged (#676 decision D-7: bit-identical numerics).
+
+        Copied from trl v0.26.2 trl/experimental/gold/gold_trainer.py:521. For a group of
+        several positions it multiplies their distributions (sums log-probs) and renormalises
+        with a softmax. trl 1.x replaced it with an unnormalised "observed" merge that needs
+        ``token_ids`` and raises on a multi-token group without them; ``token_ids`` is
+        accepted here only so trl's signature still fits, and ignored.
+        """
+        if not alignment_groups:
+            return probs
+
+        vocab_size = probs.size(-1)
+        target_len = len(alignment_groups)
+        aligned_probs = torch.zeros(target_len, vocab_size, device=probs.device)
+
+        for group_idx, group in enumerate(alignment_groups):
+            if len(group) > 1:
+                eps = 1e-8
+                logp = torch.log(probs[group[0]].clamp_min(eps))
+                for idx in group[1:]:
+                    if idx < probs.size(0):
+                        logp = logp + torch.log(probs[idx].clamp_min(eps))
+                aligned_probs[group_idx] = torch.softmax(logp, dim=-1)
+            elif len(group) == 1:
+                aligned_probs[group_idx] = probs[group[0]]
+            else:
+                aligned_probs[group_idx] = torch.zeros_like(probs[0])
+
+        return aligned_probs
+
+    def _compute_distillation_loss(
+        self,
+        student_logits,
+        teacher_logits,
+        student_labels,
+        teacher_labels,
+        student_input_ids,
+        teacher_input_ids,
+        student_byte_offsets=None,
+        teacher_byte_offsets=None,
+    ):
+        # trl 1.x's ULDLoss.__call__ passes the byte offsets its own alignment needs; this
+        # override aligns from the token IDs (both paths below), so they are not used.
         import os
         import sys
 
@@ -1805,7 +1976,7 @@ class CustomULDLoss(ULDLoss):
                     flush=True,
                 )
                 self._dbg_done = True
-            return super()._compute_distillation_loss(
+            return self._compute_base_distillation_loss(
                 student_logits,
                 teacher_logits,
                 student_labels,
@@ -2561,6 +2732,38 @@ class _StopAtStepCallback(TrainerCallback):
         return control
 
 
+class _VLLMWeightSyncCallback(TrainerCallback):
+    """Push the student's weights to vLLM at the end of every vllm_sync_frequency-th step.
+
+    trl 0.26.2's GOLDVLLMSyncCallback (trl/experimental/gold/gold_trainer.py:704), which trl 1.x
+    removed when it moved the sync into its buffered _prepare_inputs. This trainer bypasses that
+    path (D-1), so without this the server would keep generating from the initial weights.
+    Every rank runs it: the ZeRO-3 gather inside the sync is a collective.
+    """
+
+    def __init__(self, trainer):
+        self.trainer = trainer
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """On a resume the server still holds the initial checkpoint: push the restored
+        weights before the first rollout (trl 1.x also syncs before its first generation).
+        """
+        t = self.trainer
+        if state.global_step > 0:
+            t._move_model_to_vllm()
+            t._last_vllm_sync_step = state.global_step
+
+    def on_step_end(self, args, state, control, **kwargs):
+        t = self.trainer
+        if (
+            state.global_step != t._last_vllm_sync_step
+            and state.global_step % t.vllm_sync_frequency == 0
+            and getattr(t.accelerator, "sync_gradients", True)
+        ):
+            t._move_model_to_vllm()
+            t._last_vllm_sync_step = state.global_step
+
+
 class CustomGOLDTrainer(GOLDTrainer):
     """Custom trainer extending GOLDTrainer"""
 
@@ -2651,7 +2854,31 @@ class CustomGOLDTrainer(GOLDTrainer):
                 )
         else:
             print(f"[sampler] train_sampling_strategy={strategy!r}", flush=True)
-        return super()._get_train_sampler(*args, **kwargs)
+        # Skip GOLDTrainer's: trl 1.x returns a shuffled RepeatSampler there, which ignores
+        # train_sampling_strategy / length_column_name (trl/experimental/gold/gold_trainer.py
+        # _get_train_sampler). This trainer keeps the Trainer's sampler (decision D-1).
+        return super(GOLDTrainer, self)._get_train_sampler(*args, **kwargs)
+
+    # THE DATA AND GENERATION PATH STAYS THIS TRAINER'S (#676 decision D-1). trl 1.x's GOLDTrainer
+    # generates inside _prepare_inputs from a buffer that spans a gradient-accumulation window
+    # (fed by get_train_dataloader / get_batch_samples), drawing on-policy once per window.
+    # This trainer draws lambda per micro-step in training_step, keeps group_by_length and
+    # overlap_generation, and generates there. So the three hooks below skip GOLDTrainer and
+    # return to SFTTrainer/Trainer behaviour; with them, GOLDTrainer's buffer is never filled.
+
+    def _prepare_inputs(self, inputs):
+        """The batch as Trainer prepares it (device placement), never GOLD's buffered slice."""
+        return super(GOLDTrainer, self)._prepare_inputs(inputs)
+
+    def get_train_dataloader(self):
+        """Trainer's dataloader: one micro-batch per step, not one generation batch per window."""
+        return super(GOLDTrainer, self).get_train_dataloader()
+
+    def get_batch_samples(self, epoch_iterator, num_batches, device):
+        """Trainer's batch fetch, so num_items_in_batch counts what this trainer trains on."""
+        return super(GOLDTrainer, self).get_batch_samples(
+            epoch_iterator, num_batches, device
+        )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2754,7 +2981,22 @@ class CustomGOLDTrainer(GOLDTrainer):
 
             self._overlap_executor = ThreadPoolExecutor(max_workers=1)
 
-        # Replace single VLLMClient with MultiVLLMClient when multiple servers are configured
+        # trl 1.x keeps its vLLM state on self.vllm_generation (trl/generation/vllm_generation.py),
+        # which GOLDTrainer.__init__ built: in server mode it created the client and joined the
+        # weight-transfer group with the server at vllm_server_host/port (or vllm_server_base_url).
+        # The names below are what this trainer's methods read.
+        self.vllm_mode = self.args.vllm_mode if self.use_vllm else None
+        self.vllm_client = None
+        if self.use_vllm:
+            self._configure_vllm_generation()
+            self.vllm_client = getattr(self.vllm_generation, "vllm_client", None)
+            # trl 0.26.2 synced weights from a GOLDVLLMSyncCallback; trl 1.x syncs inside its
+            # buffered _prepare_inputs, which this trainer bypasses (D-1). Same callback, so
+            # the server sees the trained weights every vllm_sync_frequency steps as before.
+            self.add_callback(_VLLMWeightSyncCallback(self))
+
+        # More servers than the one GOLDTrainer connected to: add a client per extra server and
+        # put the set where VLLMGeneration reads it, so generation and weight sync reach all.
         if (
             self.use_vllm
             and self.vllm_mode == "server"
@@ -2776,26 +3018,36 @@ class CustomGOLDTrainer(GOLDTrainer):
                 raise ValueError(
                     f"Expected {self.args.vllm_num_servers} hosts in VLLM_SERVER_HOSTS, got {len(hosts)}."
                 )
-
-            # The first client was already created by super().__init__() — close it and rebuild all
-            self.vllm_client.close_communicator()
-
-            clients = []
-            for host, port, nccl_port in zip(hosts, ports, nccl_ports):
+            first = self.vllm_client
+            servers = list(zip(hosts, ports, nccl_ports))
+            first_url = first.base_url.rstrip("/")
+            extra = [(h, p, n) for h, p, n in servers if f"http://{h}:{p}" != first_url]
+            if len(extra) != len(servers) - 1:
+                raise ValueError(
+                    f"vllm_server_host/port ({first_url}) must be one of the servers in "
+                    f"VLLM_SERVER_HOSTS/PORTS ({servers}); it is the one trl already joined."
+                )
+            first_nccl = [n for h, p, n in servers if f"http://{h}:{p}" == first_url][0]
+            if first_nccl != self.args.vllm_group_port:
+                # trl joined that server's weight-transfer group on vllm_group_port; a
+                # different port listed for it would be silently ignored.
+                raise ValueError(
+                    f"VLLM_NCCL_COORDINATOR_PORTS lists {first_nccl} for {first_url}, but trl "
+                    f"joined it on vllm_group_port={self.args.vllm_group_port}; set them equal."
+                )
+            clients = [first]
+            for host, port, nccl_port in extra:
                 client = VLLMClient(
                     host=host,
                     server_port=port,
                     group_port=nccl_port,
                     connection_timeout=self.args.vllm_server_timeout,
                 )
-                client.init_communicator()
+                client.init_communicator(device=self.accelerator.device)
                 clients.append(client)
-
             self.vllm_client = MultiVLLMClient(clients)
-            print(
-                f"MultiVLLMClient initialized with {len(clients)} servers: "
-                f"{list(zip(hosts, ports, nccl_ports))}"
-            )
+            self.vllm_generation.vllm_client = self.vllm_client
+            print(f"MultiVLLMClient initialized with {len(clients)} servers: {servers}")
 
         if (
             self.use_uld_loss
@@ -2841,8 +3093,12 @@ class CustomGOLDTrainer(GOLDTrainer):
                 flush=True,
             )
 
-        if self.args.use_liger_fused_jsd and not self.use_liger_gkd_loss:
-            self.use_liger_gkd_loss = True
+        # trl 0.26.2's GOLDTrainer set use_liger_gkd_loss from use_liger_kernel; trl 1.x's has
+        # no liger path, so the flag is set here from both switches, as before.
+        self.use_liger_gkd_loss = bool(
+            self.args.use_liger_fused_jsd
+            or getattr(self.args, "use_liger_kernel", False)
+        )
 
         if self.use_liger_gkd_loss:
             from gb_steps_post_training.distillation.liger_losses import (
@@ -2912,16 +3168,73 @@ class CustomGOLDTrainer(GOLDTrainer):
 
                 self._unicode_to_byte = {v: k for k, v in bytes_to_unicode().items()}
 
-    def _min_tokens_kwargs(self) -> dict:
-        """generation_kwargs carrying the floor, for VLLMClient.generate; empty at 0.
+    def _configure_vllm_generation(self) -> None:
+        """Set the sampling parameters trl's VLLMGeneration sends to this trainer's values.
 
-        trl 0.26's vllm_serve applies a request's generation_kwargs to SamplingParams last
-        (GenerateRequest.generation_kwargs, merged with .update()), so min_tokens set here is
-        what the server samples with. Empty at 0 so a floor-less run sends the request it
-        always sent.
+        GOLDTrainer builds VLLMGeneration from trl's fields (temperature, top_k, logprobs=None);
+        this trainer samples with vllm_temperature, maps a non-positive top_k to vLLM's -1, needs
+        the sampled token's logprob for importance sampling (logprobs=0: one entry per token, the
+        sampled one, as trl's GRPO trainer requests), and passes min_completion_length as vLLM's
+        min_tokens. Both generation paths read these: VLLMGeneration.generate and the overlap
+        path's direct client call (_vllm_request_kwargs).
         """
-        n = int(getattr(self.args, "min_completion_length", 0) or 0)
-        return {"generation_kwargs": {"min_tokens": n}} if n > 0 else {}
+        vg = self.vllm_generation
+        gc = self.generation_config
+        vg.temperature = self.args.vllm_temperature
+        vg.top_k = gc.top_k if gc.top_k and gc.top_k > 0 else -1
+        vg.top_p = getattr(self.args, "top_p", 1.0)
+        vg.repetition_penalty = getattr(self.args, "repetition_penalty", 1.0)
+        vg.min_p = getattr(self.args, "min_p", 0.0) or 0.0
+        vg.max_completion_length = gc.max_new_tokens
+        vg.logprobs = 0
+        min_tokens = int(getattr(self.args, "min_completion_length", 0) or 0)
+        if min_tokens > 0:
+            vg.generation_kwargs["min_tokens"] = min_tokens
+
+    def _vllm_request_kwargs(self) -> dict:
+        """VLLMClient.generate keywords, built from VLLMGeneration the way it builds them."""
+        vg = self.vllm_generation
+        return {
+            "n": 1,
+            "repetition_penalty": vg.repetition_penalty,
+            "temperature": vg.temperature,
+            "top_p": vg.top_p,
+            "top_k": vg.top_k,
+            "min_p": vg.min_p,
+            "max_tokens": vg.max_completion_length,
+            "logprobs": vg.logprobs,
+            "structured_outputs_regex": vg.structured_outputs_regex,
+            "generation_kwargs": vg.generation_kwargs,
+        }
+
+    @staticmethod
+    def _prompt_token_ids(inputs, max_prompt_tokens: int) -> list[list[int]]:
+        """This rank's prompts as token IDs: collator left padding dropped, the last
+        max_prompt_tokens kept (as the text path truncated from the left)."""
+        ids = []
+        for row, mask in zip(inputs["prompts"], inputs["prompt_attention_mask"]):
+            row_ids = row[mask.bool()].tolist()
+            if max_prompt_tokens > 0 and len(row_ids) > max_prompt_tokens:
+                row_ids = row_ids[-max_prompt_tokens:]
+            ids.append(row_ids)
+        return ids
+
+    @staticmethod
+    def _sampled_token_logprobs(logprobs, completion_ids) -> list[list[float]]:
+        """Per-token logprob of the sampled token, as floats, NaN where vLLM reported NaN.
+
+        trl's client returns ``[sequence][token][k]`` sorted by probability, NaN as ``None``.
+        With logprobs=0 there is one entry per token, the sampled one, so index 0 is it (how trl
+        reads it). ``None`` becomes NaN, which the importance-sampling terms mask out. With no
+        logprobs returned at all, NaN everywhere: every token is then masked from IS, rather than
+        weighted against a made-up value.
+        """
+        if logprobs is None:
+            return [[math.nan] * len(c) for c in completion_ids]
+        return [
+            [math.nan if tok[0] is None else float(tok[0]) for tok in seq]
+            for seq in logprobs
+        ]
 
     def _get_current_lmbda(self) -> float:
         """
@@ -3477,7 +3790,6 @@ class CustomGOLDTrainer(GOLDTrainer):
             and self.use_vllm
             and self.vllm_mode == "server"
         ):
-            self._wake_vllm_if_needed()
             IS_enabled = (
                 self.args.opd_importance_sampling
                 or self.args.uld_hybrid_sampled_opd_weight > 0
@@ -3533,54 +3845,19 @@ class CustomGOLDTrainer(GOLDTrainer):
                 max_prompt_tokens = (
                     self.args.max_length - self.generation_config.max_new_tokens
                 )
-                prompts_to_decode = inputs["prompts"]
-                if (
-                    max_prompt_tokens > 0
-                    and prompts_to_decode.shape[1] > max_prompt_tokens
-                ):
-                    prompts_to_decode = prompts_to_decode[:, -max_prompt_tokens:]
-                prompts_text_for_vllm = self.processing_class.batch_decode(
-                    prompts_to_decode
-                )
-                if self.processing_class.pad_token:
-                    prompts_text_for_vllm = [
-                        p.replace(self.processing_class.pad_token, "")
-                        for p in prompts_text_for_vllm
-                    ]
-                _overlap_n_per_process = len(prompts_text_for_vllm)
-                all_prompts_text = gather_object(prompts_text_for_vllm)
-                _overlap_n_all_prompts = len(all_prompts_text)
+                prompt_id_lists = self._prompt_token_ids(inputs, max_prompt_tokens)
+                _overlap_n_per_process = len(prompt_id_lists)
+                all_prompt_ids = gather_object(prompt_id_lists)
+                _overlap_n_all_prompts = len(all_prompt_ids)
 
-                _gen_cfg = self.generation_config
-                _max_tokens = _gen_cfg.max_new_tokens
-                _temperature = self.args.vllm_temperature
-                _top_k = _gen_cfg.top_k if _gen_cfg.top_k and _gen_cfg.top_k > 0 else -1
-                _top_p = self.args.top_p if hasattr(self.args, "top_p") else 1.0
-                _rep_pen = (
-                    self.args.repetition_penalty
-                    if hasattr(self.args, "repetition_penalty")
-                    else 1.0
-                )
-                _min_p = self.args.min_p if hasattr(self.args, "min_p") else 0.0
                 if self.accelerator.is_main_process:
-                    if not hasattr(self, "vllm_client") or self.vllm_client is None:
-                        raise RuntimeError(
-                            "overlap_generation requires vllm_client but it is not initialized. "
-                            "Ensure use_vllm=True and vllm_mode='server'."
-                        )
                     _t_submit = time.perf_counter()
+                    # The same request VLLMGeneration.generate sends, issued directly so it
+                    # can run while this step trains.
                     _overlap_future = self._overlap_executor.submit(
                         self.vllm_client.generate,
-                        prompts=all_prompts_text,
-                        n=1,
-                        repetition_penalty=_rep_pen,
-                        temperature=_temperature,
-                        top_p=_top_p,
-                        top_k=_top_k,
-                        min_p=_min_p,
-                        max_tokens=_max_tokens,
-                        guided_decoding_regex=self.vllm_guided_decoding_regex,
-                        **self._min_tokens_kwargs(),
+                        prompts=all_prompt_ids,
+                        **self._vllm_request_kwargs(),
                     )
                     _overlap_future._submit_time = _t_submit
 
@@ -3594,7 +3871,6 @@ class CustomGOLDTrainer(GOLDTrainer):
             on_policy = True
 
             if self.use_vllm:
-                self._wake_vllm_if_needed()
                 result = self._generate_on_policy_outputs_vllm(
                     inputs, self.generation_config, self.processing_class.pad_token_id
                 )
@@ -3612,11 +3888,12 @@ class CustomGOLDTrainer(GOLDTrainer):
                     self.accelerator,
                     generation_kwargs=self.generation_kwargs,  # Override model.generation_config with generation_kwargs to fix transformers#42762
                 ) as unwrapped_model:
+                    # trl 1.x dropped the pad_token_id argument: it masks after the
+                    # first EOS and by the prompt mask, not by pad id.
                     result = self.generate_on_policy_outputs(
                         unwrapped_model,
                         inputs,
                         self.generation_config,
-                        self.processing_class.pad_token_id,
                     )
                     (
                         new_input_ids,
@@ -3709,7 +3986,9 @@ class CustomGOLDTrainer(GOLDTrainer):
                 self._timing_generation_wait += _wait_elapsed
                 self._timing_generation_actual += _gen_actual
                 completion_ids = vllm_response["completion_ids"]
-                vllm_logprobs_raw = vllm_response["logprobs"]
+                vllm_logprobs_raw = self._sampled_token_logprobs(
+                    vllm_response["logprobs"], completion_ids
+                )
             else:
                 completion_ids = [None] * _overlap_n_all_prompts
                 vllm_logprobs_raw = [None] * _overlap_n_all_prompts
@@ -3801,86 +4080,23 @@ class CustomGOLDTrainer(GOLDTrainer):
         return loss
 
     def _move_model_to_vllm(self):
-        deepspeed_plugin = self.accelerator.state.deepspeed_plugin
-        zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
-        if zero_stage_3:
-            import deepspeed
+        """Push the student's current weights to vLLM through trl's VLLMGeneration.sync_weights.
 
-            gather_if_zero3 = deepspeed.zero.GatheredParameters
-        else:
-            gather_if_zero3 = nullcontext
+        sync_weights does what this method did by hand under trl 0.26.2: gather each parameter
+        under ZeRO-3 (on every rank, as the gather is a collective), merge PEFT adapters, stream
+        the tensors to the server over the weight-transfer group in one update (or load them
+        into the colocated engine), then reset the prefix cache. Under trl 1.x a per-tensor
+        update_named_param would cost three HTTP calls and a server-side finalize per tensor.
 
-        if self.vllm_mode == "colocate" and self.vllm_enable_sleep_mode:
-            empty_cache()
-            self.vllm_engine.wake_up(tags=["weights"])
-            self.vllm_engine.collective_rpc("reload_weights")
-
+        Timed as a whole: the gather/broadcast split the old loop logged is not observable from
+        outside sync_weights, so weight_sync_allgather / weight_sync_broadcast stay 0.
+        """
         t_total = time.perf_counter()
-        t_allgather_total = 0.0
-        t_broadcast_total = 0.0
-        n_params = 0
-
-        if is_peft_model(self.model):
-            with gather_if_zero3(list(self.model.parameters())):
-                self.model.merge_adapter()
-                if self.is_fsdp_enabled:
-                    self._sync_fsdp_params_to_vllm(self.model)
-                else:
-                    for name, param in self.model.named_parameters():
-                        name = name.removeprefix("base_model.model.").replace(
-                            ".base_layer", ""
-                        )
-                        if self.model.prefix in name:
-                            continue
-                        if "original_module" in name:
-                            continue
-                        name = name.replace("modules_to_save.default.", "")
-                        if (
-                            self.vllm_mode == "server"
-                            and self.accelerator.is_main_process
-                        ):
-                            t_bc = time.perf_counter()
-                            self.vllm_client.update_named_param(name, param.data)
-                            t_broadcast_total += time.perf_counter() - t_bc
-                        elif self.vllm_mode == "colocate":
-                            llm_model = (
-                                self.vllm_engine.llm_engine.model_executor.driver_worker.model_runner.model
-                            )
-                            llm_model.load_weights([(name, param.data)])
-                        n_params += 1
-                self.model.unmerge_adapter()
-        else:
-            if self.is_fsdp_enabled:
-                self._sync_fsdp_params_to_vllm(self.model)
-            else:
-                for name, param in self.model.named_parameters():
-                    t_ag = time.perf_counter()
-                    with gather_if_zero3([param]):
-                        t_allgather_total += time.perf_counter() - t_ag
-                        if (
-                            self.vllm_mode == "server"
-                            and self.accelerator.is_main_process
-                        ):
-                            t_bc = time.perf_counter()
-                            self.vllm_client.update_named_param(name, param.data)
-                            t_broadcast_total += time.perf_counter() - t_bc
-                        elif self.vllm_mode == "colocate":
-                            llm_model = (
-                                self.vllm_engine.llm_engine.model_executor.driver_worker.model_runner.model
-                            )
-                            llm_model.load_weights([(name, param.data)])
-                    n_params += 1
-
-        if self.vllm_mode == "server" and self.accelerator.is_main_process:
-            self.vllm_client.reset_prefix_cache()
-        elif self.vllm_mode == "colocate":
-            self.vllm_engine.reset_prefix_cache()
-
-        elapsed = time.perf_counter() - t_total
-        self._timing_weight_sync += elapsed
-        self._timing_weight_sync_allgather += t_allgather_total
-        self._timing_weight_sync_broadcast += t_broadcast_total
-        self._timing_weight_sync_params = n_params
+        self.vllm_generation.sync_weights()
+        self._timing_weight_sync += time.perf_counter() - t_total
+        self._timing_weight_sync_params = len(
+            self.vllm_generation._weight_metadata or []
+        )
 
     def _build_alignment_groups_at_bytes_from_completion_ids(
         self, completion_ids, new_completion_ids
@@ -3990,163 +4206,56 @@ class CustomGOLDTrainer(GOLDTrainer):
     def _generate_on_policy_outputs_vllm(
         self, inputs, generation_config, pad_token_id=None, _prefetched=None
     ):
+        """Generate this rank's on-policy completions through vLLM and build the training batch.
+
+        Prompts go to vLLM as TOKEN IDS, the trainer's own (``inputs["prompts"]`` with
+        ``prompt_attention_mask``), the way trl 1.x's trainers send them. Until trl 0.26.2 the
+        prompts were decoded to text and vLLM re-tokenised them, which could drift from the
+        trainer's tokenisation; sending IDs removes that path, so the new batch's prompt part is
+        exactly what generated the completion.
+
+        Logprobs come back per token as trl's client returns them: requested with
+        ``logprobs=0`` (``_configure_vllm_generation``), so each token has one entry, the sampled
+        token's, at index 0, which is what trl's GRPO trainer reads. They are the values the
+        server sampled with (trl's server runs vLLM with ``--logprobs-mode processed_logprobs``).
+        A NaN logprob arrives as ``None`` and becomes NaN here; the importance-sampling terms
+        mask NaN tokens out (``_finite_is_mask``).
+        """
         _t0_gen = time.perf_counter()
         device = self.accelerator.device
 
-        # Decode prompts for vLLM (without special tokens - vLLM expects clean text)
+        # This rank's prompts as token IDs: drop the collator's left padding, keep the last
+        # max_prompt_tokens so prompt + completion fits max_length.
         max_prompt_tokens = self.args.max_length - generation_config.max_new_tokens
-        prompts_to_decode = inputs["prompts"]
-        if max_prompt_tokens > 0 and prompts_to_decode.shape[1] > max_prompt_tokens:
-            prompts_to_decode = prompts_to_decode[:, -max_prompt_tokens:]
+        prompt_id_lists = self._prompt_token_ids(inputs, max_prompt_tokens)
 
-        prompts_text_for_vllm = self.processing_class.batch_decode(
-            prompts_to_decode,
-            # skip_special_tokens=True,
-            # clean_up_tokenization_spaces=False # Keep this commented unless specific issues arise
-        )
-        # Remove padding token text if it appears, as vLLM expects clean prompts
-        if self.processing_class.pad_token:
-            prompts_text_for_vllm = [
-                p.replace(self.processing_class.pad_token, "")
-                for p in prompts_text_for_vllm
-            ]
-
-        # Also decode prompts WITH special tokens for ULD loss computation
+        # Decoded WITH special tokens for the cross-tokenizer ULD loss (unchanged).
         prompts_text_with_special = self.processing_class.batch_decode(
             inputs["prompts"],
             skip_special_tokens=False,
         )
 
-        # system_prompt = "Please reason step by step, and put your final answer within \\boxed{}."
-        # target_system_prompt = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
-        # prompts_text = [p.replace(target_system_prompt, system_prompt) for p in prompts_text]
-        # Add system prompt to prompts
-
         max_completion_length = generation_config.max_new_tokens
-        temperature = self.args.vllm_temperature
-        # vLLM uses top_k=-1 for no top_k, transformers uses 0 or None.
-        top_k = (
-            generation_config.top_k
-            if generation_config.top_k and generation_config.top_k > 0
-            else -1
-        )
-        # top_p, repetition_penalty, min_p are not directly in generation_config, get from trainer args
-        top_p = self.args.top_p if hasattr(self.args, "top_p") else 1.0
-        repetition_penalty = (
-            self.args.repetition_penalty
-            if hasattr(self.args, "repetition_penalty")
-            else 1.0
-        )
-        min_p = self.args.min_p if hasattr(self.args, "min_p") else 0.0
 
         # How many prompts the SERVING side is asked for in this one call. None when the work was
         # prefetched, because then no request was issued here and counting it would double-count the
-        # call that actually made it. Set inside each generating branch, where the gathered list is
-        # in scope; `prompts_text_for_vllm` alone cannot tell us, since it is this rank's slice.
+        # call that actually made it.
         _gen_batch_seen = None
 
         if _prefetched is not None:
             completion_ids, vllm_logprobs_raw = _prefetched
-        elif self.vllm_mode == "server":
-            all_prompts_text = gather_object(prompts_text_for_vllm)
-            _gen_batch_seen = len(all_prompts_text)
-            if self.accelerator.is_main_process:
-                vllm_response = self.vllm_client.generate(
-                    prompts=all_prompts_text,
-                    n=1,  # In GKD, we generate 1 completion per prompt from student
-                    repetition_penalty=repetition_penalty,
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    min_p=min_p,
-                    max_tokens=max_completion_length,
-                    guided_decoding_regex=self.vllm_guided_decoding_regex,
-                    **self._min_tokens_kwargs(),
-                )
-                completion_ids = vllm_response["completion_ids"]
-                vllm_logprobs_raw = vllm_response["logprobs"]
-            else:
-                completion_ids = [None] * len(all_prompts_text)
-                vllm_logprobs_raw = [None] * len(all_prompts_text)
-            completion_ids = broadcast_object_list(completion_ids, from_process=0)
-            vllm_logprobs_raw = broadcast_object_list(vllm_logprobs_raw, from_process=0)
-            process_slice = slice(
-                self.accelerator.process_index * len(prompts_text_for_vllm),
-                (self.accelerator.process_index + 1) * len(prompts_text_for_vllm),
-            )
-            completion_ids = completion_ids[process_slice]
-            vllm_logprobs_raw = vllm_logprobs_raw[process_slice]
-        elif self.vllm_mode == "colocate":
-            if self.vllm_guided_decoding_regex:
-                guided_decoding = GuidedDecodingParams(
-                    backend="outlines", regex=self.vllm_guided_decoding_regex
-                )
-            else:
-                guided_decoding = None
-            sampling_params = SamplingParams(
-                n=1,
-                repetition_penalty=repetition_penalty,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                min_p=min_p,
-                max_tokens=max_completion_length,
-                guided_decoding=guided_decoding,
-                logprobs=1 if self.args.opd_importance_sampling else None,
-                min_tokens=int(getattr(self.args, "min_completion_length", 0) or 0),
-            )
-
-            if hasattr(self, "vllm_tp_group") and self.vllm_tensor_parallel_size > 1:
-                # Gather prompts from all ranks in the TP group and flatten.
-                # Each rank starts with its own prompts; after gathering, all ranks see the full group set.
-                orig_size = len(prompts_text_for_vllm)
-                gathered_prompts = [None for _ in range(self.vllm_tensor_parallel_size)]
-                torch.distributed.all_gather_object(
-                    gathered_prompts, prompts_text_for_vllm, group=self.vllm_tp_group
-                )
-                all_prompts_text = [p for sublist in gathered_prompts for p in sublist]
-            else:
-                all_prompts_text = prompts_text_for_vllm
-
-            _gen_batch_seen = len(all_prompts_text)
-            all_outputs = self.vllm_engine.generate(
-                all_prompts_text, sampling_params=sampling_params, use_tqdm=False
-            )
-            completion_ids = [
-                output.token_ids
-                for outputs in all_outputs
-                for output in outputs.outputs
-            ]
-            vllm_logprobs_raw = [
-                (
-                    [
-                        lp_dict[tok_id].logprob
-                        for tok_id, lp_dict in zip(output.token_ids, output.logprobs)
-                    ]
-                    if output.logprobs
-                    else [0.0] * len(output.token_ids)
-                )
-                for outputs in all_outputs
-                for output in outputs.outputs
-            ]
-
-            if hasattr(self, "vllm_tp_group") and self.vllm_tensor_parallel_size > 1:
-                # Slice completions for this rank within its TP group.
-                # Each rank generates all outputs — we keep only our share.
-                local_rank_in_group = torch.distributed.get_rank(
-                    group=self.vllm_tp_group
-                )
-                tp_slice = slice(
-                    local_rank_in_group * orig_size,
-                    (local_rank_in_group + 1) * orig_size,
-                )
-                completion_ids = completion_ids[tp_slice]
-                vllm_logprobs_raw = vllm_logprobs_raw[tp_slice]
-
-            if self.vllm_enable_sleep_mode:
-                self.vllm_engine.sleep(level=2)
         else:
-            raise ValueError(f"Unknown vllm_mode: {self.vllm_mode}")
+            # trl's VLLMGeneration gathers the prompts to the main process (server) or the TP
+            # group (colocate), generates once, and returns this rank's slice.
+            _, completion_ids, logprobs, _, _ = self.vllm_generation.generate(
+                prompts=prompt_id_lists, images=None, num_generations=1
+            )
+            vllm_logprobs_raw = self._sampled_token_logprobs(logprobs, completion_ids)
+            _gen_batch_seen = len(prompt_id_lists) * (
+                self.accelerator.num_processes
+                if self.vllm_mode == "server"
+                else self.vllm_generation.tensor_parallel_size
+            )
 
         ### Re-tokenize completions
         if self.args.uld_rebuild_student_input:
@@ -4184,25 +4293,18 @@ class CustomGOLDTrainer(GOLDTrainer):
             else:
                 completion_ids = self.processing_class(completions)["input_ids"]
 
-        # We need to combine prompt and completion for new_input_ids
-        # Tokenize prompts again to get prompt_ids on the correct device and format
-        # Use prompts_text_for_vllm (without special tokens) for tokenization since vLLM expects clean text
-        # Ensure add_special_tokens=False as vLLM typically handles prompts as raw text
-        # Calculate max_length for prompts, ensuring it's positive
-        prompt_max_length = (
-            max(1, self.args.max_length - max_completion_length)
-            if self.args.max_length
-            else None
-        )
-        prompt_tokenized = self.processing_class(
-            prompts_text_for_vllm,
-            return_tensors="pt",
-            padding="longest",
-            truncation=True if prompt_max_length else False,
-            max_length=prompt_max_length,
-            add_special_tokens=False,
+        # The prompt half of the new batch is exactly the token IDs vLLM generated from,
+        # left-padded like the collator pads.
+        prompt_ids = pad(
+            [torch.tensor(ids, dtype=torch.long) for ids in prompt_id_lists],
+            padding_value=pad_token_id,
+            padding_side="left",
         ).to(device)
-        prompt_ids = prompt_tokenized.input_ids
+        prompt_mask = pad(
+            [torch.ones(len(ids), dtype=torch.long) for ids in prompt_id_lists],
+            padding_value=0,
+            padding_side="left",
+        ).to(device)
 
         completion_ids_tensors = [
             torch.tensor(ids, device=device) for ids in completion_ids
@@ -4372,7 +4474,7 @@ class CustomGOLDTrainer(GOLDTrainer):
             pad_positions[:, :padding_added] = True
         prompt_width = prompt_ids.shape[1]
         pad_positions[:, padding_added : padding_added + prompt_width] = (
-            prompt_tokenized.attention_mask == 0
+            prompt_mask == 0
         )
         completion_width = padded_completion_ids.shape[1]
         valid_completion = torch.arange(completion_width, device=device).unsqueeze(
@@ -4412,7 +4514,7 @@ class CustomGOLDTrainer(GOLDTrainer):
         if _gen_batch_seen is not None:
             self._gen_calls += 1
             self._gen_batch_total += _gen_batch_seen
-            self._gen_prompt_rows += len(prompts_text_for_vllm)
+            self._gen_prompt_rows += len(prompt_id_lists)
             self._gen_tokens += sum(len(c) for c in completion_ids)
             # `>=`, not `==`: vLLM stops AT the cap, but a re-tokenize round trip
             # (uld_rebuild_student_input) can land a hair over it, and a silent 0 here would read as
@@ -4588,18 +4690,17 @@ class CustomGOLDTrainer(GOLDTrainer):
 
             # IS weight = q_train(x) / q_inf(x) = exp(log_q_train - log_q_inf)
             is_weights = torch.exp(student_lp.detach() - vllm_lp)
-
-            # Collect stats before masking
-            total_tokens = is_weights.numel()
-            is_stats = {
-                "mean": is_weights.mean().item(),
-                "std": is_weights.std().item() if total_tokens > 1 else 0.0,
-                "min": is_weights.min().item(),
-                "max": is_weights.max().item(),
-            }
+            # NaN vLLM logprob (trl's client returns None): no IS weight, so the token is
+            # masked out, and kept out of the stats.
+            finite = torch.isfinite(is_weights)
+            is_stats = _is_weight_stats(is_weights[finite])
 
             # Truncation mask: keep tokens where IS weight is in [eps_low, eps_high]
-            is_mask = (is_weights >= is_epsilon_low) & (is_weights <= is_epsilon_high)
+            is_mask = (
+                finite
+                & (is_weights >= is_epsilon_low)
+                & (is_weights <= is_epsilon_high)
+            )
             is_stats["masked_fraction"] = 1.0 - is_mask.float().mean().item()
 
             student_lp = student_lp[is_mask]

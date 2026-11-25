@@ -333,6 +333,16 @@ def verify_tokenizer_consistency(
             )
 
 
+def get_kbit_device_map() -> dict[str, int] | None:
+    """Vendored from trl 0.26.2 (trl/trainer/utils.py:679); trl 1.x removed it. Reached only
+    with a quantization config (gold.py, sft.py)."""
+    from transformers.utils import is_torch_xpu_available
+
+    if torch.cuda.is_available() or is_torch_xpu_available():
+        return {"": PartialState().local_process_index}
+    return None
+
+
 @dataclass
 class CustomDataCollatorForChatML:
     """

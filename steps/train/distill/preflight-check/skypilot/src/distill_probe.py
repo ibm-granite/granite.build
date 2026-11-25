@@ -46,10 +46,9 @@ import tempfile
 import traceback
 from pathlib import Path
 
-# Hybrid (granitemoehybrid) students resolve mamba-ssm and causal-conv1d at load
-# time, and the modeling code asserts on the legacy causal_conv1d_cuda object --
-# the pins and the shim. See the shared package's
-# hub_kernel_pins.py for the measurements.
+# Hybrid (granitemoehybrid) students need the pinned Mamba2 hub kernels registered as
+# the causal_conv1d / mamba_ssm packages before the first model load. See the shared
+# package's hub_kernel_pins.py.
 try:
     from gb_steps_post_training.distillation.hub_kernel_pins import (
         prepare_hub_kernels,

@@ -14,7 +14,7 @@ step — checked directly against the real `uv.lock` files in
 ## Library skew against the CPU image
 
 The two images deliberately carry different versions of the shared libraries
-(transformers 5.8.0 / torch 2.8.0 here, 5.20.2 / 2.14.1 in `../cpu`): each was
+(transformers 5.20.2 / torch 2.14.0 here, 5.20.2 / 2.14.1 in `../cpu`): each was
 pinned for its own workload, and re-aligning them means re-validating the
 Mamba2 kernel cache and vLLM pins this image was built around. The skew was
 end-to-end tested where it crosses: `tokenizer-align` runs on the CPU image and
@@ -45,7 +45,7 @@ and run `make publish-step` in each step directory.
 
 ### 1. `pip`/`uv` can shadow the toolkit
 
-If a step's own dependency resolution pulls in `nvidia-*-cu12` runtime
+If a step's own dependency resolution pulls in `nvidia-*` CUDA runtime
 wheels (it does here, via torch/vllm), those pip-installed runtime
 libraries can end up ahead of this image's `CUDA_HOME`/`PATH`/
 `LD_LIBRARY_PATH` for anything invoked via `python -m` rather than bare

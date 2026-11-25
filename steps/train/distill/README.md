@@ -59,6 +59,22 @@ the container sees fewer GPUs than were allocated, and log the GPU view either w
 | `src/` | The trainer package (baked into both docker images). Provenance and local patches: [`src/VENDORED.md`](src/VENDORED.md). |
 | `<step>/skypilot/` | One step: `step-template.yaml` (the source of truth), `USAGE.md`, its launcher scripts under `src/`, and its tests. |
 
+## Testing
+
+Each step's `make test` runs its suites in the repo venv, which has no torch or trl, so the
+trainer's tests (the trl 1.x port, the loss numerics, student-sft's labels and cache) skip
+there. Run those inside a GPU image, on the CPU, with podman:
+
+```shell
+make -C steps/train/distill test-in-image IMAGE=quay.io/granitebuild/steps/train/distill/images/gpu:<tag>
+```
+
+It runs every GPU step's unit suites against the image's venv and its baked trainer package,
+with the tests from this checkout. `test_step_template.py` is left out; it needs the repo venv,
+and each step's `make test` runs it. Add `MOUNT_SRC=1` to test this checkout's `src/` against
+an existing image instead of the baked copy. Run it on every image you build, before you
+publish it.
+
 ## Restarts
 
 Each step writes a completion record next to its output. A restarted recipe re-runs every

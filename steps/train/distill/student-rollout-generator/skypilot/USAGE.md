@@ -56,7 +56,7 @@ the same as `logit-distill`. There is no per-run clone to configure.
 | Field | Type | Purpose |
 |---|---|---|
 | `compute_config` | mapping | Node count, e.g. `{num_nodes: 1}`; the server runs on one node. Request its GPUs with `launcher_config.resources.accelerators` (e.g. `"H100:8"`), since the SkyPilot launcher does not read `num_gpus_per_node`. The node's GPU count sets the default data-parallel size. |
-| `launcher_config` | mapping | SkyPilot launcher overrides: `image_id` (default `docker:quay.io/granitebuild/steps/train/distill/images/gpu:ca31e173`) and `resources` (`accelerators`, `memory`, `cluster`, `zone`). |
+| `launcher_config` | mapping | SkyPilot launcher overrides: `image_id` (default `docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5`) and `resources` (`accelerators`, `memory`, `cluster`, `zone`). |
 | `poll_interval_seconds` | integer | Monitor status-poll interval. Default: `300`. |
 | `log_retrieval_mode` | string | Monitor log-retrieval mode. Default: `periodic` (see [log_retrieval.mode](#log_retrievalmode-is-periodic-not-startup_window)). |
 | `log_retrieval_interval_seconds` | integer | How often the monitor retrieves the log, and so how soon after `/health` the URL is seen. Default: `15`. |
@@ -240,11 +240,21 @@ Splitting the server out dissolves all three:
   optional on LSF: `idle_minutes_to_autostop` is rejected for SSH/HPC clouds, so a
   SERVICE cluster never autostops and never gets a terminal-status cleanup.
 
+### Network exposure
+
+The server is vLLM's own OpenAI-compatible server, started through trl's `vllm-serve` with
+no API key. It binds the node's advertised address (`--host "$ADDR"`), not every
+interface, but that address has to be reachable from the trainer's allocation, so for the
+job's lifetime anyone on the cluster network can generate with the student, push weights
+into it or call into its workers. The image's `images/gpu/scan-ignore` records this as an
+accepted exposure, until 2027-05-31; #775 tracks binding it more
+narrowly.
+
 ### Bring-up and failure messages
 
-The server runs in the background. The step probes `http://127.0.0.1:<port>/health/`
-every `health_poll_seconds`, checking before each probe that the server process is
-still alive. Once healthy it logs `student-rollout-generator: healthy after <N>s` — which the monitor
+The server runs in the background. The step probes `http://$ADDR:$PORT/health` (the
+address it binds and publishes) every `health_poll_seconds`, checking before each probe
+that the server process is still alive. Once healthy it logs `student-rollout-generator: healthy after <N>s` — which the monitor
 turns into a RUNNING workload status — then publishes `vllm_url` and waits on the
 server. All failures exit non-zero with a `student-rollout-generator: FATAL:` line on stderr:
 

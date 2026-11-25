@@ -1,60 +1,80 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Assert every monkeypatch target still exists, and report which patches are still needed.
+"""Assert every private upstream surface this code patches or overrides still exists, and
+report which workarounds are still needed.
 
-WHY THIS EXISTS. `steps/distill-gold-train/pyproject.toml` pins nine runtime dependencies
-with `==`, and the argument for exactness is that seven monkeypatches in `gold.py` and
-`run_vllm_serve.py` reach into PRIVATE surface -- module-level flags, dunder-init methods,
-free functions inside a script module. A resolver-chosen bump does not break those loudly. It
-breaks them QUIETLY, in two different ways, and the two need opposite responses:
+WHY THIS EXISTS. The image pins trl, transformers, vLLM, DeepSpeed and kernels with `==`
+(images/gpu/pyproject.toml) because this code reaches into their PRIVATE surface: it
+monkeypatches attributes, overrides private trainer methods, and registers modules under
+names transformers imports. A version bump does not break those loudly. It breaks them
+QUIETLY, in two ways that need opposite responses:
 
-  DEAD    the symbol the patch reaches for is gone. `setattr` on a module that no longer has
-          the attribute succeeds; a `getattr(..., None)` guard skips silently. The patch
-          stops running and the bug it fixed comes back, wearing the original traceback.
-          Upstream is already doing this: `trl/extras/vllm_client.py`, the consumer of the
-          `_vllm_ascend_available` workaround, is DELETED on trl main.
-  MOOT    the symbol is there and upstream fixed the bug, so the patch is now a no-op that
-          nobody will ever delete because nobody knows it stopped mattering.
+  DEAD    the symbol a patch or override reaches for is gone. `setattr` on a module that no
+          longer has the attribute succeeds; an override of a method the parent no longer
+          calls is never called. The workaround stops running and the bug it fixed comes
+          back, wearing the original traceback.
+  MOOT    the symbol is there and upstream fixed the bug, so the workaround is a no-op that
+          nobody will delete because nobody knows it stopped mattering.
 
 Both are invisible from a training run that succeeds. This module makes them visible: it
-probes each target and reports EXISTS/MISSING (is the patch still applicable) alongside
-NEEDED/MOOT (is the bug still there). Run it after any dependency bump, and read the two
-columns as instructions -- MISSING means re-derive the patch against the new version, MOOT
-means delete the patch and record why.
+probes each target and reports EXISTS/MISSING (is the workaround still applicable) alongside
+NEEDED/MOOT (is the upstream behaviour it works around still there). Run it after any
+dependency bump: MISSING means re-derive the workaround against the new version, MOOT means
+delete it and record why.
 
-WHAT IT DELIBERATELY DOES NOT DO. It does not import `gold.py`, and it applies nothing. It
-reads the same third-party surface the patches read, in the same environment, and reports.
-That keeps it runnable in a container as a pre-flight without the side effect of half-patching
-a process that then goes on to train.
+THE vLLM 0.33 / trl 1.18 / transformers 5.20 MOVE (#676) DELETED FOUR PATCHES, recorded here
+so the reasons outlive the code:
 
-Two of the seven are not probed here and say so in their rows: the `causal_conv1d` shim
-(whose precondition is a warm HF kernel cache, not a symbol -- it is self-diagnosing, it was
-written because the import fails) and the `granite_swa` registration (which is gated on an arm
-this pairing does not use -- see `_swa_arm.py`).
+  1  trl 0.26.2 stored `_is_package_available()`'s (bool, version) tuple as
+     `_vllm_ascend_available`, which is always truthy. trl 1.x's `import_utils` has its own
+     `_is_package_available` returning a bool and no ascend guard at all.
+  2  vLLM 0.11.0's `GraniteMoeHybridAttention` / `GraniteDecoderLayer` read
+  2b `config.rope_theta`, which transformers 5.x moved into `config.rope_parameters`.
+     vLLM 0.33.0 passes `config.rope_parameters` itself. A source check below guards that,
+     so the patch's return would be noticed.
+  3  trl 0.26.2's `vllm_serve.sanitize_logprob` returned None for a NaN logprob, which its
+     response schema rejected (HTTP 500). trl 1.x serves through vLLM's own server; its
+     client returns None for NaN, and the trainer masks that token out of its
+     importance-sampling terms.
+
+DELETED rows below are those guards: they fail (like MISSING) if the bug comes BACK, because
+there is no longer a patch to catch it.
+
+WHAT IT DELIBERATELY DOES NOT DO. It does not import gold.py or the trainers, and it applies
+nothing. The new probes read upstream SOURCE, located with `importlib.util.find_spec`, which
+executes nothing below the top-level package: neither trl's trainer modules nor transformers'
+granitemoehybrid modeling module are imported -- the latter matters, because importing it
+binds its kernel decorators for the rest of the process (see hub_kernel_pins.py). Only the
+DeepSpeed and transformers.generation probes import their targets, as before.
 
     python -m gb_steps_post_training.distillation.patch_targets
-    python -m gb_steps_post_training.distillation.patch_targets --skip-vllm   # no vLLM import
 
-Exit status: 0 if every probed target EXISTS, 1 otherwise. A MOOT patch is reported and does
-NOT fail -- a no-op patch is a cleanup task, not a broken run.
+Exit status: 0 if every probed target EXISTS and no deleted patch's bug is back, 1 otherwise.
+A MOOT workaround is reported and does NOT fail -- a no-op is a cleanup task, not a broken run.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib
+import importlib.util
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
 class Probe:
     name: str
-    where: str  # where the patch lives, file:line, so the report is actionable
+    where: str  # where the workaround lives, so the report is actionable
     exists: bool | None  # None = not probed
     needed: bool | None
     detail: str
     notes: str = ""
+    deleted: bool = (
+        False  # the workaround was removed; needed=True means the bug is back
+    )
 
 
 def _version(pkg: str) -> str:
@@ -66,77 +86,55 @@ def _version(pkg: str) -> str:
         return "?"
 
 
-def probe_trl_ascend() -> Probe:
-    """`trl.import_utils._vllm_ascend_available` must be a module attribute to unwrap.
+def _source_path(package: str, relative: str) -> Path | None:
+    """Path of `relative` inside the installed top-level `package`, without importing it.
 
-    NEEDED when it is a TUPLE: under transformers >= 4.57 `_is_package_available` returns
-    `(bool, version)` and `import_utils.py:43` stores it without `return_version=True`, so the
-    tuple is truthy and `is_vllm_ascend_available()` reports an absent package as present.
+    find_spec on a TOP-LEVEL name locates the package without executing it; a dotted name
+    would import every parent package first.
     """
-    m = importlib.import_module("trl.import_utils")
-    if not hasattr(m, "_vllm_ascend_available"):
-        return Probe(
-            "trl ascend guard",
-            "gold.py:26-35 / run_vllm_serve.py:12-14",
-            False,
-            None,
-            "trl.import_utils._vllm_ascend_available is GONE -- the unwrap patches "
-            "now setattr an attribute nothing reads. Re-derive: find what "
-            "is_vllm_ascend_available() reads in this version.",
-        )
-    val = getattr(m, "_vllm_ascend_available")
-    is_tuple = isinstance(val, tuple)
+    spec = importlib.util.find_spec(package)
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    path = Path(next(iter(spec.submodule_search_locations))) / relative
+    return path if path.is_file() else None
+
+
+def _classes(path: Path) -> dict[str, ast.ClassDef]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+
+
+def _methods(cls: ast.ClassDef) -> dict[str, ast.FunctionDef]:
+    return {
+        n.name: n
+        for n in cls.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _self_assignments(cls: ast.ClassDef) -> set[str]:
+    return {
+        n.attr
+        for n in ast.walk(cls)
+        if isinstance(n, ast.Attribute)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == "self"
+        and isinstance(n.ctx, ast.Store)
+    }
+
+
+def _missing_file(name: str, where: str, package: str, relative: str) -> Probe:
     return Probe(
-        "trl ascend guard",
-        "gold.py:26-35 / run_vllm_serve.py:12-14",
-        True,
-        is_tuple,
-        f"_vllm_ascend_available = {val!r} ({'tuple -> truthy, bug present' if is_tuple else 'not a tuple'})",
-        "trl main has DELETED trl/extras/vllm_client.py, the consumer this "
-        "workaround exists for. A bump can make this MOOT and the patch would "
-        "not tell you.",
-    )
-
-
-def probe_vllm_rope(module: str, cls: str, where: str, label: str) -> Probe:
-    """vLLM reads `config.rope_theta`; transformers 5.x moved it into `config.rope_parameters`.
-
-    The patch wraps `__init__`, so the target is the class and its dunder. EXISTS is about the
-    class still being there under that name; NEEDED is about transformers still keeping
-    rope_theta inside rope_parameters rather than as a top-level attribute.
-    """
-    try:
-        m = importlib.import_module(module)
-    except Exception as exc:
-        return Probe(
-            label,
-            where,
-            False,
-            None,
-            f"cannot import {module}: {type(exc).__name__}: {exc}",
-        )
-    obj = getattr(m, cls, None)
-    if obj is None:
-        return Probe(
-            label,
-            where,
-            False,
-            None,
-            f"{module}.{cls} is GONE -- the __init__ wrapper patches a class that "
-            "no longer exists under that name, and vLLM will read config.rope_theta "
-            "unpatched. Re-derive against this vLLM version.",
-        )
-    return Probe(
-        label,
+        name,
         where,
-        True,
+        False,
         None,
-        f"{module}.{cls}.__init__ present",
-        "NEEDED is not probed: it depends on the CONFIG of the model being served "
-        "(a granite-4.x config.json under transformers 5.x has no top-level "
-        "rope_theta). The patch is a no-op when the attribute is present, so it is "
-        "safe either way -- what is not safe is the class disappearing.",
+        f"{package}/{relative} not found -- the module moved; re-derive against "
+        f"{package} {_version(package)}",
     )
+
+
+# --- kept workarounds -------------------------------------------------------------------
 
 
 def probe_deepspeed_defaults() -> Probe:
@@ -146,43 +144,35 @@ def probe_deepspeed_defaults() -> Probe:
     `optimizer.defaults`, and a ZeRO wrapper that does not forward it raises mid-run, after
     the first scheduler step rather than at startup.
     """
+    where = "gold.py / sft.py (deepspeed `defaults` property)"
     try:
         s3 = importlib.import_module("deepspeed.runtime.zero.stage3")
         s12 = importlib.import_module("deepspeed.runtime.zero.stage_1_and_2")
     except Exception as exc:
         return Probe(
             "deepspeed defaults",
-            "gold.py:73-80",
+            where,
             False,
             None,
             f"cannot import deepspeed zero modules: {type(exc).__name__}: {exc}",
         )
-    missing = [
-        n
-        for n, mod, cls in (
-            ("DeepSpeedZeroOptimizer_Stage3", s3, "DeepSpeedZeroOptimizer_Stage3"),
-            ("DeepSpeedZeroOptimizer", s12, "DeepSpeedZeroOptimizer"),
-        )
-        if getattr(mod, cls, None) is None
-    ]
+    classes = (
+        (s3, "DeepSpeedZeroOptimizer_Stage3"),
+        (s12, "DeepSpeedZeroOptimizer"),
+    )
+    missing = [cls for mod, cls in classes if getattr(mod, cls, None) is None]
     if missing:
         return Probe(
             "deepspeed defaults",
-            "gold.py:73-80",
+            where,
             False,
             None,
             f"missing: {', '.join(missing)} -- re-derive against this deepspeed",
         )
-    needed = not any(
-        hasattr(getattr(mod, cls), "defaults")
-        for mod, cls in (
-            (s3, "DeepSpeedZeroOptimizer_Stage3"),
-            (s12, "DeepSpeedZeroOptimizer"),
-        )
-    )
+    needed = not any(hasattr(getattr(mod, cls), "defaults") for mod, cls in classes)
     return Probe(
         "deepspeed defaults",
-        "gold.py:73-80",
+        where,
         True,
         needed,
         "both ZeRO optimizer classes present; "
@@ -195,19 +185,20 @@ def probe_deepspeed_defaults() -> Probe:
 
 
 def probe_generation_aliases() -> Probe:
-    """The mamba-ssm Hub kernel imports names transformers 5.x removed.
+    """The mamba-ssm Hub kernel's `decode()` names classes transformers 5.x removed.
 
     EXISTS is about the replacement (`GenerateDecoderOnlyOutput`) still being importable --
     without it the alias patch cannot run at all. NEEDED is about the old names still being
     absent.
     """
+    where = "gold.py (generation-output aliases)"
     g = importlib.import_module("transformers.generation")
     have_new = hasattr(g, "GenerateDecoderOnlyOutput")
     have_old = hasattr(g, "GreedySearchDecoderOnlyOutput")
     if not have_new:
         return Probe(
             "generation output aliases",
-            "gold.py:82-91",
+            where,
             False,
             None,
             "transformers.generation.GenerateDecoderOnlyOutput is GONE -- the alias "
@@ -215,7 +206,7 @@ def probe_generation_aliases() -> Probe:
         )
     return Probe(
         "generation output aliases",
-        "gold.py:82-91",
+        where,
         True,
         not have_old,
         "GenerateDecoderOnlyOutput present; GreedySearchDecoderOnlyOutput "
@@ -223,211 +214,371 @@ def probe_generation_aliases() -> Probe:
     )
 
 
-def probe_sanitize_logprob() -> Probe:
-    """`trl.scripts.vllm_serve.sanitize_logprob` is replaced wholesale by name.
+# --- deleted workarounds, guarded ---------------------------------------------------------
 
-    This is the most fragile of the seven: a free function in a SCRIPT module, replaced rather
-    than wrapped. If it is renamed or inlined, `setattr` quietly adds an unused attribute and
-    a NaN logprob comes back as a Pydantic ResponseValidationError -> HTTP 500 mid-rollout.
 
-    IT CANNOT BE PROBED IN ISOLATION, and the first run of this module, confirmed directly,
-    is what established that: a cold `import trl.scripts.vllm_serve` raises
-    ModuleNotFoundError: No module named 'vllm_ascend'. That is not this target being gone --
-    it is PATCH 1 not having been applied yet. trl's `is_vllm_ascend_available()` reads the
-    raw tuple `(False, None)`, which is truthy, so the module's import-time ascend branch
-    fires and tries to import a package that is not installed.
+def probe_vllm_rope_parameters() -> list[Probe]:
+    """Patches 2/2b were deleted because vLLM reads `config.rope_parameters` itself.
 
-    So patch 1 is a hard PRECONDITION for patch 3's target even existing, and the ordering in
-    run_vllm_serve.py (line 14 neutralizes the guard, line 55 imports the module) is
-    load-bearing rather than incidental. Nothing in that file said so; reordering the patch
-    blocks, or splitting them across modules, would resurrect this failure as a confusing
-    "No module named 'vllm_ascend'" from a file that never mentions ascend. This probe
-    reproduces the real ordering deliberately, and REPORTS the dependency instead of hiding
-    it behind a working import.
+    Guarded per model FILE, not per class: the patches wrapped
+    `GraniteMoeHybridAttention.__init__` and `GraniteDecoderLayer.__init__`, but vLLM moves
+    the rope set-up between classes (0.34 does it in `GraniteAttention` via a module
+    helper). The bug is back if a module reads a top-level `config.rope_theta` -- which a
+    transformers 5.x Granite config does not have -- or no longer reads
+    `config.rope_parameters` at all.
     """
-    label, where = "sanitize_logprob NaN", "run_vllm_serve.py:51-64"
-    ordering = ""
-    try:
-        m = importlib.import_module("trl.scripts.vllm_serve")
-    except ModuleNotFoundError as exc:
-        if "vllm_ascend" not in str(exc):
-            return Probe(
+    probes = []
+    for relative, label in (
+        (
+            "model_executor/models/granitemoehybrid.py",
+            "vLLM rope_parameters (MoeHybrid)",
+        ),
+        ("model_executor/models/granite.py", "vLLM rope_parameters (dense Granite)"),
+    ):
+        where = "deleted from gold.py / run_vllm_serve.py (patch 2/2b)"
+        path = _source_path("vllm", relative)
+        if path is None:
+            probes.append(_missing_file(label, where, "vllm", relative))
+            continue
+        source = path.read_text(encoding="utf-8")
+        reads_theta = "config.rope_theta" in source
+        reads_params = "config.rope_parameters" in source
+        back = reads_theta or not reads_params
+        probes.append(
+            Probe(
                 label,
                 where,
-                False,
-                None,
-                f"cannot import trl.scripts.vllm_serve: {type(exc).__name__}: {exc}",
+                True,
+                back,
+                (
+                    f"vllm {relative} "
+                    + (
+                        "reads config.rope_theta"
+                        if reads_theta
+                        else "never reads config.rope_parameters"
+                    )
+                    + " -> the deleted patch is NEEDED again"
+                    if back
+                    else f"vllm {relative} reads config.rope_parameters and never config.rope_theta "
+                    "-> the deleted patch stays deleted"
+                ),
+                deleted=True,
             )
-        # The documented precondition. Apply patch 1 exactly as run_vllm_serve.py:14 does,
-        # then retry -- and say so in the report, because a silent retry would turn a
-        # load-bearing ordering into an invisible one.
-        importlib.import_module("trl.import_utils")._vllm_ascend_available = False
-        ordering = (
-            "cold import raised ModuleNotFoundError('vllm_ascend') -- patch 1 is a "
-            "PRECONDITION for this target; applied it and retried (run_vllm_serve.py:14 "
-            "before :55 does the same, and that order is load-bearing). "
         )
-        try:
-            m = importlib.import_module("trl.scripts.vllm_serve")
-        except Exception as exc2:
-            return Probe(
-                label,
-                where,
-                False,
-                None,
-                ordering + f"still cannot import: {type(exc2).__name__}: {exc2}",
-            )
-    except Exception as exc:
-        return Probe(
-            label,
-            where,
-            False,
-            None,
-            f"cannot import trl.scripts.vllm_serve: {type(exc).__name__}: {exc}",
-        )
-    fn = getattr(m, "sanitize_logprob", None)
-    if fn is None:
-        return Probe(
-            label,
-            where,
-            False,
-            None,
-            ordering + "trl.scripts.vllm_serve.sanitize_logprob is GONE -- the "
-            "replacement is a dead attribute and NaN logprobs return HTTP 500 again. "
-            "Re-derive.",
-        )
-    # Whether it still mishandles NaN is checked by calling it, which is cheap and exact.
-    needed = None
-    detail = ordering + "sanitize_logprob present"
-    try:
-
-        class _L:
-            logprob = float("nan")
-
-        out = fn(_L())
-        needed = out is None
-        detail += f"; on a NaN logprob it returns {out!r} -> " + (
-            "None, rejected by the list[list[float]] response schema -> patch needed"
-            if needed
-            else "a value the schema accepts -> patch may be moot"
-        )
-    except Exception as exc:  # signature changed
-        detail += (
-            f"; could not call it with a stub logprob ({type(exc).__name__}) -- the "
-        )
-        detail += "signature changed, re-check the patch"
-    return Probe(label, where, True, needed, detail)
+    return probes
 
 
-def unprobed() -> list[Probe]:
-    return [
-        Probe(
-            "causal_conv1d / mamba-ssm shim",
-            "gold.py:103-209",
-            None,
-            None,
-            "NOT PROBED, and deliberately: its precondition is a warm HF kernel cache and a "
-            "specific `kernels` layout, not a symbol. It is self-diagnosing -- it exists "
-            "because the import raises, so a break is loud on the next run.",
-        ),
-        Probe(
-            "granite_swa Auto*/vLLM registration",
-            "gold.py:100-101, 211-219 / " "run_vllm_serve.py:66-75",
-            None,
-            None,
-            "NOT PROBED: gated on the SWA arm, which nothing in the granite 4.1/4.2 pairing "
-            "uses (D4). Probing it would require the vendored package this collection does "
-            "not carry. See _swa_arm.py.",
-        ),
+def probe_trl_bool_guards() -> Probe:
+    """Patch 1 was deleted because trl 1.x's `_is_package_available` returns a bool."""
+    where = "deleted from gold.py / sft.py / run_vllm_serve.py / render_gold_config.py (patch 1)"
+    label = "trl package-availability guards"
+    m = importlib.import_module("trl.import_utils")
+    tuples = [
+        name
+        for name in dir(m)
+        if name.startswith("_")
+        and name.endswith("_available")
+        and isinstance(getattr(m, name), tuple)
     ]
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--skip-vllm",
-        action="store_true",
-        help="skip the two vLLM probes (importing vllm is slow and pulls CUDA)",
+    return Probe(
+        label,
+        where,
+        True,
+        bool(tuples),
+        (
+            f"tuple-valued guards are BACK: {', '.join(tuples)} -> the deleted unwrap is "
+            "NEEDED again"
+            if tuples
+            else "no module-level *_available guard is a tuple -> the deleted unwrap stays deleted"
+        ),
+        deleted=True,
     )
-    a = ap.parse_args()
+
+
+# --- surfaces the trl 1.x port depends on --------------------------------------------------
+
+
+# CustomGOLDTrainer overrides these back to transformers.Trainer / SFTTrainer behaviour,
+# because trl 1.x's GOLDTrainer replaced them with its buffered, RepeatSampler-driven
+# generation (#676 D-1). NEEDED while GOLDTrainer still defines them.
+_GOLD_OVERRIDDEN = (
+    "_prepare_inputs",
+    "get_train_dataloader",
+    "_get_train_sampler",
+    "get_batch_samples",
+)
+
+
+def probe_gold_trainer_overrides() -> Probe:
+    label, where = (
+        "GOLDTrainer data/generation path",
+        "custom_gold_trainer.py (D-1 overrides)",
+    )
+    relative = "experimental/gold/gold_trainer.py"
+    path = _source_path("trl", relative)
+    if path is None:
+        return _missing_file(label, where, "trl", relative)
+    cls = _classes(path).get("GOLDTrainer")
+    if cls is None:
+        return Probe(label, where, False, None, f"trl {relative}: GOLDTrainer is gone")
+    defined = set(_methods(cls))
+    overridden = [m for m in _GOLD_OVERRIDDEN if m in defined]
+    return Probe(
+        label,
+        where,
+        True,
+        bool(overridden),
+        (
+            f"GOLDTrainer defines {', '.join(overridden)} -> restoring Trainer behaviour is needed"
+            if overridden
+            else "GOLDTrainer no longer overrides any of "
+            + ", ".join(_GOLD_OVERRIDDEN)
+            + " -> the restoring overrides look moot"
+        ),
+    )
+
+
+# What CustomULDLoss reads from its trl parent instead of defining itself.
+_ULD_METHODS = (
+    "__init__",
+    "__call__",
+    "_initialize_vocabulary_mapping",
+    "_compute_distillation_loss",
+    "_compute_jsd_loss_for_matched_tokens",
+    "_get_start_and_size_answers",
+)
+_ULD_ATTRIBUTES = (
+    "_vocab_mapping",
+    "_student_matched_ids",
+    "_teacher_matched_ids",
+    "beta",
+    "distillation_weight",
+    "hybrid_matched_weight",
+    "hybrid_unmatched_weight",
+    "ignore_index",
+    "student_temperature",
+    "teacher_temperature",
+    "student_tokenizer",
+    "teacher_tokenizer",
+    "use_extended_uld",
+    "use_hybrid_loss",
+)
+
+
+def probe_uld_loss_surface() -> Probe:
+    label, where = "ULDLoss parent surface", "custom_gold_trainer.py (CustomULDLoss)"
+    relative = "experimental/gold/gold_trainer.py"
+    path = _source_path("trl", relative)
+    if path is None:
+        return _missing_file(label, where, "trl", relative)
+    cls = _classes(path).get("ULDLoss")
+    if cls is None:
+        return Probe(label, where, False, None, f"trl {relative}: ULDLoss is gone")
+    methods = set(_methods(cls))
+    assigned = _self_assignments(cls)
+    missing = [m for m in _ULD_METHODS if m not in methods] + [
+        a for a in _ULD_ATTRIBUTES if a not in assigned
+    ]
+    if missing:
+        return Probe(
+            label,
+            where,
+            False,
+            None,
+            f"ULDLoss no longer defines/sets: {', '.join(missing)} -- CustomULDLoss reads them",
+        )
+    return Probe(
+        label,
+        where,
+        True,
+        None,
+        f"all {len(_ULD_METHODS)} methods and {len(_ULD_ATTRIBUTES)} attributes CustomULDLoss "
+        "reads from its parent are still defined",
+    )
+
+
+# (class, method, required parameters) of trl's vLLM client side the trainer calls.
+_VLLM_CLIENT_API = (
+    (
+        "vllm_client.py",
+        "VLLMClient",
+        "generate",
+        ("prompts", "logprobs", "structured_outputs_regex", "generation_kwargs"),
+    ),
+    ("vllm_client.py", "VLLMClient", "init_communicator", ("device",)),
+    ("vllm_client.py", "VLLMClient", "weight_update", ()),
+    (
+        "vllm_client.py",
+        "VLLMClient",
+        "update_named_params",
+        ("metadata", "named_params"),
+    ),
+    ("vllm_client.py", "VLLMClient", "reset_prefix_cache", ()),
+    ("vllm_generation.py", "VLLMGeneration", "sync_weights", ()),
+)
+
+
+def probe_vllm_client_api() -> Probe:
+    label, where = (
+        "trl vLLM client API",
+        "custom_gold_trainer.py (MultiVLLMClient, rollouts, weight sync)",
+    )
+    problems = []
+    cache: dict[str, dict[str, ast.ClassDef]] = {}
+    for filename, cls_name, method, params in _VLLM_CLIENT_API:
+        relative = f"generation/{filename}"
+        if relative not in cache:
+            path = _source_path("trl", relative)
+            if path is None:
+                return _missing_file(label, where, "trl", relative)
+            cache[relative] = _classes(path)
+        cls = cache[relative].get(cls_name)
+        if cls is None:
+            problems.append(f"{cls_name} gone")
+            continue
+        fn = _methods(cls).get(method)
+        if fn is None:
+            problems.append(f"{cls_name}.{method} gone")
+            continue
+        args = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+        lost = [p for p in params if p not in args]
+        if lost:
+            problems.append(f"{cls_name}.{method} lost parameter(s) {', '.join(lost)}")
+    if problems:
+        return Probe(label, where, False, None, "; ".join(problems))
+    return Probe(
+        label,
+        where,
+        True,
+        None,
+        f"{len(_VLLM_CLIENT_API)} methods present with the parameters the trainer passes",
+    )
+
+
+# transformers' granitemoehybrid modeling binds these at import; hub_kernel_pins registers
+# the pinned hub builds under the package names first.
+_KERNEL_DECORATIONS = (
+    (
+        'use_kernel_func_from_hub_with_fallback("causal_conv1d_fn", "causal_conv1d")',
+        "causal_conv1d",
+    ),
+    (
+        'use_kernel_func_from_hub_with_fallback("causal_conv1d_update", "causal_conv1d")',
+        "causal_conv1d",
+    ),
+    (
+        'use_kernel_func_from_hub_with_fallback("mamba_chunk_scan_combined", "mamba_ssm")',
+        "mamba_ssm",
+    ),
+    (
+        'use_kernel_func_from_hub_with_fallback("mamba_split_conv1d_scan_combined", "mamba_ssm")',
+        "mamba_ssm",
+    ),
+    (
+        'use_kernel_func_from_hub_with_fallback("selective_state_update", "mamba_ssm")',
+        "mamba_ssm",
+    ),
+)
+
+
+def probe_hub_kernel_registration() -> Probe:
+    """hub_kernel_pins.prepare_hub_kernels registers `causal_conv1d` / `mamba_ssm`.
+
+    That only helps while transformers' granitemoehybrid modeling looks the kernels up
+    under those package names. Read from source: importing the modeling module would bind
+    its decorators in this process.
+    """
+    label, where = (
+        "hub-kernel registration targets",
+        "hub_kernel_pins.py (prepare_hub_kernels)",
+    )
+    relative = "models/granitemoehybrid/modeling_granitemoehybrid.py"
+    path = _source_path("transformers", relative)
+    if path is None:
+        return _missing_file(label, where, "transformers", relative)
+    source = path.read_text(encoding="utf-8")
+    absent = [
+        decoration for decoration, _ in _KERNEL_DECORATIONS if decoration not in source
+    ]
+    if absent:
+        legacy = "lazy_load_kernel(" in source
+        return Probe(
+            label,
+            where,
+            False,
+            None,
+            f"{len(absent)} of {len(_KERNEL_DECORATIONS)} kernel lookups changed "
+            f"(first: {absent[0]})"
+            + ("; the modeling code calls lazy_load_kernel again" if legacy else ""),
+        )
+    return Probe(
+        label,
+        where,
+        True,
+        True,
+        "the modeling code binds causal_conv1d / mamba_ssm at import -> registration needed",
+    )
+
+
+def main(argv=None) -> int:
+    argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args(argv)
 
     print("environment")
-    for pkg in ("trl", "transformers", "vllm", "deepspeed", "accelerate", "torch"):
+    for pkg in (
+        "trl",
+        "transformers",
+        "vllm",
+        "deepspeed",
+        "accelerate",
+        "kernels",
+        "torch",
+    ):
         print(f"  {pkg:<14} {_version(pkg)}")
     print(f"  {'python':<14} {sys.version.split()[0]}")
     print()
 
-    # ORDER IS LOAD-BEARING HERE TOO, for the same reason it is in run_vllm_serve.py:
-    # probe_sanitize_logprob() has to SET _vllm_ascend_available = False to import its target
-    # at all (see its docstring), so probe_trl_ascend() must run FIRST or it would read the
-    # value this module just wrote and report the bug as already fixed.
-    probes = [probe_trl_ascend()]
-    if a.skip_vllm:
-        probes.append(
-            Probe(
-                "vLLM rope_theta (x2)",
-                "gold.py:37-71 / run_vllm_serve.py:16-49",
-                None,
-                None,
-                "SKIPPED via --skip-vllm",
-            )
-        )
-    else:
-        probes.append(
-            probe_vllm_rope(
-                "vllm.model_executor.models.granitemoehybrid",
-                "GraniteMoeHybridAttention",
-                "gold.py:37-53 / run_vllm_serve.py:16-32",
-                "vLLM rope_theta (MoeHybrid)",
-            )
-        )
-        probes.append(
-            probe_vllm_rope(
-                "vllm.model_executor.models.granite",
-                "GraniteDecoderLayer",
-                "gold.py:55-71 / run_vllm_serve.py:34-49",
-                "vLLM rope_theta (dense Granite)",
-            )
-        )
-    probes.append(probe_deepspeed_defaults())
-    probes.append(probe_generation_aliases())
-    probes.append(probe_sanitize_logprob())
-    probes += unprobed()
+    probes = [
+        probe_deepspeed_defaults(),
+        probe_generation_aliases(),
+        probe_trl_bool_guards(),
+        *probe_vllm_rope_parameters(),
+        probe_gold_trainer_overrides(),
+        probe_uld_loss_surface(),
+        probe_vllm_client_api(),
+        probe_hub_kernel_registration(),
+    ]
 
     def flag(v: bool | None, yes: str, no: str) -> str:
         return "  -  " if v is None else (yes if v else no)
 
     failed = []
     for p in probes:
-        print(
-            f"{flag(p.exists, 'EXISTS', 'MISSING')}  "
-            f"{flag(p.needed, 'NEEDED', ' MOOT ')}  {p.name}"
-        )
+        needed = flag(p.needed, "BACK  " if p.deleted else "NEEDED", " MOOT ")
+        print(f"{flag(p.exists, 'EXISTS', 'MISSING')}  {needed}  {p.name}")
         print(f"                    at {p.where}")
         print(f"                    {p.detail}")
         if p.notes:
             print(f"                    note: {p.notes}")
         print()
         if p.exists is False:
-            failed.append(p.name)
+            failed.append(f"{p.name} (target MISSING)")
+        elif p.deleted and p.needed:
+            failed.append(f"{p.name} (deleted patch's bug is BACK)")
 
     if failed:
-        print(
-            f"FAILED: {len(failed)} patch target(s) MISSING -- a patch is now a silent "
-            f"no-op and the bug it fixed is back:"
-        )
+        print(f"FAILED: {len(failed)} workaround target(s) broken:")
         for n in failed:
             print(f"  - {n}")
         print(
-            "Do not bump past this. Re-derive the patch, or delete it and record why."
+            "Do not bump past this. Re-derive the workaround, or delete it and record why."
         )
         return 1
-    moot = [p.name for p in probes if p.needed is False]
+    moot = [p.name for p in probes if p.needed is False and not p.deleted]
     print("ALL PROBED TARGETS EXIST")
     if moot:
         print(
-            f"but {len(moot)} patch(es) look MOOT in this environment -- upstream may have "
-            "fixed the bug. Verify, then delete the patch and record it:"
+            f"but {len(moot)} workaround(s) look MOOT in this environment -- upstream may have "
+            "fixed the bug. Verify, then delete the workaround and record it:"
         )
         for n in moot:
             print(f"  - {n}")

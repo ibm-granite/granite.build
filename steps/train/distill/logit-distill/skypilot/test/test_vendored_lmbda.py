@@ -177,48 +177,65 @@ class TestStopAtStep:
 
 
 class TestGenerationFloor:
-    def test_the_floor_is_sent_as_min_tokens(self):
-        fn = _trainer_method("_min_tokens_kwargs")
+    """min_completion_length reaches vLLM as min_tokens. Under trl 1.x every request is
+    built from trl's VLLMGeneration (VLLMGeneration.generate for both modes; the overlap
+    path's direct client call through _vllm_request_kwargs), and both send its
+    generation_kwargs, so the floor is set there once."""
+
+    @staticmethod
+    def _configured(min_completion_length):
+        fn = _trainer_method("_configure_vllm_generation")
+        vg = types.SimpleNamespace(generation_kwargs={})
         stub = types.SimpleNamespace(
-            args=types.SimpleNamespace(min_completion_length=16)
+            vllm_generation=vg,
+            generation_config=types.SimpleNamespace(top_k=0, max_new_tokens=32),
+            args=types.SimpleNamespace(
+                vllm_temperature=1.0, min_completion_length=min_completion_length
+            ),
         )
-        assert fn(stub) == {"generation_kwargs": {"min_tokens": 16}}
+        fn(stub)
+        return vg
+
+    def test_the_floor_is_sent_as_min_tokens(self):
+        assert self._configured(16).generation_kwargs == {"min_tokens": 16}
+
+    def test_the_sampled_logprob_is_requested(self):
+        """logprobs=0: one entry per token, the sampled one. Without it every token's
+        logprob would be NaN and silently masked out of importance sampling."""
+        assert self._configured(0).logprobs == 0
 
     def test_no_floor_sends_nothing(self):
-        fn = _trainer_method("_min_tokens_kwargs")
-        stub = types.SimpleNamespace(
-            args=types.SimpleNamespace(min_completion_length=0)
-        )
-        assert fn(stub) == {}
+        assert self._configured(0).generation_kwargs == {}
 
-    def test_every_vllm_server_request_carries_the_floor(self):
-        """Both server-mode request sites: the overlap submit and the direct generate."""
+    def test_the_overlap_request_carries_vllm_generations_kwargs(self):
+        """The one request this trainer issues itself (the overlap submit) must spread
+        _vllm_request_kwargs, which passes generation_kwargs."""
         tree = _tree(_TRAINER)
-        sites = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = ast.unparse(node.func)
-            direct = func == "self.vllm_client.generate"
-            submitted = func.endswith(".submit") and any(
-                ast.unparse(a) == "self.vllm_client.generate" for a in node.args
-            )
-            if direct or submitted:
-                sites.append(node)
-        assert len(sites) >= 2
-        for call in sites:
-            spread = [ast.unparse(k.value) for k in call.keywords if k.arg is None]
-            assert "self._min_tokens_kwargs()" in spread, ast.unparse(call)[:200]
-
-    def test_colocate_sampling_params_carry_min_tokens(self):
-        calls = [
+        submits = [
             n
-            for n in ast.walk(_tree(_TRAINER))
-            if isinstance(n, ast.Call) and ast.unparse(n.func) == "SamplingParams"
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and ast.unparse(n.func).endswith(".submit")
+            and any(ast.unparse(a) == "self.vllm_client.generate" for a in n.args)
         ]
-        assert calls
-        for call in calls:
-            assert "min_tokens" in {k.arg for k in call.keywords}
+        assert len(submits) == 1
+        spread = [ast.unparse(k.value) for k in submits[0].keywords if k.arg is None]
+        assert spread == ["self._vllm_request_kwargs()"]
+        fn = _trainer_method("_vllm_request_kwargs")
+        src = ast.unparse(
+            _method_node(_class(tree, "CustomGOLDTrainer"), "_vllm_request_kwargs")
+        )
+        assert "vg.generation_kwargs" in src and fn is not None
+
+    def test_no_other_direct_generate_call(self):
+        """Everything else goes through VLLMGeneration.generate."""
+        calls = [
+            ast.unparse(n.func)
+            for n in ast.walk(_tree(_TRAINER))
+            if isinstance(n, ast.Call)
+        ]
+        assert "self.vllm_client.generate" not in calls
+        assert "SamplingParams" not in calls
 
 
 class TestConfigFields:

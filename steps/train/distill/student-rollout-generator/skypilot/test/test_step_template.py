@@ -123,7 +123,7 @@ class TestReadinessGate:
         assert "exec " not in run_script
 
     def test_health_is_polled_before_publishing(self, run_script):
-        health = run_script.index("/health/")
+        health = run_script.index("/health'")
         marker = run_script.index("GB_ARTIFACT_ID:vllm_url")
         assert health < marker, "the URL is published before /health is checked"
 

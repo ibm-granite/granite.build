@@ -3,9 +3,9 @@
 # Sourced by the GOLD launchers. Defines require_hub_kernels.
 #
 # THE PROBLEM THIS SOLVES. hub_kernel_pins.prepare_hub_kernels (called by gold.py and
-# the other hybrid-model entrypoints) resolves the pinned hub kernels through
-# transformers' lazy_load_kernel, which reads the local cache and, on a miss, goes
-# ONLINE -- and the GPU steps run with HF_HUB_OFFLINE=1. The recorded scripts satisfied that with an
+# the other hybrid-model entrypoints) loads the pinned hub kernels with
+# kernels.get_kernel, which reads the local cache only when HF_HUB_OFFLINE=1 -- and the
+# GPU steps run with HF_HUB_OFFLINE=1, so a cold cache fails the model load. The recorded scripts satisfied that with an
 # unconditional Hub download inside every GPU allocation. An earlier version of this
 # file made the download opt-in (GOLD_PREFETCH_KERNELS), which removed the download
 # and, unnoticed, the invariant with it; the download is the default again
@@ -24,8 +24,8 @@
 #
 # WHICH KERNELS ARE REQUIRED. causal-conv1d and mamba-ssm only. These are the Mamba2
 # mixer kernels a Granite 4 hybrid model actually needs, and they are exactly the two
-# hub_kernel_pins.py pins (prepare_hub_kernels loads them lazily, at the pinned
-# revision, through transformers' lazy_load_kernel). The recorded prefetch also pulled
+# hub_kernel_pins.py pins (prepare_hub_kernels loads them at the pinned revisions and
+# registers them as the causal_conv1d / mamba_ssm packages). The recorded prefetch also pulled
 # kernels-community/vllm-flash-attn3, which this deliberately does NOT require: FA3 is
 # reachable only through the vendored GraniteSWAAttention path, which is gated behind
 # GOLD_SWA_ARM (see src/gb_steps_post_training/distillation/_swa_arm.py). Requiring it
@@ -62,19 +62,25 @@ require_hub_kernels() {
 import json, os, sys
 from pathlib import Path
 
-# The revision the TRAINER will resolve (hub_kernel_pins.py): the probe must check
-# the cache entry that will actually be read, not the repo's default. Keeps this
+# The revision or version the TRAINER will resolve (hub_kernel_pins.py): the probe must
+# check the cache entry that will actually be read, not the repo's default. Keeps this
 # shell and the Python pin in sync by construction.
 try:
-    from gb_steps_post_training.distillation.hub_kernel_pins import pinned_revision
+    from gb_steps_post_training.distillation.hub_kernel_pins import (
+        kernel_spec,
+        make_offline_readable,
+    )
 except ImportError:
-    def pinned_revision(repo_id):
-        return "main"
+    def kernel_spec(repo_id):
+        return {"revision": "main"}
+
+    def make_offline_readable(repo_id, variant_path=None, spec=None):
+        pass
 # EXIT 2 MEANS "THE PROBE COULD NOT ASK", and it is kept distinct from exit 1 ("asked, and repos
 # are missing") because conflating the two produced a message that named the wrong fix. See the
 # shell below.
 try:
-    from kernels.utils import install_kernel
+    from kernels import install_kernel
 except Exception as e:
     print("PROBE-BROKEN %s: %s" % (type(e).__name__, e))
     sys.exit(2)
@@ -82,7 +88,9 @@ except Exception as e:
 missing = []
 for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
-        _, path = install_kernel(repo, revision=pinned_revision(repo), local_files_only=True)
+        # Offline-safe: drops hub 2.x's tree listing so the partial snapshot is accepted.
+        make_offline_readable(repo)
+        path = install_kernel(repo, local_files_only=True, **kernel_spec(repo))
         # Layout-tolerant: kernels-community repos carry a variant-root
         # metadata.json only in some revisions -- so validate only when present
         # and let install_kernel's own success stand as the check.
@@ -148,14 +156,19 @@ MSG
     echo "GOLD_PREFETCH_KERNELS on (default): downloading now (needs egress to huggingface.co)..."
     HF_HUB_OFFLINE=0 REQUIRED_KERNEL_REPOS="$repo_list" "$pybin" - <<'PY'
 import os
-from gb_steps_post_training.distillation.hub_kernel_pins import pinned_revision
+from gb_steps_post_training.distillation.hub_kernel_pins import (
+    kernel_spec,
+    make_offline_readable,
+)
 import json, os, sys
 from pathlib import Path
-from kernels.utils import install_kernel
+from kernels import install_kernel
 rc = 0
 for repo in os.environ["REQUIRED_KERNEL_REPOS"].split():
     try:
-        _, path = install_kernel(repo, revision=pinned_revision(repo))
+        spec = kernel_spec(repo)
+        path = install_kernel(repo, **spec)
+        make_offline_readable(repo, path, spec)
         # Same layout-tolerant check as the probe above: not every pinned
         # revision carries a variant-root metadata.json, and an unconditional
         # read has failed a prefetch.

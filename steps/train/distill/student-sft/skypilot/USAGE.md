@@ -2,7 +2,7 @@
 
 Plain SFT on the distillation corpus, with **no teacher**. It is a `training` step that runs on
 the LSF and SLURM SkyPilot environments (`subtypes: [lsf, slurm]`), on one GPU node, in the prebuilt
-`docker:quay.io/granitebuild/steps/train/distill/images/gpu:ca31e173` image; it builds no image.
+`docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5` image; it builds no image.
 With `precomputed_logits_dir` set, the same step becomes forward-KL distillation against a
 frozen teacher — see [Two uses](#two-uses-and-the-second-one-is-not-a-control).
 
@@ -303,11 +303,13 @@ would fail at import.
 ### Hub kernels
 
 The launcher does not set `HF_HUB_OFFLINE`, and sets `GOLD_PREFETCH_KERNELS=1` so `run-sft.sh`'s
-kernel preflight fetches any required hub kernel missing from the image's cache inside the job.
-The image caches `kernels-community/{mamba-ssm,causal-conv1d}` but not
-`kernels-community/flash-attn2` (build `0e60920a`), which transformers needs because the renderer
-selects `flash_attention_2` for a granite student. This costs a hub fetch per run, since
-`/opt/hf-cache` does not persist; a warm shared cache (upstream's
+kernel preflight fetches any required hub kernel missing from the HF cache inside the job. The
+image caches no hub kernels: its `HF_HOME` is `/opt/hf-cache`, which the image does not create
+and the environment mounts. On a cold cache the preflight fetches
+`kernels-community/{mamba-ssm,causal-conv1d}` at the revisions `hub_kernel_pins.py` pins, and
+`kernels-community/flash-attn2` at the major version transformers 5.20.2 asks for (3), which
+transformers needs because the renderer selects `flash_attention_2` for a granite student. That
+costs a hub fetch per run unless the mounted cache persists; a warm shared cache (upstream's
 `scripts/bluevela/prefetch-kernels.sh` against a persistent `workload.hf_home`) avoids it.
 
 ## Running as root

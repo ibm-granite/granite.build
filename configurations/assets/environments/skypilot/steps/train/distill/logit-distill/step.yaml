@@ -189,6 +189,8 @@ config:
     data_seed: -1
     learning_rate: 1.0e-05
     min_lr: 1.0e-06
+    # Rendered as warmup_steps (a value in [0, 1) is a ratio); transformers 5.16
+    # removed the warmup_ratio field itself.
     warmup_ratio: 0.05
     # Adam's beta2. -1 leaves the key out and the trainer keeps 0.999, whose
     # second-moment average spans ~1,000 steps; 0.95 spans ~20. A stock
@@ -304,7 +306,9 @@ config:
     vllm_num_servers: 0
     # An EXTERNAL vLLM server is the optional `vllm` input — see `inputs:` below.
     # server = talk to a vLLM HTTP server; the reference launcher's value. Only
-    # consulted on the on-policy path.
+    # consulted on the on-policy path, where it is the command-line value for an
+    # external server; the rendered config states server for every on-policy run,
+    # because trl 1.x's own default is colocate (a vLLM engine in each trainer).
     vllm_mode: "server"
     # How often, in optimizer steps, the trainer pushes its updated weights to the
     # server. The reference launcher uses 1: on-policy means generating from the
@@ -333,7 +337,8 @@ config:
     stop_at_step: 0
     # vLLM min_tokens for the student's rollout. >0 blocks the immediate-EOS mode
     # collapse. The vendored trainer sends it as min_tokens in every request's
-    # generation_kwargs, which trl 0.26's vllm_serve applies to SamplingParams.
+    # generation_kwargs, which trl's client sends as a field of vLLM's completions
+    # request.
     min_completion_length: 0
 
 # I/O schema, validated against the build.yaml target at build time: a target that
@@ -395,7 +400,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:ca31e173"
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5"
           # Node count and accelerators come from the build.yaml
           # (compute_config.num_nodes and launcher_config.resources) so one step
           # serves the smoke and reference runs.

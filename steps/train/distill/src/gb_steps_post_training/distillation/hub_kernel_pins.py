@@ -1,157 +1,276 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pin hub-resolved kernels to revisions compatible with this image's transformers.
+"""Pin and pre-register the hub kernels a hybrid (granitemoehybrid) model needs.
 
-WHY THIS EXISTS (measured 2026-11-20, BlueVela, image 91cb624c, teacher-divergence
-build test). transformers 5.8.0's ``_HUB_KERNEL_MAPPING`` resolves ``mamba-ssm`` with
-``version=1``, the kernels-community repo's v1 branch. Every revision up to and
-including v0.0.3 ships a build whose ``mamba_ssm/utils/generation.py`` hard-imports
-``GreedySearchDecoderOnlyOutput`` from ``transformers.generation`` -- a symbol
-transformers 5.x renamed to ``GenerateDecoderOnlyOutput`` -- so every fresh load of
-a hybrid (granitemoehybrid) model dies with an ImportError after the model load has
-started. The teacher-divergence build test hit it directly; the e2e smokes did not,
-because they used dense students that never reach the mamba path.
+HOW TRANSFORMERS FINDS THE MAMBA2 KERNELS (5.16 and later; this image pins 5.20.2).
+The granitemoehybrid modeling module decorates its mixer functions with
+``use_kernel_func_from_hub_with_fallback(<func>, <package>)``. When the module is
+IMPORTED, each decorator tries ``importlib.import_module("causal_conv1d")`` /
+``importlib.import_module("mamba_ssm")`` and binds the function it finds there;
+if the package is absent it binds the reference PyTorch implementation, which is
+much slower and raises ``ValueError`` on packed sequences (``seq_idx`` /
+``cu_seqlens``). Hub kernels are only used without that package when the model is
+loaded with ``use_kernels=True`` (kernelize), which also swaps RMSNorm, rotary
+and other layers and so changes numerics.
 
-``v0.0.4`` (8ce5a492, "Fix for Falcon"; pinned by that commit's SHA, since a tag
-can move) restructured the build: the top level
-is now the actual module (verified in the GPU image -- ``_import_from_path``
-loads it, ``MambaLMHeadModel`` is available, no transformers.generation import),
-and ``mamba_ssm/`` inside the build is a compatibility shim. This is the newest
-revision whose cu128 build loads cleanly under transformers 5.8.0. It also ships
-``metadata.json`` at the variant root, which v0.0.3 lacked.
+transformers 5.8.0 worked differently: the modeling code called
+``lazy_load_kernel("mamba-ssm")`` / ``("causal-conv1d")`` through
+``_HUB_KERNEL_MAPPING``, and this module used to rewrite that mapping onto pinned
+revisions. 5.16+ has no such entries, so that rewrite is gone.
 
-causal-conv1d is pinned for a different reason: revision AGREEMENT, not a broken
-build (measured 2026-11-20, image 939685f2, student-sft build test). transformers
-resolves it with ``version=1`` -- the repo's v1 branch (6e9a5827) -- while the
-preflight's fallback for unpinned repos is ``main`` (f2651e77). Under
-``HF_HUB_OFFLINE=1`` the trainer cannot resolve an uncached ref, so sft.py died
-with ``OfflineModeIsEnabled`` on causal-conv1d/refs seconds after the preflight
-had downloaded the repo -- at the wrong revision. The pin points both sides at
-the immutable v1-branch tip (verified in the GPU image: ``causal_conv1d_fn``
-available, torch28-cu128 build), so the offline lookup is an exact snapshot hit.
+WHAT THIS MODULE DOES NOW. ``prepare_hub_kernels`` loads both kernels from the
+Hub with ``kernels.get_kernel`` at the pinned revisions and registers them in
+``sys.modules`` as ``causal_conv1d`` and ``mamba_ssm`` BEFORE the modeling module
+is imported, so transformers' decorators bind the hub kernels as if the packages
+were installed. Only the mixer functions change; nothing else is kernelized. It
+refuses to run after the modeling module is imported, because the decorators
+have already bound the PyTorch fallback by then and a late registration would be
+silently ignored.
 
-This is a pin, not a fix. When kernels-community/mamba-ssm ships a build that
-imports cleanly under transformers 5.x on the default branch, or the image moves
-past the rename, delete that entry here; delete causal-conv1d's entry when the
-preflight and transformers agree on a revision by construction. Either way,
-remove the call sites and the matching probe in gold-kernels.sh (which reads
-``pinned_revision`` from this module -- keep the two in sync by construction,
-not by discipline).
+THE REPOSITORIES (#763). Hugging Face is removing the "model" type kernel
+repositories (their model cards: "Starting from September 13, 2026"). The pins
+below are in the "kernel" type repositories of the same names, which have their
+own history, so no SHA carries over. ``kernels`` reads kernel-type repositories
+from 0.14 on; this image pins 0.17.3, the release transformers 5.20.2 accepts
+(``kernels>=0.17.2,<0.18``).
+
+- ``kernels-community/mamba-ssm`` at ``20b2508a`` (v3 branch, 2026-09-08): the
+  oldest v3 commit with a ``torch214-cxx11-cu130-x86_64-linux`` build. v3 is the
+  major version transformers 5.20.2's own kernel mapping asks for. The build is
+  self-contained (it ships its own ``_causal_conv1d``) and imports transformers
+  5.x's ``GenerateDecoderOnlyOutput``; its ``decode()`` still names the removed
+  ``GreedySearchDecoderOnlyOutput`` at call time, which nothing here calls (and
+  gold.py's generation-output aliases cover).
+- ``kernels-community/causal-conv1d`` at ``adc40e41`` (v1 branch, 2026-08-27):
+  the oldest v1 commit with a ``torch214-cxx11-cu130-x86_64-linux`` build. Its
+  top level exposes ``causal_conv1d_fn`` and ``causal_conv1d_update``, the two
+  names transformers' decorators look up.
+
+Pinned by commit SHA, since a branch moves. The torch 2.8 / cu128 image cannot use
+these repositories: their torch28 builds still import
+``GreedySearchDecoderOnlyOutput`` and were later removed as incompatible with
+kernels >= 0.14, and transformers 5.8.0 rejects kernels >= 0.13.
+
+LOAD ORDER. causal-conv1d is registered before mamba-ssm is loaded. The model-type
+mamba-ssm builds imported ``causal_conv1d`` at module load, and loading one before
+the legacy names existed bound ``causal_conv1d_cuda = None`` for good (student-sft
+build test, image 173af080, 2026-11-20). The v3 build no longer imports it, but the
+order costs nothing and keeps a future build from rediscovering that.
+
+THE CACHE GATE. gold-kernels.sh probes and prefetches with ``kernel_spec(repo)``,
+the same arguments this module loads with, and calls ``make_offline_readable`` on the
+result, so an offline (``HF_HUB_OFFLINE=1``) load is an exact cache hit under kernels
+0.17.3 and huggingface_hub 2.x (see that function for the two gaps it closes). Repos that are not pinned here resolve the way
+transformers itself asks for them (``flash-attn2``: the major version from
+``FLASH_ATTN_KERNEL_VERSIONS``), so the prefetch and the model load agree on those
+too.
 """
 
 from __future__ import annotations
 
-# repo_id -> revision. Unlisted repos resolve their default (transformers passes
-# version=1, the kernels package resolves the repo's v1 branch) -- which the
-# preflight cannot satisfy offline, so a hybrid model's kernels belong here.
+import sys
+
+# repo_id -> commit. See the module docstring for why each revision.
 PINNED_KERNEL_REVISIONS: dict[str, str] = {
-    # The v0.0.4 tag's commit. A tag can be moved; a commit SHA cannot.
-    "kernels-community/mamba-ssm": "8ce5a4921b3a09bdae509d7143b88eab9e4f21f3",
-    "kernels-community/causal-conv1d": "6e9a58272220a363dc50e59cba737abcedd7b59f",
+    "kernels-community/causal-conv1d": "adc40e4163fbac573adb44ea47b2c8d9080f13bc",
+    "kernels-community/mamba-ssm": "20b2508ad12ae40260291539bf45183000451850",
 }
 
-# The transformers mapping keys whose repos are pinned above. "falcon_mamba-ssm"
-# shares mamba-ssm's repo and the same broken default; pinning it costs nothing
-# and keeps a Falcon run from rediscovering this.
-_PINNED_KERNEL_NAMES = ("mamba-ssm", "falcon_mamba-ssm", "causal-conv1d")
+# The import names transformers' fallback decorators look for, in load order.
+_REGISTERED_PACKAGES: tuple[tuple[str, str], ...] = (
+    ("causal_conv1d", "kernels-community/causal-conv1d"),
+    ("mamba_ssm", "kernels-community/mamba-ssm"),
+)
+
+# The names transformers 5.20.2's granitemoehybrid decorators look up in each package
+# (use_kernel_func_from_hub_with_fallback; checked in the dev image: all five bind).
+_REQUIRED_NAMES: dict[str, tuple[str, ...]] = {
+    "causal_conv1d": ("causal_conv1d_fn", "causal_conv1d_update"),
+    "mamba_ssm": (
+        "mamba_chunk_scan_combined",
+        "mamba_split_conv1d_scan_combined",
+        "selective_state_update",
+    ),
+}
+
+# Imported by AutoModel*.from_pretrained for a granitemoehybrid config. Once it is in
+# sys.modules, its decorators have bound whatever was importable at that moment.
+_HYBRID_MODELING_MODULE = (
+    "transformers.models.granitemoehybrid.modeling_granitemoehybrid"
+)
+
+
+def _transformers_kernel_version(repo_id: str) -> int | None:
+    """The major version transformers loads ``repo_id`` at, when it says so itself."""
+    try:
+        from transformers.modeling_flash_attention_utils import (
+            FLASH_ATTN_KERNEL_VERSIONS,
+        )
+    except ImportError:
+        return None
+    version = FLASH_ATTN_KERNEL_VERSIONS.get(repo_id)
+    return int(version) if version is not None else None
+
+
+def kernel_spec(repo_id: str) -> dict[str, str | int]:
+    """The ``revision=`` / ``version=`` keyword to fetch or load ``repo_id`` with.
+
+    The pin when there is one; otherwise the major version transformers asks for;
+    otherwise ``main``. gold-kernels.sh's cache probe and prefetch call this, so the
+    out-of-band download lands exactly what the model load will read.
+    """
+    if repo_id in PINNED_KERNEL_REVISIONS:
+        return {"revision": PINNED_KERNEL_REVISIONS[repo_id]}
+    version = _transformers_kernel_version(repo_id)
+    if version is not None:
+        return {"version": version}
+    return {"revision": "main"}
+
+
+def make_offline_readable(repo_id: str, variant_path=None, spec=None) -> None:
+    """Make the cached kernel loadable with ``HF_HUB_OFFLINE=1`` under kernels 0.17.3.
+
+    Two gaps between kernels 0.17.3 (the release transformers 5.20.2 accepts) and
+    huggingface_hub 2.x, which kernels 0.18 closes itself (it tolerates the partial
+    snapshot and records refs):
+
+    1. huggingface_hub 2.x writes the repo's full file listing (``trees/<commit>.json``)
+       on download and, offline, refuses a snapshot that lacks any listed file
+       (``IncompleteSnapshotError``, ``_snapshot_download._raise_if_incomplete_snapshot``).
+       kernels downloads one build variant, so every offline load of a prefetched kernel
+       failed. The listings of this repo are removed, and hub then accepts what is
+       there ("If the tree listing is not cached we cannot tell, so we do nothing").
+    2. A ``version=N`` fetch resolves vN to a commit and downloads by commit, so no
+       ``refs/vN`` is written; offline, kernels resolves vN from ``refs/`` only. Given the
+       fetched ``variant_path`` and its ``spec``, the ref is written.
+
+    Measured in the #676 dev image (CPU host): a prefetch of the pinned causal-conv1d, then
+    an offline get_kernel, raised IncompleteSnapshotError; flash-attn2 at version 4 raised
+    "not available in the local cache". Touches only this repo's cache directory.
+    """
+    import os
+    from pathlib import Path
+
+    from huggingface_hub import constants
+    from huggingface_hub.file_download import repo_folder_name
+
+    cache = os.environ.get("KERNELS_CACHE") or constants.HF_HUB_CACHE
+    repo_dir = Path(cache) / repo_folder_name(repo_id=repo_id, repo_type="kernel")
+    trees = repo_dir / "trees"
+    if trees.is_dir():
+        for listing in trees.glob("*.json"):
+            listing.unlink(missing_ok=True)
+    if variant_path is not None and spec and "version" in spec:
+        commit = Path(
+            variant_path
+        ).parent.parent.name  # snapshots/<commit>/build/<variant>
+        refs = repo_dir / "refs"
+        refs.mkdir(parents=True, exist_ok=True)
+        (refs / f"v{spec['version']}").write_text(commit)
 
 
 def pinned_revision(repo_id: str) -> str:
-    """The revision to fetch ``repo_id`` at: the pin, or "main" for unpinned repos.
-
-    gold-kernels.sh's cache probe and prefetch call this so the out-of-band download
-    lands the same revision the trainer will resolve here.
-    """
+    """The pinned commit for ``repo_id``, or "main" for unpinned repos."""
     return PINNED_KERNEL_REVISIONS.get(repo_id, "main")
 
 
-def pin_hub_kernels() -> None:
-    """Rewrite transformers' hub-kernel mapping onto the pinned revisions.
+def _shim_legacy_causal_conv1d_cuda(cc1d) -> None:
+    """Expose the legacy ``causal_conv1d_cuda`` object on the hub build's interface.
 
-    Idempotent, offline (it only mutates the in-process dict), and a no-op when
-    transformers is unavailable or no longer maps the kernel -- so calling it from
-    an entrypoint that might run without hybrid models is safe.
-
-    ``version`` is popped, not just overridden: ``get_kernel`` refuses a call that
-    passes both ``revision`` and ``version``, and the default entry carries
-    ``version=1``.
+    Older modeling code (and the model-type mamba-ssm builds) asserted on
+    ``causal_conv1d_interface.causal_conv1d_cuda``; the hub build only has the
+    cpp_functions API. Harmless when nothing reads it.
     """
+    iface = getattr(cc1d, "causal_conv1d_interface", None)
+    if iface is None:
+        return
+    fwd = getattr(iface, "causal_conv1d_fwd_function", None)
+    bwd = getattr(iface, "causal_conv1d_bwd_function", None)
+    if (
+        fwd is not None
+        and bwd is not None
+        and getattr(iface, "causal_conv1d_cuda", None) is None
+    ):
+
+        class _CausalConv1dCudaShim:
+            causal_conv1d_fwd = staticmethod(fwd)
+            causal_conv1d_bwd = staticmethod(bwd)
+
+        iface.causal_conv1d_cuda = _CausalConv1dCudaShim()
+    sys.modules.setdefault("causal_conv1d.causal_conv1d_interface", iface)
+
+
+def prepare_hub_kernels(*, force: bool = False) -> None:
+    """Register the pinned hub kernels as ``causal_conv1d`` and ``mamba_ssm``.
+
+    Call it once, at the top of every hybrid-model entrypoint, before the first
+    model load. A package that is already importable under that name (a real pip
+    install, or an earlier call) is left alone. A no-op when ``kernels`` is not
+    installed or there is no CUDA device (the builds are CUDA kernels; a CPU process
+    imports these entrypoints only for tests and preflights), unless ``force`` asks
+    for a load anyway, as the kernel probe does on a CPU host.
+
+    Raises ``RuntimeError`` if the granitemoehybrid modeling module was imported
+    first: its decorators would already have bound the PyTorch fallback.
+    """
+    import importlib.util
+
+    def _importable(package):
+        if package in sys.modules:
+            return True
+        try:
+            return importlib.util.find_spec(package) is not None
+        except (ImportError, ValueError):
+            return False
+
+    missing = [
+        (pkg, repo) for pkg, repo in _REGISTERED_PACKAGES if not _importable(pkg)
+    ]
+    if not missing:
+        return  # already registered (an earlier call), or real pip packages installed
+
     try:
-        from transformers.integrations.hub_kernels import _HUB_KERNEL_MAPPING
+        from kernels import get_kernel
     except ImportError:
         return
-    for name in _PINNED_KERNEL_NAMES:
-        entry = _HUB_KERNEL_MAPPING.get(name)
-        if entry is None:
-            continue
-        repo_id = entry.get("repo_id", "")
-        if repo_id not in PINNED_KERNEL_REVISIONS:
-            continue
-        entry.pop("version", None)
-        # setdefault, not assignment: a future transformers that pins its own
-        # revision has done the work, and its pin deserves the benefit of the doubt.
-        entry.setdefault("revision", PINNED_KERNEL_REVISIONS[repo_id])
-
-
-def prepare_hub_kernels() -> None:
-    """Everything a hybrid-model entrypoint needs before its first model load.
-
-    Two stages, each a no-op where its dependencies are absent:
-
-    1. ``pin_hub_kernels`` -- rewrite transformers' hub-kernel mapping onto the
-       pinned revisions (see the module docstring for why each repo is pinned).
-    2. Register the hub causal-conv1d build under its legacy import name and
-       shim the legacy ``causal_conv1d_cuda`` object onto it: the modeling code
-       asserts on that object (``causal_conv1d_cuda is not available. Please
-       install causal-conv1d.``), but the hub build only exposes the new
-       cpp_functions API and the ``kernels`` package registers modules with
-       hash-based names, so ``causal_conv1d`` is never directly importable.
-
-    Extracted from gold.py's preamble -- which was the only entrypoint carrying
-    it while sft.py, run_divergence.py and distill_probe.py died on the
-    legacy-name assert (measured 2026-11-20, image 2990684b, student-sft build
-    test). Requires transformers 5.x hub_kernels; skips on older versions.
-
-    NO CACHE PRE-LOAD, on purpose. An earlier version also loaded both kernels from
-    the local cache straight into transformers' ``_KERNEL_MODULE_MAPPING`` before
-    stage 2. That never ran on any validated image (it read ``refs/<pin>``, which
-    huggingface_hub does not write for a commit pin), and the first image where it
-    did run (173af080) broke every hybrid load: the mamba-ssm build imports
-    ``causal_conv1d`` at module load, so loading it before stage 2 registers that
-    name binds ``causal_conv1d_cuda = None`` for good (student-sft build test,
-    BlueVela, 2026-11-20: ``AssertionError: causal_conv1d_cuda is not available``).
-    The kernels now load only through ``lazy_load_kernel``, which resolves the pinned
-    revision from the warm cache that gold-kernels.sh's preflight fills. Anything
-    that loads mamba-ssm must come after stage 2.
-    """
-    import sys
-
-    pin_hub_kernels()
 
     try:
-        from transformers.integrations.hub_kernels import (
-            lazy_load_kernel as _lazy_load_kernel,
+        import torch
+
+        has_cuda = torch.cuda.is_available()
+    except ImportError:
+        has_cuda = False
+    if not (has_cuda or force):
+        return
+    check_arch = has_cuda
+
+    if _HYBRID_MODELING_MODULE in sys.modules:
+        raise RuntimeError(
+            f"{_HYBRID_MODELING_MODULE} was imported before prepare_hub_kernels(): its "
+            "mamba/causal-conv1d decorators have already bound the PyTorch fallback, so "
+            "registering the hub kernels now would change nothing. Call "
+            "prepare_hub_kernels() before anything loads a hybrid model."
         )
-    except (ImportError, ModuleNotFoundError):
-        _lazy_load_kernel = None
 
-    # Stage 2: causal-conv1d first and alone -- see the docstring's NO CACHE PRE-LOAD.
-    if _lazy_load_kernel is not None:
-        _cc1d = _lazy_load_kernel("causal-conv1d")
-        if _cc1d is not None and "causal_conv1d" not in sys.modules:
-            sys.modules["causal_conv1d"] = _cc1d
+    try:
+        from huggingface_hub import constants
 
-            _cc1d_iface = getattr(_cc1d, "causal_conv1d_interface", None)
-            if _cc1d_iface is not None:
-                _fwd = getattr(_cc1d_iface, "causal_conv1d_fwd_function", None)
-                _bwd = getattr(_cc1d_iface, "causal_conv1d_bwd_function", None)
+        offline = bool(constants.HF_HUB_OFFLINE)
+    except ImportError:
+        offline = False
 
-                if _fwd is not None and _bwd is not None:
-
-                    class _CausalConv1dCudaShim:
-                        causal_conv1d_fwd = staticmethod(_fwd)
-                        causal_conv1d_bwd = staticmethod(_bwd)
-
-                    _cc1d_iface.causal_conv1d_cuda = _CausalConv1dCudaShim()
-
-                sys.modules["causal_conv1d.causal_conv1d_interface"] = _cc1d_iface
+    for package, repo_id in missing:
+        if offline:
+            make_offline_readable(repo_id)
+        module = get_kernel(repo_id, check_arch=check_arch, **kernel_spec(repo_id))
+        # transformers' decorators fall back to PyTorch, with only a warning, for any name
+        # they cannot resolve: a build that lacks one must fail here instead.
+        absent = [n for n in _REQUIRED_NAMES[package] if not hasattr(module, n)]
+        if absent:
+            raise RuntimeError(
+                f"{repo_id} at {kernel_spec(repo_id)} has no {absent}: transformers would "
+                "silently use its PyTorch path for them."
+            )
+        sys.modules[package] = module
+        if package == "causal_conv1d":
+            _shim_legacy_causal_conv1d_cuda(module)

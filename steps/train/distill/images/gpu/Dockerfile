@@ -31,19 +31,25 @@
 #
 # Dependency manifest below (pyproject.toml + uv.lock, next to this
 # Dockerfile) started as upstream distill-gold-train's own at the pinned
-# commit (since extended: weave, tqdm -- see pyproject.toml): it's the fullest GPU dependency set (trl, vllm, deepspeed,
-# kernels) of any step, and every other GPU step's looser range already
-# resolves inside it.
+# commit (since extended with tqdm, and moved to vllm 0.33.0 / trl 1.18.2 /
+# torch 2.14.0 in #676 -- see pyproject.toml): it's the fullest GPU dependency
+# set (trl, vllm, deepspeed, kernels) of any step, and every other GPU step's
+# looser range already resolves inside it.
 #
-# Pinned to CUDA 12.8.2 (not 12.9.x) to match the vendored uv.lock's torch
-# 2.8.0 cu128 wheels (nvidia-cublas-cu12==12.8.4.1 etc.) -- deepspeed is
-# sdist-only and compiles native CUDA extensions against nvcc at install
-# time below, so the devel toolkit's major.minor has to match what torch's
-# own runtime libs expect.
+# Pinned to CUDA 13.0.3 to match the uv.lock's torch 2.14.0 wheels, which are
+# the default PyPI (CUDA 13) build: torch requires cuda-toolkit==13.0.3
+# (nvidia-cublas==13.1.1.3, nvidia-cuda-runtime==13.0.96 etc.). CUDA 13, not
+# 12.8, because vLLM publishes no cu128 wheel for any release that fixes its
+# CRITICAL advisories (0.26.0 had the default CUDA 13 build and +cu129; 0.33.0
+# has only the default CUDA 13 build), so the CUDA 12 toolkit has nothing left
+# to match. Needs an NVIDIA driver >= 580 on
+# the host. deepspeed is sdist-only and compiles its native CUDA extensions
+# against this nvcc (CUDA_HOME below), so the devel toolkit's major.minor has
+# to match what torch's own runtime libs expect.
 # Tag AND digest: the tag says which toolkit, the digest makes a rebuild
 # reproduce the published image instead of whatever the tag points at today.
 FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
-FROM nvcr.io/nvidia/cuda:12.8.2-devel-ubuntu22.04@sha256:4c3d61ac8217a4933cc3855ddd0a75e2a058b6757a170993040272f4310ef113
+FROM nvcr.io/nvidia/cuda:13.0.3-devel-ubuntu22.04@sha256:3869b846a8cc495ce11c172d87cfc0da8874b910d14a9810bec6b6182e9ee9f8
 
 ARG DEBIAN_FRONTEND=noninteractive
 # 3.12 EXACTLY, matching the vendored pyproject.toml's own
