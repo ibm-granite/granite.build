@@ -8,7 +8,7 @@
 # and re-review it when the date passes -- an entry with no removal issue and no
 # expiry is a finding nobody is tracking.
 
-# ---- accepted exposure, no advisory id (#676; follow-up #TBD-trl-vllm-server-bind) ----
+# ---- accepted exposure, no advisory id (#676; follow-up #775) ----
 # The on-policy rollout server is vLLM's own OpenAI-compatible server: trl 1.x's
 # `trl vllm-serve` (run_vllm_serve.py) execs `vllm serve` with VLLM_SERVER_DEV_MODE=1 and
 # no --api-key. Two steps start one, and for the job's lifetime its routes are reachable,
@@ -27,7 +27,7 @@
 # --api-key would not close this: vLLM guards only /v1, /v2, /inference and /cohere paths,
 # and trl's client sends no key. Accepted for now: the server holds only the student this
 # build trained, and the exposure ends with the job. No vLLM 0.33.0 advisory remains
-# below; re-judge any future one against this server. #TBD-trl-vllm-server-bind is the
+# below; re-judge any future one against this server. #775 is the
 # follow-up: bind each server to the node's address, or to loopback where the trainer
 # shares its node. Until 2027-05-31.
 

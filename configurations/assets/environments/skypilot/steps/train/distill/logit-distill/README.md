@@ -624,7 +624,7 @@ The in-allocation server (no `vllm` input) passes no `--host`, so trl's `vllm-se
 its default, `0.0.0.0`: every interface of the serving node, with no API key. For the
 job's lifetime anyone who can reach that node can generate with the student, push weights
 into it or call into its workers. The image's `images/gpu/scan-ignore` records this as an
-accepted exposure, until 2027-05-31; #TBD-trl-vllm-server-bind tracks binding it to the
+accepted exposure, until 2027-05-31; #775 tracks binding it to the
 node's address or to loopback.
 
 ## Running as root

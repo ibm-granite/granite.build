@@ -247,7 +247,7 @@ no API key. It binds the node's advertised address (`--host "$ADDR"`), not every
 interface, but that address has to be reachable from the trainer's allocation, so for the
 job's lifetime anyone on the cluster network can generate with the student, push weights
 into it or call into its workers. The image's `images/gpu/scan-ignore` records this as an
-accepted exposure, until 2027-05-31; #TBD-trl-vllm-server-bind tracks binding it more
+accepted exposure, until 2027-05-31; #775 tracks binding it more
 narrowly.
 
 ### Bring-up and failure messages
