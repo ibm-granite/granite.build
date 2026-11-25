@@ -33,7 +33,9 @@ the recipe does not pin fails the prepare, naming only its http(s) URL; an
 uncaught error in prepare.py (a failed ``subprocess.run(..., check=True)``
 prints its argv) is printed with the values of secret-looking environment
 variables and of Authorization/Bearer headers redacted. After the prepare the
-run fails unless the recorded reads include the recipe's pin.
+run fails unless the recorded reads include the recipe's pin, and unless the
+guards' sitecustomize recorded that it loaded in the prepare (fail closed). The
+wget shim prints no traceback: an unexpected error is reported by type only.
 
 Not intercepted: ``requests``, ``httpx``, the ``wget`` Python package, ``git``,
 ``curl`` and any other subprocess. A prepare that fetches that way still runs,
@@ -102,6 +104,7 @@ WGET_VALUE = {
     "--progress": None, "--limit-rate": None,
 }
 LOCAL_BUILDERS = {"json", "csv", "parquet", "text", "arrow", "webdataset"}
+GUARD_MARKER = "granite_guards"
 
 
 class GuardError(Exception):
@@ -198,17 +201,24 @@ def fetch_pinned(url, headers=(), via="wget"):
 
 
 def wget_main(argv):
+    # The shim runs under python -I, without the sitecustomize: redact here
+    # too, and print no traceback at all for an unexpected error (an httpx
+    # error on a malformed --header quotes the header, token included).
+    sys.excepthook = redacting_excepthook
     try:
         url, out, prefix, headers = parse_wget_args(argv)
         body = fetch_pinned(url, headers, "wget")
+        if out == "-":
+            sys.stdout.buffer.write(body)
+            return
+        name = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1] or "index.html"
+        Path(out or Path(prefix or ".") / name).write_bytes(body)
     except GuardError as e:
         print(f"granite: {e}", file=sys.stderr)
         sys.exit(1)
-    if out == "-":
-        sys.stdout.buffer.write(body)
-        return
-    name = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1] or "index.html"
-    Path(out or Path(prefix or ".") / name).write_bytes(body)
+    except Exception as e:  # noqa: BLE001 - its message may carry a header value
+        print(f"granite: wget failed ({type(e).__name__})", file=sys.stderr)
+        sys.exit(1)
 
 
 class _Response(io.BytesIO):
@@ -295,14 +305,20 @@ def install_guards():
     try:
         import datasets
     except ImportError:
-        return
-    original = datasets.load_dataset
+        datasets = None
+    if datasets is not None:
+        original = datasets.load_dataset
 
-    def load_dataset(path, *args, **kwargs):
-        check_local_builder(path, args, kwargs)
-        return original(path, *args, **kwargs)
+        def load_dataset(path, *args, **kwargs):
+            check_local_builder(path, args, kwargs)
+            return original(path, *args, **kwargs)
 
-    datasets.load_dataset = load_dataset
+        datasets.load_dataset = load_dataset
+    # The marker the bridge requires after the prepare (fail closed: a
+    # prepare run without this sitecustomize, e.g. under python -I, would
+    # have none of these guards).
+    with open(os.environ["GRANITE_NS_READS"], "a") as f:
+        f.write(json.dumps({GUARD_MARKER: "loaded", "pid": os.getpid()}) + "\n")
 '''
 guard: dict[str, Any] = {"__name__": "granite_ns_guard"}
 exec(
@@ -433,15 +449,24 @@ class Nemoskills(NemoSkillsBenchmark):
         with self.prepare_guards():
             path, prov = super().prepare_data()
         log_path = self.ns_data_dir() / GUARD_READS
-        if log_path.exists():
-            prov["reads"] = [
-                *prov["reads"],
-                *(
-                    json.loads(line)
-                    for line in log_path.read_text().splitlines()
-                    if line
-                ),
-            ]
+        logged = [
+            json.loads(line)
+            for line in (log_path.read_text() if log_path.exists() else "").splitlines()
+            if line
+        ]
+        marker = guard["GUARD_MARKER"]
+        # Fail closed: the urlopen/data_files guards and the redaction exist
+        # only where the sitecustomize loaded; a prepare run without it (a
+        # future python -I in the base class) is refused, not trusted.
+        if not any(marker in entry for entry in logged):
+            raise SystemExit(
+                f"nemoskills: ns's {self.ns_benchmark} prepare ran without the bridge's "
+                "guards (no sitecustomize marker in its reads log); refusing its data"
+            )
+        prov["reads"] = [
+            *prov["reads"],
+            *(entry for entry in logged if marker not in entry),
+        ]
         if not self.read_the_pin(prov["reads"]):
             raise SystemExit(
                 f"nemoskills: ns's {self.ns_benchmark} prepare never read the pinned "

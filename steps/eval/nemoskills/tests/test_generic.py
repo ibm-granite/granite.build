@@ -149,18 +149,73 @@ def served(tmp_path):
         yield f"{base}/test.jsonl", body, hashlib.sha256(body).hexdigest()
 
 
-def _with_prepare(monkeypatch, run):
+def _with_prepare(monkeypatch, run, python_flags=()):
     """The base prepare, reduced to what matters here: prepare.py runs in a
-    subprocess (inheriting the guards' env), inside ddir; ``run(ddir)`` is
-    what it does. Returns its recorded reads (none: the guards log theirs)."""
+    Python subprocess (inheriting the guards' env, so the sitecustomize loads
+    and writes its marker), inside ddir; ``run(ddir)`` is what it does.
+    Returns its recorded reads (none: the guards log theirs)."""
 
     def fake_prepare(self):
         ddir = self.ns_data_dir()
         ddir.mkdir(parents=True, exist_ok=True)
+        subprocess.run([sys.executable, *python_flags, "-c", "pass"], check=True)
         extra = run(ddir) or []
         return ddir / "raw", {"reads": list(extra)}
 
     monkeypatch.setattr(NemoSkillsBenchmark, "prepare_data", fake_prepare)
+
+
+def test_a_prepare_without_the_guards_is_refused(tmp_path, monkeypatch, served):
+    """Fail closed: a prepare that ran without the sitecustomize (python -I
+    drops PYTHONPATH) left no marker, so its data is refused even though the
+    pin was read; with the guards, the marker is not reported as a read."""
+    url, _, sha = served
+    read = [{"url": url}]
+    _with_prepare(monkeypatch, lambda d: read, python_flags=("-I",))
+    with pytest.raises(SystemExit, match="ran without the bridge's guards"):
+        _bench(
+            tmp_path / "a", dataset=url, dataset_revision=f"sha256:{sha}"
+        ).prepare_data()
+    _with_prepare(monkeypatch, lambda d: read)
+    _, prov = _bench(
+        tmp_path / "b", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    assert prov["reads"] == read
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        f"Authorization Bearer {SECRET}",  # no colon: httpx/h11 reject it, quoting it
+        f"Authorization: Bearer {SECRET}\r\nX-Injected: 1",  # a CR/LF in the value
+        f"Authorization: Bearer {SECRET}\rmore",  # a bare CR inside the value
+    ],
+)
+def test_wget_shim_bad_header_never_prints_the_token(
+    tmp_path, monkeypatch, served, header
+):
+    """The shim runs under python -I (no sitecustomize): an unexpected error
+    from the HTTP client prints only its type, never its message."""
+    url, _, sha = served
+    out = {}
+
+    def run(ddir):
+        out["proc"] = subprocess.run(
+            ["wget", "--header", header, url, "-O", "raw"],
+            cwd=ddir,
+            capture_output=True,
+            text=True,
+        )
+        return [{"url": url}]
+
+    _with_prepare(monkeypatch, run)
+    _bench(
+        tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    proc = out["proc"]
+    assert proc.returncode != 0
+    assert "granite: wget failed (" in proc.stderr
+    assert SECRET not in proc.stderr + proc.stdout
 
 
 def test_wget_shim_serves_the_pinned_url(tmp_path, monkeypatch, served):
