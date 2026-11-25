@@ -32,7 +32,9 @@ OPTIONS: "categories=web_search,memory"
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Web search ───────────────────────────────────────────────────────
-# MCP search endpoint (Google PSE MCP server). No default; set it for your site.
+# MCP search endpoint (Google PSE MCP server) the web_search category queries;
+# build.yaml passes it to both targets as search_mcp_url=. No default; set it
+# for your site (--param SEARCH_MCP_URL=<url>).
 SEARCH_MCP_URL: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
