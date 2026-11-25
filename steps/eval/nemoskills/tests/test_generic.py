@@ -8,7 +8,9 @@ import hashlib
 import http.server
 import json
 import subprocess
+import sys
 import threading
+import types
 from pathlib import Path
 
 import pytest
@@ -110,11 +112,23 @@ def test_split_option(tmp_path, monkeypatch):
     assert prepared == tmp_path / "data" / "validation.jsonl"
 
 
+SECRET = "hf_SECRETTOKEN0123456789"
+
+
+class _Handler(http.server.SimpleHTTPRequestHandler):
+    seen_auth: list = []
+
+    def do_GET(self):  # noqa: N802 - http.server's name
+        _Handler.seen_auth.append(self.headers.get("Authorization"))
+        super().do_GET()
+
+    def log_message(self, *args):
+        pass
+
+
 @contextlib.contextmanager
 def _serve(root: Path):
-    handler = lambda *a, **k: http.server.SimpleHTTPRequestHandler(  # noqa: E731
-        *a, directory=str(root), **k
-    )
+    handler = lambda *a, **k: _Handler(*a, directory=str(root), **k)  # noqa: E731
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -124,52 +138,252 @@ def _serve(root: Path):
         server.shutdown()
 
 
-def test_wget_shim_serves_the_pinned_url(tmp_path, monkeypatch):
+@pytest.fixture
+def served(tmp_path):
+    root = tmp_path / "served"
+    root.mkdir()
+    body = b'{"problem": "1+1", "answer": "2"}\n'
+    (root / "test.jsonl").write_bytes(body)
+    with _serve(root) as base:
+        yield f"{base}/test.jsonl", body, hashlib.sha256(body).hexdigest()
+
+
+def _with_prepare(monkeypatch, run):
+    """The base prepare, reduced to what matters here: prepare.py runs in a
+    subprocess (inheriting the guards' env), inside ddir; ``run(ddir)`` is
+    what it does. Returns its recorded reads (none: the guards log theirs)."""
+
+    def fake_prepare(self):
+        ddir = self.ns_data_dir()
+        ddir.mkdir(parents=True, exist_ok=True)
+        extra = run(ddir) or []
+        return ddir / "raw", {"reads": list(extra)}
+
+    monkeypatch.setattr(NemoSkillsBenchmark, "prepare_data", fake_prepare)
+
+
+def test_wget_shim_serves_the_pinned_url(tmp_path, monkeypatch, served):
     """ns's math-500 prepare shells out to wget (absent from the images).
     The shim on the prepare's PATH fetches the pinned URL, checks its
     sha256, logs the read; an unpinned URL or a changed file fails."""
-    served = tmp_path / "served"
-    served.mkdir()
-    body = b'{"problem": "1+1", "answer": "2"}\n'
-    (served / "test.jsonl").write_bytes(body)
-    sha = hashlib.sha256(body).hexdigest()
-    with _serve(served) as base:
-        url = f"{base}/test.jsonl"
+    url, body, sha = served
+    cmd = [
+        "wget",
+        "-q",
+        "--no-check-certificate",
+        "--content-disposition",
+        "-O",
+        "raw",
+        url,
+    ]
+    _with_prepare(
+        monkeypatch, lambda d: subprocess.run(cmd, cwd=d, check=True) and None
+    )
+    bench = _bench(tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}")
+    path, prov = bench.prepare_data()
+    assert path.read_bytes() == body
+    assert prov["reads"] == [
+        {"url": url, "pinned_url": url, "sha256": sha, "via": "wget"}
+    ]
+    assert prov["pinned_by"] == {"dataset": url, "dataset_revision": f"sha256:{sha}"}
 
-        def fake_prepare(self):
-            """The base prepare, reduced to what matters here: prepare.py
-            runs in a subprocess, inside ddir, calling wget."""
-            ddir = self.ns_data_dir()
-            ddir.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                ["wget", "-q", "--no-check-certificate", "-O", str(ddir / "raw"), url],
-                check=True,
+    # The content pin: a changed file fails the prepare.
+    bench = _bench(
+        tmp_path / "run2", dataset=url, dataset_revision="sha256:" + "0" * 64
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        bench.prepare_data()
+
+    # The hub form pins no URL: any wget fails.
+    bench = _bench(tmp_path / "run3")
+    with pytest.raises(subprocess.CalledProcessError):
+        bench.prepare_data()
+
+
+@pytest.mark.parametrize(
+    ("argv", "parsed"),
+    [
+        (["-q", "-O", "f", "https://h/x"], ("https://h/x", "f", None, [])),
+        (["-Of", "https://h/x"], ("https://h/x", "f", None, [])),
+        (["--output-document=f", "-nv", "https://h/x"], ("https://h/x", "f", None, [])),
+        (["-P", "d", "https://h/x"], ("https://h/x", None, "d", [])),
+        (
+            ["--header", "Authorization: Bearer t", "https://h/x", "-O", "f"],
+            ("https://h/x", "f", None, ["Authorization: Bearer t"]),
+        ),
+        (
+            ["--header=A: b", "-U", "ua", "-t", "3", "https://h/x"],
+            ("https://h/x", None, None, ["A: b"]),
+        ),
+    ],
+)
+def test_parse_wget_args(argv, parsed):
+    assert generic.guard["parse_wget_args"](argv) == parsed
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--bogus", "https://h/x"],
+        ["-x", "https://h/x"],
+        ["-O"],
+        ["notaurl"],
+        ["https://h/x", "https://h/y"],
+        [],
+    ],
+)
+def test_parse_wget_args_refuses(argv):
+    with pytest.raises(generic.guard["GuardError"]):
+        generic.guard["parse_wget_args"](argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # mmau-pro's shape, on a URL the recipe does not pin
+        [
+            "--header",
+            f"Authorization: Bearer {SECRET}",
+            "https://h/data.zip",
+            "-O",
+            "d.zip",
+        ],
+        [f"--header=Authorization: Bearer {SECRET}", "--bogus", "https://h/x"],
+        [f"--bogus={SECRET}", "https://h/x"],
+        [SECRET, "https://h/x"],
+        [f"https://user:{SECRET}@h/x?token={SECRET}"],
+    ],
+)
+def test_wget_shim_never_prints_a_secret(tmp_path, monkeypatch, served, argv):
+    """A refusal names option names and http(s) URLs (no userinfo, no
+    query), never argv values or header values."""
+    url, _, sha = served
+    out = {}
+
+    def run(ddir):
+        proc = subprocess.run(["wget", *argv], cwd=ddir, capture_output=True, text=True)
+        out["proc"] = proc
+        return [
+            {"url": url}
+        ]  # satisfy the pin check; the shim's verdict is what counts
+
+    _with_prepare(monkeypatch, run)
+    _bench(
+        tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    proc = out["proc"]
+    assert proc.returncode != 0
+    assert "granite:" in proc.stderr
+    assert SECRET not in proc.stderr + proc.stdout
+
+
+def test_wget_shim_forwards_headers(tmp_path, monkeypatch, served):
+    url, _, sha = served
+    _Handler.seen_auth.clear()
+    cmd = ["wget", "--header", f"Authorization: Bearer {SECRET}", url, "-O", "raw"]
+    _with_prepare(
+        monkeypatch, lambda d: subprocess.run(cmd, cwd=d, check=True) and None
+    )
+    _, prov = _bench(
+        tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    assert _Handler.seen_auth == [f"Bearer {SECRET}"]
+    assert SECRET not in json.dumps(prov)
+
+
+URLOPEN = (
+    "import sys, urllib.request\n"
+    "sys.stdout.write(urllib.request.urlopen(sys.argv[1]).read().decode())\n"
+)
+
+
+def test_urlopen_is_guarded(tmp_path, monkeypatch, served):
+    """In the prepare subprocess urlopen serves the pinned URL only (the base
+    class patches urlretrieve, not urlopen)."""
+    url, body, sha = served
+    out = {}
+
+    def run(ddir):
+        for target in (
+            url,
+            url + "?token=" + SECRET + "&x=1",
+            url.replace("test", "other"),
+        ):
+            out[target] = subprocess.run(
+                [sys.executable, "-c", URLOPEN, target], capture_output=True, text=True
             )
-            return ddir / "raw", {"reads": []}
 
-        monkeypatch.setattr(NemoSkillsBenchmark, "prepare_data", fake_prepare)
-        bench = _bench(tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}")
-        path, prov = bench.prepare_data()
-        assert path.read_bytes() == body
-        assert prov["reads"] == [
-            {"url": url, "pinned_url": url, "sha256": sha, "via": "wget"}
-        ]
-        assert prov["pinned_by"] == {
-            "dataset": url,
-            "dataset_revision": f"sha256:{sha}",
-        }
+    _with_prepare(monkeypatch, run)
+    _, prov = _bench(
+        tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    pinned, with_query, other = out.values()
+    assert pinned.returncode == 0 and pinned.stdout == body.decode()
+    assert {"url": url, "pinned_url": url, "sha256": sha, "via": "urlopen"} in prov[
+        "reads"
+    ]
+    for proc in (with_query, other):
+        assert proc.returncode != 0 and "does not pin" in proc.stderr
+        assert SECRET not in proc.stderr
 
-        # The content pin: a changed file fails the prepare.
-        bench = _bench(
-            tmp_path / "run2", dataset=url, dataset_revision="sha256:" + "0" * 64
-        )
-        with pytest.raises(subprocess.CalledProcessError):
-            bench.prepare_data()
 
-        # The hub form pins no URL: any wget fails, naming the URL.
-        bench = _bench(tmp_path / "run3")
-        with pytest.raises(subprocess.CalledProcessError):
-            bench.prepare_data()
+def test_local_builders_refuse_remote_data_files():
+    check = generic.guard["check_local_builder"]
+    check("json", (), {"data_files": "/data/x.jsonl"})  # local: fine
+    check(
+        "org/repo", (), {"data_files": "hf://datasets/a/b.zip"}
+    )  # a hub id: the base pins it
+    for args, kwargs in [
+        (
+            (),
+            {"data_files": "hf://datasets/Steefano/LCB/LongCodeQA.zip"},
+        ),  # longcodebench
+        ((), {"data_files": {"test": ["a.json", "https://h/b.json?t=1"]}}),
+        ((None, None, "s3://bucket/x.csv"), {}),
+        ((), {"data_dir": "hf://datasets/a/b"}),
+    ]:
+        with pytest.raises(SystemExit, match="not local") as err:
+            check("json", args, kwargs)
+        assert "t=1" not in str(err.value)
+
+
+def test_install_guards_wraps_load_dataset(monkeypatch):
+    """The sitecustomize half: with the guard env set, datasets.load_dataset
+    refuses remote data_files for a local builder before calling through."""
+    calls = []
+    fake = types.ModuleType("datasets")
+    fake.load_dataset = lambda path, *a, **k: calls.append(path) or "ok"
+    monkeypatch.setitem(sys.modules, "datasets", fake)
+    monkeypatch.setenv("GRANITE_NS_READS", "/dev/null")
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", urllib.request.urlopen)
+    generic.guard["install_guards"]()
+    assert fake.load_dataset("json", data_files="/x.jsonl") == "ok"
+    with pytest.raises(SystemExit, match="not local"):
+        fake.load_dataset("json", data_files="hf://datasets/a/b.zip")
+    assert calls == ["json"]
+    assert urllib.request.urlopen is generic.guard["guarded_urlopen"]
+
+
+def test_the_pin_must_be_read(tmp_path, monkeypatch, served):
+    """A prepare whose checked reads never include the recipe's pin (its
+    data came another way) fails, however it succeeded."""
+    url, _, sha = served
+    _with_prepare(monkeypatch, lambda d: None)
+    with pytest.raises(SystemExit, match="never read the pinned"):
+        _bench(
+            tmp_path / "a", dataset=url, dataset_revision=f"sha256:{sha}"
+        ).prepare_data()
+    # The hub form: the base class's recorded HF reads.
+    read = [{"hf_dataset": "org/data", "revision": COMMIT, "name": None}]
+    _with_prepare(monkeypatch, lambda d: read)
+    _, prov = _bench(tmp_path / "b").prepare_data()
+    assert prov["reads"] == read
+    other = [{"hf_dataset": "org/other", "revision": COMMIT}]
+    _with_prepare(monkeypatch, lambda d: other)
+    with pytest.raises(SystemExit, match="never read the pinned"):
+        _bench(tmp_path / "c").prepare_data()
 
 
 def test_pins():

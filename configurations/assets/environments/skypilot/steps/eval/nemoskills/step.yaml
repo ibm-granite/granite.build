@@ -106,7 +106,10 @@ config:
   # "split=<name>" (which prepared <split>.jsonl to read). Its `dataset` is
   # required and pins the data: a local path in ns's row format, a hub id with
   # dataset_revision a 40-hex commit (what ns's prepare.py reads), or an http(s)
-  # URL with dataset_revision "sha256:<hex>" (what prepare.py downloads).
+  # URL with dataset_revision "sha256:<hex>" (what prepare.py downloads). The
+  # prepare's HF reads, urlretrieve, urlopen, wget and local-builder data_files
+  # are checked against the pin; other fetches (requests, git, curl) are not, so
+  # give such a benchmark a local dataset (USAGE.md).
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""
