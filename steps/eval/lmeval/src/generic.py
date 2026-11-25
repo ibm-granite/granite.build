@@ -51,8 +51,16 @@ tasks of each task's primary metric (a single task: its metric), ``n`` the
 sum of the tasks' effective sizes. ``details.per_task`` keeps each task's
 metric, value and size, and ``lm_eval_results.json`` under
 ``repeat-<k>/`` preserves the harness's full output. Groups given in
-``tasks`` are expanded by the harness; only leaf tasks are averaged (their
-group aggregates stay in the artifacts).
+``tasks`` reach the harness as the group objects it loaded, not as their
+leaf names: a group's per-task overrides (openllm's 25-shot arc_challenge,
+10-shot hellaswag) apply, and the harness computes the group's aggregate
+(where its yaml declares one) into the artifacts' ``results``/``groups``.
+Only leaf tasks are averaged into the headline. A group whose leaves span
+both modes (openllm: gsm8k generates, the rest are multiple choice) cannot
+run as one pass under ``mode=auto``: its single-mode subgroups and its
+tasks run in their own modes, overrides kept, but the harness computes no
+aggregate for the group itself (``details.split_groups`` names it; set
+``mode=chat`` or ``mode=base`` to run it whole).
 
 ``--limit N`` is lm-eval's own: the first N docs per task. It is not the
 curated benchmarks' cross-language selection; smoke runs on multilingual
@@ -254,6 +262,55 @@ def summarize_results(
     }
 
 
+def is_group(item: Any) -> bool:
+    """An lm-eval Group (it has leaves), as opposed to a Task."""
+    return hasattr(item, "get_all_tasks")
+
+
+def plan_passes(
+    task_list: list[str],
+    task_objects: dict,
+    groups: dict,
+    mode_of: dict[str, str],
+) -> tuple[dict[str, list], list[str]]:
+    """What each mode's simple_evaluate pass is given: the loaded objects,
+    never names (a name reloads the task standalone, dropping the overrides
+    a group set on it, and no group aggregate is computed).
+
+    A requested group whose leaves all run in one mode goes to that pass
+    whole. A group that spans modes is split into its direct children (in
+    yaml order), recursively, so its single-mode subgroups still aggregate;
+    its name is returned in the second element. Leaf tasks not under a
+    requested group (plain task names, tags' tasks) go as Task objects.
+    Returns ({mode: [objects]}, [split group names])."""
+    passes: dict[str, list] = {}
+    split: list[str] = []
+    covered: set[str] = set()
+
+    def place(item: Any) -> None:
+        if not is_group(item):
+            covered.add(item.task_name)
+            passes.setdefault(mode_of[item.task_name], []).append(item)
+            return
+        leaves = [task.task_name for task in item.get_all_tasks()]
+        covered.update(leaves)
+        modes = {mode_of[name] for name in leaves}
+        if len(modes) == 1:
+            passes.setdefault(modes.pop(), []).append(item)
+        elif modes:
+            split.append(item.name)
+            for child in item:
+                place(child)
+
+    for name in task_list:
+        if name in groups:
+            place(groups[name])
+    for name, task in task_objects.items():
+        if name not in covered:
+            place(task)
+    return dict(sorted(passes.items())), split
+
+
 def task_index() -> list[str]:
     """Every task/group name the pinned harness knows (its yaml index; no
     dataset is touched). Separate function so tests can fake it."""
@@ -374,6 +431,19 @@ class LMEval(Benchmark):
         output_types = {name: task.OUTPUT_TYPE for name, task in task_objects.items()}
         primary = self.primary_metrics(task_objects)
         mode_groups = resolve_modes(output_types, self.mode)
+        passes, split = plan_passes(
+            self.task_list,
+            task_objects,
+            groups,
+            {task: mode for mode, tasks in mode_groups.items() for task in tasks},
+        )
+        for name in split:
+            log.warning(
+                "lm-eval: group %s spans chat and base tasks: its parts run in their own "
+                "modes (overrides kept), but no aggregate is computed for it; set mode=chat "
+                "or mode=base to run it whole",
+                name,
+            )
         for mode, tasks in mode_groups.items():
             log.info(
                 "lm-eval: %d task(s) in %s mode (%s)",
@@ -394,7 +464,7 @@ class LMEval(Benchmark):
                     "repeat": k,
                     **self._repeat(
                         k,
-                        mode_groups,
+                        passes,
                         task_objects,
                         primary,
                         base_url,
@@ -416,6 +486,7 @@ class LMEval(Benchmark):
             "tasks": self.task_list,
             "leaf_tasks": sorted(task_objects),
             "groups": sorted(groups),
+            "split_groups": split,
             "mode": (
                 self.mode
                 if self.mode != "auto"
@@ -430,7 +501,7 @@ class LMEval(Benchmark):
     def _repeat(
         self,
         k: int,
-        mode_groups: dict,
+        passes: dict,
         task_objects: dict,
         primary: dict,
         base_url: str,
@@ -444,14 +515,15 @@ class LMEval(Benchmark):
         # One simple_evaluate pass per mode (a mixed task list runs chat and
         # base in separate passes, same repeat dir and cache), merged into
         # one result: the cache keys by request, so the modes cannot
-        # collide.
+        # collide. Each pass gets the loaded Task/Group objects (see
+        # plan_passes), so group overrides and aggregates apply.
         merged: dict[str, Any] = {}
-        for mode, tasks in mode_groups.items():
+        for mode, items in passes.items():
             results = run_simple_evaluate(
                 model=self.make_lm(
                     mode, base_url, served, seed=self.config.seed + 1234 + k
                 ),
-                tasks=tasks,
+                tasks=items,
                 task_manager=None,
                 use_cache=str(cache_dir / "cache"),
                 num_fewshot=self.num_fewshot,

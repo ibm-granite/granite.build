@@ -87,8 +87,14 @@ and cache.
 
 The headline is the macro mean over the resolved tasks of each task's primary
 metric; `n` sums their sizes, `per_task` keeps each task's numbers, and
-`repeat-<k>/lm_eval_results.json` preserves the harness's full output. Groups in
-`tasks` are expanded by the harness; only leaf tasks are averaged. `limit` is
+`repeat-<k>/lm_eval_results.json` preserves the harness's full output. A group in
+`tasks` reaches the harness as the group it loaded, so its per-task overrides apply
+(openllm's 25-shot arc_challenge, 10-shot hellaswag) and the harness computes its
+aggregate (where the group's yaml declares one) into `lm_eval_results.json`; only leaf
+tasks are averaged into the headline. Under `mode=auto` a group whose tasks span both
+modes (openllm: gsm8k generates) runs in parts — its single-mode subgroups and tasks,
+overrides kept — and gets no aggregate of its own (`details.split_groups` names it);
+`mode=chat` or `mode=base` runs it whole. `limit` is
 lm-eval's own (the first N docs per task), and `repeats` runs the whole set k times
 and averages — no pass@k here, since per-example scores have no meaning for every
 metric family. `dataset`/`dataset_revision` do not apply (every task names its own

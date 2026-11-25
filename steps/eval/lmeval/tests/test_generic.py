@@ -12,8 +12,9 @@ from granite_evals.benchmarks import chat_if, generic
 from granite_evals.registry import RunConfig, get
 
 
-def _task(output_type="multiple_choice", metric="acc", filters=None):
+def _task(output_type="multiple_choice", metric="acc", filters=None, name=None):
     return SimpleNamespace(
+        task_name=name,
         OUTPUT_TYPE=output_type,
         config=SimpleNamespace(
             metric_list=[{"metric": metric}],
@@ -22,6 +23,24 @@ def _task(output_type="multiple_choice", metric="acc", filters=None):
             ),
         ),
     )
+
+
+class _Group:
+    """lm-eval's Group surface the bridge uses: name, direct children in
+    yaml order (iteration), and every leaf (get_all_tasks)."""
+
+    def __init__(self, name, *children):
+        self.name = name
+        self.children = list(children)
+
+    def __iter__(self):
+        return iter(self.children)
+
+    def get_all_tasks(self):
+        out = []
+        for child in self.children:
+            out += child.get_all_tasks() if isinstance(child, _Group) else [child]
+        return out
 
 
 def _config(tmp_path: Path, **options):
@@ -188,6 +207,50 @@ def test_summarize_results_missing_metric():
         )
 
 
+def test_plan_passes_keeps_objects():
+    """Requested groups reach simple_evaluate as the loaded Group objects
+    (their overrides and aggregates apply), plain tasks as Task objects --
+    never as names, which the harness would reload standalone."""
+    arc = _task(name="arc_challenge")
+    hs = _task(name="hellaswag")
+    wino = _task(name="winogrande")
+    group = _Group("mc_group", arc, hs)
+    tasks = {"arc_challenge": arc, "hellaswag": hs, "winogrande": wino}
+    mode_of = dict.fromkeys(tasks, "base")
+    passes, split = generic.plan_passes(
+        ["mc_group", "winogrande"], tasks, {"mc_group": group}, mode_of
+    )
+    assert split == []
+    assert list(passes) == ["base"]
+    assert passes["base"][0] is group
+    assert passes["base"][1] is wino
+    assert len(passes["base"]) == 2  # the group's leaves are not passed again
+
+
+def test_plan_passes_splits_a_mixed_group():
+    """openllm's shape: a group over multiple-choice tasks, a multiple-choice
+    subgroup, and one generation task. Under mode=auto it cannot run as one
+    pass: the uniform subgroup still goes whole (it aggregates), the leaves
+    go as their (override-carrying) objects, the parent is reported split."""
+    arc = _task(name="arc_challenge")
+    anatomy = _task(name="mmlu_anatomy")
+    astronomy = _task(name="mmlu_astronomy")
+    gsm8k = _task("generate_until", "exact_match", name="gsm8k")
+    mmlu = _Group("mmlu", anatomy, astronomy)
+    openllm = _Group("openllm", arc, mmlu, gsm8k)
+    tasks = {t.task_name: t for t in (arc, anatomy, astronomy, gsm8k)}
+    groups = {"openllm": openllm, "mmlu": mmlu}
+    mode_of = {**dict.fromkeys(tasks, "base"), "gsm8k": "chat"}
+    passes, split = generic.plan_passes(["openllm"], tasks, groups, mode_of)
+    assert split == ["openllm"]
+    assert passes == {"base": [arc, mmlu], "chat": [gsm8k]}
+    # mode=chat (or base) puts every leaf in one mode: the group runs whole.
+    passes, split = generic.plan_passes(
+        ["openllm"], tasks, groups, dict.fromkeys(tasks, "chat")
+    )
+    assert split == [] and passes == {"chat": [openllm]}
+
+
 def test_init_requires_tasks(tmp_path):
     with pytest.raises(SystemExit, match="tasks= is required"):
         generic.LMEval(_config(tmp_path))
@@ -244,6 +307,16 @@ def test_registry():
     assert get("lm-eval") is generic.LMEval
 
 
+HELLASWAG = _task("multiple_choice", "acc", name="hellaswag")
+ARC_EASY = _task("multiple_choice", "acc", name="arc_easy")
+GSM8K = _task(
+    "generate_until",
+    "exact_match",
+    filters=["strict-match", "flexible-extract"],
+    name="gsm8k",
+)
+
+
 def test_run_end_to_end(tmp_path, monkeypatch):
     """The orchestration, with the harness faked at its three seams: task
     names, task objects, simple_evaluate. One base-mode task pair and one
@@ -256,22 +329,18 @@ def test_run_end_to_end(tmp_path, monkeypatch):
         "load_tasks",
         lambda tasks: (
             {
-                "hellaswag": _task("multiple_choice", "acc"),
-                "arc_easy": _task("multiple_choice", "acc"),
-                "gsm8k": _task(
-                    "generate_until",
-                    "exact_match",
-                    filters=["strict-match", "flexible-extract"],
-                ),
+                "hellaswag": HELLASWAG,
+                "arc_easy": ARC_EASY,
+                "gsm8k": GSM8K,
             },
-            {"lm-eval-test-group": SimpleNamespace()},
+            {},
         ),
     )
     calls = []
 
     def fake_simple_evaluate(**kwargs):
         calls.append(kwargs)
-        if "gsm8k" in kwargs["tasks"]:
+        if GSM8K in kwargs["tasks"]:
             return {
                 "results": {
                     "gsm8k": {
@@ -303,8 +372,10 @@ def test_run_end_to_end(tmp_path, monkeypatch):
     assert outcome["per_task"]["gsm8k"]["key"] == "exact_match,strict-match"
     assert len(outcome["per_repeat"]) == 1
 
-    # Two passes, one per mode, chat flags only on the chat pass.
-    assert [tuple(c["tasks"]) for c in calls] == [("hellaswag", "arc_easy"), ("gsm8k",)]
+    # Two passes, one per mode, chat flags only on the chat pass; each gets
+    # the loaded Task objects, not names.
+    assert [c["tasks"] for c in calls] == [[HELLASWAG, ARC_EASY], [GSM8K]]
+    assert outcome["split_groups"] == []
     assert [c["apply_chat_template"] for c in calls] == [False, True]
     assert [c["fewshot_as_multiturn"] for c in calls] == [False, True]
 
@@ -314,3 +385,55 @@ def test_run_end_to_end(tmp_path, monkeypatch):
     assert set(keep["results"]) == {"hellaswag", "arc_easy", "gsm8k", "mmlu"}
     rows = (tmp_path / "repeat-0" / "samples" / "gsm8k.jsonl").read_text().splitlines()
     assert json.loads(rows[0])["exact_match"] == 1.0
+
+
+def test_run_passes_the_loaded_group(tmp_path, monkeypatch):
+    """tasks=<group>: simple_evaluate gets the Group object the bridge
+    loaded (whose children carry the group's overrides), so the harness
+    computes the group's aggregate; the headline stays the leaf mean."""
+    arc = _task(name="arc_challenge")
+    arc.config.num_fewshot = 25  # the group's override, set at load time
+    hs = _task(name="hellaswag")
+    group = _Group("mc_group", arc, hs)
+    monkeypatch.setattr(generic, "task_index", lambda: ["mc_group"])
+    monkeypatch.setattr(
+        generic,
+        "load_tasks",
+        lambda tasks: ({"arc_challenge": arc, "hellaswag": hs}, {"mc_group": group}),
+    )
+    calls = []
+
+    def fake_simple_evaluate(**kwargs):
+        calls.append(kwargs)
+        (item,) = kwargs["tasks"]
+        assert item is group
+        assert item.children[0].config.num_fewshot == 25
+        return {
+            "results": {
+                "mc_group": {"acc,none": 0.5},
+                "arc_challenge": {"acc,none": 0.4},
+                "hellaswag": {"acc,none": 0.8},
+            },
+            "groups": {"mc_group": {"acc,none": 0.5}},
+            "n-samples": {
+                "arc_challenge": {"effective": 3},
+                "hellaswag": {"effective": 1},
+            },
+        }
+
+    monkeypatch.setattr(generic, "run_simple_evaluate", fake_simple_evaluate)
+    monkeypatch.setattr(
+        generic.LMEval,
+        "make_lm",
+        lambda self, mode, base_url, served, seed: SimpleNamespace(mode=mode),
+    )
+    monkeypatch.setattr(chat_if, "drop_errors_from_cache", lambda cache_dir: 0)
+
+    outcome = generic.LMEval(_config(tmp_path, tasks="mc_group")).run(
+        "http://s/v1", "m"
+    )
+    assert len(calls) == 1
+    assert outcome["value"] == pytest.approx((0.4 + 0.8) / 2)
+    assert outcome["groups"] == ["mc_group"] and outcome["split_groups"] == []
+    keep = json.loads((tmp_path / "repeat-0" / "lm_eval_results.json").read_text())
+    assert keep["groups"] == {"mc_group": {"acc,none": 0.5}}
