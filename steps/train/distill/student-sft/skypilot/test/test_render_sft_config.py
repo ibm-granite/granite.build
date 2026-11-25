@@ -17,10 +17,10 @@ Divergences from upstream:
     documented one that quietly goes away, fails here instead of going unnoticed.
 """
 
-"""Tests for distill-sft's config validation and rendering.
+"""Tests for student-sft's config validation and rendering.
 
 Two kinds of test live here, and the second kind is the reason this file is not just a copy
-of distill-gold-train's suite with the names changed.
+of logit-distill's suite with the names changed.
 
 THE FIRST KIND covers the refusals only this step has -- the attention backend, the Liger
 SWA patch that is not in this collection, and the four ways to set `precomputed_logits_dir`
@@ -531,7 +531,7 @@ def test_a_logits_dir_that_exists_is_accepted(tmp_path):
 
 
 def test_mismatched_tokenizer_identity_is_refused(tmp_path):
-    """Shared with distill-gold-train, and it has to be: a control trained on a corpus
+    """Shared with logit-distill, and it has to be: a control trained on a corpus
     segmented by a different tokenizer is not a control."""
     s = _student(tmp_path, markers=True)
     (s / "tokenizer_identity.json").write_text(
@@ -636,7 +636,7 @@ def test_the_backend_table_has_a_catch_all():
 
 # ----------------------------------------------------------------- resume modes
 #
-# The rules are render_common's and distill-gold-train's suite covers their behaviour. What
+# The rules are render_common's and logit-distill's suite covers their behaviour. What
 # is tested here is that THIS step reaches them, and reaches them named as itself: the
 # message has to say sft.py, because an operator reading "gold.py resumes on presence" about
 # a control run will go looking in the wrong file.

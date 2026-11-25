@@ -485,7 +485,7 @@ class TestExternalVllmServer:
 class TestDistillSourceDelivery:
     """No code_config here, unlike the other six ported steps: the trainer is baked
     into the shared GPU image (steps/train/distill/images/gpu/Dockerfile COPYs
-    steps/train/distill/src/), not cloned at job-launch time. distill-gold is the one
+    steps/train/distill/src/), not cloned at job-launch time. logit-distill is the one
     ported step that runs multi-node, where a runtime clone needs its own
     rank-0-clones/others-wait guard against a real race (measured on build
     7e9995b3) -- baking the source in sidesteps that race entirely instead of

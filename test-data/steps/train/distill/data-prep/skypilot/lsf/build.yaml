@@ -1,12 +1,12 @@
 granite.build:
   name: distill-corpus-prep-smoke
-  # Smoke build for the distill-corpus-prep step on BlueVela (SkyPilot / LSF).
+  # Smoke build for the data-prep step on BlueVela (SkyPilot / LSF).
   #
   # TWO targets, and that is forced rather than chosen. This step measures the completion
   # boundary by rendering with return_assistant_tokens_mask=True, which needs a chat
   # template carrying a real `{% generation %}` block tag. MEASURED on this cluster: none
   # of the 13 hand-built /proj overlay directories has one (they mention
-  # add_generation_prompt, which is a different thing), while distill-tokenizer-align's
+  # add_generation_prompt, which is a different thing), while tokenizer-align's
   # own output has four. A single-target fixture pointed at any existing overlay fails
   # with "every one of N rendered conversations produced an EMPTY assistant mask" — the
   # step refusing correctly, since GOLD would otherwise die at sft.py:909 after loading

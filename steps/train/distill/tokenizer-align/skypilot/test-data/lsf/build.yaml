@@ -1,6 +1,6 @@
 granite.build:
   name: distill-tokenizer-align-smoke
-  # Smoke build for the distill-tokenizer-align step on BlueVela (SkyPilot / LSF).
+  # Smoke build for the tokenizer-align step on BlueVela (SkyPilot / LSF).
   #
   # Exercises the PLUMBING this port introduces — source delivery from the /proj
   # checkout, PYTHONPATH onto the shared package, path absolutisation, the flag

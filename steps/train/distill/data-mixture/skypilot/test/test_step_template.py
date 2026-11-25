@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the corpus-sources step-template.yaml.
+"""Contract tests for the data-mixture step-template.yaml.
 
 The run script is rendered with gbserver's own template filler and then executed, so a
 sources list that does not reach the script, or a shell error, fails here rather than on

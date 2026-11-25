@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Integration test: distill-eval runs end to end on Skypilot/LSF.
+"""Integration test: teacher-divergence runs end to end on Skypilot/LSF.
 
 A **step-level** test, beside the step's Makefile in a per-cluster subdir with its
 fixtures in the matching ``test-data/lsf/``. Run it from the step directory::

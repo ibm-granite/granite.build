@@ -16,7 +16,7 @@ that has torch is the cluster's, not CI's.
 Keep this a near-verbatim copy so re-syncing upstream stays a three-way merge.
 """
 
-"""Unit tests for the divergence module behind distill-eval.
+"""Unit tests for the divergence module behind teacher-divergence.
 
 WHAT IS TESTED HERE AND WHAT IS NOT, because the split is deliberate and the GPU smoke
 (data/distillation/logs/divergence-smoke-exec.sh) is the other half. These tests cover the

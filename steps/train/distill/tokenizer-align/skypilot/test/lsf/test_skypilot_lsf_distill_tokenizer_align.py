@@ -2,7 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Integration test: distill-tokenizer-align runs end to end on Skypilot/LSF.
+"""Integration test: tokenizer-align runs end to end on Skypilot/LSF.
 
 A **step-level** test, living beside the step's Makefile in a per-cluster subdir
 (``steps/train/distill/tokenizer-align/skypilot/test/lsf/``) with its fixtures in the
