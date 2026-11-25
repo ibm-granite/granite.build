@@ -144,6 +144,13 @@ override-dependencies = [
     # outside requires-python drops them from the resolution.
     "nemo-run ; python_version < '3'",
     "nemo-evaluator-launcher ; python_version < '3'",
+    # NeMo-Skills also declares wandb (core/requirements.txt), for its optional
+    # experiment logging: nemo_skills.utils.init_wandb, which skips it on ImportError,
+    # and the NeMo-Run pipeline (pipeline/summarize_results.py, the
+    # inference/log_samples_wandb.py job it launches), which needs NeMo-Run, dropped
+    # above. None runs in granite-evals, and wandb brings wandb-core's Go toolchain and
+    # cwevals, a 0.0.1 beta, so it is dropped the same way.
+    "wandb ; python_version < '3'",
 ]
 # Floors at the fix for the fixable HIGH-and-above advisories the dependency and image
 # gates reported (scan-deps, scan-image-* in steps/eval/Makefile), so a later re-lock
@@ -163,7 +170,6 @@ constraint-dependencies = [
     "pypdf>=6.21.4",
     "soupsieve>=4.0.0",
     "virtualenv>=21.14.13",
-    "wandb>=0.31.2",
 ]
 # Each image installs one family's extra (plus serve), so families whose pins
 # clash resolve apart. vllm pins torch, so every fork shares the serve layer.
