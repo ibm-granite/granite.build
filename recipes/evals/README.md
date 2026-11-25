@@ -3,8 +3,11 @@
 One recipe per benchmark, at `<family>/<benchmark>/skypilot/`: a `build.yaml` and its
 `parameters.yaml`. The `<family>` is the
 [`steps/eval/<family>`](../../steps/eval/README.md) step the recipe runs, one granite-evals
-image per family. Each recipe holds the GPU only while the model generates
-(`<benchmark>-generate`), and most then grade that output on a CPU node (`<benchmark>`).
+image per family. Most recipes have two targets on one output dir: `<benchmark>-generate`
+holds a GPU only while the model generates, and `<benchmark>` grades that output on a CPU
+node. `nemoskills/flores200` and `nemoskills/wmt24pp` grade on a GPU, because their scorer
+needs one. The `lmeval`, `mcpmark` and `tbench` recipes run as one GPU target,
+`<benchmark>`.
 
 | Path | What it is |
 |---|---|
