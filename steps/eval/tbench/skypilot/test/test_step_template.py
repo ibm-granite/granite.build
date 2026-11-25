@@ -255,6 +255,32 @@ def test_online_by_default(step, tmp_path):
     assert _out(proc)["OFF"] == ""
 
 
+@pytest.mark.parametrize("word", ["0", "false", "False", "no", "off", " "])
+def test_hf_offline_off_words_stay_online(step, tmp_path, word):
+    # A word, not a truth value: "0" and "false" are non-empty strings.
+    proc = _run_until_output_dir(
+        step, tmp_path, benchmark="b", hf_offline=word, hf_home=str(tmp_path / "c")
+    )
+    assert _out(proc)["OFF"] == ""
+
+
+@pytest.mark.parametrize("word", ["1", "true", "TRUE", "yes", "on"])
+def test_hf_offline_on_words_run_offline(step, tmp_path, word):
+    proc = _run_until_output_dir(
+        step, tmp_path, benchmark="b", hf_offline=word, hf_home=str(tmp_path / "c")
+    )
+    assert _out(proc)["OFF"] == "1"
+
+
+def test_hf_offline_rejects_other_words(step, tmp_path):
+    proc = _run_until_output_dir(
+        step, tmp_path, benchmark="b", hf_offline="maybe", hf_home=str(tmp_path / "c")
+    )
+    assert proc.returncode == 1
+    assert "hf_offline must be" in proc.stderr
+    assert not (tmp_path / "out").exists()
+
+
 @pytest.mark.parametrize("options", ["", "limit_langs=en judge_model=self"])
 def test_a_curated_benchmark_keeps_its_own_dir(step, tmp_path, options):
     # No selection option: $OUTPUT_ROOT/$RUN_NAME/<benchmark>, as before the bridges.

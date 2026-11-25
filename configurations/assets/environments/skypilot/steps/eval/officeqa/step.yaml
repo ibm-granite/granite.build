@@ -121,7 +121,8 @@ config:
   # load_dataset needs. Data the cache lacks fails fast; steps/eval/README.md
   # ("The warm HF cache") lists what runs offline (not terminal-bench; lm-eval
   # bridge tasks only once prepared). Bind the model (hf://) or warm it too;
-  # hf_offline without hf_home is refused.
+  # hf_offline without hf_home is refused. A word: 1/true/yes/on turn it on,
+  # empty/0/false/no/off leave it off, anything else fails the run.
   hf_offline: ""
 outputs:
   optional:
@@ -161,9 +162,15 @@ environment_configs:
                 all eleven (CI's test_published_steps_match_their_templates.py fails until
                 then). -#}
             {%- macro granite_output_dir(config) -%}
+            {#- hf_offline is a word, not a Jinja truth value ("0" and "false" are
+                non-empty strings): 1/true/yes/on turn it on, empty/0/false/no/off leave
+                it off, anything else fails the run. -#}
+            {%- set offline_word = (config.hf_offline | string | trim | lower) if config.hf_offline is not none else "" -%}
+            {%- set offline = offline_word in ("1", "true", "yes", "on") -%}
             {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
-            {% if config.hf_offline and not config.hf_home %}echo "granite: hf_offline needs hf_home pointing at a cache warmed by make -C steps/eval prefetch" >&2; exit 1{% endif %}
-            {% if config.hf_offline %}export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1  # warm-cache mode: hub reads hit HF_HOME's cache only, never the hub{% endif %}
+            {% if offline_word not in ("", "0", "false", "no", "off", "1", "true", "yes", "on") %}echo "granite: hf_offline must be 1, true, yes or on (offline), or empty, 0, false, no or off" >&2; exit 1{% endif %}
+            {% if offline and not config.hf_home %}echo "granite: hf_offline needs hf_home pointing at a cache warmed by make -C steps/eval prefetch" >&2; exit 1{% endif %}
+            {% if offline %}export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1  # warm-cache mode: hub reads hit HF_HOME's cache only, never the hub{% endif %}
 
             # options, split on whitespace (no quoting) and never glob-expanded: read -a
             # over a single-quoted word, not an unquoted for, so a * or ? in a value (a

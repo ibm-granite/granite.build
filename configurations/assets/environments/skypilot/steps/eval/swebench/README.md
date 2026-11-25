@@ -51,7 +51,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Shared squashfs cache for instance images. Every benchmark in this family sandboxes, so recipes always set this. |
 | `hf_home` | Overrides `HF_HOME`. |
-| `hf_offline` | Warm-cache mode: `HF_HUB_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`, which also prepares the `datasets.load_dataset` configs the benchmarks request; gated datasets need a token with access) and share it across runs; data the cache lacks fails fast. What runs offline (not terminal-bench; lm-eval bridge tasks only once prepared): steps/eval/README.md, "The warm HF cache". |
+| `hf_offline` | `1`/`true`/`yes`/`on` (empty/`0`/`false`/`no`/`off`: off; anything else fails the run). Warm-cache mode: `HF_HUB_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`, which also prepares the `datasets.load_dataset` configs the benchmarks request; gated datasets need a token with access) and share it across runs; data the cache lacks fails fast. What runs offline (not terminal-bench; lm-eval bridge tasks only once prepared): steps/eval/README.md, "The warm HF cache". |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none. Every dataset in this family is public; no HF token is needed.
