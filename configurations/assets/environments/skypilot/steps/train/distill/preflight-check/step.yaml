@@ -11,7 +11,7 @@
 # load-student and tokenizer-fit, one GPU, which the build supplies. No trainer source;
 # the script is baked into the image under $DISTILL_HOME (/opt/distill).
 #
-# Deliberately no HF_HUB_OFFLINE / HF_HOME, unlike gen-smoke: load-student asks whether
+# Deliberately no HF_HUB_OFFLINE / HF_HOME, unlike repetition-check: load-student asks whether
 # transformers' lazy kernel fetch works in this image, and an offline hub would answer a
 # different question.
 ######

@@ -15,7 +15,7 @@ version: 1.0.0
 # the trainer will truncate.
 #
 # DATA_PROCESSING and not DATA_GENERATION: nothing is sampled from a model here. Generating
-# data from the teacher is distill-logit-precompute's job.
+# data from the teacher is the teacher-logits step's job.
 type: data_processing
 config:
   # ─── Corpus ───────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ inputs:
     source_dataset:
       type: dataset
       accept: [uri, binding]
-    # The tokenizer that DEFINES this corpus. Normally distill-tokenizer-align's
+    # The tokenizer that DEFINES this corpus. Normally tokenizer-align's
     # `retagged_student`. Not decoration: max_length filtering and the completion-boundary
     # check are both measured on the RENDERED, TOKENIZED conversation, so the surviving set
     # of examples is a function of this directory. Its identity is copied into

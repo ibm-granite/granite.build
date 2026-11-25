@@ -1,5 +1,5 @@
 ######
-# gen-smoke — does the model still write text?
+# repetition-check — does the model still write text?
 #
 # Greedy-decodes eight raw prompts from each exported checkpoint and reports, per rung,
 # the fraction of generated lines inside a run of >= 3 identical lines. Was an inline

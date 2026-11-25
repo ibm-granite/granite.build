@@ -139,7 +139,7 @@ def load_student(checkpoint: str) -> int:
     # "loads but FA2 does not resolve" is a different diagnosis from "does not load", and
     # they have different fixes. FA2 is probed because render_sft_config.py selects it
     # for granitemoehybrid and sft.py aborts every rank on a mismatch, so the SFT-control
-    # arm depends on a kernel distill-gold never asks for.
+    # arm depends on a kernel logit-distill never asks for.
     ok = []
     for attn in ("flash_attention_2", "eager"):
         try:

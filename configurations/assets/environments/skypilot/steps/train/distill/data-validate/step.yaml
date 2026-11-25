@@ -1,5 +1,5 @@
 ######
-# corpus-pin-check — refuse a pinned corpus that this build does not describe.
+# data-validate — refuse a pinned corpus that this build does not describe.
 #
 # Was an inline `command` target copied verbatim into four granite4-350m recipes. The
 # logic, and the reasoning behind each comparison, live in src/check_corpus_pin.py;

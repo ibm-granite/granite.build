@@ -1,4 +1,4 @@
-# distill-corpus-prep step for the SkyPilot environment (LSF / BlueVela).
+# data-prep step for the SkyPilot environment (LSF / BlueVela).
 #
 # Turns a conversation dataset into the GOLD training corpus: filter by rendered
 # length, apply a think-tag policy, enforce the completion boundary, split

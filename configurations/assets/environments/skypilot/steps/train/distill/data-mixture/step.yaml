@@ -1,5 +1,5 @@
 ######
-# corpus-sources — build ONE prep-ready corpus file from several raw SFT splits.
+# data-mixture — build ONE prep-ready corpus file from several raw SFT splits.
 #
 # Was an inline `command` target copied verbatim into five granite4-350m recipes. The
 # logic, and the measurements behind it, live in src/build_sources.py; this file only
@@ -65,7 +65,7 @@ environment_configs:
           # bb779f1f). Blank lines BETWEEN array appends are inert.
           run: |
             set -euo pipefail
-            echo "=== corpus-sources on $(hostname) ==="
+            echo "=== data-mixture on $(hostname) ==="
             WORK="${GB_BUILD_WORKDIR:-$PWD}"
             OUT_DIR="{{ config.sources_config.output_dir }}"
             case "$OUT_DIR" in /*) ;; *) OUT_DIR="$WORK/$OUT_DIR" ;; esac

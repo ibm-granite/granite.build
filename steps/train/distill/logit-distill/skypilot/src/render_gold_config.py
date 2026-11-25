@@ -224,7 +224,7 @@ LOSS_ARMS: Dict[str, Dict[str, Any]] = {
         "flags": {"use_ce_loss": True},
         # An SFT control that runs INSIDE this trainer, on the same data path, collator and
         # masking as every distillation arm -- so a gap between them cannot be a data-pipeline
-        # artefact. Not a replacement for distill-sft, which trains with no teacher
+        # artefact. Not a replacement for student-sft, which trains with no teacher
         # resident at all.
         "doc": "cross entropy only -- in-trainer SFT control, teacher still loaded",
         "requires": {"lmbda_eq": 0.0},
@@ -662,7 +662,7 @@ def check_corpus_tokenizer(args: argparse.Namespace) -> None:
     tokenizers' ids are interchangeable, but their pre_tokenizers still differ (a Split regex
     on 4.1 vs plain ByteLevel on 4.2), so the same text segments differently. A run on the
     wrong corpus does not error: it trains on mis-segmented text at full speed with a falling
-    loss. recipes/distill/distill chains corpus-prep straight into this step, which is exactly
+    loss. recipes/distill/distill chains data-prep straight into this step, which is exactly
     where a mismatch can be introduced by changing one parameter.
 
     LAZY AND LOUD, never silent. The check lives in the shared package, which the step's

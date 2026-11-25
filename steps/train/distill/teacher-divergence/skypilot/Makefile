@@ -1,4 +1,4 @@
-# distill-eval step for the SkyPilot environment (LSF / BlueVela).
+# teacher-divergence step for the SkyPilot environment (LSF / BlueVela).
 #
 # Measures how far the student's next-token distribution is from the teacher's on a
 # held-out corpus. Runs in the shared distillation GPU image (built by

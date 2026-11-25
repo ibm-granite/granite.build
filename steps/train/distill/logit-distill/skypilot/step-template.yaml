@@ -243,7 +243,7 @@ config:
     # detect. See LOSS_ARMS in src/render_gold_config.py, which lists each arm and why.
     loss_arm: ""
     # Verify the student's tokenizer is the one the corpus was built with. Off by default;
-    # ON is worth it for any build that chains distill-corpus-prep into this step, because
+    # ON is worth it for any build that chains data-prep into this step, because
     # a mismatch does not error -- it trains on mis-segmented text at full speed with a
     # falling loss.
     check_corpus_tokenizer: false
@@ -359,7 +359,7 @@ inputs:
     teacher:
       type: model
       accept: [uri, binding]
-    # distill-corpus-prep's `corpus`. Must be think-filtered ("nothink"): an
+    # data-prep's `corpus`. Must be think-filtered ("nothink"): an
     # assistant completion containing an inline <think>...</think> breaks gold's
     # completion extraction.
     corpus:
@@ -367,7 +367,7 @@ inputs:
       accept: [uri, binding]
   optional:
     # An EXTERNAL vLLM server, reached by URL, instead of carving nodes out of
-    # this allocation: bind distill-vllm-server's mem:// `vllm_url`. When
+    # this allocation: bind student-rollout-generator's mem:// `vllm_url`. When
     # bound, EVERY node here trains and the role split below does not happen; the
     # trainer is given the address on gold.py's command line. Unbound keeps the
     # in-allocation split that gold_config.vllm_num_servers alone selects.

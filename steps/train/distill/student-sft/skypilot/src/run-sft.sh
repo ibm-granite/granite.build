@@ -15,13 +15,14 @@
 # as a two-character escape. That is a property of granite.build's transport, so the
 # compensation lives on granite.build's side rather than in this ported file.
 #
-# distill-sft step entrypoint, INSIDE the container.
+# student-sft step entrypoint, INSIDE the container.
 #
 # This is the CONTROL arm. Every distillation number is reported relative to what this step
 # produces, so the failure mode that matters here is not "the run dies" -- it is "the run
 # succeeds at something slightly different from the treatment". That is why this file is a
-# deliberate near-twin of distill-gold-train/src/run-gold.sh: same part-location logic, same
-# kernel preflight, same allocation assertion, same TRK_ convention, same multi-node refusal.
+# deliberate near-twin of run-gold.sh, logit-distill's launcher upstream (here, the run block in
+# logit-distill/skypilot/step-template.yaml): same part-location logic, same kernel preflight,
+# same allocation assertion, same TRK_ convention, same multi-node refusal.
 # Where the two differ, the difference is named in a comment. A control that drifts from its
 # treatment in an unnamed way is not a control.
 #
@@ -61,7 +62,7 @@ if [[ -z "${LIB_DIR:-}" ]]; then
   )" || LIB_DIR="$STEP_HOME/lib"
 fi
 # THE PACKAGE ROOT, and it is load-bearing twice over. render_sft_config.py imports
-# gb_steps_post_training.distillation.render_common (shared with distill-gold-train so the two
+# gb_steps_post_training.distillation.render_common (shared with logit-distill so the two
 # arms cannot validate by different rules), and sft.py's own import graph reaches
 # gb_steps_post_training.distillation at MODULE scope. sft.py is launched FLAT (`cd $SFT_SRC`;
 # `accelerate launch sft.py`), which puts the flat directory on sys.path and the package root
@@ -195,7 +196,7 @@ fi
 # control loads the same student architecture as the treatment.
 #
 # ONE REPO MORE THAN run-gold.sh, and the difference is real rather than an oversight there:
-# this step ASKS for FA2 and the gold step does not. render_sft_config.py always emits
+# this step ASKS for FA2 and the logit-distill step does not. render_sft_config.py always emits
 # `attn_implementation` (sft.py's verify_optimization_stack aborts every rank without it), while
 # no gold config sets it and render_gold_config.py never emits it -- so gold loads on whatever
 # transformers picks by default and never resolves an FA2 kernel at all.
@@ -213,8 +214,9 @@ fi
 
 if [[ ! -f "$STEP_HOME/render_sft_config.py" ]]; then
   echo "FATAL: render_sft_config.py not found under STEP_HOME=$STEP_HOME." >&2
-  echo "       In the image it is COPYd there from steps/distill-sft/src/; in a" >&2
-  echo "       checkout STEP_HOME is that directory. Set STEP_HOME explicitly if this" >&2
+  echo "       In the image it is COPYd there from" >&2
+  echo "       steps/train/distill/student-sft/skypilot/src/; in a checkout STEP_HOME is" >&2
+  echo "       that directory. Set STEP_HOME explicitly if this" >&2
   echo "       script was moved away from it." >&2
   exit 2
 fi
@@ -320,7 +322,8 @@ if (( NODES > 1 )); then
   echo "FATAL: nodes=$NODES needs a multi-node rendezvous (main_process_ip/port and a" >&2
   echo "       machine_rank per host) that this step is not handed. Use nodes=1 here, or run" >&2
   echo "       it inside a scheduler allocation that supplies the host list. Tracked" >&2
-  echo "       as D3 -- see distill-gold-train/src/run-gold.sh for the full statement." >&2
+  echo "       as D3; logit-distill/skypilot/step-template.yaml's run block shows the" >&2
+  echo "       rendezvous a multi-node launch is handed there." >&2
   exit 1
 fi
 echo "topology  : all-trainer, 1 node x $GPN GPU(s)"
