@@ -1,6 +1,9 @@
 # nemoskills (the generic bridge) on ns's own math-500 protocol -- BlueVela (SkyPilot / SLURM), nemoskills family image.
-# Data: openai/prm800k's math_splits/test.jsonl (the MATH-500 subset), downloaded at run time
-# from the commit-pinned URL, sha256-pinned in the image's code (https://github.com/openai/prm800k).
+# Data: what ns's own math-500 prepare.py reads -- it wgets openai/prm800k's
+# math_splits/test.jsonl (the MATH-500 subset, https://github.com/openai/prm800k) at run
+# time. The bridge requires a pin: DATASET/DATASET_REVISION below name that download and
+# its sha256, and the bridge's wget shim (the image has no wget) fetches it and checks the
+# hash, so a changed upstream file fails the prepare instead of changing the score.
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
@@ -28,6 +31,12 @@ REPEATS: ""
 WORKERS: 32
 OPTIONS: "benchmark=math-500"
 TENSOR_PARALLEL_SIZE: 1
+
+# ─── Dataset (the bridge's required pin) ─────────────────────────────
+# The URL ns's math-500 prepare.py downloads, pinned by content (the same bytes the
+# curated math-500 id fetches from its commit-pinned URL).
+DATASET: "https://github.com/openai/prm800k/raw/main/prm800k/math_splits/test.jsonl"
+DATASET_REVISION: "sha256:35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132"
 
 # ─── Cluster ──────────────────────────────────────────────────────────
 ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"

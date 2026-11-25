@@ -18,6 +18,8 @@ granite.build:
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             benchmark: "nemoskills"
             image: "$${IMAGE}"
+            dataset: "$${DATASET}"
+            dataset_revision: "$${DATASET_REVISION}"
             model_path: "$${MODEL_PATH}"
             served_model_name: "$${SERVED_MODEL_NAME}"
             output_root: "$${OUTPUT_ROOT}"
@@ -51,6 +53,8 @@ granite.build:
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             benchmark: "nemoskills"
             image: "$${IMAGE_CPU}"
+            dataset: "$${DATASET}"
+            dataset_revision: "$${DATASET_REVISION}"
             model_path: "$${MODEL_PATH}"
             served_model_name: "$${SERVED_MODEL_NAME}"
             output_root: "$${OUTPUT_ROOT}"

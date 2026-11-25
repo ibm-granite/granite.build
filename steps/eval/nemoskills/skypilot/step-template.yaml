@@ -102,8 +102,11 @@ config:
   # "ns.<key>=<value>" (any NeMo-Skills generation override).
   # nemoskills (the generic bridge) instead takes: "benchmark=math-500" (required;
   # any NeMo-Skills dataset name at the pinned checkout, run with ns's own prepare,
-  # prompts and metrics) and "metric=<ns metric key>" (default symbolic_correct);
-  # its `dataset` must be a local path in ns's row format (hub ids are refused).
+  # prompts and metrics), "metric=<ns metric key>" (default symbolic_correct) and
+  # "split=<name>" (which prepared <split>.jsonl to read). Its `dataset` is
+  # required and pins the data: a local path in ns's row format, a hub id with
+  # dataset_revision a 40-hex commit (what ns's prepare.py reads), or an http(s)
+  # URL with dataset_revision "sha256:<hex>" (what prepare.py downloads).
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""
