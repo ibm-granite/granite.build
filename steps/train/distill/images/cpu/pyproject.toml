@@ -36,7 +36,9 @@ dependencies = [
     "torch>=2.8",
     "safetensors>=0.4",
     "clearml>=2.1.12",
-    "wandb>=0.28.2",
+    # Floor 0.31.2, above the step union's 0.28.2 (#752): its wandb-core binary scans
+    # clean, unlike 0.31.0's. Same release the GPU image pins.
+    "wandb>=0.31.2",
 ]
 
 [tool.uv]

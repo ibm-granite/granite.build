@@ -209,7 +209,9 @@ dependencies = [
     # pin-verification tool, which checks only the exact pins for this step -- a range here
     # would be declared but unchecked.
     "clearml==2.1.12",
-    "wandb==0.28.2",
+    # 0.31.2, not 0.28.2 (#752): its wandb-core (Go 1.27.4, x/net 0.63.0, x/crypto 0.59.0)
+    # clears the Go advisories 0.28.2 and 0.31.0 carried in scan-ignore.
+    "wandb==0.31.2",
     # weave is NOT listed any more (#676; was weave==0.53.12). This code never used it:
     # trl 0.26.2's callbacks.py imported it behind a tuple-returning guard that was truthy
     # with weave absent, so it had to be installed for `from trl import ...` to work.
