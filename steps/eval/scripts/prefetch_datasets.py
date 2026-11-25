@@ -3,8 +3,20 @@
 
 Run it once on a node with internet access (a laptop or login node), pointing
 --hf-home at the directory the environment mounts into the eval containers as
-the HF cache. Jobs on air-gapped compute nodes then read the pinned snapshots
-from the cache (HF_HUB_OFFLINE=1).
+the HF cache. Jobs on air-gapped compute nodes then read the pinned data from
+the cache (hf_offline: HF_HUB_OFFLINE=1, HF_DATASETS_OFFLINE=1).
+
+Two caches, because benchmarks read the Hub two ways. Every entry is fetched
+as a hub snapshot ($HF_HOME/hub), which serves snapshot_download and
+hf_hub_download offline. A benchmark that reads through datasets.load_dataset
+(directly, via granite_evals.data.load_split, or inside lm-eval and ns
+prepare.py) needs more: offline, datasets 5 loads a hub id only from its
+prepared cache ($HF_HOME/datasets), which a snapshot does not build. For those
+entries (LOAD_CONFIGS) the prefetch also runs load_dataset for each config the
+benchmark requests, at the pinned revision. A load without a revision (lm-eval
+task yamls, e.g. the lm-eval bridge's gpqa_diamond_zeroshot) resolves offline
+to that same prepared copy, so the gpqa entry serves it too. A non-default
+selection option (languages=, ...) needs its configs warmed with --config.
 
 Every entry is pinned to the commit the benchmark module pins
 (<family>/src/*.py); `--check` verifies that against the source.
@@ -12,6 +24,11 @@ Datasets that are not on the Hub (GitHub files, PyPI packages, task data) are
 pinned by commit/sha256 and baked into the image by the owning family's extras.sh instead.
 
     python scripts/prefetch_datasets.py --hf-home /path/to/hf-cache [--benchmark gpqa ...]
+    python scripts/prefetch_datasets.py --hf-home ... --benchmark mmlu-prox-lite --config ko
+
+Run it with a Python whose datasets matches the images' lock (steps/eval/src/
+core/uv.lock: datasets 5.0.1, huggingface-hub 1.33.0): the jobs read the
+prepared cache back with that version.
 
 Gated datasets (gpqa, hle, officeqa, ...) need HF_TOKEN with access granted.
 Entries that carry an allow_patterns list fetch only those files, matching what
@@ -180,6 +197,108 @@ DATASETS: dict[str, tuple[str, str, str] | tuple[str, str, str, tuple[str, ...]]
     ),
 }
 
+# benchmark id -> the configs its reader passes to datasets.load_dataset (None:
+# the default config), each prepared at the entry's pinned revision (see the
+# docstring). The defaults each benchmark requests with no selection option;
+# where they are defined:
+#   ns prepare.py reads (nemo_skills_*.py classes without a prepare_data):
+#     NeMo-Skills' nemo_skills/dataset/<name>/prepare.py, with the class's
+#     ns_prepare_args (gpqa: --split diamond -> gpqa_diamond; livecodebench:
+#     release_v6; wmt24pp: en-<WMT_LANGUAGES>)
+#   load_split reads: human-eval/mbpp (nemo_skills_codegen.py, MBPP_CONFIG),
+#     browsecomp-plus (tools_agentic.py), flores200 (eng_Latn plus
+#     flores_config() of FLORES_LANGUAGES, nemo_skills_extended.py), profbench
+#     and gdpval (judge_general.py), the swebench sets (dataset_config(); Pro's
+#     subset=default)
+#   lm-eval reads: mmlu-prox-lite (chat_if.py OFFICIAL_LANGUAGES), include-44
+#     (include.py LANGUAGES, all 44)
+# Not listed (snapshot only): officeqa (snapshot_download), mcpatlas and
+# fortress (hf_hub_download of one pinned file), terminal-bench-2.1
+# (snapshot_download into a local_dir, which offline never reads the cache
+# for: tbench cannot run under hf_offline).
+LOAD_CONFIGS: dict[str, tuple[str | None, ...]] = {
+    "hmmt-feb25": (None,),
+    "aime26": (None,),
+    "gpqa": ("gpqa_diamond",),
+    "mmlu-pro": (None,),
+    "livecodebench-v6": ("release_v6",),
+    "scicode": (None,),
+    "human-eval": (None,),
+    "mbpp": ("sanitized",),
+    "hle": (None,),
+    "omniscience": (None,),
+    "critpt": (None,),
+    "aa-lcr": (None,),
+    "browsecomp-plus": (None,),
+    "wmt24pp": ("en-de_DE", "en-es_MX", "en-fr_FR", "en-it_IT", "en-ja_JP"),
+    "flores200": (
+        "eng_Latn",
+        "arb_Arab",
+        "ces_Latn",
+        "deu_Latn",
+        "spa_Latn",
+        "fra_Latn",
+        "ita_Latn",
+        "jpn_Jpan",
+        "kor_Hang",
+        "nld_Latn",
+        "por_Latn",
+        "cmn_Hans",
+    ),
+    "mmlu-prox-lite": ("en", "de", "es", "fr", "it", "ja"),
+    "include-44": (
+        "Albanian",
+        "Arabic",
+        "Armenian",
+        "Azerbaijani",
+        "Basque",
+        "Belarusian",
+        "Bengali",
+        "Bulgarian",
+        "Chinese",
+        "Croatian",
+        "Dutch",
+        "Estonian",
+        "Finnish",
+        "French",
+        "Georgian",
+        "German",
+        "Greek",
+        "Hebrew",
+        "Hindi",
+        "Hungarian",
+        "Indonesian",
+        "Italian",
+        "Japanese",
+        "Kazakh",
+        "Korean",
+        "Lithuanian",
+        "Malay",
+        "Malayalam",
+        "Nepali",
+        "North Macedonian",
+        "Persian",
+        "Polish",
+        "Portuguese",
+        "Russian",
+        "Serbian",
+        "Spanish",
+        "Tagalog",
+        "Tamil",
+        "Telugu",
+        "Turkish",
+        "Ukrainian",
+        "Urdu",
+        "Uzbek",
+        "Vietnamese",
+    ),
+    "profbench": (None,),
+    "gdpval": (None,),
+    "swebench-verified": (None,),
+    "swebench-multilingual": (None,),
+    "swebench-pro": ("default",),
+}
+
 # The shared core lives in src/core/; each family's modules in <family>/src/.
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -201,6 +320,11 @@ def check_pins() -> list[str]:
         )
         if repo not in text or rev not in text:
             problems.append(f"{bench}: {repo}@{rev} not found in {fam}/src or src/core")
+    problems += [
+        f"{bench}: LOAD_CONFIGS entry has no DATASETS pin"
+        for bench in LOAD_CONFIGS
+        if bench not in DATASETS
+    ]
     return problems
 
 
@@ -217,6 +341,13 @@ def main(argv: list[str] | None = None) -> int:
         "--benchmark",
         action="append",
         help="only this benchmark id (repeatable); default: all",
+    )
+    ap.add_argument(
+        "--config",
+        action="append",
+        default=[],
+        help="also prepare this load_dataset config (repeatable; needs exactly one "
+        "--benchmark): a non-default selection, e.g. mmlu-prox-lite languages=ko",
     )
     ap.add_argument("--list", action="store_true", help="print the datasets and exit")
     ap.add_argument(
@@ -238,15 +369,20 @@ def main(argv: list[str] | None = None) -> int:
     unknown = [b for b in chosen if b not in DATASETS]
     if unknown:
         ap.error(f"unknown benchmark(s) {unknown}; known: {sorted(DATASETS)}")
+    if args.config and len(chosen) != 1:
+        ap.error("--config needs exactly one --benchmark")
     if args.list:
         for b in chosen:
             repo, rev, fam = DATASETS[b][:3]
-            print(f"{b:24s} {fam:11s} {repo}@{rev[:12]}")
+            n = len(LOAD_CONFIGS.get(b, ()))
+            how = f"snapshot + {n} load_dataset config(s)" if n else "snapshot"
+            print(f"{b:24s} {fam:11s} {repo}@{rev[:12]}  {how}")
         return 0
     if not args.hf_home:
         ap.error("--hf-home is required")
 
-    # Set before importing huggingface_hub: it reads HF_HOME at import time.
+    # Set before importing huggingface_hub / datasets: they read HF_HOME at
+    # import time.
     os.environ["HF_HOME"] = str(args.hf_home)
     from huggingface_hub import snapshot_download
 
@@ -265,11 +401,25 @@ def main(argv: list[str] | None = None) -> int:
                 allow_patterns=patterns,
             )
             print(f"ok    {b:24s} {repo}@{rev[:12]} -> {path}")
+            configs = [*LOAD_CONFIGS.get(b, ()), *args.config]
+            for config in dict.fromkeys(configs):
+                warm_load_dataset(repo, rev, config)
+                print(f"ok    {b:24s} {repo}@{rev[:12]} load_dataset config={config}")
         except Exception as e:  # noqa: BLE001 - report every dataset, then fail once
             failed.append(b)
             reason = re.sub(r"\s+", " ", str(e))[:160]
             print(f"FAIL  {b:24s} {repo}@{rev[:12]}: {reason}", file=sys.stderr)
     return 1 if failed else 0
+
+
+def warm_load_dataset(repo: str, rev: str, config: str | None) -> None:
+    """Build the datasets prepared cache for one config at the pinned
+    revision (every split), as an offline load_dataset needs it."""
+    import datasets
+
+    datasets.load_dataset(
+        repo, name=config, revision=rev, token=os.environ.get("HF_TOKEN")
+    )
 
 
 if __name__ == "__main__":

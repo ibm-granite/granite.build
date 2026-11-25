@@ -12,11 +12,14 @@
 # filesystem; the token never enters the repo or the job:
 #   HF_TOKEN=<token> python steps/eval/scripts/prefetch_datasets.py \
 #     --hf-home <OUTPUT_ROOT>/hf-cache --benchmark gpqa
-# (a writable path the cluster nodes see; datasets takes cache locks). An
-# unwarmed cache fails fast at the dataset load. The job runs with HF_HUB_OFFLINE=1:
-# it never reaches the Hub -- the dataset resolves from the cache (the cache's
-# pinned snapshot is the run's dataset revision), and the model is staged by
-# hfpull (public, no token) rather than downloaded by vLLM.
+# (a writable path the cluster nodes see; datasets takes cache locks). Use a
+# Python with the images' datasets (5.0.1). The gpqa entry fetches the snapshot
+# and prepares the gpqa_diamond config at its pin (83022cef), which is what an
+# offline datasets.load_dataset needs: lm-eval's task yaml names no revision, so
+# offline it resolves to that prepared copy -- the cache's pin is the run's
+# dataset revision. An unwarmed cache fails fast at the dataset load. The job
+# runs with HF_HUB_OFFLINE=1: it never reaches the Hub, and the model is staged
+# by hfpull (public, no token) rather than downloaded by vLLM.
 #
 # LIMIT is empty: the full benchmark (198 questions). For a quick functional
 # check, score only the first N questions:

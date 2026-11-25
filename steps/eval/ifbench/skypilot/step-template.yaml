@@ -99,9 +99,12 @@ config:
   # hub read -- datasets, and the model if model_path is a hub id -- resolves from
   # hf_home's cache instead of the hub. Warm the cache first (HF_TOKEN=... make -C
   # steps/eval prefetch HF_HOME=<same cache>; gated datasets need a token with
-  # access granted) and share it across runs: a job with a warm cache skips every
-  # dataset download. A cold cache fails fast. Bind the model (hf://) or warm it
-  # too; hf_offline without hf_home is refused.
+  # access granted): it fetches each pinned snapshot and prepares the
+  # datasets.load_dataset configs the benchmarks request, which an offline
+  # load_dataset needs. Data the cache lacks fails fast; steps/eval/README.md
+  # ("The warm HF cache") lists what runs offline (not terminal-bench; lm-eval
+  # bridge tasks only once prepared). Bind the model (hf://) or warm it too;
+  # hf_offline without hf_home is refused.
   hf_offline: ""
 outputs:
   optional:

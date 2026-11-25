@@ -129,16 +129,49 @@ download serves every later job, and someone else may have already warmed the
 dataset you need:
 
 ```shell
-HF_TOKEN=<token> make -C steps/eval prefetch HF_HOME=<shared-cache>   # or --benchmark gpqa
+HF_TOKEN=<token> make -C steps/eval prefetch HF_HOME=<shared-cache>
+HF_TOKEN=<token> python steps/eval/scripts/prefetch_datasets.py --hf-home <shared-cache> --benchmark gpqa
 ```
+
+Benchmarks read the Hub two ways, and offline each needs its own part of the
+cache. `snapshot_download`/`hf_hub_download` readers (officeqa, mcpatlas,
+fortress, gdpval's task files, aa-lcr's text zip) are served by the hub snapshot
+(`$HF_HOME/hub`). `datasets.load_dataset` readers — through
+`granite_evals.data.load_split`, ns's `prepare.py`, or lm-eval's task yamls —
+are not: offline, datasets 5 loads a hub id only from its prepared cache
+(`$HF_HOME/datasets`), which a snapshot does not build. So the prefetch fetches
+every pinned snapshot and, for the benchmarks that read through `load_dataset`,
+also prepares each config they request at the pinned revision
+(`scripts/prefetch_datasets.py`'s `LOAD_CONFIGS`; `--list` shows which). Run it
+with the lock's `datasets` (5.0.1), the version the jobs read the cache back
+with. What runs offline after a prefetch:
+
+- **Every curated benchmark with a prefetch entry** (`--list`), at its default
+  selection. A non-default selection option (`languages=`, ...) reads other
+  configs: warm them with `--benchmark <id> --config <name>`.
+- **Not terminal-bench** (terminal-bench-2.1, and the bridge's 2.0 recipe): it
+  downloads its snapshot into a run-local `local_dir`, and huggingface_hub
+  offline never reads the cache for a `local_dir` download, so it fails fast
+  under `hf_offline`. Run it online.
+- **lm-eval bridge tasks** read their datasets with `load_dataset` and no
+  revision; offline that resolves to whatever prepared copy of the dataset and
+  config the cache holds. The prefetch's `gpqa` entry prepares `gpqa_diamond`,
+  which serves `recipes/evals/lmeval/gpqa-diamond`
+  (`gpqa_diamond_zeroshot`) at that entry's pin. Any other task has no entry:
+  run it once online with the same `hf_home` (that prepares what it reads),
+  then offline.
+- **Benchmarks without a prefetch entry** (data baked into the image or fetched
+  from GitHub/PyPI by pinned URL) need no hub cache; `hf_offline` blocks Hub
+  reads only, so their pinned non-Hub downloads (and, e.g., tiktoken's
+  encoding for aa-lcr) still need the network.
 
 Gated datasets (gpqa, hle, officeqa, ...) need a token with access granted for
 the warming fetch only — the jobs themselves carry no token. A cold cache fails
 fast (`hf_offline` without `hf_home` is refused), the cache must be writable by
 the job (datasets takes cache locks), and the model must not need the Hub
 either: bind it as an `hf://` input (hfpull stages it with the network) or warm
-it into the same cache. Offline also pins the run's data to whatever snapshot
-the cache holds — the warm cache is the revision pin. For a run that must fetch
+it into the same cache. Offline also pins the run's data to whatever the cache
+holds — the warm cache is the revision pin. For a run that must fetch
 a gated dataset online instead, pass the token as a space secret
 (`skypilot.secrets` in the recipe, as the officeqa recipes do) — never in the
 recipe text. The `recipes/evals/lmeval/gpqa-diamond` and
