@@ -25,7 +25,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "bfcl-v3"
-            image: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:0373ba6a"
+            image: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:fda089e8"
             # The staged HF artifact path (its basename is not the
             # model name, so pin the name vLLM advertises).
             model_path: "{{ bindings.model.binding.path }}"
@@ -73,7 +73,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "bfcl-v3"
-            image: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:0373ba6a"
+            image: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:fda089e8"
             # Must match the generate target's expression exactly: the score
             # phase checks the generation record's model against this run's
             # (results.py read_generation), and the binding path is what
@@ -121,7 +121,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "bfcl-v3"
-            image: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:0373ba6a"
+            image: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:fda089e8"
             # The staged HF artifact path (its basename is not the
             # model name, so pin the name vLLM advertises).
             model_path: "{{ bindings.model.binding.path }}"
@@ -169,7 +169,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "bfcl-v3"
-            image: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:0373ba6a"
+            image: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:fda089e8"
             # Must match the generate target's expression exactly: the score
             # phase checks the generation record's model against this run's
             # (results.py read_generation), and the binding path is what
