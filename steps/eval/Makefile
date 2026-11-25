@@ -57,11 +57,15 @@ cpu_ref = $(REGISTRY)/steps/eval/$(1)/images/cpu:$(IMAGE_VERSION)
 # skips it.
 # HIGH, not CRITICAL: a fixable HIGH ships only if it is recorded in scan-ignore;
 # silence is not acceptance. Same rule as steps/train/distill.
+# trivy runs as the container TRIVY_IMAGE, pinned by digest (the same pin as
+# steps/train/distill and steps/aux/hf-export), so a gate's verdict does not depend on
+# whichever trivy a host has installed; its database is cached under SCAN_CACHE.
 SCAN_SEVERITY ?= HIGH
 SCAN_CACHE    ?= $(HOME)/.cache/gb-image-scan
 SCAN_IGNORE   ?= scan-ignore
 SKIP_SCAN     ?= false
-TRIVY         ?= trivy
+TRIVY_IMAGE   ?= ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+# Longer than distill's 30m: the eval GPU images are larger.
 TRIVY_TIMEOUT ?= 60m
 SEVERITY_UP_CRITICAL := CRITICAL
 SEVERITY_UP_HIGH     := HIGH,CRITICAL
@@ -81,8 +85,12 @@ define scan-image
 	@tar="$(SCAN_CACHE)/$(2)-$(IMAGE_VERSION).tar"; rm -f "$$tar"; \
 	echo "[scan] saving $(1)"; \
 	$(DOCKER) save -o "$$tar" $(1) || { rm -f "$$tar"; exit 1; }; \
-	ign=""; [ -f $(SCAN_IGNORE) ] && ign="--ignorefile $(abspath $(SCAN_IGNORE))"; \
-	t() { $(TRIVY) image --quiet --cache-dir "$(SCAN_CACHE)/trivy" --input "$$tar" --scanners vuln --timeout $(TRIVY_TIMEOUT) $$ign "$$@"; }; \
+	ign=""; if [ -f $(SCAN_IGNORE) ]; then \
+		ign="-v $(abspath $(SCAN_IGNORE)):/scan/ignore:ro,Z"; \
+		echo "[scan] accepting the advisories listed in $(SCAN_IGNORE)"; fi; \
+	t() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
+		$(TRIVY_IMAGE) image --quiet --input /scan/image.tar --scanners vuln --timeout $(TRIVY_TIMEOUT) \
+		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
 	echo "[scan] trivy report ($(TRIVY_REPORT_SEVERITY), fixed and unfixed) for $(1)"; \
 	t --severity $(TRIVY_REPORT_SEVERITY) --format table; rc=$$?; \
 	if [ $$rc -ne 0 ]; then rm -f "$$tar"; echo "[scan] trivy did not run (exit $$rc)" >&2; exit $$rc; fi; \
@@ -181,18 +189,25 @@ check-pins:
 # each one is scanned from a temp dir under that name. The lock is scanned whole, so a
 # package one fork pins below its fix fails here even when no image installs that fork
 # (trivy reads no markers).
+#
+# Each file is copied alone into a temp dir under SCAN_CACHE (which a podman machine
+# shares with its VM, unlike /tmp on macOS) and scanned there by the pinned TRIVY_IMAGE.
 scan-deps:
 	$(check-severity)
-	@command -v $(TRIVY) >/dev/null 2>&1 || { echo "$(TRIVY) is not on PATH; install it first" >&2; exit 1; }
 	@mkdir -p "$(SCAN_CACHE)/trivy"
 	@rc=0; \
+	ign=""; if [ -f $(SCAN_IGNORE) ]; then \
+		ign="-v $(abspath $(SCAN_IGNORE)):/scan/ignore:ro,Z"; \
+		echo "[scan] accepting the advisories listed in $(SCAN_IGNORE)"; fi; \
 	for f in src/core/uv.lock $$(ls */*requirements*.txt 2>/dev/null); do \
 	  echo "== $$f (fixable $(TRIVY_GATE_SEVERITY))"; \
-	  case "$$f" in *.txt) d=$$(mktemp -d) || exit 1; cp "$$f" "$$d/requirements.txt"; target=$$d;; *) d=; target=$$f;; esac; \
-	  $(TRIVY) fs --quiet --cache-dir "$(SCAN_CACHE)/trivy" --scanners vuln --timeout $(TRIVY_TIMEOUT) \
-	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed --ignorefile $(abspath $(SCAN_IGNORE)) \
-	    --exit-code 3 --format table "$$target"; frc=$$?; \
-	  [ -n "$$d" ] && rm -rf "$$d"; \
+	  d=$$(mktemp -d "$(SCAN_CACHE)/deps.XXXXXX") || exit 1; \
+	  case "$$f" in *.txt) cp "$$f" "$$d/requirements.txt";; *) cp "$$f" "$$d/";; esac || { rm -rf "$$d"; exit 1; }; \
+	  $(DOCKER) run --rm -v "$$d:/scan/src:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" $$ign \
+	    $(TRIVY_IMAGE) fs --quiet --scanners vuln --timeout $(TRIVY_TIMEOUT) \
+	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed $${ign:+--ignorefile /scan/ignore} \
+	    --exit-code 3 --format table /scan/src; frc=$$?; \
+	  rm -rf "$$d"; \
 	  case $$frc in \
 	    0) echo "OK: $$f has no fixable $(TRIVY_GATE_SEVERITY) vulnerabilities" ;; \
 	    3) echo "SCAN-DEPS FAILED: $$f has fixable $(TRIVY_GATE_SEVERITY) vulnerabilities (above); raise them or record them in $(SCAN_IGNORE)" >&2; rc=1 ;; \
