@@ -30,8 +30,9 @@ Every compute endpoint gbserver can run a step on, and the page that documents i
 | &nbsp;&nbsp;↳ Kubernetes | `Skypilot` | `default_cloud: kubernetes` | [skypilot-kubernetes.md](skypilot-kubernetes.md) |
 | &nbsp;&nbsp;↳ AWS | `Skypilot` | `default_cloud: aws` | [skypilot-aws.md](skypilot-aws.md) |
 
-> **LSF is retired.** The native `Lsf` environment and SkyPilot's `lsf` cloud are no longer
-> supported; move LSF builds to SkyPilot on SLURM (see [lsf.md](lsf.md)).
+> **LSF is deprecated.** The native `Lsf` environment and SkyPilot's `lsf` cloud still ship, but
+> these docs no longer cover them, and the SkyPilot release gbserver pins has no `lsf` cloud. Move
+> LSF builds to SkyPilot on SLURM (see [lsf.md](lsf.md)).
 
 Kubernetes is reachable **two ways**: natively via Helm/AppWrapper ([k8s.md](k8s.md)) or through
 SkyPilot ([skypilot-kubernetes.md](skypilot-kubernetes.md)). Pick the native type when you want

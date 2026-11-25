@@ -16,7 +16,8 @@ wins):
 | Memory | `compute_config.total_memory_per_node` (or `launcher_config.resources.memory`, GiB); on SLURM, see below |
 | Nodes | `compute_config.num_nodes` (or `launcher_config.num_nodes`) |
 
-- **One CPU setting is enough.** `num_cpus_per_node` becomes `sky.Resources.cpus`.
+- **One CPU setting is enough.** `num_cpus_per_node` becomes `sky.Resources.cpus`. It must be a
+  YAML integer (`64`); any other value, such as a quoted `"64"`, is ignored without a warning.
   `resources.cpus` sets the same value; if both are set, `resources.cpus` wins. Don't add it
   "to be sure". Memory works the same way: `total_memory_per_node` becomes `sky.Resources.memory`,
   and `resources.memory` wins over it.
@@ -58,11 +59,12 @@ What each key becomes in `#SBATCH` (the allocation is per node):
   asks for that count up front and logs a warning, since a request below it aborts a containerized
   launch. This applies only when the `infra` or `zone` names the partition.
 - **`cpus` is an exact count** here, so a bare number is fine.
-- **Not set at all?** SkyPilot's SLURM defaults apply: 2 CPUs with no GPU, 4 per GPU otherwise
-  (32 for `H100:8`). Memory then follows the CPU count: 1 GiB per CPU without GPUs, 4 GiB per CPU
-  with them (a cluster that doesn't track memory gets no `--mem`). A CPU-only job with no
-  settings therefore gets 2 GiB, too small for a model load, so set memory for real
-  workloads.
+- **Nothing set by the build or the step?** SkyPilot's SLURM defaults apply: 2 CPUs with no
+  GPU, 4 per GPU otherwise (32 for `H100:8`). Memory then follows the CPU count: 1 GiB per CPU
+  without GPUs, 4 GiB per CPU with them (a cluster that doesn't track memory gets no `--mem`). A
+  CPU-only job with no settings therefore gets 2 GiB, too small for a model load, so set memory
+  for real workloads. Many steps carry their own `compute_config` defaults, which apply when the
+  build sets nothing: the built-in `hfpull` and `s3pull` ask for 1 and 2 CPUs, for example.
 - **The run step gets every CPU of the allocation.** Every rank of a multi-GPU task can use all
   `--cpus-per-task` cores, not one.
 
@@ -115,8 +117,8 @@ Wall-clock limits, partitions and other scheduler directives are in
 `total_memory_per_node` as minimums (`"64+"`); SkyPilot drops the `+` and requests exactly
 that number.
 
-- **Not set at all?** SkyPilot's Kubernetes defaults match SLURM's: 2 CPUs with no GPU, 4 per GPU
-  otherwise, and 1 GiB per CPU without GPUs, 4 GiB per CPU with them.
+- **Nothing set by the build or the step?** SkyPilot's Kubernetes defaults match SLURM's: 2 CPUs
+  with no GPU, 4 per GPU otherwise, and 1 GiB per CPU without GPUs, 4 GiB per CPU with them.
 
 ## AWS
 
@@ -129,8 +131,8 @@ SkyPilot picks the cheapest EC2 instance type that satisfies the request
   ("Catalog does not contain any instances satisfying the request").
 - **`instance_type` pins the machine.** Its vCPUs, memory and any GPUs come with it; don't also
   set `cpus`/`memory`.
-- **Not set at all?** With no `accelerators` either, SkyPilot asks for at least 8 vCPUs and
-  4 GiB per vCPU; with `accelerators`, it picks the cheapest instance type that has them.
+- **Nothing set by the build or the step?** With no `accelerators` either, SkyPilot asks for at
+  least 8 vCPUs and 4 GiB per vCPU; with `accelerators`, it picks the cheapest instance type that has them.
 
 ## See also
 

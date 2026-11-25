@@ -1,7 +1,7 @@
-# LSF (`Lsf`) environment — retired
+# LSF (`Lsf`) environment — deprecated
 
-The native `Lsf` environment is retired, and these docs no longer cover it. Builds that target an
-LSF environment should move to **SkyPilot on SLURM**:
+The native `Lsf` environment is deprecated. Its code still ships, but these docs no longer cover
+it. Builds that target an LSF environment should move to **SkyPilot on SLURM**:
 
 - Set `environment_uri` to a SkyPilot SLURM environment in your space, e.g.
   `space://environments/skypilot/slurm/<cluster>`.

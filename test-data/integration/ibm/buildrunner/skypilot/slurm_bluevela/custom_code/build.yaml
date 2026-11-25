@@ -35,13 +35,12 @@ granite.build:
           config:
             # Fast completion detection for the test (base skypilot default 300s).
             poll_interval_seconds: 5
-            # num_cpus_per_node -> --cpus-per-task, even though the step's own
-            # resources is {}. num_gpus_per_node only reaches the workload's env
-            # (the step's envs), not SLURM.
+            # The step's own compute_config.num_cpus_per_node still becomes
+            # --cpus-per-task (its resources is {}). num_gpus_per_node only
+            # reaches the workload's env (the step's envs), not SLURM.
             compute_config:
               num_nodes: 1
               num_gpus_per_node: 1
-              num_cpus_per_node: 4
             # GPUs come only from accelerators (-> --gres=gpu:H200:1). gpu-mid
             # rejects a GPU-less job. Kept equal to num_gpus_per_node above.
             launcher_config:

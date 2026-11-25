@@ -50,7 +50,7 @@ DOC_TOPICS: dict[str, str] = {
     "monitoring_and_artifact_events": "steps/monitoring-and-artifact-events.md",
     "hf_push": "builds/hf-push.md",
     "bring_your_own_step": "steps/bring-your-own-step.md",
-    "custom_code_steps_k8s": "steps/custom-code-steps.md",
+    "custom_code_steps": "steps/custom-code-steps.md",
     "bring_your_own_image": "steps/bring-your-own-image.md",
     "faq": "help/faq.md",
     "glossary": "glossary.md",

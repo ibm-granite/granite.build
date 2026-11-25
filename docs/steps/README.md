@@ -35,7 +35,7 @@ direct reference from a `build.yaml` have a focused reference page (linked below
 
 | Step | Description | Environments | Reference |
 |------|-------------|--------------|-----------|
-| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. | K8s | — |
+| `gbstep` | Base step runner. Default when `step_uri` is omitted. Supports `setup_command`, `start_command`, and `cleanup_command`. | K8s (and the deprecated `Lsf`) | — |
 | `command` | Run a shell command; its exit status is the step's status. Docker/Skypilot can run it inside a container image via `command_config.image` (BYOI); Bash always runs on the bare node. | Bash, Docker, Skypilot | [`command`](command.md) |
 
 > The data-staging utility steps `hfpull`/`hfpush` (HuggingFace), `s3pull`/`s3push`
