@@ -240,6 +240,16 @@ Splitting the server out dissolves all three:
   optional on LSF: `idle_minutes_to_autostop` is rejected for SSH/HPC clouds, so a
   SERVICE cluster never autostops and never gets a terminal-status cleanup.
 
+### Network exposure
+
+The server is vLLM's own OpenAI-compatible server, started through trl's `vllm-serve` with
+no API key. It binds the node's advertised address (`--host "$ADDR"`), not every
+interface, but that address has to be reachable from the trainer's allocation, so for the
+job's lifetime anyone on the cluster network can generate with the student, push weights
+into it or call into its workers. The image's `images/gpu/scan-ignore` records this as an
+accepted exposure, until 2027-05-31; #TBD-trl-vllm-server-bind tracks binding it more
+narrowly.
+
 ### Bring-up and failure messages
 
 The server runs in the background. The step probes `http://127.0.0.1:<port>/health/`

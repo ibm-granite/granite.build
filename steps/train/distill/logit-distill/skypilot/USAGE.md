@@ -620,6 +620,13 @@ allocations (`n_sync_params: 362`). The renderer refuses the `vllm` input with `
 would train off-policy while a server sat idle) or with `lmbda: 0` (the student would never
 generate).
 
+The in-allocation server (no `vllm` input) passes no `--host`, so trl's `vllm-serve` binds
+its default, `0.0.0.0`: every interface of the serving node, with no API key. For the
+job's lifetime anyone who can reach that node can generate with the student, push weights
+into it or call into its workers. The image's `images/gpu/scan-ignore` records this as an
+accepted exposure, until 2027-05-31; #TBD-trl-vllm-server-bind tracks binding it to the
+node's address or to loopback.
+
 ## Running as root
 
 The shared images default to `DISTILL_UID=0` (root). On SLURM/enroot this preserves

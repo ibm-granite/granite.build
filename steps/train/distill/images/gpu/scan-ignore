@@ -8,20 +8,28 @@
 # and re-review it when the date passes -- an entry with no removal issue and no
 # expiry is a finding nobody is tracking.
 
-# ---- accepted exposure, no advisory id (#676) ----
+# ---- accepted exposure, no advisory id (#676; follow-up #TBD-trl-vllm-server-bind) ----
 # The on-policy rollout server is vLLM's own OpenAI-compatible server: trl 1.x's
 # `trl vllm-serve` (run_vllm_serve.py) execs `vllm serve` with VLLM_SERVER_DEV_MODE=1 and
-# no --api-key. For the job's lifetime its routes are reachable, unauthenticated, from the
-# cluster network, including by other users' jobs: the trainer that calls it runs in a
-# different allocation (student-rollout-generator/skypilot/step-template.yaml). A caller
-# can generate with the student (/v1/completions, /v1/chat/completions, /tokenize), push
-# weights into it (/init_weight_transfer_engine, /update_weights: the served model is then
-# the caller's), call into the workers (/collective_rpc), pause, sleep or reset it, and
-# with --enable-scale-out (trl passes it on vLLM >= 0.30) use /inference/v1/generate.
+# no --api-key. Two steps start one, and for the job's lifetime its routes are reachable,
+# unauthenticated, from the cluster network, including by other users' jobs:
+# - student-rollout-generator binds the node's advertised address (`--host "$ADDR"`,
+#   student-rollout-generator/skypilot/step-template.yaml): the trainer that calls it runs
+#   in a different allocation, so that address has to be reachable from the cluster.
+# - logit-distill's in-allocation server (vllm_num_servers > 0, no `vllm` input; the
+#   run_vllm_serve call in logit-distill/skypilot/step-template.yaml) passes no --host, so
+#   it binds trl's default, 0.0.0.0: every interface of the serving node.
+# A caller can generate with the student (/v1/completions, /v1/chat/completions,
+# /tokenize), push weights into it (/init_weight_transfer_engine, /update_weights: the
+# served model is then the caller's), call into the workers (/collective_rpc), pause, sleep
+# or reset it, and with --enable-scale-out (trl passes it on vLLM >= 0.30) use
+# /inference/v1/generate.
 # --api-key would not close this: vLLM guards only /v1, /v2, /inference and /cohere paths,
 # and trl's client sends no key. Accepted for now: the server holds only the student this
 # build trained, and the exposure ends with the job. No vLLM 0.33.0 advisory remains
-# below; re-judge any future one against this server.
+# below; re-judge any future one against this server. #TBD-trl-vllm-server-bind is the
+# follow-up: bind each server to the node's address, or to loopback where the trainer
+# shares its node. Until 2027-05-31.
 
 # ---- accepted HIGH advisories (tracked in #752) ----
 # The vllm 0.33.0 lock (#676) has one HIGH advisory in osv, filelock's below: vllm, torch,
