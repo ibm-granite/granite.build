@@ -22,8 +22,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/swebench/images/gpu:2a94aa3c"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/swebench/images/cpu:2a94aa3c"
+IMAGE: "quay.io/granitebuild/steps/eval/swebench/images/gpu:1ed3f370"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/swebench/images/cpu:1ed3f370"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""

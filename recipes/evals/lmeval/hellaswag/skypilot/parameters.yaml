@@ -27,8 +27,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU only) ────────────────────────────────────
-# This branch's lmeval image (built from the commit this tag names, on quay).
-IMAGE: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:2a94aa3c"
+# The lmeval image built from the commit this tag names (it carries the generic bridge).
+IMAGE: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:1ed3f370"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""

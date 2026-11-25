@@ -29,7 +29,7 @@ HF_HOME: ""
 # short SHA of the commit the image was built from). To run your own build instead:
 #   make -C steps/eval image-mcpmark REGISTRY=quay.io/granitebuild publish-image-mcpmark REGISTRY=...
 # (the tag defaults to the building checkout's git short SHA), then repoint here.
-IMAGE: "quay.io/granitebuild/steps/eval/mcpmark/images/gpu:2a94aa3c"
+IMAGE: "quay.io/granitebuild/steps/eval/mcpmark/images/gpu:1ed3f370"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
