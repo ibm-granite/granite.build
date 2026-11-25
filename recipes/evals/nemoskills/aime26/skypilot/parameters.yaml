@@ -19,8 +19,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:136b0f80"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:136b0f80"
+IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:a3e62a3b"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:a3e62a3b"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""

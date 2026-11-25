@@ -24,7 +24,7 @@ target_expectations:
   - config:
       benchmark: birdbench
       phase: score
-      image: quay.io/granitebuild/steps/eval/bird/images/cpu:136b0f80
+      image: quay.io/granitebuild/steps/eval/bird/images/cpu:a3e62a3b
     step_uri: space://steps/eval/bird
 space_uri: ../../../../../../configurations/spaces/local
 tests:

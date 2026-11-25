@@ -29,8 +29,8 @@ HF_HOME: ""
 #   make -C steps/eval image-nemoskills REGISTRY=quay.io/granitebuild publish-image-nemoskills REGISTRY=...
 #   make -C steps/eval image-cpu-nemoskills REGISTRY=... publish-image-cpu-nemoskills REGISTRY=...
 # (the tag defaults to the building checkout's git short SHA).
-IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:136b0f80"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:136b0f80"
+IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:a3e62a3b"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:a3e62a3b"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
