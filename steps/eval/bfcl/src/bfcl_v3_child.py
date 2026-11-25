@@ -174,9 +174,20 @@ def max_new_tokens(context_length: int, prompt_tokens: int) -> int:
     return min(MAX_NEW_TOKENS, context_length - prompt_tokens - 2)
 
 
+class EndpointError(RuntimeError):
+    """The serving vLLM failed a /tokenize or /v1/models call for a transient
+    reason (5xx, connection, timeout) on every attempt. The message starts with a
+    phrase ``bfcl.INFRA_ERROR`` matches, so the entry BFCL records as "Error during
+    inference: ..." is retried on resume instead of being scored as a wrong answer."""
+
+
 class VLLMTokens:
     """Prompt token counts and the context length from the serving vLLM itself
     (its /tokenize and /v1/models), so no tokenizer is loaded here."""
+
+    ATTEMPTS = 3
+    RETRY_WAIT = 2.0  # seconds, times the attempt number
+    TIMEOUT = 600.0
 
     def __init__(self, base_url: str, model: str):
         self.base_url = base_url.rstrip("/")
@@ -185,12 +196,43 @@ class VLLMTokens:
         self._context: int | None = None
 
     def _json(self, url: str, body: dict | None = None) -> Any:
+        """One JSON call, retried on transient failures. A 4xx is not transient (an
+        endpoint the server does not have): it is raised at once, and :meth:`probe`
+        turns it into a startup failure."""
+        import http.client
+        import time
+        import urllib.error
         import urllib.request
 
         data = None if body is None else json.dumps(body).encode()
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            return json.loads(resp.read())
+        for attempt in range(1, self.ATTEMPTS + 1):
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
+                    return json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                if e.code < 500:
+                    raise
+                err = f"Error code: {e.code} from {url}"
+            except (OSError, http.client.HTTPException) as e:  # URLError, TimeoutError, ConnectionError
+                reason = getattr(e, "reason", e)
+                if isinstance(reason, TimeoutError):
+                    err = f"Request timed out: {url}"
+                else:
+                    err = f"Connection error: {url}: {type(reason).__name__}: {reason}"
+            if attempt < self.ATTEMPTS:
+                time.sleep(self.RETRY_WAIT * attempt)
+        raise EndpointError(f"{err} ({self.ATTEMPTS} attempts)")
+
+    def probe(self) -> None:
+        """Fail the job now, not every entry later, if the endpoint cannot serve
+        legacy-granite (no /tokenize or no max_model_len: not a vLLM server)."""
+        try:
+            context, count = self.context_length(), self.count("probe")
+        except Exception as e:
+            raise SystemExit(f"bfcl-v3: handler=legacy-granite needs vLLM's /tokenize and the max_model_len of "
+                             f"/v1/models at {self.base_url}: {type(e).__name__}: {e}") from e
+        print(f"bfcl-v3: {self.base_url}: max_model_len {context}, /tokenize ok ({count} tokens)", flush=True)
 
     def context_length(self) -> int:
         if self._context is None:
@@ -253,7 +295,8 @@ def make_handler(served_model_name: str, sampling: dict[str, Any], progress: dic
     return GraniteFCHandler
 
 
-def make_legacy_granite_handler(served_model_name: str, sampling: dict[str, Any], progress: dict[str, int]):
+def make_legacy_granite_handler(served_model_name: str, sampling: dict[str, Any], progress: dict[str, int],
+                                tokens: VLLMTokens | None = None):
     from bfcl_eval.model_handler.base_handler import BaseHandler
     from bfcl_eval.model_handler.local_inference.base_oss_handler import OSSHandler
     from bfcl_eval.model_handler.model_style import ModelStyle
@@ -281,7 +324,7 @@ def make_legacy_granite_handler(served_model_name: str, sampling: dict[str, Any]
             super().__init__(model_name, temperature)
             self.model_style = ModelStyle.OpenAI_Completions  # BFCL's threaded path, no server spin-up
             self.client = OpenAI()  # OPENAI_BASE_URL / OPENAI_API_KEY from the parent
-            self.tokens = VLLMTokens(os.environ.get("OPENAI_BASE_URL", ""), served_model_name)
+            self.tokens = tokens or VLLMTokens(os.environ.get("OPENAI_BASE_URL", ""), served_model_name)
 
         @override
         def inference(self, test_entry: dict, include_input_log: bool, exclude_state_log: bool):
@@ -341,7 +384,15 @@ def make_legacy_granite_handler(served_model_name: str, sampling: dict[str, Any]
     return LegacyGraniteHandler
 
 
-HANDLER_FACTORIES = {"fc": make_handler, "legacy-granite": make_legacy_granite_handler}
+def build_handler(cfg: dict, progress: dict[str, int]):
+    """The handler class for ``cfg["handler"]``. legacy-granite needs vLLM's own
+    endpoints for every request, so a generating child checks them once, first."""
+    if cfg["handler"] == "fc":
+        return make_handler(cfg["served_model_name"], cfg["sampling"], progress)
+    tokens = VLLMTokens(os.environ.get("OPENAI_BASE_URL", ""), cfg["served_model_name"])
+    if cfg["phase"] != "score":
+        tokens.probe()
+    return make_legacy_granite_handler(cfg["served_model_name"], cfg["sampling"], progress, tokens)
 
 
 def restrict_evaluation_to(ids: set[str]) -> None:
@@ -408,7 +459,7 @@ def child_main(config_path: str) -> None:
         url="",
         org="",
         license="",
-        model_handler=HANDLER_FACTORIES[cfg["handler"]](cfg["served_model_name"], cfg["sampling"], progress),
+        model_handler=build_handler(cfg, progress),
         input_price=None,
         output_price=None,
         is_fc_model=fc,

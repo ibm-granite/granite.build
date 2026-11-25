@@ -9,10 +9,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from granite_evals.benchmarks import bfcl_v3, bfcl_v3_child
+from granite_evals.benchmarks import bfcl, bfcl_v3, bfcl_v3_child
 from granite_evals.registry import RunConfig, get
 
 V3_PYTHON = os.environ.get(bfcl_v3.PYTHON_ENV) or bfcl_v3.DEFAULT_PYTHON
@@ -412,30 +413,44 @@ def test_real_child_scores_legacy_text_results(tmp_path):
 @pytest.fixture
 def fake_vllm():
     """A stand-in OpenAI-compatible server: /v1/models, /tokenize, /v1/completions
-    and /v1/chat/completions, every answer a refusal (no tool call), every request kept."""
+    and /v1/chat/completions, every answer a refusal (no tool call), every request kept.
+    ``fail[path]`` is a list of HTTP codes the next requests to ``path`` get instead,
+    and ``delay[path]`` seconds each of them waits first."""
     import http.server
     import threading
+    import time
 
-    seen = []
+    seen, fail, delay = [], {}, {}
 
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
-        def _send(self, obj):
+        def _send(self, obj, code=200):
             body = json.dumps(obj).encode()
-            self.send_response(200)
+            self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def _failed(self):
+            time.sleep(delay.get(self.path, 0))
+            if fail.get(self.path):
+                self._send({"detail": "injected"}, fail[self.path].pop(0))
+                return True
+            return False
+
         def do_GET(self):
-            self._send({"object": "list", "data": [{"id": "m", "object": "model", "max_model_len": 32768}]})
+            seen.append((self.path, None))
+            if not self._failed():
+                self._send({"object": "list", "data": [{"id": "m", "object": "model", "max_model_len": 32768}]})
 
         def do_POST(self):
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             seen.append((self.path, req))
+            if self._failed():
+                return
             usage = {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
             if self.path == "/tokenize":
                 return self._send({"count": 10, "max_model_len": 32768, "tokens": []})
@@ -448,8 +463,83 @@ def fake_vllm():
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_port}/v1", seen
+    yield SimpleNamespace(base_url=f"http://127.0.0.1:{server.server_port}/v1", seen=seen, fail=fail, delay=delay)
     server.shutdown()
+
+
+@pytest.fixture
+def quick_retries(monkeypatch):
+    monkeypatch.setattr(bfcl_v3_child.VLLMTokens, "RETRY_WAIT", 0.0)
+    monkeypatch.setattr(bfcl_v3_child.VLLMTokens, "TIMEOUT", 0.5)
+
+
+def test_vllm_tokens_retries_transient_failures(fake_vllm, quick_retries):
+    fake_vllm.fail["/tokenize"] = [503, 500]
+    assert bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m").count("p") == 10
+    assert [p for p, _ in fake_vllm.seen] == ["/tokenize"] * 3
+
+
+def _closed_port_url():
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{s.getsockname()[1]}/v1"
+
+
+@pytest.mark.parametrize("failure", ["503", "refused", "timeout"])
+def test_vllm_tokens_failures_are_retried_on_resume(tmp_path, fake_vllm, quick_retries, failure):
+    """A vLLM hiccup that outlasts the retries is an infrastructure error: its
+    "Error during inference" record is pruned before the next generate."""
+    base_url = fake_vllm.base_url
+    if failure == "503":
+        fake_vllm.fail["/tokenize"] = [503] * 3
+    elif failure == "timeout":
+        fake_vllm.delay["/tokenize"] = 1.0
+    else:
+        base_url = _closed_port_url()
+    with pytest.raises(bfcl_v3_child.EndpointError) as err:
+        bfcl_v3_child.VLLMTokens(base_url, "m").count("p")
+    assert "(3 attempts)" in str(err.value)
+    result = tmp_path / "BFCL_v3_simple_result.json"
+    result.write_text(json.dumps({"id": "simple_0", "result": f"Error during inference: {err.value}"}) + "\n")
+    assert bfcl.prune_infra_errors(result) == 1, str(err.value)
+
+
+def test_vllm_tokens_does_not_retry_a_missing_endpoint(fake_vllm, quick_retries):
+    import urllib.error
+
+    fake_vllm.fail["/tokenize"] = [404]
+    with pytest.raises(urllib.error.HTTPError, match="404"):
+        bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m").count("p")
+    assert len(fake_vllm.seen) == 1
+
+
+@pytest.mark.parametrize("path", ["/tokenize", "/v1/models"])
+def test_vllm_tokens_probe_fails_loudly_without_vllms_endpoints(fake_vllm, quick_retries, path):
+    fake_vllm.fail[path] = [404]
+    with pytest.raises(SystemExit, match="handler=legacy-granite needs vLLM's /tokenize"):
+        bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m").probe()
+    fake_vllm.fail.clear()
+    bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m").probe()
+
+
+@needs_v3_venv
+def test_real_legacy_child_refuses_a_server_without_tokenize(tmp_path, fake_vllm):
+    """An OpenAI-compatible server that is not vLLM: the generating child fails at
+    startup and writes no results (no wrong answers, no plausible score)."""
+    fake_vllm.fail["/tokenize"] = [404] * 10
+    root = tmp_path / "bfcl"
+    root.mkdir()
+    cfg = {"served_model_name": "m", "categories": ["simple", "irrelevance"], "limit": 1, "num_threads": 1,
+           "sampling": {}, "include_input_log": False, "phase": "all", "handler": "legacy-granite"}
+    (root / bfcl_v3.CHILD_CONFIG).write_text(json.dumps(cfg))
+    env = {**os.environ, "BFCL_PROJECT_ROOT": str(root), "OPENAI_API_KEY": "EMPTY", "OPENAI_BASE_URL": fake_vllm.base_url}
+    proc = subprocess.run([V3_PYTHON, "-I", str(bfcl_v3.CHILD), str(root / bfcl_v3.CHILD_CONFIG)], env=env,
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 1 and "needs vLLM's /tokenize" in proc.stderr, proc.stderr[-2000:]
+    assert [p for d in ("result", "score") for p in (root / d).rglob("*") if p.is_file()] == []
+    assert {p for p, _ in fake_vllm.seen} <= {"/v1/models", "/tokenize"}
 
 
 @needs_v3_venv
@@ -457,7 +547,8 @@ def fake_vllm():
 def test_real_child_generates_and_scores_end_to_end(tmp_path, fake_vllm, handler):
     """BFCL v3's own generation loop (single- and multi-turn) and evaluation, with
     each handler, against the stand-in server: every entry gets a result and a score."""
-    base_url, seen = fake_vllm
+    base_url = fake_vllm.base_url
+    seen = fake_vllm.seen  # filtered to POSTs below
     root = tmp_path / "bfcl"
     root.mkdir()
     cfg = {"served_model_name": "m", "categories": ["simple", "multi_turn_base"], "limit": 1, "num_threads": 2,
@@ -468,6 +559,10 @@ def test_real_child_generates_and_scores_end_to_end(tmp_path, fake_vllm, handler
     assert bfcl_v3_child.missing_results(root, handler) == []
     per = bfcl_v3.read_category_scores(root / "score" / bfcl_v3_child.REGISTRY_NAMES[handler])
     assert set(per) == {"simple", "multi_turn_base"} and all(s["total_count"] == 1 for s in per.values())
+    gets = {p for p, r in seen if r is None}
+    assert gets == (set() if handler == "fc" else {"/v1/models"})  # max_model_len, read once at startup
+    assert [p for p, _ in seen].count("/v1/models") == len(gets)
+    seen = [(p, r) for p, r in seen if r is not None]
     paths = {p for p, _ in seen}
     if handler == "fc":
         assert paths == {"/v1/chat/completions"}
