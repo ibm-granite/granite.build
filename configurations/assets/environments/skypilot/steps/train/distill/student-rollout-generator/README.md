@@ -252,9 +252,9 @@ narrowly.
 
 ### Bring-up and failure messages
 
-The server runs in the background. The step probes `http://127.0.0.1:<port>/health/`
-every `health_poll_seconds`, checking before each probe that the server process is
-still alive. Once healthy it logs `student-rollout-generator: healthy after <N>s` — which the monitor
+The server runs in the background. The step probes `http://$ADDR:$PORT/health` (the
+address it binds and publishes) every `health_poll_seconds`, checking before each probe
+that the server process is still alive. Once healthy it logs `student-rollout-generator: healthy after <N>s` — which the monitor
 turns into a RUNNING workload status — then publishes `vllm_url` and waits on the
 server. All failures exit non-zero with a `student-rollout-generator: FATAL:` line on stderr:
 

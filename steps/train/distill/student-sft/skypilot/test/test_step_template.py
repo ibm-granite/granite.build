@@ -185,9 +185,10 @@ class TestLauncher:
     def test_missing_hub_kernels_are_fetched_in_job(self, launcher):
         """run-sft.sh preflights the required kernel list and downloads in-job on a cold
         cache, because those kernels are resolved at import time — so without this the
-        failure lands after the allocation is up. Measured (build 0e60920a): this image caches
-        mamba-ssm and causal-conv1d but not kernels-community/flash-attn2, which is the
-        FA2 fallback the renderer selects for a granite student.
+        failure lands after the allocation is up. The image caches no hub kernels, so on a
+        cold cache that means the pinned mamba-ssm and causal-conv1d and
+        kernels-community/flash-attn2, the FA2 fallback the renderer selects for a granite
+        student.
         """
         assert launcher["envs"]["GOLD_PREFETCH_KERNELS"] == "1"
 

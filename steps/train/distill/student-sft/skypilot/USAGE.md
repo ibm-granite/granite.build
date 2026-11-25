@@ -303,11 +303,13 @@ would fail at import.
 ### Hub kernels
 
 The launcher does not set `HF_HUB_OFFLINE`, and sets `GOLD_PREFETCH_KERNELS=1` so `run-sft.sh`'s
-kernel preflight fetches any required hub kernel missing from the image's cache inside the job.
-The image caches `kernels-community/{mamba-ssm,causal-conv1d}` but not
-`kernels-community/flash-attn2` (build `0e60920a`), which transformers needs because the renderer
-selects `flash_attention_2` for a granite student. This costs a hub fetch per run, since
-`/opt/hf-cache` does not persist; a warm shared cache (upstream's
+kernel preflight fetches any required hub kernel missing from the HF cache inside the job. The
+image caches no hub kernels: its `HF_HOME` is `/opt/hf-cache`, which the image does not create
+and the environment mounts. On a cold cache the preflight fetches
+`kernels-community/{mamba-ssm,causal-conv1d}` at the revisions `hub_kernel_pins.py` pins, and
+`kernels-community/flash-attn2` at the major version transformers 5.20.2 asks for (3), which
+transformers needs because the renderer selects `flash_attention_2` for a granite student. That
+costs a hub fetch per run unless the mounted cache persists; a warm shared cache (upstream's
 `scripts/bluevela/prefetch-kernels.sh` against a persistent `workload.hf_home`) avoids it.
 
 ## Running as root

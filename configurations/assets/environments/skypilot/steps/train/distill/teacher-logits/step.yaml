@@ -149,11 +149,13 @@ environment_configs:
             # kernels-community/causal-conv1d through the Hub API, which offline mode turns
             # into OfflineModeIsEnabled after the load has begun (measured on distill-eval,
             # build 15267e81).
-            # The image caches mamba-ssm and causal-conv1d but NOT
-            # kernels-community/flash-attn2, and these resolve at import time, so the step
-            # preflights them and refuses on a cold cache rather than failing after the
-            # allocation (measured on distill-sft, build 0e60920a). A warm shared
-            # cache via upstream's prefetch-kernels.sh is the better production answer.
+            # The image caches no hub kernels (HF_HOME=/opt/hf-cache, which the image
+            # does not create), and the pinned mamba-ssm / causal-conv1d and
+            # kernels-community/flash-attn2 (major version 3 under transformers 5.20.2)
+            # resolve at import or model-load time, so the step preflights them and
+            # fetches them in-job on a cold cache rather than failing after the
+            # allocation. A warm shared cache via upstream's prefetch-kernels.sh is the
+            # better production answer.
             GOLD_PREFETCH_KERNELS: "1"
             PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
             DS_SKIP_CUDA_CHECK: "1"

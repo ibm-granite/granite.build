@@ -34,18 +34,18 @@ requires-python = ">=3.12,<3.13"
 # builds against the base image's CUDA toolkit. For the pins the venv above recorded,
 # that venv proves the set runs; for the #676 pins, see their comments.
 #
-# WHY EXACT `==` AND NOT RANGES, for this step specifically. Two of this step's
-# entrypoints reach into private internals of the pinned packages to work around bugs in
-# them -- gold.py rewrites `trl.import_utils._vllm_ascend_available` and patches
-# `vllm.model_executor.models.{granitemoehybrid,granite}`, and run_vllm_serve.py also
-# patches `trl.scripts.vllm_serve`. A monkeypatch against a private attribute is not
-# version-tolerant: it either no-ops or raises when upstream moves the attribute, and
-# upstream HAS moved it (trl 1.x has no `trl/extras/vllm_client.py` -- the client is
-# `trl/generation/vllm_client.py` -- no `_vllm_ascend_available` and no
-# `trl.scripts.vllm_serve.sanitize_logprob`; see patch_targets.py). A range would let a
-# resolver pick a release these patches do not describe. Bumping any of them is
-# therefore a deliberate change with its own test, not a resolver's choice -- see the
-# patch inventory in README.md.
+# WHY EXACT `==` AND NOT RANGES, for this step specifically. This code reaches into
+# private surfaces of the pinned packages: custom_gold_trainer.py and sft.py override
+# private trainer methods of trl's GOLDTrainer and SFTTrainer, hub_kernel_pins.py
+# registers modules under the names transformers' granitemoehybrid code imports, and the
+# kernel gate reads kernels' and huggingface_hub's on-disk cache layout. An override of a
+# private method is not version-tolerant: when upstream moves it, the override is never
+# called, quietly. The monkeypatches the trl 0.26.2 / vLLM 0.11.0 stack needed (trl's
+# `_vllm_ascend_available`, `trl.scripts.vllm_serve.sanitize_logprob`, and vLLM's granite
+# and granitemoehybrid `__init__`s) were deleted in #676; patch_targets.py records why and
+# fails if one of those bugs comes back. A range would let a resolver pick a release this
+# code does not describe. Bumping any of them is therefore a deliberate change with its
+# own test, not a resolver's choice -- run patch_targets.py after it.
 dependencies = [
     # GOLD lives in trl.experimental.gold, which is not a stable public API: the module
     # path and GOLDConfig's field set have both moved between releases, and
@@ -64,13 +64,12 @@ dependencies = [
     # its own `_is_package_available` that returns a plain bool unless asked for the
     # version, has no `_vllm_ascend_available` at all, and `is_weave_available()` calls
     # it directly, so the tuple-guard failures (`No module named 'vllm_ascend'` /
-    # `'weave'`) cannot happen. That makes gold.py's and run_vllm_serve.py's ascend
-    # patch a no-op and is why weave is no longer installed.
+    # `'weave'`) cannot happen. That is why gold.py and run_vllm_serve.py no longer patch
+    # it (deleted in #676) and why weave is no longer installed.
     #
-    # NOT yet verified: that this code's GOLD extension runs on it. custom_gold_trainer.py
-    # and custom_gold_config.py extend the 0.26.2 GOLDTrainer/GOLDConfig, and the 1.x
-    # trainer, config and vLLM client/server protocol differ (#676 phase 2 ports them;
-    # see the porting map). Until then this pin builds and imports; it does not train.
+    # custom_gold_trainer.py and custom_gold_config.py are ported to 1.18.2's
+    # GOLDTrainer/GOLDConfig and its vLLM client and server (#676): VENDORED.md lists the
+    # decisions, and logit-distill's test_trl1_port.py pins each of them.
     "trl==1.18.2",
     # A 5.x-only codebase in ways that are load-bearing rather than incidental: the chat template is read from `chat_template.jinja` as a FILE and
     # not from tokenizer_config.json (patches/granite-chat-template-generation-markers/),
@@ -89,7 +88,8 @@ dependencies = [
     # imported, instead of lazy_load_kernel through _HUB_KERNEL_MAPPING), which is why
     # hub_kernel_pins.py was rewritten, and it requires kernels>=0.17.2,<0.18 (the kernels
     # pin). It loads flash-attn2 at major version 3 (5.22 loads 4); gold-kernels.sh reads
-    # that from transformers. What else changed against this code is in the porting map.
+    # that from transformers. patch_targets.py probes the transformers surface this code
+    # still depends on.
     "transformers==5.20.2",
     # accelerate is the DeepSpeed integration layer here, not a
     # convenience: configs/distillation/deepspeed/accelerate_deepspeed_zero3.yaml is an
@@ -143,10 +143,10 @@ dependencies = [
     # vllm's exact pin already fixes its version. vLLM publishes no cu128 wheel for any
     # release with the CRITICAL fixes (0.33.0 has only the default CUDA 13 wheel), which
     # is why the image moved to CUDA 13 (Dockerfile). Upwards: gold.py and
-    # run_vllm_serve.py patch `GraniteMoeHybridAttention.__init__` and
-    # `GraniteDecoderLayer.__init__` inside vllm.model_executor, private surfaces that
-    # vLLM reorganises freely; vllm passes `config.rope_parameters` itself now, so those
-    # patches are no-ops (patch_targets.py).
+    # run_vllm_serve.py patched `GraniteMoeHybridAttention.__init__` and
+    # `GraniteDecoderLayer.__init__` inside vllm.model_executor for vLLM 0.11.0; vLLM
+    # 0.33.0 passes `config.rope_parameters` itself, so #676 deleted both patches
+    # (patch_targets.py guards against the bug's return).
     "vllm==0.33.0",
     # Mamba2 mixer kernels for Granite 4 hybrid models, loaded from the Hub by
     # hub_kernel_pins.prepare_hub_kernels at entrypoint import time. The HF cache the step
@@ -170,8 +170,8 @@ dependencies = [
     # predated the kernel preflight.)
     #
     # 2.4.0 EXACTLY (#676; was 1.14.0), the latest. vllm 0.33.0 and datasets 5.x need
-    # >=1.31, kernels 0.17 >=1.10. A MAJOR version: what 2.x removed against this
-    # code is in the porting map.
+    # >=1.31, kernels 0.17 >=1.10. A MAJOR version: the 2.x cache changes the offline
+    # kernel loads depend on are handled in hub_kernel_pins.make_offline_readable.
     "huggingface_hub==2.4.0",
     # Liger fused-linear JSD, for loss_arm=liger_fused_jsd. Optional at runtime for the
     # default jsd arm, but the arm must not be a config value that fails on import.
@@ -181,8 +181,8 @@ dependencies = [
     # for 0.6.4, and its GOLD trainer has no liger path at all. This code gates on
     # transformers' check instead (custom_gold_trainer.py, sft.py), which needs >=0.3.0,
     # and liger_losses.py imports liger_kernel directly, so 0.6.4 still serves the arm.
-    # Imports under torch 2.14.0 / triton 3.8.0 in the dev image; whether to raise it is
-    # a #676 phase 2 decision.
+    # Imports under torch 2.14.0 / triton 3.8.0 in the dev image. Not raised in #676:
+    # raising it belongs with the first training run of the arm.
     "liger-kernel==0.6.4",
     # Declared because gold.py imports `datasets.{Dataset, DatasetDict, load_dataset,
     # load_from_disk}` directly and corpus-prep's output is consumed through them, so
@@ -193,7 +193,8 @@ dependencies = [
     # 5.2.0 EXACTLY (#676; was 4.4.1, the recorded environment's version), the latest.
     # trl 1.x requires datasets>=4.7; 5.2.0 caps fsspec<=2026.9.0, which admits the
     # fsspec release that fixes its HIGH advisory (constraint below). A MAJOR version
-    # against what this code has run under; the porting map lists what it touches.
+    # against what this code has run under: 5.2.0's save_to_disk refuses a format with a
+    # transform, which student-sft's preprocessing cache hit (sft.py, _run_map_chain).
     "datasets==5.2.0",
     # render_gold_config.py's only third-party dependency. Deliberately NOT pinned exactly:
     # nothing here touches a private pyyaml surface, safe_load/safe_dump are stable across
