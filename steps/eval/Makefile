@@ -80,7 +80,7 @@ TAG_STATUS    := $(CURDIR)/../scripts/registry-tag-status.sh
 # scan-image <image-ref> <label>
 define scan-image
 	$(check-severity)
-	@$(DOCKER) image exists $(1) 2>/dev/null || { echo "[scan] $(1) is not in local storage: build it first" >&2; exit 1; }
+	@$(DOCKER) image exists $(1) 2>/dev/null || $(DOCKER) image inspect $(1) >/dev/null 2>&1 || { echo "[scan] $(1) is not in local storage: build it first" >&2; exit 1; }
 	@mkdir -p "$(SCAN_CACHE)/trivy"
 	@tar="$(SCAN_CACHE)/$(2)-$(IMAGE_VERSION).tar"; rm -f "$$tar"; \
 	echo "[scan] saving $(1)"; \
