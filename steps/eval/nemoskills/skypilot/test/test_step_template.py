@@ -288,31 +288,56 @@ def test_a_curated_benchmark_keeps_its_own_dir(step, tmp_path, options):
     assert _out(proc)["OUT"] == str(tmp_path / "out" / "model-x" / "mmlu-x")
 
 
+HYDRA_SAFE = re.compile(r"[A-Za-z0-9._@+-]+")
+"""The run-dir name's characters: a subset of what a Hydra 1.3.8 override
+value takes unquoted (NeMo-Skills passes paths as ++output_file=<path>;
+= , ~ ( ) and the like break its parser or make a sweep), with no shell glob
+character and no % (URI handling could decode it)."""
+
+
+def _dir(proc):
+    """The composed output dir, checked as a Hydra override value: its name
+    within the charset, and, where hydra-core is importable (the nemoskills
+    images; any venv with it), parsed exactly as ns parses ++output_file."""
+    out = _out(proc)["OUT"]
+    name = Path(out).name
+    assert HYDRA_SAFE.fullmatch(name), name
+    try:
+        from hydra.core.override_parser.overrides_parser import OverridesParser
+    except ImportError:
+        return out
+    path = f"{out}/output-rs0.jsonl"
+    override = OverridesParser.create().parse_overrides([f"++output_file={path}"])[0]
+    assert not override.is_sweep_override(), path
+    assert override.value() == path, (override.value(), path)
+    return out
+
+
 @pytest.mark.parametrize(
     ("options", "name"),
     [
-        ("tasks=hellaswag,arc_easy", "lm-eval@tasks=hellaswag,arc_easy"),
-        ("domains=airline,retail", "lm-eval@domains=airline,retail"),
+        ("tasks=hellaswag,arc_easy", "lm-eval@tasks-hellaswag+2Carc_easy"),
+        ("domains=airline,retail", "lm-eval@domains-airline+2Cretail"),
         (
             "service=filesystem task_suite=easy",
-            "lm-eval@service=filesystem@task_suite=easy",
+            "lm-eval@service-filesystem@task_suite-easy",
         ),
         (
             "task_suite=easy service=filesystem",
-            "lm-eval@service=filesystem@task_suite=easy",
+            "lm-eval@service-filesystem@task_suite-easy",
         ),
-        ("categories=web_search,memory", "lm-eval@categories=web_search,memory"),
-        ("benchmark=math-500 split=test", "lm-eval@benchmark=math-500@split=test"),
-        ("tasks=x exclude=y", "lm-eval@tasks=x@exclude=y"),
-        ("instances=^apache__druid", "lm-eval@instances=~5Eapache__druid"),
-        ("tasks=a tasks=b", "lm-eval@tasks=b"),  # the harness reads the last
-        ("tasks=hellaswag metric=acc_norm", "lm-eval@tasks=hellaswag"),
+        ("categories=web_search,memory", "lm-eval@categories-web_search+2Cmemory"),
+        ("benchmark=math-500 split=test", "lm-eval@benchmark-math-500@split-test"),
+        ("tasks=x exclude=y", "lm-eval@tasks-x@exclude-y"),
+        ("instances=^apache__druid", "lm-eval@instances-+5Eapache__druid"),
+        ("tasks=a tasks=b", "lm-eval@tasks-b"),  # the harness reads the last
+        ("tasks=hellaswag metric=acc_norm", "lm-eval@tasks-hellaswag"),
     ],
 )
 def test_a_selection_names_the_dir(step, tmp_path, options, name):
     # Every selection value, in a fixed key order; other options do not count.
     proc = _run_until_output_dir(step, tmp_path, benchmark="lm-eval", options=options)
-    assert _out(proc)["OUT"] == str(tmp_path / "out" / "model-x" / name)
+    assert _dir(proc) == str(tmp_path / "out" / "model-x" / name)
 
 
 def test_distinct_selections_never_share_a_dir(step, tmp_path):
@@ -326,38 +351,43 @@ def test_distinct_selections_never_share_a_dir(step, tmp_path):
         ("lm-eval", "tasks=a/b"),
         ("lm-eval", "tasks=a,b"),
         ("lm-eval", "tasks=a-b"),
-        ("lm-eval", "tasks=a~2Ab"),
+        ("lm-eval", "tasks=a+2Cb"),
+        ("lm-eval", "tasks=a+b"),
         ("lm-eval", "tasks=a domains=b"),
-        ("lm-eval", "tasks=a@domains=b"),
+        ("lm-eval", "tasks=a@domains-b"),
+        ("lm-eval", "tasks=a-b"),
         ("mcpmark", "service=filesystem"),
         ("mcpmark", "service=filesystem task_suite=easy"),
         ("mcpmark-filesystem", ""),
         ("tau3", "domains=airline"),
         ("tau3-airline", ""),
     ]
-    dirs = []
+    dirs = {}
     for i, (benchmark, options) in enumerate(runs):
         sub = tmp_path / str(i)
         sub.mkdir()
         proc = _run_until_output_dir(step, sub, benchmark=benchmark, options=options)
-        out = Path(_out(proc)["OUT"])
+        out = Path(_dir(proc))
         assert out.parent == sub / "out" / "model-x"
-        dirs.append(out.name)
-    assert len(set(dirs)) == len(dirs), dirs
+        dirs.setdefault((benchmark, options), set()).add(out.name)
+    names = [name for names in dirs.values() for name in names]
+    assert all(len(names) == 1 for names in dirs.values())  # deterministic
+    assert len(set(names)) == len(names), names
 
 
 @pytest.mark.parametrize(
     ("options", "name"),
     [
-        ("tasks=glob*", "lm-eval@tasks=glob~2A"),
-        ("tasks=../../etc/x", "lm-eval@tasks=..~2F..~2Fetc~2Fx"),
-        ("tasks=a/b,c?d", "lm-eval@tasks=a~2Fb,c~3Fd"),
-        ("tasks=café", "lm-eval@tasks=caf~C3~A9"),
+        ("tasks=glob*", "lm-eval@tasks-glob+2A"),
+        ("tasks=../../etc/x", "lm-eval@tasks-..+2F..+2Fetc+2Fx"),
+        ("tasks=a/b,c?d", "lm-eval@tasks-a+2Fb+2Cc+3Fd"),
+        ("tasks=x=y~z", "lm-eval@tasks-x+3Dy+7Ez"),
+        ("tasks=café", "lm-eval@tasks-caf+C3+A9"),
     ],
 )
 def test_a_selection_is_one_literal_path_segment(step, tmp_path, options, name):
     proc = _run_until_output_dir(step, tmp_path, benchmark="lm-eval", options=options)
-    out = _out(proc)["OUT"]
+    out = _dir(proc)
     assert out == str(tmp_path / "out" / "model-x" / name)
     assert Path(out).parent == tmp_path / "out" / "model-x"
 
@@ -381,10 +411,18 @@ def test_a_long_selection_is_shortened_but_stays_distinct(step, tmp_path):
         proc = _run_until_output_dir(
             step, sub, benchmark="lm-eval", options=f"tasks={tasks}"
         )
-        names.append(Path(_out(proc)["OUT"]).name)
+        names.append(Path(_dir(proc)).name)
     for name in names:
-        assert len(name) == 180 + 2 + 16 and name[180:182] == "~h"
+        assert len(name) == 180 + 3 + 16 and name[180:183] == "@h-"
     assert names[0][:180] == names[1][:180] and names[0] != names[1]
+
+
+NS_MATH_500_URL = (
+    "https://github.com/openai/prm800k/raw/main/prm800k/math_splits/test.jsonl"
+)
+NS_MATH_500_SHA = (
+    "sha256:35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132"
+)
 
 
 @pytest.mark.parametrize(
@@ -395,24 +433,24 @@ def test_a_long_selection_is_shortened_but_stays_distinct(step, tmp_path):
             "SWE-bench/SWE-bench_Multilingual",
             "846e647b9f33c0b51b739d005d13d85493c9af09",
             "instances=^apache__druid",
-            "swebench@dataset=SWE-bench~2FSWE-bench_Multilingual"
-            "@dataset_revision=846e647b9f33c0b51b739d005d13d85493c9af09"
-            "@instances=~5Eapache__druid",
+            "swebench@instances-+5Eapache__druid"
+            "@dataset-SWE-bench+2FSWE-bench_Multilingual"
+            "@dataset_revision-846e647b9f33c0b51b739d005d13d85493c9af09",
         ),
         (
             "terminal-bench",
             "harborframework/terminal-bench-2.1",
             "",
             "",
-            "terminal-bench@dataset=harborframework~2Fterminal-bench-2.1@dataset_revision=",
+            "terminal-bench@dataset-harborframework+2Fterminal-bench-2.1@dataset_revision-",
         ),
         (
             "nemoskills",
             "https://example.org/t.jsonl",
             "sha256:00",
             "benchmark=math-500",
-            "nemoskills@dataset=https~3A~2F~2Fexample.org~2Ft.jsonl"
-            "@dataset_revision=sha256~3A00@benchmark=math-500",
+            "nemoskills@benchmark-math-500@dataset-https+3A+2F+2Fexample.org+2Ft.jsonl"
+            "@dataset_revision-sha256+3A00",
         ),
         (
             "swebench-verified",
@@ -437,4 +475,30 @@ def test_a_dataset_pinned_bridge_names_its_pin(
         dataset_revision=revision,
         options=options,
     )
-    assert _out(proc)["OUT"] == str(tmp_path / "out" / "model-x" / name)
+    assert _dir(proc) == str(tmp_path / "out" / "model-x" / name)
+
+
+def test_ns_math_500s_dir_is_hydra_safe_and_stable(step, tmp_path):
+    # The shipped nemoskills bridge recipe: its pin is long, so the name is
+    # cut and hashed, but it starts with the readable selection, is the same
+    # for every render (generate and score share it), and parses as a Hydra
+    # override value.
+    names = set()
+    for phase in ("generate", "score"):
+        sub = tmp_path / phase
+        sub.mkdir()
+        proc = _run_until_output_dir(
+            step,
+            sub,
+            benchmark="nemoskills",
+            dataset=NS_MATH_500_URL,
+            dataset_revision=NS_MATH_500_SHA,
+            options="benchmark=math-500",
+            phase=phase,
+        )
+        names.add(Path(_dir(proc)).name)
+    (name,) = names
+    assert name.startswith(
+        "nemoskills@benchmark-math-500@dataset-https+3A+2F+2Fgithub.com"
+    )
+    assert name[180:183] == "@h-"

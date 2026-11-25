@@ -185,18 +185,22 @@ environment_configs:
             # selects (a selection option, or a dataset-pinned bridge's dataset) gets
             # its own dir, named after EVERY selection value, so two runs that select
             # differently never share a dir (results.json would overwrite):
-            #   <id>@<key>=<value>[@<key>=<value>...]
-            # in a fixed key order (the dataset pin first, then the options below),
-            # e.g. lm-eval@tasks=hellaswag, tau3@domains=airline,retail,
-            # mcpmark@service=filesystem@task_suite=easy. The @ keeps it apart from
-            # every curated id's dir (no id has one), so a bridge run never lands in a
-            # curated recipe's dir. A repeated key takes its last value, as the harness
-            # reads it. Each value is escaped into ONE path segment: [A-Za-z0-9._,-]
-            # stay, any other byte becomes ~XX (hex; a / is ~2F, a * ~2A, ~ itself
-            # ~7E), so distinct values stay distinct; no %, which URI handling could
-            # decode. A name over 200 bytes keeps its first 180 and appends ~h and 16
-            # hex of its sha256. With no selection the dir is the benchmark id, as for
-            # every curated benchmark.
+            #   <id>@<key>-<value>[@<key>-<value>...]
+            # in a fixed key order (the options below, then a dataset-pinned bridge's
+            # dataset and dataset_revision), e.g. lm-eval@tasks-hellaswag,
+            # tau3@domains-airline+2Cretail, mcpmark@service-filesystem@task_suite-easy.
+            # The @ keeps it apart from every curated id's dir (no id has one), so a
+            # bridge run never lands in a curated recipe's dir. A repeated key takes its
+            # last value, as the harness reads it. No key contains a -, so the first -
+            # ends the key. Each value is escaped into ONE path segment: [A-Za-z0-9._-]
+            # stay, any other byte (a /, a comma, a @, a + itself) becomes +XX (hex), so
+            # distinct values stay distinct. Every character of the name is one a Hydra
+            # override value takes unquoted (NeMo-Skills passes paths as
+            # ++output_file=<path>; = , ~ and the like break its parser or make a sweep),
+            # none is special to a shell glob, and there is no %, which URI handling
+            # could decode. A name over 200 bytes keeps its first 180 and appends @h-
+            # and 16 hex of its sha256 (h is no key). With no selection the dir is the
+            # benchmark id, as for every curated benchmark.
             granite_enc() {
               # byte by byte (LC_ALL=C); no length expansions, whose brace-hash would
               # open a Jinja comment in this template
@@ -204,27 +208,27 @@ environment_configs:
               while [ -n "$s" ]; do
                 c="${s:0:1}"; s="${s:1}"
                 case "$c" in
-                  [A-Za-z0-9._,-]) out="$out$c" ;;
-                  *) printf -v c '%d' "'$c"; out="$out$(printf '~%02X' $((c & 255)))" ;;
+                  [A-Za-z0-9._-]) out="$out$c" ;;
+                  *) printf -v c '%d' "'$c"; out="$out$(printf '+%02X' $((c & 255)))" ;;
                 esac
               done
               printf '%s' "$out"
             }
             SEL=""
-            {% if config.dataset and config.benchmark in ("swebench", "terminal-bench", "nemoskills") %}
-            SEL="@dataset=$(granite_enc "{{ config.dataset }}")@dataset_revision=$(granite_enc "{{ config.dataset_revision }}")"
-            {% endif %}
             for key in benchmark service task_suite domains categories tasks exclude instances split; do
               found=""
               for kv in "${OPT_WORDS[@]}"; do
                 case "$kv" in "$key"=*) found=1; val="${kv#*=}" ;; esac
               done
-              if [ -n "$found" ]; then SEL="$SEL@$key=$(granite_enc "$val")"; fi
+              if [ -n "$found" ]; then SEL="$SEL@$key-$(granite_enc "$val")"; fi
             done
+            {% if config.dataset and config.benchmark in ("swebench", "terminal-bench", "nemoskills") %}
+            SEL="$SEL@dataset-$(granite_enc "{{ config.dataset }}")@dataset_revision-$(granite_enc "{{ config.dataset_revision }}")"
+            {% endif %}
             BENCH_DIR="$BENCHMARK$SEL"
             if [ "$(printf '%s' "$BENCH_DIR" | wc -c)" -gt 200 ]; then
               h="$(printf '%s' "$BENCH_DIR" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"
-              BENCH_DIR="${BENCH_DIR:0:180}~h$h"
+              BENCH_DIR="${BENCH_DIR:0:180}@h-$h"
             fi
             # Either a full output_dir, or output_root composed per benchmark; with
             # neither set, fail here rather than deep inside a harness.

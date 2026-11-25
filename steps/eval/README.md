@@ -109,18 +109,23 @@ parameters).
 
 **Run dirs.** A bridge runs many benchmarks through one id, so a run that
 selects gets a dir named after every selection value:
-`$OUTPUT_ROOT/$RUN_NAME/<id>@<key>=<value>[@<key>=<value>...]`. The keys, in this
-fixed order: the dataset-pinned bridges' (`swebench`, `terminal-bench`,
-`nemoskills`) `dataset` and `dataset_revision`, then the options `benchmark=`,
-`service=`, `task_suite=`, `domains=`, `categories=`, `tasks=`, `exclude=`,
-`instances=`, `split=` (a repeated option counts once, its last value, as the
-harness reads it). So `lm-eval@tasks=hellaswag`, `tau3@domains=airline,retail`,
-`mcpmark@service=filesystem@task_suite=easy`. No curated id contains `@`, so a
-bridge run never shares a curated recipe's dir (`tau3@domains=airline` is not
-`tau3-airline`). Each value is escaped into one path segment: `[A-Za-z0-9._,-]`
-stay, every other byte becomes `~XX` (hex: a `/` is `~2F`, a `*` is `~2A`), so
-distinct selections never map to one dir; a name over 200 bytes is cut to 180
-plus `~h` and 16 hex of its sha256. The options are read without glob expansion.
+`$OUTPUT_ROOT/$RUN_NAME/<id>@<key>-<value>[@<key>-<value>...]`. The keys, in this
+fixed order: the options `benchmark=`, `service=`, `task_suite=`, `domains=`,
+`categories=`, `tasks=`, `exclude=`, `instances=`, `split=` (a repeated option
+counts once, its last value, as the harness reads it), then the dataset-pinned
+bridges' (`swebench`, `terminal-bench`, `nemoskills`) `dataset` and
+`dataset_revision`. So `lm-eval@tasks-hellaswag`,
+`tau3@domains-airline+2Cretail`, `mcpmark@service-filesystem@task_suite-easy`.
+No curated id contains `@`, so a bridge run never shares a curated recipe's dir
+(`tau3@domains-airline` is not `tau3-airline`); no key contains `-`, so the
+first `-` ends the key. Each value is escaped into one path segment:
+`[A-Za-z0-9._-]` stay, every other byte becomes `+XX` (hex: a `/` is `+2F`, a
+comma `+2C`, a `+` itself `+2B`), so distinct selections never map to one dir.
+Every character of the name is one a Hydra override value takes unquoted
+(NeMo-Skills passes paths as `++output_file=<path>`, and `=`, `,` or `~` there
+break its parser or make a sweep), none is a shell glob character, and there is
+no `%`. A name over 200 bytes is cut to 180 plus `@h-` and 16 hex of its sha256
+(ns-math-500's URL pin is). The options are read without glob expansion.
 A benchmark run without a selection (every curated recipe, a dataset swap on a
 curated id included) keeps `$OUTPUT_ROOT/$RUN_NAME/<id>`.
 
