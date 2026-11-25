@@ -13,12 +13,13 @@ wins):
 |---|---|
 | CPUs | `compute_config.num_cpus_per_node` (or `launcher_config.resources.cpus`) |
 | GPUs | `launcher_config.resources.accelerators`, e.g. `"H100:8"` (per node) |
-| Memory | `compute_config.total_memory_per_node`, or `launcher_config.resources.memory` (GiB); not SLURM, see below |
+| Memory | `compute_config.total_memory_per_node` (or `launcher_config.resources.memory`, GiB); on SLURM, see below |
 | Nodes | `compute_config.num_nodes` (or `launcher_config.num_nodes`) |
 
 - **One CPU setting is enough.** `num_cpus_per_node` becomes `sky.Resources.cpus`.
   `resources.cpus` sets the same value; if both are set, `resources.cpus` wins. Don't add it
-  "to be sure".
+  "to be sure". Memory works the same way: `total_memory_per_node` becomes `sky.Resources.memory`,
+  and `resources.memory` wins over it.
 - **A step's `resources: {}` does not mean "no CPU request".** Steps such as
   `command` and `custom_code_skypilot` leave `resources` empty to stay cloud-agnostic. gbserver
   still applies `compute_config` underneath. Only a step.yaml that sets its own `resources.cpus`
@@ -42,16 +43,25 @@ What each key becomes in `#SBATCH` (the allocation is per node):
 |---|---|
 | `compute_config.num_cpus_per_node: 64` (or `resources.cpus: "64"`) | `--cpus-per-task=64` |
 | `resources.accelerators: "H100:8"` | 8 GPUs via `--gres` (`gpu:<type>:8`; `sacct` shows the cluster's own GRES type name) |
-| `resources.memory: "512"` (bare GiB, quoted) | `--mem=524288M` (512 GiB) |
+| `compute_config.total_memory_per_node: 512Gi` | `--mem=524288M` (512 GiB), on a cluster that tracks memory; nothing otherwise |
+| `resources.memory: "512"` (bare GiB, quoted) | `--mem=524288M` (512 GiB), on any cluster |
 | `compute_config.num_nodes: 2` | `--nodes=2` |
 
-- **`total_memory_per_node` is not read on SLURM.** Many SLURM clusters don't track memory, so
-  gbserver skips it; memory comes only from `resources.memory`.
+- **`total_memory_per_node` applies only where SLURM tracks memory.** gbserver reads the
+  cluster's `SelectTypeParameters`: on `CR_CPU_Memory` / `CR_Core_Memory` it sends `--mem`; on
+  `CR_CPU` / `CR_Core` it sends nothing and the partition default applies. If the check fails,
+  gbserver logs a warning and SkyPilot usually sends its per-CPU default (below).
+  `resources.memory` is sent on every cluster. Details in
+  [Step memory](skypilot-slurm.md#step-memory-total_memory_per_node).
+- **Memory can raise the CPU count.** When the partition sets `MaxMemPerCPU`, Slurm grants
+  `ceil(memory / MaxMemPerCPU)` CPUs to a job whose memory needs more than it asked for. gbserver
+  asks for that count up front and logs a warning, since a request below it aborts a containerized
+  launch. This applies only when the `infra` or `zone` names the partition.
 - **`cpus` is an exact count** here, so a bare number is fine.
 - **Not set at all?** SkyPilot's SLURM defaults apply: 2 CPUs with no GPU, 4 per GPU otherwise
   (32 for `H100:8`). Memory then follows the CPU count: 1 GiB per CPU without GPUs, 4 GiB per CPU
   with them (a cluster that doesn't track memory gets no `--mem`). A CPU-only job with no
-  settings therefore gets 2 GiB, too small for a model load, so set `resources.memory` for real
+  settings therefore gets 2 GiB, too small for a model load, so set memory for real
   workloads.
 - **The run step gets every CPU of the allocation.** Every rank of a multi-GPU task can use all
   `--cpus-per-task` cores, not one.
@@ -73,8 +83,9 @@ config:
 
 Common mistakes:
 
-- `total_memory_per_node: 512Gi` alone does nothing here; memory falls back to the per-CPU
-  default (64 CPUs with `H100:8` gives 256 GiB). Use `resources.memory: "512"`.
+- Relying on `total_memory_per_node` on a cluster that doesn't track memory. Nothing is sent, and
+  the job gets the partition's default memory. Use `resources.memory` for a step that must get
+  the same memory on every cluster.
 - `num_gpus_per_node: 8` alone gives no GPUs. Use `accelerators: "H100:8"`.
 - A redundant `resources.cpus` next to `num_cpus_per_node`, justified by "the step has
   `resources: {}`". It's harmless, but the two can drift, and `resources.cpus` silently wins.

@@ -5,8 +5,9 @@
 > page covers only what is SLURM-specific.
 >
 > **Sizing a step:** `compute_config.num_cpus_per_node` becomes `--cpus-per-task` even when the
-> step's `resources` is `{}`; GPUs come only from `resources.accelerators` and memory only from
-> `resources.memory`. Details and how to check with `sacct`:
+> step's `resources` is `{}`; GPUs come only from `resources.accelerators`. Memory comes from
+> `resources.memory`, or from `compute_config.total_memory_per_node` on a cluster that tracks
+> memory. Details and how to check with `sacct`:
 > [Sizing a SkyPilot step](skypilot-sizing.md#slurm).
 
 ## SkyPilot patches

@@ -121,8 +121,8 @@ For a COS / S3 store:
     fail with a clear error when it's unset, rather than guess between AWS S3 and IBM COS. Use
     `s3.amazonaws.com` for AWS, or the regional IBM COS endpoint.
   - **`cos_region` is likewise used only when set.** It isn't filled in for these.
-  - **The K8s / LSF `cosrclone` steps still default** to the IBM COS us-east endpoint and region
-    when these are unset.
+  - **The K8s `cosrclone` step still defaults** to the IBM COS us-east endpoint and region when
+    these are unset.
 - **`cos_gbserver_endpoint` (optional) is the endpoint gbserver itself uses**, for example for
   the input existence check that build validation runs (`Cosstore.uri_exists`, reached through the
   target environment's `input_exists`). Set it when gbserver can't reach `cos_endpoint`.

@@ -602,7 +602,7 @@ gbserver applies `compute_config` underneath the merged `resources` (step.yaml
 |---|---|
 | `num_nodes` | Becomes `sky.Task(num_nodes=...)`. Overridable by `launcher_config.num_nodes`. |
 | `num_cpus_per_node` | Becomes `sky.Resources.cpus` unless `resources.cpus` is set. On SLURM this is `--cpus-per-task`. |
-| `total_memory_per_node` | Becomes `sky.Resources.memory` unless `resources.memory` is set. Skipped on LSF, and on SLURM clusters that don't track memory (see [skypilot-slurm.md](skypilot-slurm.md#step-memory-total_memory_per_node)). |
+| `total_memory_per_node` | Becomes `sky.Resources.memory` unless `resources.memory` is set. Skipped on SLURM clusters that don't track memory (see [skypilot-slurm.md](skypilot-slurm.md#step-memory-total_memory_per_node)). |
 | `num_gpus_per_node` | **Not read.** Use `resources.accelerators`. |
 
 Per-cloud conversions, defaults and how to check a SLURM job with `sacct` are in

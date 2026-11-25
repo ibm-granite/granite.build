@@ -252,7 +252,7 @@ steps:
 Reference definitions that show both variants in real use:
 
 - [`builtins/monitors/bash/monitor.yaml`](../../src/gbserver/builtins/monitors/bash/monitor.yaml) — the shared bash monitor, carrying the `GB_ARTIFACT_PATH` and `GB_ARTIFACT_STATE` rules (dual-accepting the legacy `LLMB_` prefix) side by side. The [`builtins/steps/bash/command/step.yaml`](../../src/gbserver/builtins/steps/bash/command/step.yaml) step references it with `ref: space://monitors/bash`.
-- [`skypilot/steps/distill/vllm-server/step.yaml`](../../configurations/assets/environments/skypilot/steps/distill/vllm-server/step.yaml) — a long-lived service that references `space://monitors/skypilot`, adds its own rules via `extra_event_configs`, and publishes its URL as a `mem://` `state` binding.
+- [`skypilot/steps/train/distill/student-rollout-generator/step.yaml`](../../configurations/assets/environments/skypilot/steps/train/distill/student-rollout-generator/step.yaml) — a long-lived service that references `space://monitors/skypilot`, adds its own rules via `extra_event_configs`, and publishes its URL as a `mem://` `state` binding.
 
 ## Per-environment monitor behaviour
 
