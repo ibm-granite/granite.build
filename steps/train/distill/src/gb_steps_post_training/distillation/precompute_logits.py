@@ -846,6 +846,16 @@ def teacher_load_kwargs(dtype, *, tp_size: int, mesh_dp: int, device) -> dict:
 
 def run_precompute(args):
     """The GPU pass. Imports torch et al. HERE; see DTYPE_NAMES for why."""
+    # Before anything imports transformers' granitemoehybrid modeling module: its Mamba2
+    # mixers bind whatever causal_conv1d / mamba_ssm is importable at that import, and
+    # without this registration a hybrid teacher silently runs the PyTorch reference path
+    # (slower, and logits that differ from logit-distill's kernel-backed teacher). Here
+    # rather than at module level, which would cost the preflight subcommands the torch
+    # import DTYPE_NAMES avoids. run-precompute.sh prefetches both kernels for it.
+    from gb_steps_post_training.distillation.hub_kernel_pins import prepare_hub_kernels
+
+    prepare_hub_kernels()
+
     import torch
     import torch.nn.functional as F
     from accelerate import PartialState

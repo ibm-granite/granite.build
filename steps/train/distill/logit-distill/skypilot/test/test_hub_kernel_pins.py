@@ -43,6 +43,7 @@ _ENTRYPOINTS = [
     _SRC / "src" / "gb_steps_post_training" / "distillation" / "gold.py",
     _SRC / "src" / "gb_steps_post_training" / "distillation" / "sft.py",
     _SRC / "src" / "gb_steps_post_training" / "distillation" / "run_divergence.py",
+    _SRC / "src" / "gb_steps_post_training" / "distillation" / "precompute_logits.py",
     _SRC / "preflight-check" / "skypilot" / "src" / "distill_probe.py",
 ]
 _SHELL = _SRC / "images" / "gpu" / "shell" / "gold-kernels.sh"
@@ -98,10 +99,11 @@ def test_kernel_spec_without_transformers(monkeypatch):
 def test_every_hybrid_model_entrypoint_calls_the_pin(path):
     """The registration only helps if it runs before the first model load.
 
-    These four entrypoints instantiate hybrid (granitemoehybrid) models; the
-    teacher-logits step loads only the dense teacher, and vLLM resolves its own
-    kernels, so neither needs the call. A source check, not an import, because
-    importing every entrypoint here would drag torch and trl into this suite.
+    These five entrypoints instantiate hybrid (granitemoehybrid) models, the
+    teacher-logits step's teacher included (run-precompute.sh prefetches its Mamba2
+    kernels); vLLM resolves its own kernels, so it needs no call. A source check, not
+    an import, because importing every entrypoint here would drag torch and trl into
+    this suite.
     """
     src = path.read_text(encoding="utf-8")
     assert "prepare_hub_kernels()" in src, (
