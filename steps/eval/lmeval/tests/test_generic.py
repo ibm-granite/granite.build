@@ -12,10 +12,15 @@ from granite_evals.benchmarks import chat_if, generic
 from granite_evals.registry import RunConfig, get
 
 
-def _task(output_type="multiple_choice", metric="acc"):
+def _task(output_type="multiple_choice", metric="acc", filters=None):
     return SimpleNamespace(
         OUTPUT_TYPE=output_type,
-        config=SimpleNamespace(metric_list=[{"metric": metric}]),
+        config=SimpleNamespace(
+            metric_list=[{"metric": metric}],
+            filter_list=(
+                [{"name": f, "filter": []} for f in filters] if filters else None
+            ),
+        ),
     )
 
 
@@ -64,6 +69,70 @@ def test_resolve_modes():
 
 def test_metric_keys():
     assert generic.metric_keys("acc") == ["acc,none", "acc"]
+    assert generic.metric_keys("exact_match", ["strict-match", "flexible-extract"]) == [
+        "exact_match,none",
+        "exact_match",
+        "exact_match,strict-match",
+        "exact_match,flexible-extract",
+    ]
+    # An explicit <metric>,<filter> is exactly that key.
+    assert generic.metric_keys("exact_match,flexible-extract", ["strict-match"]) == [
+        "exact_match,flexible-extract"
+    ]
+
+
+def test_task_filters():
+    assert generic.task_filters(_task()) == []
+    assert generic.task_filters(
+        _task(filters=["strict-match", "flexible-extract"])
+    ) == ["strict-match", "flexible-extract"]
+    # filter_list entries as objects (a parsed config) work the same way.
+    task = SimpleNamespace(
+        config=SimpleNamespace(filter_list=[SimpleNamespace(name="maj@1")])
+    )
+    assert generic.task_filters(task) == ["maj@1"]
+
+
+# gsm8k's row shape at lm-eval 0.4.13: one key per filter_list entry, no ",none".
+GSM8K_ROW = {
+    "alias": "gsm8k",
+    "exact_match,strict-match": 0.25,
+    "exact_match_stderr,strict-match": 0.01,
+    "exact_match,flexible-extract": 0.75,
+    "exact_match_stderr,flexible-extract": 0.02,
+}
+GSM8K_FILTERS = {"gsm8k": ["strict-match", "flexible-extract"]}
+
+
+def test_summarize_results_filtered_metric():
+    results = {
+        "results": {"gsm8k": GSM8K_ROW},
+        "n-samples": {"gsm8k": {"effective": 4, "original": 4}},
+    }
+    # The task's first filter, in filter_list order (not dict order).
+    reordered = {
+        "results": {"gsm8k": dict(reversed(list(GSM8K_ROW.items())))},
+        "n-samples": results["n-samples"],
+    }
+    for res in (results, reordered):
+        out = generic.summarize_results(
+            res, ["gsm8k"], {"gsm8k": "exact_match"}, GSM8K_FILTERS
+        )
+        assert out["value"] == pytest.approx(0.25)
+        assert out["per_task"]["gsm8k"] == {
+            "metric": "exact_match",
+            "key": "exact_match,strict-match",
+            "value": 0.25,
+            "n": 4,
+        }
+    # metric=<metric>,<filter> picks another filter.
+    out = generic.summarize_results(
+        results,
+        ["gsm8k"],
+        {"gsm8k": "exact_match,flexible-extract"},
+        GSM8K_FILTERS,
+    )
+    assert out["value"] == pytest.approx(0.75)
 
 
 RESULTS = {
@@ -90,7 +159,12 @@ def test_summarize_results():
     )
     assert out["value"] == pytest.approx(0.6)  # macro mean, group row excluded
     assert out["n"] == 150
-    assert out["per_task"]["hellaswag"] == {"metric": "acc", "value": 0.5, "n": 100}
+    assert out["per_task"]["hellaswag"] == {
+        "metric": "acc",
+        "key": "acc,none",
+        "value": 0.5,
+        "n": 100,
+    }
 
 
 def test_summarize_results_metric_override():
@@ -99,11 +173,19 @@ def test_summarize_results_metric_override():
 
 
 def test_summarize_results_missing_metric():
-    out = generic.summarize_results(
-        RESULTS, ["arc_easy", "hellaswag"], {"arc_easy": "f1", "hellaswag": "acc"}
-    )
-    assert out["value"] == pytest.approx(0.5)  # the task without the key is left out
-    assert out["per_task"]["arc_easy"]["value"] is None
+    """A metric the row does not carry fails the run, naming what it has,
+    rather than writing a null value into results.json."""
+    with pytest.raises(SystemExit, match=r"'arc_easy': no 'f1' \(has acc,none\)"):
+        generic.summarize_results(
+            RESULTS, ["arc_easy", "hellaswag"], {"arc_easy": "f1", "hellaswag": "acc"}
+        )
+    # Without the task's filter names, a filtered-only row is a miss too.
+    with pytest.raises(
+        SystemExit, match="exact_match,flexible-extract, exact_match,strict-match"
+    ):
+        generic.summarize_results(
+            {"results": {"gsm8k": GSM8K_ROW}}, ["gsm8k"], {"gsm8k": "exact_match"}
+        )
 
 
 def test_init_requires_tasks(tmp_path):
@@ -176,7 +258,11 @@ def test_run_end_to_end(tmp_path, monkeypatch):
             {
                 "hellaswag": _task("multiple_choice", "acc"),
                 "arc_easy": _task("multiple_choice", "acc"),
-                "gsm8k": _task("generate_until", "exact_match"),
+                "gsm8k": _task(
+                    "generate_until",
+                    "exact_match",
+                    filters=["strict-match", "flexible-extract"],
+                ),
             },
             {"lm-eval-test-group": SimpleNamespace()},
         ),
@@ -187,7 +273,12 @@ def test_run_end_to_end(tmp_path, monkeypatch):
         calls.append(kwargs)
         if "gsm8k" in kwargs["tasks"]:
             return {
-                "results": {"gsm8k": {"exact_match,none": 0.9}},
+                "results": {
+                    "gsm8k": {
+                        "exact_match,strict-match": 0.9,
+                        "exact_match,flexible-extract": 0.1,
+                    }
+                },
                 "n-samples": {"gsm8k": {"effective": 30, "original": 30}},
                 "samples": {"gsm8k": [{"doc_id": 0, "exact_match": 1.0}]},
                 "groups": {},
@@ -209,6 +300,7 @@ def test_run_end_to_end(tmp_path, monkeypatch):
     assert outcome["n"] == 180
     assert outcome["mode"] == {"base": 2, "chat": 1}
     assert set(outcome["per_task"]) == {"hellaswag", "arc_easy", "gsm8k"}
+    assert outcome["per_task"]["gsm8k"]["key"] == "exact_match,strict-match"
     assert len(outcome["per_repeat"]) == 1
 
     # Two passes, one per mode, chat flags only on the chat pass.

@@ -34,8 +34,17 @@ Options (all through ``--option`` / the step's ``options`` config):
   (``%2C`` a comma, ``%20`` a space -- the ``stop=`` convention); applies
   to chat-mode generation only.
 * ``metric``: the primary metric to report, for every task (e.g.
-  ``acc_norm``). Unset uses each task's own primary (its config's first
-  ``metric_list`` entry).
+  ``acc_norm``), or one exact results key ``<metric>,<filter>`` (e.g.
+  ``exact_match,strict-match``) to pick a filter. Unset uses each task's own
+  primary (its config's first ``metric_list`` entry).
+
+A task's metric is read from its results row as ``<metric>,none`` (a task
+without a ``filter_list``), then bare ``<metric>``, then ``<metric>,<filter>``
+for each of the task's ``filter_list`` names in their yaml order -- so gsm8k's
+``exact_match`` reads ``exact_match,strict-match``, its first filter. The key
+read lands in ``details.per_task`` (``key``). A task whose row has none of
+these keys fails the run (after its artifacts are written), naming the keys
+it does have: a missing metric is never reported as a null score.
 
 Semantics: the headline ``value`` is the macro mean over the resolved
 tasks of each task's primary metric (a single task: its metric), ``n`` the
@@ -92,8 +101,11 @@ OUTPUT_TYPE_MODE = {
     "multiple_choice": "base",
     "loglikelihood": "base",
 }
-# lm-eval results rows key metrics as "<metric>,<aggregation>" (acc,none);
-# a few bare (older task configs). Try both, in that order.
+# lm-eval results rows key metrics as "<metric>,<filter>": "none" for a task
+# without a filter_list (acc,none), else one key per filter_list entry
+# (gsm8k: exact_match,strict-match and exact_match,flexible-extract); a few
+# bare (older task configs). The unfiltered forms first, then the task's
+# filters in their yaml order.
 METRIC_KEY_FORMATS = ("{m},none", "{m}")
 
 
@@ -164,33 +176,77 @@ def resolve_modes(output_types: dict[str, str], mode: str) -> dict[str, list[str
     return dict(sorted(groups.items()))
 
 
-def metric_keys(name: str) -> list[str]:
-    """The results-row keys a metric may appear under."""
-    return [fmt.format(m=name) for fmt in METRIC_KEY_FORMATS]
+def metric_keys(name: str, filters: list[str] | tuple[str, ...] = ()) -> list[str]:
+    """The results-row keys a metric may appear under, in lookup order: the
+    unfiltered forms, then one per filter in ``filters`` (the task's
+    ``filter_list`` names, yaml order). A name that already carries a
+    filter (``exact_match,strict-match``) is that one key."""
+    if "," in name:
+        return [name]
+    keys = [fmt.format(m=name) for fmt in METRIC_KEY_FORMATS]
+    keys += [f"{name},{f}" for f in filters if f"{name},{f}" not in keys]
+    return keys
+
+
+def task_filters(task: Any) -> list[str]:
+    """A task's ``filter_list`` names in yaml order (empty: no filter_list,
+    i.e. the harness's implicit ``none``)."""
+    filter_list = getattr(getattr(task, "config", None), "filter_list", None) or []
+    names = []
+    for entry in filter_list:
+        name = (
+            entry.get("name")
+            if isinstance(entry, dict)
+            else getattr(entry, "name", None)
+        )
+        if name:
+            names.append(name)
+    return names
 
 
 def summarize_results(
-    results: dict, tasks: list[str], primary: dict[str, str]
+    results: dict,
+    tasks: list[str],
+    primary: dict[str, str],
+    filters: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """The headline and per-task numbers from one (or merged) simple_evaluate
     output: macro mean over ``tasks`` of each task's primary metric, ``n``
     summed effective sizes. Group rows are left out (only leaf tasks are
-    averaged); a task whose metric key is missing counts in ``per_task`` with
-    a null value but not in the mean."""
+    averaged). ``filters`` gives each task's filter names (see
+    :func:`metric_keys`); a task whose row has none of its metric's keys
+    fails with SystemExit rather than report a null."""
+    filters = filters or {}
     per_task: dict[str, dict[str, Any]] = {}
     values, n = [], 0
     rows = results.get("results") or {}
     sizes = results.get("n-samples") or {}
+    missing = []
     for task in tasks:
         row = rows.get(task) or {}
         name = primary[task]
-        value = next((row[k] for k in metric_keys(name) if k in row), None)
+        key = next(
+            (k for k in metric_keys(name, filters.get(task, ())) if k in row), None
+        )
+        if key is None:
+            have = sorted(k for k in row if "_stderr" not in k and k != "alias")
+            missing.append(
+                f"{task!r}: no {name!r} (has {', '.join(have) or 'no metrics'})"
+            )
+            continue
+        value = row[key]
         size = (sizes.get(task) or {}).get("effective")
-        per_task[task] = {"metric": name, "value": value, "n": size}
-        if value is not None:
-            values.append(value)
+        per_task[task] = {"metric": name, "key": key, "value": value, "n": size}
+        values.append(value)
         if isinstance(size, int):
             n += size
+    if missing:
+        raise SystemExit(
+            "lm-eval: metric not in the results for "
+            + "; ".join(missing)
+            + ". Pass metric=<metric> or metric=<metric>,<filter> (lm_eval_results.json "
+            "under repeat-<k>/ has the full rows)"
+        )
     return {
         "value": sum(values) / len(values) if values else None,
         "n": n,
@@ -421,7 +477,12 @@ class LMEval(Benchmark):
                 dropped,
             )
         self._write(repeat_dir, merged, task_objects)
-        summary = summarize_results(merged, sorted(task_objects), primary)
+        summary = summarize_results(
+            merged,
+            sorted(task_objects),
+            primary,
+            {name: task_filters(task) for name, task in task_objects.items()},
+        )
         summary["duration_s"] = round(time.time() - started, 1)
         return summary
 

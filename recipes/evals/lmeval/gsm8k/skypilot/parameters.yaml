@@ -1,7 +1,9 @@
 # gsm8k on BlueVela (SkyPilot / SLURM), lmeval family image -- the generic
 # lm-eval bridge: lm-eval's own `gsm8k` task, 5-shot generation in chat mode
 # (mode=auto picks chat for it), graded exact_match on the strict-match
-# extraction (the `#### <answer>` regex), the harness's own protocol.
+# extraction (the `#### <answer>` regex), the harness's own protocol. The task
+# reports one exact_match per filter (strict-match, flexible-extract), so
+# OPTIONS names the one this recipe reports: metric=exact_match,strict-match.
 # Data: https://huggingface.co/datasets/openai/gsm8k (public, config `main`;
 # the job downloads it into the HF cache at run start).
 #
@@ -34,7 +36,7 @@ IMAGE: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:1ed3f370"
 LIMIT: ""
 REPEATS: ""
 WORKERS: 128
-OPTIONS: "tasks=gsm8k"
+OPTIONS: "tasks=gsm8k metric=exact_match,strict-match"
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Cluster ──────────────────────────────────────────────────────────

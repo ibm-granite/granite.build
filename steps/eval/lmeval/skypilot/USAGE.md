@@ -69,8 +69,15 @@ Options: `tasks` (required, comma-separated task/group ids; unknown names fail f
 before vLLM starts, with near-miss suggestions), `mode` (`auto` — the default —
 `chat` or `base`), `num_fewshot`, `gen_kwargs` (comma-separated `key=value` overrides
 of the tasks' generation kwargs, values percent-decoded like `stop=`), and `metric`
-(the primary metric for every task; default: each task's own, its config's first
+(the primary metric for every task, or one exact results key `<metric>,<filter>` such
+as `exact_match,strict-match`; default: each task's own, its config's first
 `metric_list` entry).
+
+A task's metric is read as `<metric>,none`, then bare `<metric>`, then
+`<metric>,<filter>` for each of the task's `filter_list` names in yaml order (gsm8k's
+`exact_match` reads `exact_match,strict-match`); `per_task` records the `key` read. A
+task whose results row has none of these fails the run, naming the keys it has — a
+missing metric is never written as a null score.
 
 `auto` picks each task's protocol from its `output_type`: generation tasks run in
 chat mode (`local-chat-completions`, `apply_chat_template`, `fewshot_as_multiturn`,
@@ -96,7 +103,8 @@ don't share an output dir).
 
 Two recipes ship as templates: `recipes/evals/lmeval/hellaswag` (base mode —
 multiple-choice loglikelihood, the leaderboard-standard `metric=acc_norm`) and
-`recipes/evals/lmeval/gsm8k` (chat mode — 5-shot generation, `exact_match`).
+`recipes/evals/lmeval/gsm8k` (chat mode — 5-shot generation,
+`metric=exact_match,strict-match`).
 A third, `recipes/evals/lmeval/gpqa-diamond`, is the warm-cache example: the
 dataset is Hub-gated, so the recipe runs `hf_offline` against a cache warmed by
 `make -C steps/eval prefetch` (see steps/eval/README.md, "The warm HF cache").

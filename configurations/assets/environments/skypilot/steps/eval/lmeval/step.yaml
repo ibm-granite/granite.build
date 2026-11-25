@@ -79,7 +79,9 @@ config:
   # lm-eval (the generic bridge) instead takes: "tasks=hellaswag,arc_easy"
   # (required; comma-separated harness task/group ids), "mode=auto|chat|base"
   # (auto: each task's output_type picks), "num_fewshot=5", "gen_kwargs=k=v,..."
-  # (percent-decoded values), "metric=acc_norm" (default: each task's primary).
+  # (percent-decoded values), "metric=acc_norm" or "metric=exact_match,strict-match"
+  # (a metric, or one exact <metric>,<filter> results key; default: each task's
+  # primary, read through its filter_list in yaml order when it has one).
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""
