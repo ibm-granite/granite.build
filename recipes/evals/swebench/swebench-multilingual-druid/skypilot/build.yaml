@@ -1,6 +1,6 @@
 granite.build:
   name: eval-swebench-multilingual-druid
-  # swebench-multilingual (swebench family). Two targets on one output dir: `swebench-multilingual-generate` holds a GPU only while the model generates, and `swebench-multilingual` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `swebench-multilingual` runs both.
+  # swebench (the generic bridge, swebench family) on SWE-bench_Multilingual's apache/druid instances. Two targets on one output dir: `swebench-multilingual-druid-generate` holds a GPU only while the model generates, and `swebench-multilingual-druid` grades that output on a CPU node (no vLLM), binding the generate target, so selecting `swebench-multilingual-druid` runs both. Both pass the same dataset/dataset_revision: the bridge requires dataset= in either phase, and the run dir is named after it.
   retries:
     max_retries: $${MAX_RETRIES}
     target_reuse_enabled: true
@@ -54,6 +54,8 @@ granite.build:
             log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
             benchmark: "swebench"
             image: "$${IMAGE_CPU}"
+            dataset: "$${DATASET}"
+            dataset_revision: "$${DATASET_REVISION}"
             model_path: "$${MODEL_PATH}"
             served_model_name: "$${SERVED_MODEL_NAME}"
             output_root: "$${OUTPUT_ROOT}"
