@@ -32,8 +32,10 @@ granite.build:
             # Every single-turn and multi-turn category. The agentic ones are left
             # out: web search has no backend here, so each call only waits out its
             # retries, and every memory category first replays its prerequisite
-            # conversations turn by turn, the long pole of the phase. The
-            # bfcl-agentic recipe covers both. Must match the score target's options.
+            # conversations turn by turn, the long pole of the phase. No build
+            # test exercises memory or web search: only bfcl-v4 recipe runs do
+            # (their default categories, all_scoring, include both). Must match
+            # the score target's options.
             options: "categories=single_turn,multi_turn"
             # Relative: composes and then resolves against the per-run
             # $GB_BUILD_WORKDIR (the output_dir rule) -- no cluster path.
