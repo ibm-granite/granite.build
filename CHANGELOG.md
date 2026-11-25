@@ -78,12 +78,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (which answers an anonymous check of a missing repository with 401) works after a plain
   `podman login`.
 
-- **granite-evals** — benchmark evaluation suite: 41 benchmarks across 9 harness families
-  (bfcl, bird, ifbench, judged, lmeval, nemoskills, swebench, tau, tbench), one image and
-  one sourced step per family under `steps/eval/`, with dispatch recipes under
-  `recipes/evals/` that split GPU generate from CPU score. No benchmark data is committed:
-  dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
-  time (#460).
+- **granite-evals** — benchmark evaluation suite: 58 benchmarks across 11 harness families
+  (bfcl, bird, ifbench, judged, lmeval, mcpmark, nemoskills, officeqa, swebench, tau,
+  tbench), one image and one sourced step per family under `steps/eval/`, with dispatch
+  recipes under `recipes/evals/` that split GPU generate from CPU score. No benchmark data
+  is committed: dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or
+  image-build time (#460).
+- **`bfcl-v3` benchmark (#237)** in the bfcl eval family (`space://steps/eval/bfcl`,
+  `benchmark: bfcl-v3`): the BFCL v3 leaderboard's own harness, data and Overall formula,
+  `bfcl-eval==2025.8.6.2` (the last v3 release: 17 categories, 4,441 entries). It runs from a
+  hash-locked side venv, `/opt/bfcl-v3`, in both bfcl images, because v3 and v4 are one
+  distribution at conflicting pins, with the same GPU generate / CPU score split as `bfcl-v4`.
+  `--option handler=` picks the request format: `fc` (the default: the checkpoint's chat
+  template and vLLM's tool parser, as `bfcl-v4`) or `legacy-granite` (BFCL prompt mode with
+  the Granite 4.0 prompt format; with `temperature=0.001` it reproduces the granite-4.0-micro
+  and granite-4.0-h-small model cards' BFCL v3 numbers within 0.4 points). Recipe
+  `recipes/evals/bfcl/bfcl-v3`; the SLURM build test covers both handlers.
 
 - **`single_node` step flag (#651)** — `environment_configs.Skypilot.single_node: true` makes
   gbserver resolve `num_nodes` from every layer the launch reads (`compute_config`, the step's

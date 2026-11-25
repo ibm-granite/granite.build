@@ -23,8 +23,12 @@ template and tool parser, sampling only when set. ``legacy-granite`` is BFCL
 prompt mode with the Granite 4.0 prompt format rendered by the handler and sent
 as text to the completions endpoint, the format Granite 4.0 BFCL v3 numbers were
 produced with (see :func:`bfcl_v3_child.granite4_prompt` for the template's
-source). Both send sampling only when set; ``temperature=0.001`` is BFCL's own
-default, which those runs used.
+source); the handler parses the tool calls from the model's ``<tool_call>``
+blocks itself. Both send ``temperature`` and ``top_p`` only when set
+(``temperature=0.001`` is BFCL's own default, which those runs used).
+``max_tokens``: ``fc`` sends it only when set; ``legacy-granite`` always sends
+one, BFCL prompt mode's min(4096, context - prompt - 2) unless set, counted by
+the serving vLLM (/tokenize, max_model_len), so it needs a vLLM endpoint.
 No web search, no memory: v3 has neither.
 
 Phases, resume and ``--repeats`` as in ``bfcl-v4``.
@@ -66,7 +70,8 @@ DEFAULT_PYTHON = "/opt/bfcl-v3/bin/python"
 HANDLER_DESCRIPTIONS = {
     "fc": "OpenAICompletionsHandler (FC) via the checkpoint's chat template and vLLM tool parser",
     "legacy-granite": "BFCL prompt mode, Granite 4.0 chat-template format (granite-4.0-micro@b77de16e), "
-                      "completions endpoint, <tool_call> text parsed by BFCL",
+                      "completions endpoint, <tool_call> blocks parsed by the handler (extract_tool_calls), "
+                      "max_tokens min(4096, context - prompt - 2) unless set",
 }
 
 OVERALL_GROUPS = {

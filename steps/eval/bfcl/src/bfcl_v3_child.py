@@ -23,7 +23,9 @@ What this changes in BFCL, and nothing else:
   rendered by the handler itself and sent as raw text to the completions
   endpoint, the way Granite 4.0 BFCL v3 numbers were produced before this step
   (BFCL's prompt-mode OSS handler pattern; see :func:`granite4_prompt`). The
-  model's tool calls are parsed from its ``<tool_call>`` text, not by vLLM.
+  model's tool calls are parsed from its ``<tool_call>`` text by
+  :func:`extract_tool_calls`, not by vLLM. Temperature and top_p are sent only
+  when set; max_tokens always is (:func:`max_new_tokens` unless set).
 
 - ``--limit``: v3 has no partial evaluation (it asserts a result for every
   entry of a category), so a limited score phase filters the category files to
@@ -326,7 +328,8 @@ def make_legacy_granite_handler(served_model_name: str, sampling: dict[str, Any]
         it uses the served endpoint (OPENAI_BASE_URL) instead of starting vLLM, so
         BFCL's threaded per-entry path runs it; the prompt is :func:`granite4_prompt`
         with no BFCL system prompt added (the template carries the tool
-        instructions); and sampling is sent only when configured."""
+        instructions); and sampling is sent only when configured, except
+        max_tokens, which defaults to BFCL prompt mode's budget."""
 
         def __init__(self, model_name, temperature) -> None:
             super().__init__(model_name, temperature)

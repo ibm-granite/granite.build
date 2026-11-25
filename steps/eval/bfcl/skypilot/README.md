@@ -29,8 +29,13 @@ parser doing the formatting, and sampling sent only when set (the checkpoint's
 generation_config applies otherwise). `bfcl-v3` also has `--option
 handler=legacy-granite`: BFCL prompt mode with the Granite 4.0 chat template's prompt
 format rendered by the handler, sent as text to the completions endpoint, the format
-Granite 4.0 BFCL v3 numbers were produced with. Use it to compare with those numbers
-(with `temperature=0.001`, BFCL's own default), and the default for anything else.
+Granite 4.0 BFCL v3 numbers were produced with. The handler itself parses the tool
+calls from the model's `<tool_call>` blocks. It sends `temperature` and `top_p` only
+when set, but it always sends `max_tokens`: unless that option is set, BFCL prompt
+mode's budget, min(4096, context length − prompt tokens − 2), counted with vLLM's
+`/tokenize` and `max_model_len`, so it needs a vLLM endpoint. To compare with the
+Granite 4.0 numbers, use `handler=legacy-granite temperature=0.001` (BFCL's own default
+temperature). For anything else, use the default handler, `fc`.
 
 The code is the vendored granite-evals runtime (`steps/eval/src`), baked into this
 family's image by `Dockerfile.gpu` / `Dockerfile.cpu` one directory up (built by
@@ -56,7 +61,7 @@ steps:
 | `repeats` | `""` (1) | Both versions are a single run. |
 | `workers` | `8` | Concurrent test entries (BFCL `--num-threads`). |
 | `dataset` / `dataset_revision` | `""` | Unused: the data ships inside the pinned bfcl-eval package. |
-| `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups of that version; default `all_scoring` for v4, `all` for v3), `temperature`, `top_p`, `max_tokens` (default: the checkpoint's generation_config), `include_input_log`; v4 only: `search_mcp_url`; v3 only: `handler` (`fc`, the default, or `legacy-granite`). |
+| `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups of that version; default `all_scoring` for v4, `all` for v3), `temperature`, `top_p`, `max_tokens` (default: the checkpoint's generation_config; with `handler=legacy-granite`, min(4096, context length − prompt tokens − 2)), `include_input_log`; v4 only: `search_mcp_url`; v3 only: `handler` (`fc`, the default, or `legacy-granite`). |
 | `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
