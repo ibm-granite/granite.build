@@ -1,0 +1,82 @@
+# EXAMPLE site file for the recipes under recipes/evals/. Every value is fake.
+#
+# Copy it to a private location (a private repo, or ~/.granite.build/local-env/),
+# fill in your site's values, and never commit the real one: it names your
+# hosts, users, accounts and paths. Secrets are named here, never given.
+#
+# One file serves both uses:
+#   scripts/setup-local-space.sh \
+#     --template recipes/environments/skypilot-slurm.template.yaml \
+#     --site <your-site.yaml> --name <env-name>
+# renders the environment from the "Environment" keys and sets ENVIRONMENT_URI
+# below to it, and
+#   gb build start -f recipes/evals/<family>/<benchmark>/skypilot/build.yaml \
+#     --param-file <your-site.yaml> --param OUTPUT_ROOT=<root>
+# hands every key to the recipe. A --param KEY=VALUE still overrides any of them.
+#
+# The keys and their names are those of recipes/distill/site.example.yaml, so a
+# site that runs both keeps one file: distill's file already holds every key
+# below but the optional SCORE_REMOTE_HOST. No eval recipe's parameters.yaml may
+# define one of them.
+
+# ─── Environment: identity and scheduler ─────────────────────────────
+# The rendered environment's `name`.
+ENV_NAME: "slurm-example"
+# SkyPilot cluster name (infra=slurm/<CLUSTER>); also the SSH Host alias and the cluster_configs key.
+CLUSTER: "example-cluster"
+# The GPU partition: the environment's default zone.
+GPU_PARTITION: "gpu"
+# The CPU-only partition: HF I/O steps, the image-cache import job and the score targets.
+CPU_PARTITION: "cpu"
+# #SBATCH --constraint pinning jobs to one GPU node type; "" leaves the directive out.
+GPU_CONSTRAINT: "a100"
+# SLURM account (association) the jobs are billed to.
+SLURM_ACCOUNT: "my-account"
+# Env-wide SLURM QOS, accepted on GPU_PARTITION.
+SLURM_QOS: "normal"
+# QOS for jobs on CPU_PARTITION.
+CPU_QOS: "cpu"
+# QOS for jobs on EVAL_PARTITION, when that partition refuses SLURM_QOS (a
+# preemptible partition often admits only its own). "" uses SLURM_QOS there.
+EVAL_QOS: ""
+
+# ─── Environment: filesystems ────────────────────────────────────────
+# Shared root of the per-run build workdirs (GB_BUILD_WORKDIR hangs off it).
+SHARED_WORKDIR: "/shared/gb/builds/"
+# SkyPilot's cluster workdir; an ancestor of SHARED_WORKDIR, bind-mounted into containers.
+CLUSTER_WORKDIR: "/shared/gb"
+# SkyPilot runtime dir, on storage every login node shares ($HOME expands remotely).
+CLUSTER_TMPDIR: "$HOME/skypilot-tmp"
+# Extra identity bind mounts into step containers: container_path, host_path, mode.
+CONTAINER_MOUNTS:
+  - container_path: "/shared"
+    host_path: "/shared"
+    mode: "rw"
+# Shared directory holding the imported .sqsh container images.
+IMAGE_CACHE_SHARE_PATH: "/shared/gb/image-cache"
+# Hugging Face cache for hf:// pulls, on shared storage.
+HF_CACHE_PATH: "/shared/gb/hfcache/"
+
+# ─── Environment: SSH to the login nodes ─────────────────────────────
+# Interchangeable login nodes; gbserver picks one per launch and fails over.
+LOGIN_HOSTS:
+  - "login1.example.org"
+  - "login2.example.org"
+# The user the jobs are submitted as.
+SSH_USER: "my-user"
+# NAME of the space secret holding that user's SSH private key (not the key).
+SSH_KEY_SECRET: "MY_CLUSTER_SSH_KEY"
+
+# ─── Recipes: where they run ─────────────────────────────────────────
+# The environment every SkyPilot target runs in; setup-local-space.sh rewrites this line.
+ENVIRONMENT_URI: "space://environments/skypilot-local/slurm-example"
+# Partition for the GPU generate targets (short, idempotent, retryable: a preemptible
+# one suits). May be GPU_PARTITION itself. CLUSTER and CPU_PARTITION above place the
+# rest: every target runs on CLUSTER, the CPU-only score targets on CPU_PARTITION.
+EVAL_PARTITION: "gpu-preemptible"
+
+# ─── Recipes: judged/multi-challenge build-local.yaml only ───────────
+# The login host build-local.yaml copies the generate output from, as the gbserver
+# user's ssh config (SCORE_SSH_CONFIG) names it. "" (or leaving the key out) uses
+# CLUSTER, the Host alias gbserver writes into ~/.slurm/config for the environment.
+SCORE_REMOTE_HOST: ""

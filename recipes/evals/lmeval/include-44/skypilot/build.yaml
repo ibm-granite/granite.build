@@ -33,5 +33,5 @@ granite.build:
               resources:
                 accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${EVAL_PARTITION}"
                 memory: $${GPU_MEMORY}

@@ -47,11 +47,10 @@ TENSOR_PARALLEL_SIZE: 1
 SANDBOX_CACHE: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
-ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
-CLUSTER: "bluevela"
-QUEUE: "gpu-mid"
+# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) comes from the site
+# file passed with --param-file; recipes/evals/site.example.yaml lists every key, and
+# none may also be set here.
 GPU_MEMORY: 256
-CPU_QUEUE: "cpu"
 SCORE_CPUS: 8
 SCORE_MEMORY: 64
 MAX_RETRIES: 2

@@ -33,7 +33,7 @@ granite.build:
               resources:
                 accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${EVAL_PARTITION}"
                 memory: $${GPU_MEMORY}
     fortress-adversity:
       environment_uri: "$${ENVIRONMENT_URI}"
@@ -69,6 +69,6 @@ granite.build:
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
-                zone: "$${CPU_QUEUE}"
+                zone: "$${CPU_PARTITION}"
                 memory: $${SCORE_MEMORY}
                 cpus: "$${SCORE_CPUS}"
