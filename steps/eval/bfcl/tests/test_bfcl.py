@@ -423,14 +423,20 @@ def test_child_regenerates_a_memory_category_with_infra_errors(tmp_path, harness
     root = tmp_path / "bfcl"
     d = root / "result" / bfcl.REGISTRY_NAME / "agentic" / "memory" / "kv"
     d.mkdir(parents=True)
-    (d / "BFCL_v4_memory_kv_prereq_result.json").write_text(json.dumps({"id": "memory_kv_prereq_0-a-0", "result": INFRA}) + "\n")
-    (d / "BFCL_v4_memory_kv_result.json").write_text(json.dumps({"id": "memory_kv_0", "result": [{"f": "{}"}]}) + "\n")
+    # Stale records that the regeneration cannot write again: both files must be dropped,
+    # not kept (BFCL would skip the ids they hold) or appended to.
+    prereq, scored = d / "BFCL_v4_memory_kv_prereq_result.json", d / "BFCL_v4_memory_kv_result.json"
+    prereq.write_text(json.dumps({"id": "memory_kv_prereq_0-a-0", "result": INFRA + " STALE-PREREQ"}) + "\n")
+    scored.write_text(json.dumps({"id": "memory_kv_0", "result": [{"stale_scored": "{}"}]}) + "\n")
     snapshot = root / "result" / bfcl.REGISTRY_NAME / "memory_snapshot" / "memory_kv"
     snapshot.mkdir(parents=True)
     (snapshot / "stale-marker").write_text("")
     proc = _child(root, "generate", ["memory_kv"], _closed_port_url())
     assert "memory_kv: regenerating the category, 1 entries hit infrastructure errors" in proc.stdout, proc.stderr[-2000:]
     assert not (snapshot / "stale-marker").exists()
+    for path, stale in ((prereq, "STALE-PREREQ"), (scored, "stale_scored")):
+        assert not path.exists() or stale not in path.read_text(), path.name
+    assert prereq.exists() and '"memory_kv_prereq_' in prereq.read_text()  # regenerated, not just dropped
     assert proc.returncode == bfcl.INFRA_EXIT  # the endpoint is still down: the regenerated chain failed again
 
 
