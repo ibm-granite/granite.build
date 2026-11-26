@@ -36,9 +36,11 @@ its pinned image (`config.image`, set by the recipe — e.g. the `IMAGE` /
 
 Bumping a benchmark's behavior means editing `src/` or the family's
 `<family>/src/`, rebuilding the family image,
-pushing it (`make publish-image-<family> REGISTRY=quay.io/granitebuild`; `IMAGE_VERSION`
-defaults to the short SHA of the commit you build from, and publishing refuses a tag
-that already exists), and re-pinning its tag in the recipe `parameters.yaml` — recipes under
+pushing it (`make publish-image-<family> REGISTRY=quay.io/granitebuild`, and
+`publish-image-cpu-<family>` for its CPU image; `IMAGE_VERSION` defaults to the short
+SHA of the commit you build from, each publish first runs the vulnerability gate, and
+publishing refuses a tag that already exists), and re-pinning its tag in the recipe
+`parameters.yaml` — recipes under
 `recipes/evals/<family>/<benchmark>/skypilot/` choose which benchmarks a model
 family is scored on and own the image pins.
 
