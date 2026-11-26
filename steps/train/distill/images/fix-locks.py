@@ -58,8 +58,11 @@ def say(msg):
     print(f"[fix-lock] {msg}", flush=True)
 
 
-def scan(cmd, ignores=frozenset()):
-    """Run osv-scanner; return {package: (version, best fix, worst score, ids)} at any severity."""
+def scan(cmd, ignores=()):
+    """Run osv-scanner; return {package: (version, best fix, worst score, ids)} at any severity.
+
+    `ignores` are the live (unexpired) scan-ignore entries; a group is skipped only when
+    one of them lists its id and its package scope covers this package and version."""
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode not in (0, 1):
         sys.stderr.write(proc.stderr)
@@ -69,9 +72,14 @@ def scan(cmd, ignores=frozenset()):
     for result in report.get("results", []):
         for pkg in result.get("packages", []):
             name, version = pkg["package"]["name"], pkg["package"]["version"]
+            ecosystem = pkg["package"].get("ecosystem", "")
             vulns = {v["id"]: v for v in pkg.get("vulnerabilities", [])}
             for group in pkg.get("groups", []):
-                if osv_gate.group_ids(group) & ignores:
+                ids = osv_gate.group_ids(group)
+                if any(
+                    e["id"] in ids and osv_gate.scope_matches(e, ecosystem, name, version)
+                    for e in ignores
+                ):
                     continue  # accepted in <image dir>/scan-ignore
                 sev = group.get("max_severity")
                 score = float(sev) if sev not in (None, "") else None
@@ -187,7 +195,12 @@ def main():
             "usage: fix-locks.py <image dir> <SEVERITY> -- <osv-scanner json command...>"
         )
     image_dir, gate, cmd = Path(sys.argv[1]), sys.argv[2].upper(), sys.argv[4:]
-    ignores = osv_gate.load_ignores(image_dir / "scan-ignore")
+    today = osv_gate.utc_today()
+    ignores = [
+        e
+        for e in osv_gate.load_ignore_entries(image_dir / "scan-ignore")
+        if not osv_gate.is_expired(e, today)
+    ]
     if ignores:
         say(
             f"skipping {len(ignores)} advisory ids accepted in {image_dir / 'scan-ignore'}"
