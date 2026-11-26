@@ -58,6 +58,39 @@ def test_a_requiring_arm_without_it_is_a_problem(arm, lmo):
 
 
 @pytest.mark.parametrize("arm", _REQUIRING)
+@pytest.mark.parametrize("lmo", ["true", 1], ids=["string", "int"])
+def test_only_the_boolean_true_satisfies_it(arm, lmo):
+    """A YAML string or a 1 is not the boolean the trainer's parser needs; the check is
+    `is not True`, not falsiness."""
+    for form in _forms(arm):
+        cfg = {"response_template": _TEMPLATE, "last_message_only": lmo, **form}
+        (problem,) = _lmo_problems(cfg)
+        assert f"it is {lmo!r}" in problem
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
+def test_the_message_names_who_refuses_it(arm):
+    """Named as loss_arm, the renderer refuses it; inferred from the switch alone (a config
+    that never went through the renderer), only CustomGOLDConfig does."""
+    named, switch = _forms(arm)
+    (problem,) = _lmo_problems({"response_template": _TEMPLATE, **named})
+    assert "render_gold_config.py refuses it at render and CustomGOLDConfig" in problem
+    (problem,) = _lmo_problems({"response_template": _TEMPLATE, **switch})
+    assert "render_gold_config.py" not in problem
+    assert "CustomGOLDConfig refuses it at startup" in problem
+
+
+@pytest.mark.parametrize("mode", ["uld_per_turn_regions", "uld_reuse_student_input"])
+def test_uld_modes_that_render_the_teacher_otherwise_are_exempt(mode):
+    """The exemptions CustomGOLDConfig makes: per-turn regions require false, and a
+    teacher reusing the student's input needs no last-turn render."""
+    for form in _forms("uld"):
+        cfg = {"response_template": _TEMPLATE, mode: True, **form}
+        assert masking.check_config(_DOC, cfg) == []
+        assert masking.check_config(_DOC, {**cfg, "last_message_only": False}) == []
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
 def test_a_requiring_arm_with_it_is_sound(arm):
     """The direction that changed: true is no longer reported for these arms."""
     for form in _forms(arm):

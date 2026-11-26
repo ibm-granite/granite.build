@@ -470,6 +470,26 @@ class CustomGOLDConfig(GOLDConfig):
                 "use_old_uld_loss needs trl 1.x's byte-offset ULD inputs, which this trainer "
                 "does not produce; use CustomULDLoss (use_old_uld_loss: false)."
             )
+        # The single-region ULD teacher is rendered as msgs[:-1] against msgs: its completion
+        # is the LAST assistant turn. With last_message_only=false the collator labels every
+        # assistant turn, the base path's one region per row starts at the first, and no
+        # multi-turn row aligns (render_gold_config.py's uld arm requires it for the same
+        # reason; this catches a config that bypasses the renderer). The two exceptions
+        # render the teacher another way: per-turn regions (one teacher region per assistant
+        # turn, and they require false), and reusing the student's own input as the teacher's.
+        if (
+            self.use_uld_loss
+            and not self.last_message_only
+            and not self.uld_per_turn_regions
+            and not self.uld_reuse_student_input
+        ):
+            raise ValueError(
+                "use_uld_loss requires last_message_only=true: the ULD teacher is rendered as "
+                "the last assistant turn only, so with false the student's span starts at the "
+                "first assistant turn and no multi-turn row aligns (the loss is zero). Set "
+                "last_message_only: true, or uld_per_turn_regions: true (with "
+                "uld_use_hybrid_loss: true) to supervise every turn."
+            )
 
         # Validate alpha is non-negative
         if not (0.0 <= self.alpha <= 1.0):

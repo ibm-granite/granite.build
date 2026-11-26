@@ -219,3 +219,45 @@ def test_a_run_shorter_than_one_window_is_judged_at_train_end(tmp_path):
     with pytest.raises(RuntimeError, match=r"ULD steps 1-2: 2 of 4 rows"):
         trainer.train()
     assert trainer.state.global_step == 2
+
+
+# ── Before the guard: the config refuses the known systematic cause ──────────────────
+
+
+def _config(tmp_path, **overrides):
+    kw = dict(output_dir=str(tmp_path), report_to=[], use_cpu=True, use_uld_loss=True)
+    kw.update(overrides)
+    return CustomGOLDConfig(**kw)
+
+
+@pytest.mark.parametrize("lmo", [None, False], ids=["default", "false"])
+def test_the_config_refuses_uld_without_last_message_only(tmp_path, lmo):
+    """The same requirement as render_gold_config.py's uld arm, for a config that never
+    went through the renderer, as CustomGOLDConfig already does for sampled_opd."""
+    overrides = {} if lmo is None else {"last_message_only": lmo}
+    with pytest.raises(
+        ValueError, match="use_uld_loss requires last_message_only=true"
+    ):
+        _config(tmp_path, **overrides)
+
+
+def test_the_config_accepts_uld_with_last_message_only(tmp_path):
+    assert _config(tmp_path, last_message_only=True).last_message_only is True
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        {"uld_per_turn_regions": True, "uld_use_hybrid_loss": True},
+        {"uld_reuse_student_input": True},
+    ],
+    ids=["per-turn-regions", "reuse-student-input"],
+)
+def test_the_config_exempts_the_modes_that_render_the_teacher_otherwise(tmp_path, mode):
+    """Per-turn regions give the teacher one region per assistant turn and REQUIRE false;
+    reusing the student's input gives the teacher the student's own spans."""
+    assert _config(tmp_path, last_message_only=False, **mode).use_uld_loss is True
+
+
+def test_the_config_leaves_other_arms_alone(tmp_path):
+    assert _config(tmp_path, use_uld_loss=False).last_message_only is False
