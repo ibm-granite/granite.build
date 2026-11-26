@@ -8,8 +8,9 @@ from that commit in these ways, and in no other:
 - **Formatting.** Every file is reformatted with `black` and `isort`, which CI enforces
   repo-wide. To compare against upstream, format both sides the same way first.
 - **Local patches** in `custom_gold_config.py`, `custom_gold_trainer.py` and `masking.py`,
-  described below: the two on-policy study patches, the ULD base-path fix, the ULD
-  alignment guard, and check-config's `last_message_only` rule.
+  described below: the two on-policy study patches, the ULD base-path fix, the crop for a
+  teacher that reuses the student's input, the ULD alignment guard, and check-config's
+  `last_message_only` rule.
 
 ## Licence
 
@@ -130,12 +131,20 @@ loss would be one rank's alone, and the other ranks would wait in backward's col
 until the NCCL timeout.
 The layouts the logit-distill step builds never put a completion there: the collator's spans
 start after the response template or the prompt, and the single-region teacher crop keeps
-`teacher_prompt_length - 1`. One mode the step cannot reach can: `uld_reuse_student_input`
-with a batch larger than 1. The collator left-pads, and the crop then uses the batch's
-longest prompt, so a row whose completion starts earlier is cut into, and its labels can
-start at position 0. That mis-crop is older than this guard; the guard turns it from a wrong
-slice into a refusal. `_unpredictable_start`'s docstring still says no layout can
-do this. It is an image input, so it is left as it is, and the follow-up issue records it.
+`teacher_prompt_length - 1`.
+
+## Local fix: the crop for a teacher that reuses the student's input
+
+With `uld_reuse_student_input` (a debugging mode the step cannot reach), the teacher's
+`input_ids` and labels are the student's, and `teacher_prompt_length` was
+`inputs["prompts"].shape[1]`, the batch's longest prompt. The collator left-pads, so the rows
+end together and, at a batch larger than 1, a row with a shorter prompt and a longer
+completion starts its completion before that column: the crop cut into it, the teacher lost
+its first tokens, and its labels started at position 0. The mis-crop came with the import.
+`teacher_prompt_length` is now the first column any row labels, and at least 1
+(`earliest_completion_column`), so every row's completion is kept whole with the logit
+before it. The crop is exactly as wide as a per-row crop padded to one width: for rows that
+end together, both are the longest completion plus one.
 
 ## Local addition: refusing a ULD run that trains on nothing
 

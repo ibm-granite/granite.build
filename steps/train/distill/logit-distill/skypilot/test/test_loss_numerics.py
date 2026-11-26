@@ -770,6 +770,32 @@ class TestULDCompletionAtPositionZero:
             assert (tmp_path / f"rank{rank}.txt").read_text() == "raised"
 
 
+class TestEarliestCompletionColumn:
+    """The crop column for a teacher that reuses the student's input. The rows are
+    left-padded, so they end together and their completions start at different columns;
+    the crop must keep the logit before the EARLIEST one."""
+
+    def test_is_the_first_column_any_row_labels(self):
+        labels = torch.tensor(
+            [
+                [IGNORE, IGNORE, IGNORE, IGNORE, IGNORE, 4, 0],  # longest prompt
+                [IGNORE, IGNORE, IGNORE, 3, 4, 4, 0],  # starts 2 columns earlier
+            ]
+        )
+        assert cgt.earliest_completion_column(labels) == 3
+
+    def test_is_at_least_1(self):
+        """A row labelled at column 0 keeps column 0 in the crop, where the loss finds it
+        at position 0 and skips it for the guard to refuse; -1 would crop the last
+        column only."""
+        labels = torch.tensor([[2, 0, IGNORE], [IGNORE, 3, 0]])
+        assert cgt.earliest_completion_column(labels) == 1
+
+    def test_no_labels_crops_to_the_last_column(self):
+        labels = torch.full((2, 5), IGNORE)
+        assert cgt.earliest_completion_column(labels) == 5
+
+
 def _spawn_two_ranks(fn, tmp_path):
     mp = pytest.importorskip("torch.multiprocessing")
     if not torch.distributed.is_available():

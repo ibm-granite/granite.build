@@ -327,5 +327,42 @@ def test_rebuilding_the_student_aligns_multi_turn_rows_without_last_message_only
     assert line["train/alignment_unaligned_rows"] == 0
 
 
+def test_reusing_the_student_input_keeps_every_rows_completion(tmp_path, monkeypatch):
+    """uld_reuse_student_input at batch 2. The collator left-pads, so the rows end
+    together; row 1's prompt is shorter and its completion longer, so its completion
+    starts before the batch's longest prompt ends. Cropped at that prompt, the teacher
+    lost row 1's first tokens and its labels started at position 0. Cropped at the
+    earliest completion, the teacher scores exactly the student's completion on every
+    row, from position 1 or later, and both rows align. (With the hybrid loss: the
+    mode's tokenizer check reads `jaccard`, which only the hybrid loss's vocabulary
+    mapping sets.)"""
+    trainer = _trainer(tmp_path, uld_reuse_student_input=True, uld_use_hybrid_loss=True)
+    inputs = trainer.data_collator([trainer.train_dataset[i] for i in (0, 1)])
+    first = [int((row != -100).nonzero()[0]) for row in inputs["labels"]]
+    assert min(first) < inputs["prompts"].shape[1]  # the layout this is about
+
+    loss_fn = trainer.uld_loss_fn
+    seen = {}
+    real_call = cgt.CustomULDLoss.__call__
+
+    def spy(self, **kw):  # trl's ULDLoss defines __call__, not forward
+        seen.update(kw)
+        return real_call(self, **kw)
+
+    monkeypatch.setattr(cgt.CustomULDLoss, "__call__", spy)
+    trainer.compute_loss(trainer.model, inputs)
+
+    for row in (0, 1):
+        s_mask = seen["student_labels"][row] != -100
+        t_mask = seen["teacher_labels"][row] != -100
+        assert torch.equal(
+            seen["teacher_input_ids"][row][t_mask],
+            seen["student_input_ids"][row][s_mask],
+        )
+        assert int(t_mask.nonzero()[0]) >= 1
+    assert loss_fn._alignment_unpredictable == 0
+    assert (loss_fn._alignment_rows, loss_fn._alignment_unaligned) == (2, 0)
+
+
 def test_the_config_leaves_other_arms_alone(tmp_path):
     assert _config(tmp_path, use_uld_loss=False).last_message_only is False

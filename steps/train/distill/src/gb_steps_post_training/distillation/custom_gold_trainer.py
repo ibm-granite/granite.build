@@ -288,6 +288,27 @@ def build_teacher_inputs_from_texts_with_eos_control(
     )
 
 
+def earliest_completion_column(labels: torch.Tensor, ignore_index: int = -100) -> int:
+    """`teacher_prompt_length` for a teacher that reuses the student's input
+    (uld_reuse_student_input): the first column any row labels, and at least 1.
+
+    The crop keeps `teacher_prompt_length - 1` onward, the logit before each row's first
+    completion token included, so no row's completion is cut into and none starts at
+    position 0 unless its own input has no prompt. The batch's longest prompt is the
+    wrong column here: the collator left-pads input_ids, so the rows END together and
+    each completion starts at the width less its own length, before that column for any
+    row whose completion is longer than the width less the longest prompt. Cropping every
+    row at the earliest completion is also no wider than a per-row crop padded to one
+    width: for rows that end together, both are the longest completion plus one; for the
+    on-policy batch, whose completions start at one column, the two are the same crop. A
+    batch with no labelled position gets its last column, a crop of one unlabelled column.
+    """
+    labelled = (labels != ignore_index).any(dim=0).nonzero()
+    if labelled.numel() == 0:
+        return labels.shape[1]
+    return max(int(labelled[0]), 1)
+
+
 def contiguous_label_spans(
     labels_row, ignore_index: int = -100
 ) -> list[tuple[int, int]]:
@@ -1937,12 +1958,15 @@ class CustomULDLoss(ULDLoss):
         token t + 1. A completion at position 0 has no predictor, and start-1 = -1 would
         silently slice from the END of the row instead. Every layout this trainer builds has
         a prompt: the collator's spans start after the response template or the rendered
-        prompt, the single-region teacher crop keeps `teacher_prompt_length - 1`, and the
-        per-turn teacher pack puts each region at block offset + 1. So this is a
-        construction error, not a data condition to degrade over, and ULDAlignmentGuard
-        refuses any such row at the optimizer step, on every rank alike. It is not raised
-        here: this runs on one rank's rows, and the other ranks would wait in backward's
-        collective until the NCCL timeout.
+        prompt, the single-region teacher crop keeps `teacher_prompt_length - 1` (the
+        builder's common prompt length, or, for a teacher reusing the student's input, the
+        batch's earliest completion: `earliest_completion_column`), and the per-turn
+        teacher pack puts each region at block offset + 1. So a completion reaches
+        position 0 only when its row's own input has no prompt: a construction error, not
+        a data condition to degrade over, and ULDAlignmentGuard refuses any such row at
+        the optimizer step, on every rank alike. It is not raised here: this runs on one
+        rank's rows, and the other ranks would wait in backward's collective until the
+        NCCL timeout.
         """
         if student_start < 1 or teacher_start < 1:
             self._alignment_unpredictable += 1
@@ -5427,7 +5451,10 @@ class CustomGOLDTrainer(GOLDTrainer):
                 teacher_input_ids = inputs["input_ids"]
                 teacher_labels = inputs["labels"]
                 teacher_attention_mask = inputs["attention_mask"]
-                teacher_prompt_length = inputs["prompts"].shape[1]
+                # Not inputs["prompts"].shape[1], the batch's longest prompt: these rows are
+                # left-padded, so a row's completion can start before that column, and the
+                # crop below would cut into it.
+                teacher_prompt_length = earliest_completion_column(inputs["labels"])
             elif (
                 "messages" in inputs
                 and inputs["messages"] is not None
