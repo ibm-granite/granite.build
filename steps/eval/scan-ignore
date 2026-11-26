@@ -17,7 +17,10 @@
 #   accepted in, and the gates accept it nowhere else: the same id in another package,
 #   or another version of the same one, fails. osv-gate.py
 #   (steps/train/distill/images/) reads this file as it is. trivy gets the YAML ignore
-#   file scripts/trivy-ignore.py writes from it at gate time (its `purls` field). The
+#   file scripts/trivy-ignore.py writes from it at gate time (its `purls` field, with
+#   names as trivy writes them). trivy cannot apply a scope to a finding it has no
+#   package URL for, and matches such a finding by id alone (none of the 19 images'
+#   findings lacks one today; see scripts/trivy-ignore.py). The
 #   scopes were taken from what the gates report in the 19 published images and the
 #   lock, so a new version of a listed package needs a new review, not a wider scope.
 #   One file serves every family. An entry names packages, not images, so it covers

@@ -62,7 +62,7 @@ def test_generated_yaml_keeps_every_entry(tmp_path):
     for e, item in zip(entries, items, strict=True):
         assert set(item) <= {"id", "purls", "expired_at", "statement"}
         assert item["id"] == e["id"]
-        assert item.get("purls", []) == [trivy_ignore.purl_string(p) for p in e["purls"]]
+        assert item.get("purls", []) == [trivy_ignore.trivy_purl(p) for p in e["raw_purls"]]
         # yaml decodes the bare date as a date, as trivy's yaml.v3 decodes it into time.Time
         assert item.get("expired_at") == e["expires"]
         assert isinstance(item["statement"], str) and item["statement"]
@@ -91,6 +91,18 @@ def test_generated_yaml_shape(tmp_path):
             "statement": 'second: "quoted"',
         },
     ]
+
+
+def test_pypi_names_follow_trivys_normalisation(tmp_path):
+    """trivy lowercases and turns `_` into `-` but keeps dots (zope.interface), and
+    compares names exactly; osv-gate compares PEP 503 names, so both forms match there."""
+    src = tmp_path / "scan-ignore"
+    src.write_text("CVE-2026-2 pkg:pypi/Zope.Interface@7.2 pkg:pypi/ruamel.yaml_clib@0.2.12\n")
+    item = generate(tmp_path, src)["vulnerabilities"][0]
+    assert item["purls"] == ["pkg:pypi/zope.interface@7.2", "pkg:pypi/ruamel.yaml-clib@0.2.12"]
+    entry = osv_gate.load_ignore_entries(src)[0]
+    assert osv_gate.scope_matches(entry, "PyPI", "zope.interface", "7.2")
+    assert osv_gate.scope_matches(entry, "PyPI", "zope-interface", "7.2")
 
 
 def test_empty_file_gives_an_empty_list(tmp_path):

@@ -32,6 +32,12 @@ the same package scope osv-gate does:
         expired_at: 2027-05-31
         statement: "pillow 11.3.0 (judged), ..."
 
+Names are written as trivy writes them into a finding's purl (see trivy_name), since
+trivy compares them exactly. One gap remains on trivy's side: a finding in a package
+trivy has no purl for matches a scoped entry by its id alone (pkg/result/ignore.go,
+matchPURL), so the scope does not apply to it. In trivy's reports of the 19
+published eval images, all 31,025 findings carry a purl; osv-gate.py has no such gap.
+
 The statement is the entry's section heading. The output file must end in .yaml:
 that is how trivy tells the YAML format from the plain one. The make targets write
 it under SCAN_CACHE at gate time; it is not committed.
@@ -53,6 +59,20 @@ _spec.loader.exec_module(osv_gate)
 def purl_string(purl):
     ptype, name, version = purl
     return f"pkg:{ptype}/{name}" + (f"@{version}" if version else "")
+
+
+def trivy_name(ptype, name):
+    """A package name as trivy writes it into a finding's purl, which its ignore
+    matching compares exactly: for PyPI lowercase with `_` turned into `-`, dots kept
+    (trivy pkg/purl parsePyPI), so zope.interface stays zope.interface where PEP 503
+    would give zope-interface. Other types as written."""
+    return name.lower().replace("_", "-") if ptype == "pypi" else name
+
+
+def trivy_purl(raw):
+    """One entry purl, as written in scan-ignore, in trivy's form."""
+    ptype, name, version = raw
+    return purl_string((ptype, trivy_name(ptype, name), version))
 
 
 def sections(path):
@@ -78,7 +98,7 @@ def render(path):
     for e in entries:
         out.append(f"  - id: {json.dumps(e['id'])}")
         if e["purls"]:
-            out.append("    purls: [" + ", ".join(json.dumps(purl_string(p)) for p in e["purls"]) + "]")
+            out.append("    purls: [" + ", ".join(json.dumps(trivy_purl(p)) for p in e["raw_purls"]) + "]")
         if e["expires"]:
             out.append(f"    expired_at: {e['expires'].isoformat()}")
         statement = heading.get(index.get(e["line"], 0), "")

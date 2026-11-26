@@ -197,8 +197,8 @@ def normalize_name(purl_type, name):
     return name.lower()
 
 
-def parse_purl(token):
-    """`pkg:<type>/<name>[@<version>]` -> (type, name, version or None).
+def split_purl(token):
+    """`pkg:<type>/<name>[@<version>]` -> (type, name as written, version or None).
 
     A namespace (`pkg:deb/debian/name`) is kept in the name. Qualifiers and subpaths
     are not supported: they are rejected rather than ignored."""
@@ -209,8 +209,13 @@ def parse_purl(token):
     name, _, version = rest.rpartition("@") if "@" in rest else (rest, "", "")
     if not ptype or not name:
         raise ValueError(f"unsupported purl {token!r}: use pkg:<type>/<name>[@<version>]")
-    ptype = ptype.lower()
-    return ptype, normalize_name(ptype, name), version or None
+    return ptype.lower(), name, version or None
+
+
+def parse_purl(token):
+    """`pkg:<type>/<name>[@<version>]` -> (type, normalised name, version or None)."""
+    ptype, name, version = split_purl(token)
+    return ptype, normalize_name(ptype, name), version
 
 
 def parse_ignore_line(line):
@@ -222,12 +227,13 @@ def parse_ignore_line(line):
     if not text:
         return None
     fields = text.split()
-    entry = {"id": fields[0], "expires": None, "purls": [], "line": line.strip()}
+    entry = {"id": fields[0], "expires": None, "purls": [], "raw_purls": [], "line": line.strip()}
     for field in fields[1:]:
         if field.startswith("exp:"):
             entry["expires"] = datetime.date.fromisoformat(field[len("exp:") :])
         elif field.startswith("pkg:"):
             entry["purls"].append(parse_purl(field))
+            entry["raw_purls"].append(split_purl(field))
         else:
             raise ValueError(f"unknown field {field!r} in ignore entry {line.strip()!r}")
     return entry
