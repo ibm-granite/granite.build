@@ -61,6 +61,12 @@ cpu_ref = $(REGISTRY)/steps/eval/$(1)/images/cpu:$(IMAGE_VERSION)
 # trivy runs as the container TRIVY_IMAGE, pinned by digest (the same pin as
 # steps/train/distill and steps/aux/hf-export), so a gate's verdict does not depend on
 # whichever trivy a host has installed; its database is cached under SCAN_CACHE.
+# Then the CVSS half: some environments are resolved while the image builds, not from
+# the lock (mcpmark's harness venv and its warmed postgres-mcp, nemoskills' SciCode
+# sandbox and COMET env). Each records its set as granite-freeze.txt under /opt. The
+# gate reads every such file out of the image and runs it through osv-scanner and
+# osv-gate.py, as scan-deps does for the lock, with the same scan-ignore. trivy alone
+# would rate those packages by GHSA only.
 SCAN_SEVERITY ?= HIGH
 SCAN_CACHE    ?= $(HOME)/.cache/gb-image-scan
 SCAN_IGNORE   ?= scan-ignore
@@ -112,10 +118,29 @@ define scan-image
 	t --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed --exit-code 3 --format table --skip-db-update; rc=$$?; \
 	rm -f "$$tar"; \
 	case $$rc in \
-		0) echo "[scan] $(1): no fixable $(SCAN_SEVERITY) vulnerabilities" ;; \
+		0) ;; \
 		3) echo "[scan] FAILED: $(1) has fixable $(SCAN_SEVERITY) vulnerabilities" >&2; exit 1 ;; \
 		*) echo "[scan] trivy did not run (exit $$rc)" >&2; exit $$rc ;; \
-	esac
+	esac; \
+	echo "[scan] osv-scanner over the environments $(1) resolved at build time (granite-freeze.txt)"; \
+	d=$$(mktemp -d "$(SCAN_CACHE)/envs.XXXXXX") || exit 1; \
+	$(DOCKER) run --rm --network=none $(1) sh -c 'find /opt -maxdepth 4 -name granite-freeze.txt -type f' > "$$d/list" \
+		|| { rm -rf "$$d"; echo "[scan] could not list the environments in $(1)" >&2; exit 1; }; \
+	orc=0; n=0; \
+	for f in $$(cat "$$d/list"); do \
+		n=$$((n + 1)); mkdir -p "$$d/$$n"; \
+		echo "== $$f"; \
+		$(DOCKER) run --rm --network=none $(1) cat "$$f" > "$$d/$$n/requirements.txt" || { echo "[scan] could not read $$f" >&2; orc=1; continue; }; \
+		$(DOCKER) run --rm -v "$$d/$$n:/scan/src:ro,Z" $(OSV_IMAGE) \
+			scan source --no-resolve --lockfile requirements.txt:/scan/src/requirements.txt --format json > "$$d/$$n/osv.json"; r=$$?; \
+		if [ $$r -ne 0 ] && [ $$r -ne 1 ]; then echo "[scan] osv-scanner did not run on $$f (exit $$r)" >&2; orc=1; \
+		elif ! $(PYTHON3) "$(OSV_GATE)" $(SCAN_SEVERITY) --summarise-stale $${ignsrc:+--ignore "$$ignsrc"} < "$$d/$$n/osv.json"; then \
+			echo "[scan] FAILED: $$f in $(1) has fixable $(SCAN_SEVERITY) vulnerabilities by CVSS (above)" >&2; orc=1; fi; \
+	done; \
+	rm -rf "$$d"; \
+	[ $$n -eq 0 ] && echo "[scan] $(1) has no build-time environments besides the locked venv"; \
+	[ $$orc -eq 0 ] || exit 1; \
+	echo "[scan] $(1): no fixable $(SCAN_SEVERITY) vulnerabilities"
 endef
 
 # push-image <image-ref>: only a tag the registry reports absent; `unknown` is refused

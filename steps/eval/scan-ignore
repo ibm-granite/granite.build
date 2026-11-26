@@ -384,6 +384,14 @@ GHSA-wqgw-9xfh-qf2g exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
 CVE-2026-12773 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
 GHSA-4jcj-7x88-m979 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
 PYSEC-2026-4067 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+# PYSEC-2026-4071: missing authentication in the LiteLLM proxy's SSO debug flow
+# (litellm/proxy/management_endpoints/ui_sso.py). Scored 7.3 by OSV; its record gives
+# last affected 1.82.2 instead of a fix (1.82.3 follows), so it affects only MCPMark's
+# litellm==1.80.0 (in /opt/mcpmark/<commit>/.venv), not tau's 1.82.6. The proxy is
+# never started. Issue: #770 (the MCPMark refresh). Until 2027-05-31.
+CVE-2026-12795 exp:2027-05-31 pkg:pypi/litellm@1.80.0
+GHSA-j37q-q7p9-vpwm exp:2027-05-31 pkg:pypi/litellm@1.80.0
+PYSEC-2026-4071 exp:2027-05-31 pkg:pypi/litellm@1.80.0
 
 # ---- transformers 4.57.6: nemoskills' COMET env (/opt/comet), HIGH by CVSS ----------------
 # PYSEC-2026-2288: Trainer._load_rng_state calls torch.load without weights_only, which
