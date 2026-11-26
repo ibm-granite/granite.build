@@ -869,10 +869,13 @@ class TestULDAlignmentGuard:
             )
 
     def test_the_rate_is_reduced_across_ranks(self, tmp_path):
-        """Two real gloo ranks. Rank 0 aligned both its rows, rank 1 neither of its: the
-        step is NOT all-unaligned (2 of 4), and both ranks log the global rate 0.5, not
-        their own 0.0 and 1.0. Then both ranks all-unaligned: both raise, together, so
-        neither is left waiting in a collective."""
+        """Two real gloo ranks, through CustomGOLDTrainer._uld_alignment_step_end with a
+        distributed type other than NO. Rank 0 aligned both its rows, rank 1 neither of
+        its: the step is NOT all-unaligned (2 of 4), and both ranks log the global rate
+        0.5, not their own 0.0 and 1.0. Then both ranks all-unaligned: both raise,
+        together, so neither is left waiting in a collective. Rank-local judging (a forced
+        or inverted `distributed`) makes rank 1 raise alone at the first step: on N GPUs,
+        one rank dies and the others hang."""
         mp = pytest.importorskip("torch.multiprocessing")
         if not torch.distributed.is_available():
             pytest.skip("torch.distributed is not available")
@@ -897,14 +900,22 @@ def _guard_rank(rank, world, rendezvous, out_dir):
         "gloo", init_method=f"file://{rendezvous}", rank=rank, world_size=world
     )
     try:
-        device = torch.device("cpu")
-
-        def reduce(values):
-            return cgt._all_reduce_sum(values, device, distributed=True)
-
+        # Through the trainer's own step-end path, with a distributed type that is not NO,
+        # as accelerate reports it on N GPUs (MULTI_GPU) or N CPU processes (MULTI_CPU): what
+        # _uld_alignment_step_end derives `distributed` from. Forced or inverted, the reduction
+        # is skipped and each rank judges its own rows.
         guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=1.0)
-        mine = _counts(0, 2) if rank == 0 else _counts(2, 2)
-        guard.end_step(mine, step=1, reduce=reduce, window_steps=1)
+        trainer = types.SimpleNamespace(
+            accelerator=types.SimpleNamespace(
+                distributed_type=cgt.DistributedType.MULTI_CPU,
+                device=torch.device("cpu"),
+            ),
+            args=types.SimpleNamespace(logging_steps=1),
+            uld_loss_fn=_counts(0, 2) if rank == 0 else _counts(2, 2),
+            _uld_alignment_guard=guard,
+        )
+        state = types.SimpleNamespace(global_step=0, logging_steps=1)
+        CustomGOLDTrainer._uld_alignment_step_end(trainer, state)
         log = guard.pop_log()
         result = "%d/%d/%s" % (
             log["train/alignment_unaligned_rows"],
@@ -912,7 +923,9 @@ def _guard_rank(rank, world, rendezvous, out_dir):
             log["train/alignment_unaligned_rate"],
         )
         try:
-            guard.end_step(_counts(2, 2), step=2, reduce=reduce, window_steps=1)
+            trainer.uld_loss_fn = _counts(2, 2)
+            state.global_step = 1
+            CustomGOLDTrainer._uld_alignment_step_end(trainer, state)
             outcome = "did not raise"
         except RuntimeError as e:
             outcome = "raised" if "all 4 rows" in str(e) else f"wrong: {e}"
