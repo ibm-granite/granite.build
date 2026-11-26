@@ -1,22 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Every loss arm renders byte-identically to ced53644, except `uld`, which changes as stated.
+"""Every loss arm renders byte-identically to main, except `uld`, which changes as stated.
 
-At ced53644 the renderer dropped last_message_only off-policy (_ONLINE_ONLY), so the uld
-arm could not get the last_message_only=true its alignment needs. The change gives the uld
-arm that requirement and emits the key off-policy for that arm alone. This pins the
-"alone": for every arm, on- and off-policy, with last_message_only false and true, the
-renderer's exit code and output bytes are compared against the ced53644 renderer's,
-recorded in render_gold_config_golden_ced53644.json. For uld the expected difference is
-spelled out: false now fails to render, and true off-policy gains exactly one trailing
+On main (a86c3405, "move the distill images to vLLM 0.33 and trl 1.18 (#779)") the renderer
+dropped last_message_only off-policy (_ONLINE_ONLY), so the uld arm could not get the
+last_message_only=true its alignment needs. The uld arm now requires it, and the key is
+emitted off-policy for that arm alone. This test pins the "alone". For every arm, on- and
+off-policy, with last_message_only false and true, it compares the renderer's exit code and
+output bytes with those of main's renderer, recorded in
+render_gold_config_golden_main_a86c3405.json. For uld the expected difference is spelled out:
+false now fails to render, and true off-policy gains exactly one trailing
 `last_message_only: true` line.
 
-The fixture was written by running this module against the ced53644 renderer:
+The fixture was written by running this module against main's renderer. a86c3405 is a main
+commit, so this still works after the branch is squash-merged. Run it from the step
+directory (steps/train/distill/logit-distill/skypilot):
 
-    git show ced53644:steps/train/distill/logit-distill/skypilot/src/render_gold_config.py \\
-        > /tmp/render_ced53644.py
-    python test/test_render_gold_config_arms_golden.py --write /tmp/render_ced53644.py \\
-        test/render_gold_config_golden_ced53644.json
+    git show a86c3405:steps/train/distill/logit-distill/skypilot/src/render_gold_config.py \\
+        > /tmp/render_main.py
+    python test/test_render_gold_config_arms_golden.py --write /tmp/render_main.py \\
+        test/render_gold_config_golden_main_a86c3405.json
+
+Regenerate it only for a renderer change that is meant to alter other arms' output, and say
+so in that commit.
 """
 
 import json
@@ -27,7 +33,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 _RENDER = _HERE.parent / "src" / "render_gold_config.py"
-_GOLDEN = _HERE / "render_gold_config_golden_ced53644.json"
+_GOLDEN = _HERE / "render_gold_config_golden_main_a86c3405.json"
 
 _REQUIRED = [
     "--model-name-or-path",
@@ -40,7 +46,7 @@ _REQUIRED = [
 
 # What each arm needs to render at all; requirements it does not meet are covered by the
 # last_message_only axis and by the policy axis (an arm that is on-policy only fails
-# off-policy, at ced53644 and now).
+# off-policy, on main and now).
 _ARM_ARGS = {
     "": [],
     "jsd": [],
@@ -111,7 +117,7 @@ def test_every_arm_but_uld_is_byte_identical_and_uld_changes_as_stated():
             assert got == want, case_id
             continue
         if case_id.endswith("last_message_only=false"):
-            # Rendered at ced53644, and trained on nothing; refused now.
+            # Rendered on main, and trained on nothing; refused now.
             assert want["rc"] == 0 and got == {"rc": 2, "yaml": None}, case_id
         elif "policy=off " in case_id:
             # The one off-policy addition, appended after the arm's own switch.
