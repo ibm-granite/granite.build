@@ -91,6 +91,16 @@ whole set k times and averages; there is no pass@k here, because
 per-example scores have no meaning for every metric family (the curated
 benchmarks, whose metrics are 0/1, keep theirs).
 
+Reproducible docs: the bridge builds the tasks itself, so it seeds
+``random`` (the run's seed), numpy and torch (1234) first, as lm-eval's
+simple_evaluate does before it builds them; a task whose ``process_docs``
+shuffles (gpqa's choice order) then gets the same order on every run.
+``datasets`` caches that mapped dataset under ``hf_home`` and reuses it,
+keyed by the map function, not the seed: a cache written by an older,
+unseeded bridge run keeps that run's order. Use a fresh ``hf_home``, or
+delete the dataset's ``cache-*.arrow`` files under ``$HF_HOME/datasets``,
+to get the seeded order.
+
 Resume: the harness response cache (``repeat-<k>/lm_cache``) keeps every
 finished request, so a restarted run only sends the missing ones; requests
 that keep failing are answered with an error marker and dropped from the
@@ -382,6 +392,35 @@ def task_index() -> list[str]:
     return list(TaskManager().all_tasks)
 
 
+def seed_like_simple_evaluate(seed: int) -> None:
+    """Seed as lm-eval's simple_evaluate does before it builds tasks:
+    ``random`` with the run's seed, numpy and torch with lm-eval's
+    DEFAULT_OTHER_SEED (1234). The bridge builds the tasks itself
+    (load_tasks, before simple_evaluate), and task construction runs
+    ``process_docs``, which may shuffle (gpqa shuffles each question's
+    choices with ``random``): unseeded, every fresh dataset cache gets a
+    different answer order."""
+    import random
+
+    other = 1234
+    try:
+        from lm_eval.defaults import DEFAULT_OTHER_SEED as other
+    except ImportError:
+        pass
+    random.seed(seed)
+    try:
+        import numpy
+
+        numpy.random.seed(other)
+    except ImportError:
+        pass
+    try:
+        from lm_eval.utils import set_torch_seed
+    except ImportError:
+        return
+    set_torch_seed(other)
+
+
 def load_tasks(tasks: list[str]) -> tuple[dict, dict]:
     """The harness's view of ``tasks``: (leaf task objects, group objects).
     Constructs tasks, which fetches their datasets -- the run needs them
@@ -531,6 +570,7 @@ class LMEval(Benchmark):
         return out
 
     def run(self, base_url: str, served_model_name: str) -> dict[str, Any]:
+        seed_like_simple_evaluate(self.config.seed)
         task_objects, groups = load_tasks(self.task_list)
         output_types = {name: task.OUTPUT_TYPE for name, task in task_objects.items()}
         primary = self.primary_metrics(task_objects)

@@ -20,6 +20,10 @@
 # dataset revision. An unwarmed cache fails fast at the dataset load. The job
 # runs with HF_HUB_OFFLINE=1: it never reaches the Hub, and the model is staged
 # by hfpull (public, no token) rather than downloaded by vLLM.
+# The task shuffles each question's choices; the bridge seeds that, but the first run
+# caches the shuffled dataset in HF_HOME and later runs reuse it, so a cache an older,
+# unseeded run used keeps its order: delete its cache-*.arrow files under
+# $HF_HOME/datasets/Idavidrein___gpqa (or warm a fresh cache) for the seeded order.
 #
 # LIMIT is empty: the full benchmark (198 questions). For a quick functional
 # check, score only the first N questions:

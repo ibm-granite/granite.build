@@ -127,6 +127,13 @@ A third, `recipes/evals/lmeval/gpqa-diamond`, is the warm-cache example: the
 dataset is Hub-gated, so the recipe runs `hf_offline` against a cache warmed by
 `make -C steps/eval prefetch` (see steps/eval/README.md, "The warm HF cache").
 
+The bridge builds the tasks before `simple_evaluate` does, so it seeds them first, as
+`simple_evaluate` would (`random` with the run's `seed`, numpy and torch with 1234): a
+task whose `process_docs` shuffles (gpqa's answer order) gets the same order on every
+run. `datasets` caches the mapped dataset under `hf_home`, keyed by the map function and
+not the seed, so a cache an older, unseeded run wrote keeps its order: use a fresh
+`hf_home` or delete that dataset's `cache-*.arrow` files.
+
 Resume is the curated benchmarks' care: the harness response cache
 (`repeat-<k>/lm_cache`) keeps every finished request, so a restarted run only sends
 the missing ones.

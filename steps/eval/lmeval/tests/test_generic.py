@@ -4,6 +4,7 @@
 no lm-eval install -- the harness surface is faked at the module's seams)."""
 
 import json
+import random
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -608,3 +609,41 @@ def test_few_empty_responses_are_recorded(tmp_path, monkeypatch):
             samples={"gsm8k": rows},
             max_failed_frac="0",
         )
+
+
+@pytest.mark.parametrize("seed", [0, 7])
+def test_tasks_are_built_after_seeding(tmp_path, monkeypatch, seed):
+    """gpqa's process_docs shuffles each question's choices with random at
+    task construction: the bridge seeds random as simple_evaluate does
+    (the run's seed) before load_tasks, so every run draws the same order."""
+    drawn = []
+
+    def load_tasks(names):
+        drawn.append(random.random())
+        return {"hellaswag": _task(name="hellaswag")}, {}
+
+    monkeypatch.setattr(generic, "task_index", lambda: ["hellaswag"])
+    monkeypatch.setattr(generic, "load_tasks", load_tasks)
+    monkeypatch.setattr(
+        generic,
+        "run_simple_evaluate",
+        lambda **kw: {"results": {"hellaswag": {"acc,none": 1.0}}},
+    )
+    monkeypatch.setattr(
+        generic.LMEval, "make_lm", lambda self, mode, base_url, served, seed: None
+    )
+    monkeypatch.setattr(chat_if, "drop_errors_from_cache", lambda cache_dir: 0)
+    config = RunConfig(
+        model="m", output_dir=tmp_path, seed=seed, options={"tasks": "hellaswag"}
+    )
+    random.seed(12345)  # whatever state the process is in
+    generic.LMEval(config).run("http://s/v1", "m")
+    assert drawn == [random.Random(seed).random()]
+
+
+def test_seed_like_simple_evaluate_seeds_numpy_too():
+    numpy = pytest.importorskip("numpy")
+    generic.seed_like_simple_evaluate(3)
+    first = (random.random(), numpy.random.random())
+    generic.seed_like_simple_evaluate(3)
+    assert (random.random(), numpy.random.random()) == first
