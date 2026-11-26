@@ -125,6 +125,8 @@ spec:
             secretKeyRef:
               key: GBSERVER_GITHUB_TOKEN
               name: '{{ main_secret_name }}'
+        - name: GBSERVER_GIT_TRANSPORT
+          value: https
         - name: GBSERVER_SQL_USER
           valueFrom:
             secretKeyRef:

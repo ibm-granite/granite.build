@@ -15,17 +15,62 @@ from typing import TYPE_CHECKING, List, Optional, Self, Tuple, Type
 
 if TYPE_CHECKING:
     from git import Repo
+    from git.exc import GitCommandError
 
+from gbcommon.types.constants import get_gh_api_base
 from gbcommon.uri.uri import URI
-from gbserver.types.constants import (
-    GBSERVER_GITHUB_TOKEN,
-    SPACE_REPO_CONFIG_BRANCH_NAME,
-)
+from gbserver.types.constants import SPACE_REPO_CONFIG_BRANCH_NAME
 from gbserver.utils.filesystem import sync_or_copy
+from gbserver.utils.git_auth import (
+    ENV_VAR_GIT_TRANSPORT,
+    GitToken,
+    GitTransport,
+    get_git_transport,
+    get_service_token,
+    get_token_candidates,
+    git_auth_env,
+)
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import short_alphanumeric_lower_hash
 
 logger = get_logger(__name__)
+
+# Errors after which a different token might succeed (bad token, or a repo
+# the token can't see: GitHub reports both as "not found").
+_ACCESS_ERROR_PATTERNS = (
+    "authentication failed",
+    "invalid username or password",
+    "could not read username",
+    "terminal prompts disabled",
+    "repository not found",
+    "returned error: 401",
+    "returned error: 403",
+    "returned error: 404",
+)
+
+_NOISE_LINE_PREFIXES = (
+    "cloning into",
+    "please make sure",
+    "and the repository exists",
+)
+
+
+def _is_access_error(error: "GitCommandError") -> bool:
+    text = f"{error.stderr}".lower()
+    return any(p in text for p in _ACCESS_ERROR_PATTERNS)
+
+
+def _git_error_summary(error: "GitCommandError") -> str:
+    """The informative lines of a failed git command's stderr, on one line."""
+    lines = []
+    for raw in f"{error.stderr}".splitlines():
+        line = raw.strip()
+        if line.lower().startswith("stderr:"):
+            line = line[len("stderr:") :].strip()
+        line = line.strip("'").strip()
+        if line and not line.lower().startswith(_NOISE_LINE_PREFIXES):
+            lines.append(line)
+    return "; ".join(lines) or f"exit code {error.status}"
 
 
 def split_repo_path(path: str) -> Tuple[str, str]:
@@ -147,14 +192,16 @@ class GitURI(URI):
         host, owner, repo = GitURI.__parse_repo_components(uri)
         from gbserver.github.myghapi import MyGHApi
 
-        myapi = MyGHApi(token=token, owner=owner, repo=repo, domain=host)
+        myapi = MyGHApi(
+            token=token, owner=owner, repo=repo, gh_api_endpoint=get_gh_api_base(host)
+        )
         config_branch_exists = myapi.is_branch_present(config_branch_name)
         return config_branch_name if config_branch_exists else None
 
     @staticmethod
     def get_gb_space_config_uri(
         uri: str,
-        token: str = GBSERVER_GITHUB_TOKEN,
+        token: Optional[str] = None,
         config_branch_name: str = SPACE_REPO_CONFIG_BRANCH_NAME,
     ) -> str:
         """
@@ -174,7 +221,8 @@ class GitURI(URI):
             https://github.ibm.com/granite-dot-build/gbspace-public becomes
             git+ssh://github.ibm.com/granite-dot-build/gbspace-public.git@gbspace-config#subdirectory=
         Args:
-            token (): github token used to read the repo
+            token (): github token used to read the repo; None (default) uses
+                the service token for the repo's host, "" skips the lookup.
             uri (str): https:// uri pointing to a git space repo.
         """
         if uri == "":
@@ -187,6 +235,8 @@ class GitURI(URI):
             return uri
         uri = uri.rstrip("/")  # To allow appending ".git" below.
         uriobj = urllib.parse.urlparse(uri)
+        if token is None:
+            token = get_service_token(uriobj.hostname or "")
         if not uriobj.path.endswith(".git"):
             uriobj = uriobj._replace(path=uriobj.path + ".git")
         cfg_branch = (
@@ -218,28 +268,19 @@ class GitURI(URI):
     def is_accessible(self: Self) -> bool:
         return self.exists()
 
-    def get_repo_url(self: Self) -> str:
-        """Returns the actual URI that can clone the repo."""
+    def _repo_parts(self: Self) -> Tuple[str, str, str]:
+        """``(host, owner, repo)``, without ``.git`` or ``@ref``."""
         assert self.uri is not None, "Git uri is None"
-        uri_parts = self.uri.path.split("/")
-        org = uri_parts[1]
-        repo_name = uri_parts[2].split(".")[0]
-        if self.uri.scheme == "git+https":
-            base_url = f"https://{self.uri.hostname}/{org}/{repo_name}"
-            token_key = (
-                self.config.get("token_secretname")
-                if isinstance(self.config, dict)
-                else "GITHUB_PAT_TUNING"
-            )
-            # check if a token is provided via secrets
-            token = None
-            if self.secrets is not None:
-                token = self.secrets.get(token_key, "")
-            if token:
-                return f"https://{token}:x-oauth-basic@{self.uri.hostname}/{org}/{repo_name}"
-            return base_url
-        if self.uri.scheme == "git+ssh":
-            return f"git@{self.uri.hostname}:{org}/{repo_name}"
+        owner, repo = split_repo_path(self.uri.path)
+        return self.hostname, owner, repo
+
+    def get_repo_url(self: Self) -> str:
+        """The URL that clones the repo over the URI's own scheme (no credentials)."""
+        host, owner, repo = self._repo_parts()
+        if self.scheme == "git+https":
+            return f"https://{host}/{owner}/{repo}"
+        if self.scheme == "git+ssh":
+            return f"git@{host}:{owner}/{repo}"
         logger.error("Invalid protocol in Git URI.")
         return ""
 
@@ -264,8 +305,11 @@ class GitURI(URI):
         logger.info("repo ref: %s", ref)
         th_repo_cache = self._thread_local.repo_cache
         assert isinstance(th_repo_cache, Path)
+        # Keyed on the repo, not the clone URL: an ssh and an https clone of
+        # the same repo share an entry.
+        host, owner, repo = self._repo_parts()
         repo_cache_path = th_repo_cache / short_alphanumeric_lower_hash(
-            repo_url + ("#" + ref if ref else "")
+            f"{host}/{owner}/{repo}".lower() + ("#" + ref if ref else "")
         )
         if repo_cache_path.is_dir():
             if not force:
@@ -282,13 +326,77 @@ class GitURI(URI):
                 ref,
                 repo_cache_path,
             )
-            self._clone_with_retry(
-                repo_url, repo_cache_path, branch=ref, single_branch=True, depth=1
-            )
+            self._clone(repo_cache_path, branch=ref, single_branch=True, depth=1)
         else:
             logger.info("cloning repo '%s' to '%s'", repo_url, repo_cache_path)
-            self._clone_with_retry(repo_url, repo_cache_path, depth=1)
+            self._clone(repo_cache_path, depth=1)
         return repo_cache_path
+
+    def _clone(self: Self, path: Path, **kwargs) -> "Repo":
+        """Clone per ``GBSERVER_GIT_TRANSPORT``: a ``git+ssh`` URI may go over HTTPS."""
+        from git.exc import GitCommandError
+
+        if self.scheme != "git+ssh":
+            return self._clone_https(path, fallback_reason=None, **kwargs)
+        transport = get_git_transport()
+        if transport == GitTransport.HTTPS:
+            reason = f"{ENV_VAR_GIT_TRANSPORT}={transport.value}"
+        else:
+            try:
+                return self._clone_with_retry(self.get_repo_url(), path, **kwargs)
+            except GitCommandError as e:
+                if transport == GitTransport.SSH:
+                    raise
+                shutil.rmtree(path, ignore_errors=True)
+                reason = f"ssh failed: {_git_error_summary(e)}"
+        return self._clone_https(path, fallback_reason=reason, **kwargs)
+
+    def _clone_https(
+        self: Self, path: Path, fallback_reason: Optional[str], **kwargs
+    ) -> "Repo":
+        """Clone over HTTPS with each token for the host, then anonymously.
+
+        Only an access error moves on to the next token; any other error is
+        raised right away.
+        """
+        from git.exc import GitCommandError
+
+        host, owner, repo = self._repo_parts()
+        url = f"https://{host}/{owner}/{repo}"
+        # Only secrets handed to this URI: a thread-local could still hold
+        # another build's (e.g. on a reused server thread).
+        candidates: List[Optional[GitToken]] = [
+            *get_token_candidates(host, self.secrets),
+            None,
+        ]
+        failures: List[Tuple[str, GitCommandError]] = []
+        for candidate in candidates:
+            label = candidate.label if candidate else "anonymous"
+            env = git_auth_env(host, candidate.token if candidate else None)
+            try:
+                cloned = self._clone_with_retry(url, path, env=env, **kwargs)
+            except GitCommandError as e:
+                shutil.rmtree(path, ignore_errors=True)
+                failures.append((label, e))
+                if not _is_access_error(e):
+                    break
+                continue
+            if fallback_reason:
+                logger.warning(
+                    "cloned %s over https (token: %s) instead of ssh (%s);"
+                    " use git+https:// in this URI to skip ssh",
+                    str(self),
+                    label,
+                    fallback_reason,
+                )
+            elif failures:
+                logger.info("cloned %s with token %s", url, label)
+            return cloned
+        attempts = [fallback_reason] if fallback_reason else []
+        attempts += [f"https ({lbl}): {_git_error_summary(e)}" for lbl, e in failures]
+        raise GitCommandError(
+            ["git", "clone", url], failures[-1][1].status, "; ".join(attempts)
+        )
 
     def _clone_with_retry(self, repo_url: str, path: Path, **kwargs) -> "Repo":
         """Clone repository with retry logic."""
@@ -346,7 +454,7 @@ class GitURI(URI):
                 logger.debug(
                     "Subdirectory '%s' not found in repository '%s'",
                     subdirectory,
-                    self.uri.geturl(),
+                    str(self),
                 )
                 return None
         return final_path
@@ -386,8 +494,8 @@ class GitURI(URI):
                 return True
             return False
         except ValueError as e:
-            logger.error("Error while pulling: %s", e)
+            logger.error("Error while pulling %s: %s", self, e)
             return False
         except Exception as e:
-            logger.error("An unexpected error occurred: %s", e)
+            logger.error("Failed to pull %s: %s", self, e)
             return False
