@@ -33,6 +33,19 @@ Options (all through ``--option`` / the step's ``options`` config):
   Values are int/float when they parse, else percent-decoded strings
   (``%2C`` a comma, ``%20`` a space -- the ``stop=`` convention); applies
   to chat-mode generation only.
+* ``thinking``: ``on`` (default: the chat template's own default; Granite
+  4.x thinks) or ``off`` (``chat_template_kwargs.enable_thinking=false``, as
+  mmlu-prox-lite's ``thinking=off``). Chat mode only. With thinking on, a
+  chat task that sets no ``max_gen_toks`` (and none in ``gen_kwargs``) gets
+  a 32768-token budget (chat_if's ``CARD_SAMPLING``): lm-eval's default of
+  256 ends a Granite thought before its ``</think>``, the server's reasoning
+  parser then returns no content, and lm-eval scores an empty answer. vLLM
+  applies the task's stop strings to the whole generation, thought
+  included (its detokenizer checks them before the reasoning parser
+  splits the text), so a stop the thought happens to contain (gsm8k's
+  ``Question:``) also ends it with no content. ``thinking=off`` is the
+  harness's own protocol for the lm-eval generation tasks.
+* ``max_failed_frac`` (default 0.05): see the response check below.
 * ``metric``: the primary metric to report, for every task (e.g.
   ``acc_norm``), or one exact results key ``<metric>,<filter>`` (e.g.
   ``exact_match,strict-match``) to pick a filter. Unset uses each task's own
@@ -45,6 +58,15 @@ for each of the task's ``filter_list`` names in their yaml order -- so gsm8k's
 read lands in ``details.per_task`` (``key``). A task whose row has none of
 these keys fails the run (after its artifacts are written), naming the keys
 it does have: a missing metric is never reported as a null score.
+
+Response check: per task the run counts docs whose chat response is
+empty (no content: a thought cut off, or stopped inside the thought) and
+docs whose request failed (the adapters' error markers: chat_if's
+``ERROR_MARKER``, include's ``ERROR_LL``). They stay in lm-eval's score as
+wrong answers; ``details.responses`` records the counts per task, and the
+run fails (``failure_policy``) when they exceed ``max_failed_frac`` of all
+docs over all repeats. Failed requests are dropped from the response cache
+in both modes, so a rerun retries them.
 
 Semantics: the headline ``value`` is the macro mean over the resolved
 tasks of each task's primary metric (a single task: its metric), ``n`` the
@@ -98,7 +120,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from granite_evals.registry import Benchmark, register
+from granite_evals.registry import Benchmark, failure_policy, register
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +137,10 @@ OUTPUT_TYPE_MODE = {
 # bare (older task configs). The unfiltered forms first, then the task's
 # filters in their yaml order.
 METRIC_KEY_FORMATS = ("{m},none", "{m}")
+THINKING = ("on", "off")
+# chat_if.CARD_SAMPLING["max_tokens"]: Granite 4.2's thinking budget (a test
+# keeps the two equal).
+THINKING_BUDGET = 32768
 
 
 def parse_tasks(spec: str) -> list[str]:
@@ -311,6 +337,43 @@ def plan_passes(
     return dict(sorted(passes.items())), split
 
 
+def is_empty_response(text: Any) -> bool:
+    """A chat response with no content: lm-eval turns a null ``content`` into
+    ``LMEVAL_MODEL_NONE_ANSWER_PLACEHOLDER`` (default empty)."""
+    import os
+
+    text = "" if text is None else str(text)
+    placeholder = os.environ.get("LMEVAL_MODEL_NONE_ANSWER_PLACEHOLDER", "")
+    return not text.strip() or (bool(placeholder) and text == placeholder)
+
+
+def response_counts(samples: dict, chat_tasks: set[str]) -> dict[str, dict[str, int]]:
+    """Per task: docs, docs with an empty chat response, docs with a failed
+    request (chat_if's ERROR_MARKER, include's ERROR_LL), from lm-eval's
+    logged samples."""
+    from granite_evals.benchmarks.chat_if import ERROR_MARKER
+    from granite_evals.benchmarks.include import ERROR_LL
+
+    out: dict[str, dict[str, int]] = {}
+    for task, rows in (samples or {}).items():
+        docs = empty = errors = 0
+        for row in rows:
+            docs += 1
+            resps = [r for choice in row.get("resps") or [] for r in choice]
+            if task in chat_tasks:
+                if any(r == ERROR_MARKER for r in resps):
+                    errors += 1
+                elif resps and all(is_empty_response(r) for r in resps):
+                    empty += 1
+            elif any(
+                isinstance(r, (list, tuple)) and list(r) == list(ERROR_LL)
+                for r in resps
+            ):
+                errors += 1
+        out[task] = {"docs": docs, "empty": empty, "errors": errors}
+    return out
+
+
 def task_index() -> list[str]:
     """Every task/group name the pinned harness knows (its yaml index; no
     dataset is touched). Separate function so tests can fake it."""
@@ -370,6 +433,47 @@ class LMEval(Benchmark):
             else {}
         )
         self.metric_override = config.options.get("metric", "")
+        self.thinking = config.options.get("thinking", "on")
+        if self.thinking not in THINKING:
+            raise SystemExit(
+                f"lm-eval: thinking must be one of {', '.join(THINKING)}; got {self.thinking!r}"
+            )
+
+    def chat_gen_kwargs(self) -> dict[str, Any] | None:
+        """The chat pass's gen_kwargs: ``gen_kwargs=`` plus, with
+        ``thinking=off``, ``chat_template_kwargs.enable_thinking=false``."""
+        kw = dict(self.gen_kwargs)
+        if self.thinking == "off":
+            kw["chat_template_kwargs"] = {"enable_thinking": False}
+        return kw or None
+
+    def apply_thinking_budget(
+        self, task_objects: dict, chat_tasks: list[str]
+    ) -> list[str]:
+        """With thinking on, give every chat task that sets no max_gen_toks
+        (and none in gen_kwargs) the thinking budget; the tasks given it."""
+        if self.thinking != "on" or "max_gen_toks" in self.gen_kwargs:
+            return []
+        given = []
+        for name in chat_tasks:
+            task = task_objects[name]
+            own = (
+                getattr(getattr(task, "config", None), "generation_kwargs", None) or {}
+            )
+            if "max_gen_toks" not in own:
+                task.set_config(
+                    key="generation_kwargs",
+                    value={"max_gen_toks": THINKING_BUDGET},
+                    update=True,
+                )
+                given.append(name)
+        if given:
+            log.info(
+                "lm-eval: thinking on: max_gen_toks=%d for %s",
+                THINKING_BUDGET,
+                ", ".join(given),
+            )
+        return given
 
     def opt(self, key: str, default: Any) -> Any:
         value = self.config.options.get(key)
@@ -431,6 +535,9 @@ class LMEval(Benchmark):
         output_types = {name: task.OUTPUT_TYPE for name, task in task_objects.items()}
         primary = self.primary_metrics(task_objects)
         mode_groups = resolve_modes(output_types, self.mode)
+        budget_tasks = self.apply_thinking_budget(
+            task_objects, mode_groups.get("chat", [])
+        )
         passes, split = plan_passes(
             self.task_list,
             task_objects,
@@ -469,6 +576,7 @@ class LMEval(Benchmark):
                         primary,
                         base_url,
                         served_model_name,
+                        set(mode_groups.get("chat", [])),
                     ),
                 }
             )
@@ -479,6 +587,19 @@ class LMEval(Benchmark):
                 per_repeat[-1]["n"],
             )
 
+        responses: dict[str, dict[str, int]] = {}
+        for rep in per_repeat:
+            for task, counts in rep["responses"].items():
+                into = responses.setdefault(task, dict.fromkeys(counts, 0))
+                for key, n in counts.items():
+                    into[key] += n
+        policy = failure_policy(
+            self.id,
+            "responses",
+            sum(c["empty"] + c["errors"] for c in responses.values()),
+            sum(c["docs"] for c in responses.values()),
+            self.opt("max_failed_frac", 0.05),
+        )
         values = [r["value"] for r in per_repeat if r["value"] is not None]
         return {
             "value": sum(values) / len(values) if values else None,
@@ -494,6 +615,10 @@ class LMEval(Benchmark):
             ),
             "num_fewshot": self.num_fewshot,
             "gen_kwargs": self.gen_kwargs,
+            "thinking": self.thinking,
+            "thinking_budget": {"max_gen_toks": THINKING_BUDGET, "tasks": budget_tasks},
+            "responses": responses,
+            **policy,
             "per_task": per_repeat[0]["per_task"],
             "per_repeat": per_repeat,
         }
@@ -506,6 +631,7 @@ class LMEval(Benchmark):
         primary: dict,
         base_url: str,
         served: str,
+        chat_tasks: set[str] = frozenset(),
     ) -> dict[str, Any]:
         repeat_dir = self.config.output_dir / f"repeat-{k}"
         cache_dir = repeat_dir / "lm_cache"
@@ -530,7 +656,7 @@ class LMEval(Benchmark):
                 limit=self.config.limit,
                 apply_chat_template=(mode == "chat"),
                 fewshot_as_multiturn=(mode == "chat"),
-                gen_kwargs=(self.gen_kwargs or None) if mode == "chat" else None,
+                gen_kwargs=self.chat_gen_kwargs() if mode == "chat" else None,
                 log_samples=True,
                 bootstrap_iters=0,
                 random_seed=self.config.seed,
@@ -555,6 +681,7 @@ class LMEval(Benchmark):
             primary,
             {name: task_filters(task) for name, task in task_objects.items()},
         )
+        summary["responses"] = response_counts(merged.get("samples") or {}, chat_tasks)
         summary["duration_s"] = round(time.time() - started, 1)
         return summary
 

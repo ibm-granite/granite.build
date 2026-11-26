@@ -81,7 +81,9 @@ config:
   # (auto: each task's output_type picks), "num_fewshot=5", "gen_kwargs=k=v,..."
   # (percent-decoded values), "metric=acc_norm" or "metric=exact_match,strict-match"
   # (a metric, or one exact <metric>,<filter> results key; default: each task's
-  # primary, read through its filter_list in yaml order when it has one).
+  # primary, read through its filter_list in yaml order when it has one),
+  # "thinking=off" (enable_thinking=false; default on, with a 32768-token budget
+  # for chat tasks that set no max_gen_toks) and "max_failed_frac=0.05".
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""

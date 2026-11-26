@@ -12,15 +12,32 @@ from granite_evals.benchmarks import chat_if, generic
 from granite_evals.registry import RunConfig, get
 
 
-def _task(output_type="multiple_choice", metric="acc", filters=None, name=None):
-    return SimpleNamespace(
+class _FakeTask(SimpleNamespace):
+    def set_config(self, key, value, update=False):
+        """lm-eval's Task.set_config: update merges a dict into the key."""
+        if update and isinstance(getattr(self.config, key, None), dict):
+            getattr(self.config, key).update(value)
+        else:
+            setattr(self.config, key, value)
+
+
+def _task(
+    output_type="multiple_choice",
+    metric="acc",
+    filters=None,
+    name=None,
+    generation_kwargs=None,
+    metrics=None,
+):
+    return _FakeTask(
         task_name=name,
         OUTPUT_TYPE=output_type,
         config=SimpleNamespace(
-            metric_list=[{"metric": metric}],
+            metric_list=[{"metric": m} for m in (metrics or [metric])],
             filter_list=(
                 [{"name": f, "filter": []} for f in filters] if filters else None
             ),
+            generation_kwargs=dict(generation_kwargs or {}),
         ),
     )
 
@@ -307,14 +324,19 @@ def test_registry():
     assert get("lm-eval") is generic.LMEval
 
 
+def _gsm8k(**kw):
+    return _task(
+        "generate_until",
+        "exact_match",
+        filters=["strict-match", "flexible-extract"],
+        name="gsm8k",
+        **kw,
+    )
+
+
 HELLASWAG = _task("multiple_choice", "acc", name="hellaswag")
 ARC_EASY = _task("multiple_choice", "acc", name="arc_easy")
-GSM8K = _task(
-    "generate_until",
-    "exact_match",
-    filters=["strict-match", "flexible-extract"],
-    name="gsm8k",
-)
+GSM8K = _gsm8k()
 
 
 def test_run_end_to_end(tmp_path, monkeypatch):
@@ -437,3 +459,152 @@ def test_run_passes_the_loaded_group(tmp_path, monkeypatch):
     assert outcome["groups"] == ["mc_group"] and outcome["split_groups"] == []
     keep = json.loads((tmp_path / "repeat-0" / "lm_eval_results.json").read_text())
     assert keep["groups"] == {"mc_group": {"acc,none": 0.5}}
+
+
+def test_thinking_budget_is_chat_ifs():
+    assert generic.THINKING_BUDGET == chat_if.CARD_SAMPLING["max_tokens"] == 32768
+
+
+def test_init_rejects_bad_thinking(tmp_path, monkeypatch):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    with pytest.raises(SystemExit, match="thinking must be one of on, off"):
+        generic.LMEval(_config(tmp_path, tasks="gsm8k", thinking="no"))
+
+
+def test_chat_gen_kwargs(tmp_path, monkeypatch):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    bench = generic.LMEval(_config(tmp_path, tasks="gsm8k"))
+    assert bench.chat_gen_kwargs() is None
+    bench = generic.LMEval(
+        _config(tmp_path, tasks="gsm8k", thinking="off", gen_kwargs="temperature=0.6")
+    )
+    assert bench.chat_gen_kwargs() == {
+        "temperature": 0.6,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+def _mixed_run(tmp_path, monkeypatch, tasks, samples=None, **options):
+    """run() over hellaswag (base) and ``tasks`` (chat), simple_evaluate
+    faked: returns the outcome and the simple_evaluate calls."""
+    hs = _task("multiple_choice", "acc", name="hellaswag")
+    objects = {"hellaswag": hs, **{t.task_name: t for t in tasks}}
+    monkeypatch.setattr(generic, "task_index", lambda: list(objects))
+    monkeypatch.setattr(generic, "load_tasks", lambda names: (dict(objects), {}))
+    calls = []
+
+    def fake_simple_evaluate(**kwargs):
+        calls.append(kwargs)
+        names = [t.task_name for t in kwargs["tasks"]]
+        return {
+            "results": {
+                n: {"acc,none": 0.5, "exact_match,strict-match": 0.5} for n in names
+            },
+            "n-samples": {n: {"effective": 2} for n in names},
+            "samples": {n: (samples or {}).get(n, []) for n in names},
+        }
+
+    monkeypatch.setattr(generic, "run_simple_evaluate", fake_simple_evaluate)
+    monkeypatch.setattr(
+        generic.LMEval,
+        "make_lm",
+        lambda self, mode, base_url, served, seed: SimpleNamespace(
+            mode=mode, seed=seed
+        ),
+    )
+    monkeypatch.setattr(chat_if, "drop_errors_from_cache", lambda cache_dir: 0)
+    bench = generic.LMEval(_config(tmp_path, tasks=",".join(objects), **options))
+    return bench.run("http://s/v1", "m"), calls
+
+
+def test_thinking_off_reaches_the_chat_pass_only(tmp_path, monkeypatch):
+    gsm8k = _gsm8k()
+    outcome, calls = _mixed_run(tmp_path, monkeypatch, [gsm8k], thinking="off")
+    by_mode = {c["model"].mode: c for c in calls}
+    assert by_mode["chat"]["gen_kwargs"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+    assert by_mode["base"]["gen_kwargs"] is None  # gen_kwargs never reach base mode
+    assert gsm8k.config.generation_kwargs == {}  # no thinking budget when off
+    assert outcome["thinking"] == "off"
+    assert outcome["thinking_budget"]["tasks"] == []
+
+
+def test_gen_kwargs_never_reach_base_mode(tmp_path, monkeypatch):
+    _, calls = _mixed_run(
+        tmp_path, monkeypatch, [_gsm8k()], gen_kwargs="temperature=0.6"
+    )
+    by_mode = {c["model"].mode: c for c in calls}
+    assert by_mode["base"]["gen_kwargs"] is None
+    assert by_mode["chat"]["gen_kwargs"] == {"temperature": 0.6}
+
+
+def test_thinking_on_gives_the_budget(tmp_path, monkeypatch):
+    """thinking on (the default): a chat task with no max_gen_toks of its
+    own gets the thinking budget; a task that sets one keeps it; base tasks
+    are untouched."""
+    bare = _gsm8k()
+    own = _task(
+        "generate_until",
+        "exact_match",
+        name="own",
+        filters=["strict-match"],
+        generation_kwargs={"max_gen_toks": 64},
+    )
+    outcome, _ = _mixed_run(tmp_path, monkeypatch, [bare, own])
+    assert bare.config.generation_kwargs == {"max_gen_toks": generic.THINKING_BUDGET}
+    assert own.config.generation_kwargs == {"max_gen_toks": 64}
+    assert outcome["thinking_budget"] == {"max_gen_toks": 32768, "tasks": ["gsm8k"]}
+
+
+def test_gen_kwargs_max_gen_toks_wins_over_the_budget(tmp_path, monkeypatch):
+    bare = _gsm8k()
+    _, calls = _mixed_run(tmp_path, monkeypatch, [bare], gen_kwargs="max_gen_toks=1024")
+    assert bare.config.generation_kwargs == {}
+    assert {c["model"].mode: c for c in calls}["chat"]["gen_kwargs"] == {
+        "max_gen_toks": 1024
+    }
+
+
+def test_response_counts():
+    rows_chat = [
+        {"resps": [["the answer"]]},
+        {"resps": [[""]]},
+        {"resps": [["   "]]},
+        {"resps": [[chat_if.ERROR_MARKER]]},
+    ]
+    rows_base = [
+        {"resps": [[(-1.0, True)], [(-2.0, False)]]},
+        {"resps": [[(-1e9, False)], [(-2.0, False)]]},
+        {"resps": [[[-1e9, False]], [[-2.0, False]]]},
+    ]
+    counts = generic.response_counts({"c": rows_chat, "b": rows_base}, {"c"})
+    assert counts == {
+        "c": {"docs": 4, "empty": 2, "errors": 1},
+        "b": {"docs": 3, "empty": 0, "errors": 2},
+    }
+
+
+def test_empty_responses_fail_the_run(tmp_path, monkeypatch):
+    """The cluster smoke's shape: every gsm8k response empty (the thought
+    ran out of tokens, content null). Counted, and over max_failed_frac the
+    run fails instead of reporting 0.0."""
+    empty = {"gsm8k": [{"resps": [[""]]}, {"resps": [[""]]}]}
+    with pytest.raises(SystemExit, match="responses_failed 2/2"):
+        _mixed_run(tmp_path, monkeypatch, [_gsm8k()], samples=empty)
+
+
+def test_few_empty_responses_are_recorded(tmp_path, monkeypatch):
+    rows = [{"resps": [["#### 4"]]}] * 99 + [{"resps": [[""]]}]
+    outcome, _ = _mixed_run(tmp_path, monkeypatch, [_gsm8k()], samples={"gsm8k": rows})
+    assert outcome["responses"]["gsm8k"] == {"docs": 100, "empty": 1, "errors": 0}
+    assert outcome["responses_failed"] == 1 and outcome["responses_total"] == 100
+    assert outcome["incomplete"] is True
+    with pytest.raises(SystemExit, match="above the allowed fraction 0.0"):
+        _mixed_run(
+            tmp_path / "strict",
+            monkeypatch,
+            [_gsm8k()],
+            samples={"gsm8k": rows},
+            max_failed_frac="0",
+        )

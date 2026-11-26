@@ -71,7 +71,19 @@ before vLLM starts, with near-miss suggestions), `mode` (`auto` — the default 
 of the tasks' generation kwargs, values percent-decoded like `stop=`), and `metric`
 (the primary metric for every task, or one exact results key `<metric>,<filter>` such
 as `exact_match,strict-match`; default: each task's own, its config's first
-`metric_list` entry).
+`metric_list` entry), `thinking` (`on`, the default, or `off`) and `max_failed_frac`
+(default 0.05).
+
+`thinking=off` sends `chat_template_kwargs.enable_thinking=false` (as mmlu-prox-lite's
+`thinking=off` does): the lm-eval generation tasks' own protocol. With thinking on
+(Granite 4.x's template default), a chat task that sets no `max_gen_toks` (and none in
+`gen_kwargs`) gets a 32768-token budget: lm-eval's 256-token default ends the thought
+before `</think>`, the server's reasoning parser returns no content, and the answer
+scores as `""`. vLLM applies the task's stop strings to the whole generation, thought
+included, so a stop string the thought contains (gsm8k's `Question:`) also ends it with
+no content. Per task the run counts docs with an empty chat response and docs whose
+request failed (`details.responses`); they stay in lm-eval's score as wrong answers,
+and the run fails when they exceed `max_failed_frac` of all docs.
 
 A task's metric is read as `<metric>,none`, then bare `<metric>`, then
 `<metric>,<filter>` for each of the task's `filter_list` names in yaml order (gsm8k's

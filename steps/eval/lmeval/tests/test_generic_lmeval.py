@@ -1,0 +1,181 @@
+# SPDX-License-Identifier: Apache-2.0
+
+"""The lm-eval bridge's chat path against the real lm-eval (skipped where
+lm-eval is not installed; it runs in the lmeval image build): a local
+gsm8k-shaped task (gsm8k.yaml's prompt, stops, filters and metric over a local
+json dataset) and a stub of vLLM's chat endpoint serving a thinking model
+behind a reasoning parser -- the thought, then </think>, then the answer;
+max_tokens and stop strings apply to the whole text; no </think> in the
+output means content null (the Granite 4.2 cluster smoke's 0.0)."""
+
+import json
+import re
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("lm_eval")
+
+from granite_evals.benchmarks import generic  # noqa: E402
+from granite_evals.registry import RunConfig  # noqa: E402
+
+THINK_TOKENS = 300
+
+TASK_YAML = """task: gsm8k_local
+dataset_path: json
+dataset_kwargs:
+  data_files:
+    train: {data}/train.jsonl
+    test: {data}/test.jsonl
+output_type: generate_until
+training_split: train
+fewshot_split: train
+test_split: test
+doc_to_text: "Question: {{{{question}}}}\\nAnswer:"
+doc_to_target: "{{{{answer}}}}"
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: false
+    regexes_to_ignore: [",", "\\\\$", "(?s).*#### ", "\\\\.$"]
+generation_kwargs:
+  until: ["Question:", "</s>", "<|im_end|>"]
+  do_sample: false
+  temperature: 0.0
+{extra}num_fewshot: 2
+filter_list:
+  - name: "strict-match"
+    filter:
+      - function: "regex"
+        regex_pattern: "#### (\\\\-?[0-9\\\\.\\\\,]+)"
+      - function: "take_first"
+"""
+
+
+class _Stub(BaseHTTPRequestHandler):
+    log: list = []
+
+    def do_POST(self):  # noqa: N802 - http.server's name
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        _Stub.log.append(body)
+        thinking = (body.get("chat_template_kwargs") or {}).get("enable_thinking", True)
+        q = body["messages"][-1]["content"]
+        m = re.search(r"has (\d+) apples and (\d+) pears", q)
+        ans = int(m.group(1)) + int(m.group(2)) if m else 0
+        thought = ["hmm"] * (THINK_TOKENS if thinking else 0)
+        tokens = thought + ["</think>"] + f"The answer is {ans}.\n#### {ans}".split(" ")
+        max_tokens = body.get("max_tokens", 16)
+        text = " ".join(tokens[:max_tokens])
+        for stop in body.get("stop") or []:
+            if (i := text.find(stop)) >= 0:
+                text = text[:i]
+        content = text.split("</think>", 1)[1].lstrip() if "</think>" in text else None
+        out = json.dumps(
+            {
+                "id": "x",
+                "object": "chat.completion",
+                "model": body["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def stub():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Stub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    _Stub.log = []
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/v1"
+    finally:
+        server.shutdown()
+
+
+def _bridge(tmp_path, monkeypatch, own_max_gen_toks=None, **options):
+    data, tasks = tmp_path / "data", tmp_path / "tasks"
+    data.mkdir()
+    tasks.mkdir()
+    for split, n in (("train", 4), ("test", 3)):
+        with open(data / f"{split}.jsonl", "w") as f:
+            for i in range(n):
+                a, b = 10 + i, 20 + i
+                f.write(
+                    json.dumps(
+                        {
+                            "question": f"Tom has {a} apples and {b} pears; how many fruits?",
+                            "answer": f"{a}+{b}={a + b}\n#### {a + b}",
+                        }
+                    )
+                    + "\n"
+                )
+    extra = f"  max_gen_toks: {own_max_gen_toks}\n" if own_max_gen_toks else ""
+    (tasks / "gsm8k_local.yaml").write_text(TASK_YAML.format(data=data, extra=extra))
+
+    def load_tasks(names):
+        from lm_eval.tasks import TaskManager
+
+        loaded = TaskManager(include_path=str(tasks)).load(names)
+        return dict(loaded["tasks"]), dict(loaded["groups"])
+
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k_local"])
+    monkeypatch.setattr(generic, "load_tasks", load_tasks)
+    config = RunConfig(
+        model="m",
+        output_dir=tmp_path / "out",
+        workers=2,
+        options={
+            "tasks": "gsm8k_local",
+            "metric": "exact_match,strict-match",
+            **options,
+        },
+    )
+    return generic.LMEval(config)
+
+
+def test_thinking_on_gets_the_budget_and_answers(tmp_path, monkeypatch, stub):
+    outcome = _bridge(tmp_path, monkeypatch).run(stub, "granite")
+    assert {r["max_tokens"] for r in _Stub.log} == {generic.THINKING_BUDGET}
+    assert outcome["value"] == pytest.approx(1.0)
+    assert outcome["responses"]["gsm8k_local"] == {"docs": 3, "empty": 0, "errors": 0}
+
+
+def test_thinking_off_sends_enable_thinking_false(tmp_path, monkeypatch, stub):
+    outcome = _bridge(tmp_path, monkeypatch, thinking="off").run(stub, "granite")
+    assert all(
+        r.get("chat_template_kwargs") == {"enable_thinking": False} for r in _Stub.log
+    )
+    assert outcome["value"] == pytest.approx(1.0)
+
+
+def test_a_cut_thought_fails_the_run(tmp_path, monkeypatch, stub):
+    """The task's own small max_gen_toks with thinking on: every content is
+    null, lm-eval scores "", and the run fails instead of reporting 0.0."""
+    bench = _bridge(tmp_path, monkeypatch, own_max_gen_toks=16)
+    with pytest.raises(SystemExit, match="responses_failed 3/3"):
+        bench.run(stub, "granite")
+    rows = (tmp_path / "out" / "repeat-0" / "samples" / "gsm8k_local.jsonl").read_text()
+    assert all(json.loads(r)["resps"] == [[""]] for r in rows.splitlines())

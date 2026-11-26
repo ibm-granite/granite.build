@@ -4,6 +4,14 @@
 # extraction (the `#### <answer>` regex), the harness's own protocol. The task
 # reports one exact_match per filter (strict-match, flexible-extract), so
 # OPTIONS names the one this recipe reports: metric=exact_match,strict-match.
+# thinking=off (chat_template_kwargs.enable_thinking=false) is lm-eval's own
+# protocol for this task: Granite 4.x's chat template thinks by default, and with
+# thinking on the task's 256-token default ends the thought before </think>, so
+# the reasoning parser returns no content and every answer scores "" (the
+# bridge then gives thinking runs a 32768-token budget, but gsm8k's stop string
+# "Question:" still applies across the thought). To score with thinking on,
+# drop thinking=off from OPTIONS (--param OPTIONS="tasks=gsm8k
+# metric=exact_match,strict-match").
 # Data: https://huggingface.co/datasets/openai/gsm8k (public, config `main`;
 # the job downloads it into the HF cache at run start).
 #
@@ -36,7 +44,7 @@ IMAGE: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:5110acea"
 LIMIT: ""
 REPEATS: ""
 WORKERS: 128
-OPTIONS: "tasks=gsm8k metric=exact_match,strict-match"
+OPTIONS: "tasks=gsm8k metric=exact_match,strict-match thinking=off"
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Cluster ──────────────────────────────────────────────────────────
