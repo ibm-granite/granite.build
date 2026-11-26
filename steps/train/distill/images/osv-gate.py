@@ -33,6 +33,8 @@ A fix is the group's highest `fixed` event. Records that end their range with
 `last_affected` instead count as fixed when a final release after it exists (PyPI's
 release list, read over the network); when the releases cannot be listed, or the
 package is not on PyPI, such a group fails closed as fixable.
+--summarise-stale prints one count of the entries that match nothing instead of one
+line each, for an ignore file shared by several scans (steps/eval's).
 
 --ignore names a file of accepted advisory ids, one per line, `#` comments (the
 .trivyignore format, so trivy reads the same file). A finding is IGNORED when any of
@@ -50,6 +52,12 @@ An entry may carry two optional fields after the id, as whitespace-separated tok
   omitted). PyPI names compare normalised (PEP 503). Several may be given.
 A bare id, as in distill's and hf-export's files, applies to every package and never
 expires, as before.
+
+WARNING: only a gate that honours both fields may use them. steps/eval gives trivy a
+YAML ignore file generated from its scan-ignore (scripts/trivy-ignore.py), so trivy
+applies the same scope. distill's and hf-export's gates give trivy the scan-ignore
+file itself, in trivy's plain format, which keeps `exp:` but ignores `pkg:`. A `pkg:`
+scope there would narrow this gate and leave trivy's unscoped.
 """
 
 import datetime
@@ -279,6 +287,9 @@ def main():
         i = args.index("--ignore")
         ignore_path = args[i + 1] if i + 1 < len(args) else None
         del args[i : i + 2]
+    summarise_stale = "--summarise-stale" in args
+    if summarise_stale:
+        args.remove("--summarise-stale")
     try:
         entries = load_ignore_entries(ignore_path)
     except ValueError as e:
@@ -338,10 +349,17 @@ def main():
     ]
     ignored = [f for f in findings if f[5]]
     used = set().union(*(f[5] for f in findings)) if findings else set()
-    for stale in sorted(ignores - used - {o[0] for o in out_of_scope}):
+    stale = sorted(ignores - used - {o[0] for o in out_of_scope})
+    if summarise_stale and stale:
         print(
-            f"  note: {stale} in {ignore_path} matches no finding; remove it if fixed"
+            f"  note: {len(stale)} entries in {ignore_path} match no finding in this scan"
+            " (they may apply to another lock or image)"
         )
+    else:
+        for vid in stale:
+            print(
+                f"  note: {vid} in {ignore_path} matches no finding; remove it if fixed"
+            )
     for vid, name, version in sorted(set(out_of_scope)):
         print(
             f"  note: {vid} in {ignore_path} is accepted for other packages only, "

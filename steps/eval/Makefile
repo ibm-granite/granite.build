@@ -273,7 +273,7 @@ scan-deps:
 	  $(DOCKER) run --rm -v "$$d:/scan/src:ro,Z" $(OSV_IMAGE) scan source --lockfile "$$lf" --format json > "$$d/osv.json"; orc=$$?; \
 	  if [ $$orc -ne 0 ] && [ $$orc -ne 1 ]; then \
 	    echo "SCAN-DEPS FAILED: osv-scanner did not run on $$f (exit $$orc)" >&2; rc=1; \
-	  elif $(PYTHON3) "$(OSV_GATE)" $(SCAN_SEVERITY) $${ignsrc:+--ignore "$$ignsrc"} < "$$d/osv.json"; then \
+	  elif $(PYTHON3) "$(OSV_GATE)" $(SCAN_SEVERITY) --summarise-stale $${ignsrc:+--ignore "$$ignsrc"} < "$$d/osv.json"; then \
 	    echo "OK: $$f has no fixable $(SCAN_SEVERITY) vulnerabilities by CVSS"; \
 	  else \
 	    echo "SCAN-DEPS FAILED: $$f has fixable $(SCAN_SEVERITY) vulnerabilities by CVSS (above); raise them or record them in $(SCAN_IGNORE)" >&2; rc=1; \

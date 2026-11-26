@@ -254,6 +254,21 @@ def test_is_after(release, last, after):
     assert osv_gate.is_after(release, last) is after
 
 
+def test_stale_entries_listed_or_summarised(tmp_path):
+    """By default each unmatched entry gets a line (distill's per-image files);
+    --summarise-stale gives one count. The out-of-scope note stays visible either way."""
+    ignore = "PYSEC-2026-4327 pkg:pypi/pillow@12.3.0\nCVE-1\nCVE-2\nCVE-3\n"
+    pkgs = [package("pillow", "11.3.0", PILLOW)]
+    full = run(tmp_path, pkgs, ignore)
+    assert full.stdout.count("matches no finding; remove it if fixed") == 3
+    short = run(tmp_path, pkgs, ignore, extra=("--summarise-stale",))
+    assert "matches no finding; remove it if fixed" not in short.stdout
+    assert "3 entries in" in short.stdout and "match no finding in this scan" in short.stdout
+    for r in (full, short):
+        assert "PYSEC-2026-4327 in" in r.stdout and "accepted for other packages only, not pillow 11.3.0" in r.stdout
+        assert r.returncode == 1
+
+
 def test_load_ignores_keeps_its_set_of_ids():
     """fix-locks.py relies on load_ignores returning every id as a set."""
     assert osv_gate.load_ignores(None) == set()
