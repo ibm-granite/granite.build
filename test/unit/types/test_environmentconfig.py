@@ -454,3 +454,20 @@ def test_cluster_ssh_identity_step_cert_accepts_bool_or_unset():
             {"slurm": [{"Host": "bv", "IdentityStepCert": good}]}
         )
     ClusterSshConfigs.model_validate({"slurm": [{"Host": "bv"}]})
+
+
+def test_environment_config_rejects_placeholder_efs_file_system_id():
+    cfg = {
+        "default_cloud": "aws",
+        "shared_workdir": "/mnt/gb-shared/gbroot",
+        "shared_filesystem": {
+            "provider": "efs",
+            "mount_point": "/mnt/gb-shared",
+            "efs": {"file_system_id": "fs-REPLACE-ME", "region": "us-east-1"},
+        },
+    }
+    with pytest.raises(
+        ValidationError, match="file_system_id.*contains placeholder 'REPLACE-ME'"
+    ):
+        EnvironmentConfig.model_validate(_aws_env(cfg))
+

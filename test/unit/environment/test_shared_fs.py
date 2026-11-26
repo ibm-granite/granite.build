@@ -9,6 +9,7 @@ from unittest import mock
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from gbserver.environment.shared_fs import build_providers
 from gbserver.environment.shared_fs.base import (
@@ -214,6 +215,27 @@ def test_efs_ephemeral_accepts_optional_networking():
     )
     assert cfg.vpc_id == "vpc-1" and cfg.subnets == ["subnet-a"]
     assert cfg.derived_dns_name() is None  # no fsid yet
+
+
+@pytest.mark.parametrize(
+    "field, bad_val",
+    [
+        ("file_system_id", "fs-REPLACE-ME"),
+        ("file_system_id", "REPLACE-ME"),
+        ("access_point_id", "fsap-REPLACE-ME"),
+        ("access_point_id", "REPLACE-ME"),
+        ("dns_name", "fs-REPLACE-ME.efs.us-east-1.amazonaws.com"),
+    ],
+)
+def test_efs_rejects_placeholder(field, bad_val):
+    kwargs = {"region": "us-east-1"}
+    if field == "access_point_id":
+        kwargs["file_system_id"] = "fs-1"
+    kwargs[field] = bad_val
+    with pytest.raises(
+        ValidationError, match=f"{field}.*contains placeholder 'REPLACE-ME'"
+    ):
+        EfsConfig(**kwargs)
 
 
 # --- Task 2: parse_shared_filesystems list coercion + cross-mount rules (#404) ---

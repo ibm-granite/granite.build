@@ -5,9 +5,11 @@
 import os
 from typing import List, Literal, Optional
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from gbserver.types.config import Config
+
+_PLACEHOLDER_MARKER = "REPLACE-ME"
 
 
 class EfsConfig(Config):
@@ -35,6 +37,17 @@ class EfsConfig(Config):
     # AWS access-point ids are ``fsap-<hex>``; the id is interpolated into the
     # mount command line, so reject anything else (e.g. shell metacharacters).
     access_point_id: Optional[str] = Field(default=None, pattern=r"^fsap-[0-9a-f]+$")
+
+    @field_validator("file_system_id", "access_point_id", "dns_name", mode="before")
+    @classmethod
+    def _reject_placeholder(
+        cls, v: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        if isinstance(v, str) and _PLACEHOLDER_MARKER in v:
+            raise ValueError(
+                f"efs: {info.field_name} {v!r} contains placeholder '{_PLACEHOLDER_MARKER}'"
+            )
+        return v
 
     @model_validator(mode="after")
     def _require_target(self) -> "EfsConfig":
