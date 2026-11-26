@@ -24,7 +24,7 @@
 #   make image-nemoskills REGISTRY=...            build one (image-cpu-<family>: its CPU image)
 #   make scan-image-nemoskills REGISTRY=...       the image gate on a built image (scan-image-cpu-<family>)
 #   make publish-image-nemoskills REGISTRY=...    scan, then push one, refusing an existing tag
-#   make publish-images REGISTRY=...              the same for all (needs a prior `podman login`)
+#   make publish-images REGISTRY=...              scan every image, check every tag, then push them all (needs `podman login`)
 #   make scan-images REGISTRY=...                 the image gate on every built image (scan-images-cpu: the CPU ones)
 #   make test-src                                 run the vendored unit tests (no GPU, no network)
 #   make prefetch HF_HOME=/path/to/hf-cache       download the pinned HF datasets into a cache
@@ -131,10 +131,10 @@ define push-image
 	$(DOCKER) push $(1)
 endef
 
-.PHONY: help scan-deps scan-images scan-images-cpu images-cpu publish-images-cpu $(addprefix image-cpu-,$(CPU_FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES)) images publish-images test-src prefetch check-pins $(addprefix image-,$(FAMILIES)) $(addprefix publish-image-,$(FAMILIES)) $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
+.PHONY: help $(addprefix push-image-,$(FAMILIES)) $(addprefix push-image-cpu-,$(CPU_FAMILIES)) scan-deps scan-images scan-images-cpu images-cpu publish-images-cpu $(addprefix image-cpu-,$(CPU_FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES)) images publish-images test-src prefetch check-pins $(addprefix image-,$(FAMILIES)) $(addprefix publish-image-,$(FAMILIES)) $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
 
 help:
-	@echo "Targets: images, scan-images, publish-images, image-<family>, scan-image-<family>, publish-image-<family> (and the -cpu- forms), test-src, prefetch, check-pins, scan-deps"
+	@echo "Targets: images, scan-images, publish-images (all scans, then all pushes), image-<family>, scan-image-<family>, publish-image-<family>, push-image-<family> (no scan) (and the -cpu- forms), test-src, prefetch, check-pins, scan-deps"
 	@echo "Families: $(FAMILIES)"
 	@echo "Set REGISTRY (e.g. quay.io/myorg); IMAGE_VERSION defaults to the git short SHA ($(IMAGE_VERSION))."
 
@@ -144,10 +144,38 @@ endef
 
 images: $(addprefix image-,$(FAMILIES)) $(addprefix image-cpu-,$(CPU_FAMILIES))
 images-cpu: $(addprefix image-cpu-,$(CPU_FAMILIES))
-publish-images-cpu: $(addprefix publish-image-cpu-,$(CPU_FAMILIES))
 scan-images: $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
 scan-images-cpu: $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
-publish-images: $(addprefix publish-image-,$(FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES))
+
+# publish-images / publish-images-cpu are all or nothing: every image is scanned, and
+# every tag checked absent on the registry, before the first push. One failing scan
+# or one existing tag stops them with nothing pushed. (Each push still re-checks its
+# own tag, so a tag published meanwhile is refused too.)
+ALL_REFS := $(foreach f,$(FAMILIES),$(call gpu_ref,$(f))) $(foreach f,$(CPU_FAMILIES),$(call cpu_ref,$(f)))
+CPU_REFS := $(foreach f,$(CPU_FAMILIES),$(call cpu_ref,$(f)))
+define check-all-absent
+	@for ref in $(1); do \
+		status=$$($(TAG_STATUS) "$$ref"); \
+		[ "$$status" = absent ] || { echo "[publish] refusing: $$ref is $$status on the registry; nothing was pushed" >&2; exit 1; }; \
+	done; echo "[publish] every tag is absent on the registry"
+endef
+publish-images: $(if $(filter true,$(SKIP_SCAN)),,scan-images)
+	$(require_registry)
+	$(call check-all-absent,$(ALL_REFS))
+	@$(MAKE) --no-print-directory $(addprefix push-image-,$(FAMILIES)) $(addprefix push-image-cpu-,$(CPU_FAMILIES))
+publish-images-cpu: $(if $(filter true,$(SKIP_SCAN)),,scan-images-cpu)
+	$(require_registry)
+	$(call check-all-absent,$(CPU_REFS))
+	@$(MAKE) --no-print-directory $(addprefix push-image-cpu-,$(CPU_FAMILIES))
+
+# push-image-<family> / push-image-cpu-<family>: the push alone, tag guard included,
+# for publish-images after its scans. Run publish-image-* to scan and push one image.
+$(addprefix push-image-,$(FAMILIES)): push-image-%:
+	$(require_registry)
+	$(call push-image,$(call gpu_ref,$*))
+$(addprefix push-image-cpu-,$(CPU_FAMILIES)): push-image-cpu-%:
+	$(require_registry)
+	$(call push-image,$(call cpu_ref,$*))
 
 $(addprefix image-cpu-,$(CPU_FAMILIES)): image-cpu-%:
 	$(require_registry)
