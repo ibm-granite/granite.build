@@ -98,3 +98,22 @@ class TestAuth:
         assert GBCredentials().get("login", section=get_gh_credentials_section()) == (
             "standalone"
         )
+
+    @patch("gbcommon.types.gbenvconfig.is_standalone", return_value=False)
+    @patch("gbcli.utils.gh_auth.requests.get")
+    def test_gh_login_private_email(self, mock_get, _standalone):
+        """GitHub returns null name/email for a private profile; login still works."""
+        mock_get.return_value.json.return_value = {
+            "login": "ghuser",
+            "id": 1,
+            "url": "u",
+            "html_url": "h",
+            "name": None,
+            "email": None,
+        }
+
+        assert gh_login("token") == "ghuser"
+
+        credentials = GBCredentials()
+        assert credentials.get("email", section=get_gh_credentials_section()) == ""
+        assert credentials.check_values()

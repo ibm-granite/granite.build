@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 from urllib.parse import parse_qs
 
 import requests
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from gbcommon.types.constants import (
     get_gh_api_base,
@@ -67,6 +67,12 @@ class UserInfoResponse(BaseModel):
     html_url: str
     name: str
     email: str
+
+    @field_validator("name", "email", mode="before")
+    @classmethod
+    def _null_as_empty(cls, value):
+        # GitHub returns null for an unset name or a private email.
+        return "" if value is None else value
 
 
 def get_device_code() -> DeviceCodeURLResponse:
