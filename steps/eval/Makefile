@@ -78,10 +78,20 @@ check-severity = $(if $(SEVERITY_UP_$(SCAN_SEVERITY)),,$(error SCAN_SEVERITY=$(S
 # Does a tag exist on its registry (present / absent / unknown)? Manifest only, no pull.
 TAG_STATUS    := $(CURDIR)/../scripts/registry-tag-status.sh
 
-# Shell: set ign to scan-ignore's absolute path if the file exists, else to empty. The
-# recipes pass it quoted, so a SCAN_IGNORE path may hold spaces.
-find-ignore = ign=""; case "$(SCAN_IGNORE)" in /*) ign="$(SCAN_IGNORE)";; *) ign="$(CURDIR)/$(SCAN_IGNORE)";; esac; \
-	if [ -f "$$ign" ]; then echo "[scan] accepting the advisories listed in $$ign"; else ign=""; fi
+# scan-ignore scopes each accepted id to the packages (purls) it names, and trivy's
+# plain-text ignore format cannot say that: it would accept the id in every package.
+# So trivy gets the YAML ignore file scripts/trivy-ignore.py writes from scan-ignore at
+# gate time (its `purls` field), and scan-ignore stays the one hand-kept list.
+PYTHON3          ?= python3
+TRIVY_IGNORE_GEN := $(CURDIR)/scripts/trivy-ignore.py
+
+# Shell, $(call gen-ignore,<label>): set ignsrc to scan-ignore's absolute path and ign to
+# the trivy YAML generated from it under SCAN_CACHE, or both to empty when there is no
+# scan-ignore. The recipes pass both quoted, so a path may hold spaces.
+gen-ignore = ignsrc=""; ign=""; case "$(SCAN_IGNORE)" in /*) ignsrc="$(SCAN_IGNORE)";; *) ignsrc="$(CURDIR)/$(SCAN_IGNORE)";; esac; \
+	if [ -f "$$ignsrc" ]; then ign="$(SCAN_CACHE)/trivy-ignore-$(1).yaml"; \
+	$(PYTHON3) "$(TRIVY_IGNORE_GEN)" "$$ignsrc" "$$ign" || exit 1; \
+	echo "[scan] accepting the advisories listed in $$ignsrc, each only in the packages it names"; else ignsrc=""; fi
 
 # scan-image <image-ref> <label>
 define scan-image
@@ -91,10 +101,10 @@ define scan-image
 	@tar="$(SCAN_CACHE)/$(2)-$(IMAGE_VERSION).tar"; rm -f "$$tar"; \
 	echo "[scan] saving $(1)"; \
 	$(DOCKER) save -o "$$tar" $(1) || { rm -f "$$tar"; exit 1; }; \
-	$(find-ignore); \
+	$(call gen-ignore,$(2)); \
 	t() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" \
-		$${ign:+-v "$$ign:/scan/ignore:ro,Z"} $(TRIVY_IMAGE) image --quiet --input /scan/image.tar --scanners vuln --timeout $(TRIVY_TIMEOUT) \
-		$${ign:+--ignorefile /scan/ignore} "$$@"; }; \
+		$${ign:+-v "$$ign:/scan/ignore.yaml:ro,Z"} $(TRIVY_IMAGE) image --quiet --input /scan/image.tar --scanners vuln --timeout $(TRIVY_TIMEOUT) \
+		$${ign:+--ignorefile /scan/ignore.yaml} "$$@"; }; \
 	echo "[scan] trivy report ($(TRIVY_REPORT_SEVERITY), fixed and unfixed) for $(1)"; \
 	t --severity $(TRIVY_REPORT_SEVERITY) --format table; rc=$$?; \
 	if [ $$rc -ne 0 ]; then rm -f "$$tar"; echo "[scan] trivy did not run (exit $$rc)" >&2; exit $$rc; fi; \
@@ -203,14 +213,14 @@ scan-deps:
 	$(check-severity)
 	@mkdir -p "$(SCAN_CACHE)/trivy"
 	@rc=0; \
-	$(find-ignore); \
+	$(call gen-ignore,deps); \
 	for f in src/core/uv.lock $$(ls */*requirements*.txt 2>/dev/null); do \
 	  echo "== $$f (fixable $(TRIVY_GATE_SEVERITY))"; \
 	  d=$$(mktemp -d "$(SCAN_CACHE)/deps.XXXXXX") || exit 1; \
 	  case "$$f" in *.txt) cp "$$f" "$$d/requirements.txt";; *) cp "$$f" "$$d/";; esac || { rm -rf "$$d"; exit 1; }; \
 	  $(DOCKER) run --rm -v "$$d:/scan/src:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" \
-	    $${ign:+-v "$$ign:/scan/ignore:ro,Z"} $(TRIVY_IMAGE) fs --quiet --scanners vuln --timeout $(TRIVY_TIMEOUT) \
-	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed $${ign:+--ignorefile /scan/ignore} \
+	    $${ign:+-v "$$ign:/scan/ignore.yaml:ro,Z"} $(TRIVY_IMAGE) fs --quiet --scanners vuln --timeout $(TRIVY_TIMEOUT) \
+	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed $${ign:+--ignorefile /scan/ignore.yaml} \
 	    --exit-code 3 --format table /scan/src; frc=$$?; \
 	  rm -rf "$$d"; \
 	  case $$frc in \
