@@ -498,7 +498,7 @@ A row whose alignment yields no groups contributes no loss and is skipped. That 
 the rare row, but when the two renders disagree for every row, the run trains at exactly zero
 gradient and still checkpoints and reports success. So the trainer sums, over every rank, the
 rows that reached alignment and the ones that did not, at every optimizer step, and fails the
-run with a `RuntimeError` in two cases.
+run with a `RuntimeError` in three cases.
 
 When every row of an optimizer step is unaligned. The check runs at the optimizer step
 (`on_pre_optimizer_step`). Under this step's DeepSpeed ZeRO-3, accelerate's backward has
@@ -514,6 +514,14 @@ unaligned. The final, partial window is judged when training ends:
 
 ```
 RuntimeError: ULD steps <a>-<b>: <u> of <r> rows (<pct>) yielded no alignment groups and contributed no loss, more than uld_max_unaligned_fraction=0.5. ...
+```
+
+When any row of an optimizer step has a completion at position 0, where no logit predicts
+its first token. The loss skips such a row, and the check at the optimizer step fails the run
+on every rank together, as in the first case. No layout this step builds produces one:
+
+```
+RuntimeError: ULD step <n>: <k> rows (regions, on the hybrid path) across all ranks have a completion at position 0, so no logit predicts their first token; they were skipped. ...
 ```
 
 A log line carries the counts since the previous line, summed over ranks:

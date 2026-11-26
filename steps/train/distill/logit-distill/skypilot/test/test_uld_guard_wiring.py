@@ -196,12 +196,17 @@ def test_every_callback_method_is_a_transformers_hook():
 
 
 def test_evaluation_rows_do_not_reach_the_next_step():
-    loss_fn = types.SimpleNamespace(_alignment_unaligned=3, _alignment_rows=5)
+    """Except a completion at position 0, which is refused wherever it came from: it is
+    left for the next step's guard."""
+    loss_fn = types.SimpleNamespace(
+        _alignment_unaligned=3, _alignment_rows=5, _alignment_unpredictable=1
+    )
     callback = cgt._ULDAlignmentGuardCallback(
         types.SimpleNamespace(uld_loss_fn=loss_fn)
     )
     callback.on_evaluate(None, None, None, metrics={})
     assert (loss_fn._alignment_unaligned, loss_fn._alignment_rows) == (0, 0)
+    assert loss_fn._alignment_unpredictable == 1
 
 
 def test_init_registers_the_guard_for_the_uld_loss(tmp_path):

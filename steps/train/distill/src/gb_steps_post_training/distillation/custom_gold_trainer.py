@@ -677,7 +677,8 @@ class CustomULDLoss(ULDLoss):
       trainer's ULDAlignmentGuard drains both at each optimizer step, reduces them across
       ranks, and raises when a whole step, or too much of a window, trained on nothing.
     - A completion that starts at position 0 has no logit predicting its first token; both
-      paths raise on it (`_require_predictable_start`).
+      paths skip it and count it in `_alignment_unpredictable` (`_unpredictable_start`),
+      and ULDAlignmentGuard refuses the step on every rank.
     """
 
     def __init__(
@@ -793,6 +794,10 @@ class CustomULDLoss(ULDLoss):
         # ranks before it checks or logs them (`train/alignment_unaligned_rate`).
         self._alignment_rows = 0
         self._alignment_unaligned = 0
+        # Rows (regions) skipped because a completion starts at position 0. Not a data
+        # condition like the two above: the guard refuses any, on every rank alike, which
+        # a raise here, on the one rank whose row it is, could not do.
+        self._alignment_unpredictable = 0
 
         self._opd_batch_norm_stats_accum = {"mean": 0.0, "std": 0.0}
         self._opd_batch_norm_stats_count = 0
@@ -1867,10 +1872,13 @@ class CustomULDLoss(ULDLoss):
             teacher_start = teacher_answer_index[i]
             teacher_size = teacher_answer_size[i]
 
-            if student_size <= 0 or teacher_size <= 0:
+            if (
+                student_size <= 0
+                or teacher_size <= 0
+                or self._unpredictable_start(student_start, teacher_start)
+            ):
                 distillation_losses.append(student_logits[i].sum() * 0.0)
                 continue
-            self._require_predictable_start(i, student_start, teacher_start)
 
             # Fix 1: logits at start-1 .. start+size-2, so probs[k] predicts token_ids[k].
             student_probs = F.softmax(
@@ -1921,9 +1929,9 @@ class CustomULDLoss(ULDLoss):
 
         return self.distillation_weight * torch.stack(distillation_losses).mean()
 
-    @staticmethod
-    def _require_predictable_start(i, student_start, teacher_start, region=False):
-        """Raise unless both completions start at position 1 or later.
+    def _unpredictable_start(self, student_start, teacher_start) -> bool:
+        """Whether either completion starts at position 0; if so, count it, and the caller
+        skips the row (region) with a zero loss.
 
         Both ULD paths read the logits at start-1 .. start+size-2, because logits[t] predict
         token t + 1. A completion at position 0 has no predictor, and start-1 = -1 would
@@ -1931,14 +1939,15 @@ class CustomULDLoss(ULDLoss):
         a prompt: the collator's spans start after the response template or the rendered
         prompt, the single-region teacher crop keeps `teacher_prompt_length - 1`, and the
         per-turn teacher pack puts each region at block offset + 1. So this is a
-        construction error, not a data condition to degrade over.
+        construction error, not a data condition to degrade over, and ULDAlignmentGuard
+        refuses any such row at the optimizer step, on every rank alike. It is not raised
+        here: this runs on one rank's rows, and the other ranks would wait in backward's
+        collective until the NCCL timeout.
         """
         if student_start < 1 or teacher_start < 1:
-            kind = "region" if region else "row"
-            raise ValueError(
-                f"ULD {kind} {i}: completion starts at position 0 (student {student_start}, "
-                f"teacher {teacher_start}), so no logit predicts its first token"
-            )
+            self._alignment_unpredictable += 1
+            return True
+        return False
 
     def _merge_probabilities_with_alignment_groups(
         self, probs, alignment_groups, token_ids=None
@@ -2213,17 +2222,19 @@ class CustomULDLoss(ULDLoss):
                         getattr(self, "_uld_scaffold_regions_trimmed", 0) + 1
                     )
 
-            if student_size <= 0 or teacher_size <= 0:
+            # The start check before every start-1 read below (the full-vocab softmax, the
+            # chunked region terms, the OPD slices). The scaffold trim above only moves a
+            # start forward.
+            if (
+                student_size <= 0
+                or teacher_size <= 0
+                or self._unpredictable_start(student_start, teacher_start)
+            ):
                 uld_losses.append(student_logits[row].sum() * 0.0)
                 uld_token_counts.append(0)
                 opd_losses.append(student_logits[row].sum() * 0.0)
                 opd_token_counts.append(0)
                 continue
-            # Before every start-1 read below (the full-vocab softmax, the chunked region
-            # terms, the OPD slices). The scaffold trim above only moves a start forward.
-            self._require_predictable_start(
-                i, student_start, teacher_start, region=True
-            )
 
             # Logits at positions start-1 .. start+size-2: probs[k] predicts token_ids[k]
             # (includes first answer token, excludes prediction after EOS)
@@ -2795,6 +2806,10 @@ class ULDAlignmentGuard:
     So the counts are checked, after being summed over every rank (a rank-local count is
     wrong on N GPUs, and a rank-local raise would hang the other ranks):
 
+    - at every optimizer step: if any row (region), on any rank, was skipped because a
+      completion starts at position 0 (`_alignment_unpredictable`), raise. That is a
+      construction error, not a rate to tolerate; it is counted rather than raised in the
+      loss so that every rank raises here together.
     - at every optimizer step: if every row that reached alignment, on every rank, was
       unaligned, raise. No loss term was computed for the step at all.
     - over each window of `window_steps` optimizer steps (default: the logging window's
@@ -2836,10 +2851,23 @@ class ULDAlignmentGuard:
         `window_steps` is the window to use when the guard was built with 0 (the trainer
         passes its logging window). Raises RuntimeError, on every rank alike, as above.
         """
-        local = [loss_fn._alignment_unaligned, loss_fn._alignment_rows]
+        local = [
+            loss_fn._alignment_unaligned,
+            loss_fn._alignment_rows,
+            loss_fn._alignment_unpredictable,
+        ]
         loss_fn._alignment_unaligned = 0
         loss_fn._alignment_rows = 0
-        unaligned, rows = (int(round(v)) for v in reduce(local))
+        loss_fn._alignment_unpredictable = 0
+        unaligned, rows, unpredictable = (int(round(v)) for v in reduce(local))
+        if unpredictable > 0:
+            raise RuntimeError(
+                f"ULD step {step}: {unpredictable} rows (regions, on the hybrid path) across "
+                "all ranks have a completion at position 0, so no logit predicts their first "
+                "token; they were skipped. Every layout the trainer builds puts a prompt "
+                "before the completion, so these inputs were built wrongly (a row with no "
+                "prompt, for one). Rows evaluated since the previous step count too."
+            )
         self._log_unaligned += unaligned
         self._log_rows += rows
         if rows > 0 and unaligned == rows:
@@ -2921,7 +2949,9 @@ class _ULDAlignmentGuardCallback(TrainerCallback):
 
     def on_evaluate(self, args, state, control, **kwargs):
         # Rows the loss counted during evaluation are not a training step's; the training
-        # counters were drained at the step that preceded the evaluation.
+        # counters were drained at the step that preceded the evaluation. Not
+        # `_alignment_unpredictable`: a completion at position 0 is refused wherever it
+        # came from, so an evaluated one is left for the next step's guard to refuse.
         loss_fn = self._trainer.uld_loss_fn
         loss_fn._alignment_unaligned = 0
         loss_fn._alignment_rows = 0

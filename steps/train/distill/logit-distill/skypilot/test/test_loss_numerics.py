@@ -722,31 +722,112 @@ class TestULDUnalignedRow:
 class TestULDCompletionAtPositionZero:
     """Both paths read the logits at start-1. A completion at position 0 has no logit
     predicting its first token, and start-1 = -1 would slice from the end of the row, so
-    each path refuses it rather than scoring the wrong positions."""
+    each path skips it rather than scoring the wrong positions, and counts it for the
+    guard, which refuses it on every rank (TestULDAlignmentGuard). A raise in the loss
+    would be one rank's alone: the others would wait in backward's collective."""
 
-    @pytest.mark.parametrize("path", ["base", "hybrid"])
-    @pytest.mark.parametrize("side", ["student", "teacher"])
-    def test_raises(self, path, side):
+    @staticmethod
+    def _at_zero(side, seed=14):
         s_c, t_c = S_ROWS[0][1], T_ROWS[0][1]
-        batch = _single_row(
+        return _single_row(
             s_c,
             t_c,
-            seed=14,
+            seed=seed,
             s_prompt=() if side == "student" else (5,),
             t_prompt=() if side == "teacher" else (7,),
         )
-        first = "student 0" if side == "student" else "teacher 0"
+
+    @pytest.mark.parametrize("path", ["base", "hybrid"])
+    @pytest.mark.parametrize("side", ["student", "teacher"])
+    def test_is_skipped_and_counted(self, path, side):
+        batch = self._at_zero(side)
+        batch["student_logits"].requires_grad_(True)
         loss_fn = _custom_uld(uld_use_hybrid_loss=(path == "hybrid"))
         assert loss_fn.use_hybrid_loss is (path == "hybrid")
-        kind = "region" if path == "hybrid" else "row"
-        with pytest.raises(ValueError, match=f"ULD {kind} 0: .*{first}"):
-            loss_fn(**batch)
+        loss = loss_fn(**batch)
+        assert loss.item() == 0.0
+        assert loss_fn._alignment_unpredictable == 1
+        # Not a row that reached alignment: it is refused outright, not judged as a rate.
+        assert (loss_fn._alignment_unaligned, loss_fn._alignment_rows) == (0, 0)
+        loss.backward()
+        assert batch["student_logits"].grad.abs().max().item() == 0.0
+
+    def test_the_guard_refuses_it_whatever_the_threshold(self):
+        loss_fn = _custom_uld()
+        loss_fn(**self._at_zero("teacher"))
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=1.0)
+        with pytest.raises(RuntimeError, match="ULD step 3: 1 rows .* position 0"):
+            guard.end_step(loss_fn, step=3, reduce=_one_rank, window_steps=10)
+        assert loss_fn._alignment_unpredictable == 0
+
+    def test_two_ranks_refuse_it_together(self, tmp_path):
+        """Two real gloo ranks, through the real loss and _uld_alignment_step_end. Rank 0's
+        row starts at position 0, rank 1's rows align. Both raise, at the same step, so
+        neither is left waiting in a collective. A raise inside the loss (rank 0 alone)
+        leaves rank 1 in the guard's all-reduce until the process group's timeout."""
+        _spawn_two_ranks(_position_zero_rank, tmp_path)
+        for rank in (0, 1):
+            assert (tmp_path / f"rank{rank}.txt").read_text() == "raised"
 
 
-def _counts(unaligned, rows):
-    """A stand-in for the loss object's two rank-local counters, which is all the guard
+def _spawn_two_ranks(fn, tmp_path):
+    mp = pytest.importorskip("torch.multiprocessing")
+    if not torch.distributed.is_available():
+        pytest.skip("torch.distributed is not available")
+    mp.spawn(fn, args=(2, str(tmp_path / "rdzv"), str(tmp_path)), nprocs=2, join=True)
+
+
+def _position_zero_rank(rank, world, rendezvous, out_dir):
+    """One rank of test_two_ranks_refuse_it_together (module level: spawn pickles it)."""
+    import datetime
+    import os
+    from pathlib import Path
+
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{rendezvous}",
+        rank=rank,
+        world_size=world,
+        timeout=datetime.timedelta(seconds=20),
+    )
+    try:
+        loss_fn = _custom_uld()
+        trainer = types.SimpleNamespace(
+            accelerator=types.SimpleNamespace(
+                distributed_type=cgt.DistributedType.MULTI_CPU,
+                device=torch.device("cpu"),
+            ),
+            args=types.SimpleNamespace(logging_steps=1),
+            uld_loss_fn=loss_fn,
+            _uld_alignment_guard=cgt.ULDAlignmentGuard(max_unaligned_fraction=1.0),
+        )
+        try:
+            if rank == 0:
+                loss_fn(**TestULDCompletionAtPositionZero._at_zero("student"))
+            else:
+                loss_fn(**_uld_batch())
+            CustomGOLDTrainer._uld_alignment_step_end(
+                trainer, types.SimpleNamespace(global_step=0, logging_steps=1)
+            )
+            outcome = "did not raise"
+        except RuntimeError as e:
+            ok = "ULD step 1: 1 rows" in str(e) and "position 0" in str(e)
+            outcome = "raised" if ok else f"wrong: {e}"
+        except Exception as e:  # the loss's own raise, on one rank
+            outcome = f"wrong: {type(e).__name__}: {e}"
+        Path(os.path.join(out_dir, f"rank{rank}.txt")).write_text(outcome)
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def _counts(unaligned, rows, unpredictable=0):
+    """A stand-in for the loss object's three rank-local counters, which is all the guard
     reads."""
-    return types.SimpleNamespace(_alignment_unaligned=unaligned, _alignment_rows=rows)
+    return types.SimpleNamespace(
+        _alignment_unaligned=unaligned,
+        _alignment_rows=rows,
+        _alignment_unpredictable=unpredictable,
+    )
 
 
 def _one_rank(values):

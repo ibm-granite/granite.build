@@ -123,15 +123,18 @@ when `use_hybrid_loss` and a vocabulary mapping were set. `_compute_distillation
 dispatches exactly that case to the hybrid path, so the branch was unreachable here.
 
 Because it reads start-1, a completion that starts at position 0 would have no predictor
-and would slice from the end of the row. Both ULD paths now raise `ValueError` on one
-(`CustomULDLoss._require_predictable_start`; on the hybrid path before every start-1 read).
+and would slice from the end of the row. Both ULD paths now skip such a row and count it
+(`CustomULDLoss._unpredictable_start`; on the hybrid path before every start-1 read), and
+`ULDAlignmentGuard` refuses it at the optimizer step on every rank (below). A raise in the
+loss would be one rank's alone, and the other ranks would wait in backward's collective
+until the NCCL timeout.
 The layouts the logit-distill step builds never put a completion there: the collator's spans
 start after the response template or the prompt, and the single-region teacher crop keeps
 `teacher_prompt_length - 1`. One mode the step cannot reach can: `uld_reuse_student_input`
 with a batch larger than 1. The collator left-pads, and the crop then uses the batch's
 longest prompt, so a row whose completion starts earlier is cut into, and its labels can
 start at position 0. That mis-crop is older than this guard; the guard turns it from a wrong
-slice into a ValueError. `_require_predictable_start`'s docstring still says no layout can
+slice into a refusal. `_unpredictable_start`'s docstring still says no layout can
 do this. It is an image input, so it is left as it is, and the follow-up issue records it.
 
 ## Local addition: refusing a ULD run that trains on nothing
@@ -145,6 +148,9 @@ increments it too), and `ULDAlignmentGuard` in `custom_gold_trainer.py`, run by
 `_ULDAlignmentGuardCallback` at `on_pre_optimizer_step` on every rank, drains them at each
 optimizer step and sums them over ranks. It raises `RuntimeError`:
 
+- when any row of a step, on any rank, was skipped for a completion at position 0
+  (`_alignment_unpredictable`, reduced in the same all-reduce as the other two counts);
+  always on, whatever the threshold. An evaluated row counts towards the next step;
 - when every row of a step, across all ranks, was unaligned; always on;
 - when more than `uld_max_unaligned_fraction` (default 0.5; 1.0 turns it off) of the rows
   in a window of `uld_unaligned_window_steps` optimizer steps (default 0 = `logging_steps`)
