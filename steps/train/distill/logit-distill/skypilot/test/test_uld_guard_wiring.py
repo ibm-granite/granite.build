@@ -371,7 +371,32 @@ def test_reusing_the_student_input_keeps_every_rows_completion(tmp_path, monkeyp
     first = [int((row != -100).nonzero()[0]) for row in inputs["labels"]]
     assert min(first) < inputs["prompts"].shape[1]  # the layout this is about
 
+    _assert_the_teacher_scores_the_students_completion(trainer, inputs, monkeypatch)
     loss_fn = trainer.uld_loss_fn
+    assert (loss_fn._alignment_rows, loss_fn._alignment_unaligned) == (2, 0)
+
+
+def test_reusing_the_student_input_keeps_every_turn_at_batch_1(tmp_path, monkeypatch):
+    """The same crop at batch 1, with two assistant turns and last_message_only false:
+    the collator labels both turns, but `prompts` is everything before the LAST turn.
+    Cropped at it, the teacher lost the first turn; cropped at the first labelled
+    column, it keeps both, as the student does."""
+    trainer = _trainer(
+        tmp_path,
+        rows=_MULTI_TURN_ROWS,
+        last_message_only=False,
+        uld_reuse_student_input=True,
+        uld_use_hybrid_loss=True,
+    )
+    inputs = trainer.data_collator([trainer.train_dataset[0]])
+    first = int((inputs["labels"][0] != -100).nonzero()[0])
+    assert first < inputs["prompts"].shape[1]  # the layout this is about
+    _assert_the_teacher_scores_the_students_completion(trainer, inputs, monkeypatch)
+
+
+def _assert_the_teacher_scores_the_students_completion(trainer, inputs, monkeypatch):
+    """compute_loss on `inputs`, recording what reaches the loss: on every row the
+    teacher's labelled ids are exactly the student's, from position 1 or later."""
     seen = {}
     real_call = cgt.CustomULDLoss.__call__
 
@@ -382,7 +407,7 @@ def test_reusing_the_student_input_keeps_every_rows_completion(tmp_path, monkeyp
     monkeypatch.setattr(cgt.CustomULDLoss, "__call__", spy)
     trainer.compute_loss(trainer.model, inputs)
 
-    for row in (0, 1):
+    for row in range(inputs["input_ids"].shape[0]):
         s_mask = seen["student_labels"][row] != -100
         t_mask = seen["teacher_labels"][row] != -100
         assert torch.equal(
@@ -390,8 +415,7 @@ def test_reusing_the_student_input_keeps_every_rows_completion(tmp_path, monkeyp
             seen["student_input_ids"][row][s_mask],
         )
         assert int(t_mask.nonzero()[0]) >= 1
-    assert loss_fn._alignment_unpredictable == 0
-    assert (loss_fn._alignment_rows, loss_fn._alignment_unaligned) == (2, 0)
+    assert trainer.uld_loss_fn._alignment_unpredictable == 0
 
 
 def test_the_config_leaves_other_arms_alone(tmp_path):

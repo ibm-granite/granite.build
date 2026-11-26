@@ -140,7 +140,10 @@ With `uld_reuse_student_input` (a debugging mode the step cannot reach), the tea
 `inputs["prompts"].shape[1]`, the batch's longest prompt. The collator left-pads, so the rows
 end together and, at a batch larger than 1, a row with a shorter prompt and a longer
 completion starts its completion before that column: the crop cut into it, the teacher lost
-its first tokens, and its labels started at position 0. The mis-crop came with the import.
+its first tokens, and its labels started at position 0. With `last_message_only=false`, which
+the mode is exempt from, the collator labels every assistant turn while `prompts` is everything
+before the last one, so even a batch of 1 lost the earlier turns from the teacher. The mis-crop
+came with the import.
 `teacher_prompt_length` is now the first column any row labels, and at least 1
 (`earliest_completion_column`), so every row's completion is kept whole with the logit
 before it. The crop is exactly as wide as a per-row crop padded to one width: for rows that

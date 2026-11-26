@@ -297,8 +297,10 @@ def earliest_completion_column(labels: torch.Tensor, ignore_index: int = -100) -
     position 0 unless its own input has no prompt. The batch's longest prompt is the
     wrong column here: the collator left-pads input_ids, so the rows END together and
     each completion starts at the width less its own length, before that column for any
-    row whose completion is longer than the width less the longest prompt. Cropping every
-    row at the earliest completion is also no wider than a per-row crop padded to one
+    row whose completion is longer than the width less the longest prompt. And with
+    last_message_only false the collator labels every assistant turn while `prompts` is
+    everything before the last one, so even a single row lost its earlier turns.
+    Cropping every row at the earliest completion is also no wider than a per-row crop padded to one
     width: for rows that end together, both are the longest completion plus one; for the
     on-policy batch, whose completions start at one column, the two are the same crop. A
     batch with no labelled position gets its last column, a crop of one unlabelled column.
