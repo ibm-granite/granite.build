@@ -392,3 +392,19 @@ PYSEC-2026-4067 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
 CVE-2026-1839 exp:2027-05-31 pkg:pypi/transformers@4.57.6
 GHSA-69w3-r845-3855 exp:2027-05-31 pkg:pypi/transformers@4.57.6
 PYSEC-2026-2288 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+# Two more, scored 7.8 by OSV, whose records give a last affected release instead of a
+# fixed one (5.8.1 and 5.0.0-rc0), with transformers 5.9.0 and 5.0.0 after them; COMET's
+# transformers<5 rules both out (see the COMET section above):
+# - PYSEC-2026-4174: GenerativePreTrainedModel.load_custom_generate() writes a remote
+#   custom_generate/generate.py to the HF modules cache before the trust_remote_code
+#   check. COMET's scorer is an encoder (XCOMET-XXL on XLM-R) and never generates, so
+#   that function is never called.
+# - PYSEC-2025-217: unsafe deserialization in the X-CLIP checkpoint conversion script.
+#   The env never runs a conversion script, and loads only the pinned XCOMET-XXL
+#   checkpoint.
+# Issue: #770 (a COMET release on transformers 5). Until 2027-05-31.
+CVE-2026-80047 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+GHSA-x9r9-c232-4q39 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+PYSEC-2026-4174 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+CVE-2025-14929 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+PYSEC-2025-217 exp:2027-05-31 pkg:pypi/transformers@4.57.6

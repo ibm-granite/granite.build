@@ -29,6 +29,11 @@ FAILS CLOSED when it has a fixed version (an unscored advisory is not a mild one
 -- it is an unmeasured one); it is printed as UNKNOWN and never fails when no fix
 exists or it is ignored.
 
+A fix is the group's highest `fixed` event. Records that end their range with
+`last_affected` instead count as fixed when a final release after it exists (PyPI's
+release list, read over the network); when the releases cannot be listed, or the
+package is not on PyPI, such a group fails closed as fixable.
+
 --ignore names a file of accepted advisory ids, one per line, `#` comments (the
 .trivyignore format, so trivy reads the same file). A finding is IGNORED when any of
 its ids or aliases is listed: it is still printed, marked, and never fails the gate.
@@ -48,9 +53,11 @@ expires, as before.
 """
 
 import datetime
+import os
 import json
 import re
 import sys
+import urllib.request
 from pathlib import Path
 
 # osv-scanner's ecosystem names -> purl types.
@@ -84,6 +91,87 @@ def fixed_versions(vuln, package):
         for rng in affected.get("ranges", []):
             out += [e["fixed"] for e in rng.get("events", []) if "fixed" in e]
     return out
+
+
+def last_affected_versions(vuln, package):
+    """Every `last_affected` event for this package in one OSV record. Some records
+    encode the affected range as introduced..last_affected instead of
+    introduced..fixed; a release after last_affected then fixes it."""
+    out = []
+    for affected in vuln.get("affected", []):
+        if affected.get("package", {}).get("name", "").lower() != package.lower():
+            continue
+        for rng in affected.get("ranges", []):
+            out += [e["last_affected"] for e in rng.get("events", []) if "last_affected" in e]
+    return out
+
+
+FINAL_RELEASE = re.compile(r"\d+(\.\d+)*(\.post\d+)?")
+
+
+def _numbers(v):
+    """The leading numeric release of a version (5.0.0 for 5.0.0-rc0) and whether
+    anything (a pre-release tag) follows it."""
+    m = re.match(r"\d+(\.\d+)*", v)
+    nums = tuple(int(p) for p in m.group(0).split(".")) if m else ()
+    rest = v[m.end() :] if m else v
+    return nums, bool(rest) and not re.fullmatch(r"\.post\d+", rest)
+
+
+def is_after(release, last_affected):
+    """Is the final release `release` later than `last_affected`? A last_affected
+    pre-release (5.0.0-rc0) is followed by its own final release (5.0.0)."""
+    r, _ = _numbers(release)
+    la, la_pre = _numbers(last_affected)
+    width = max(len(r), len(la))
+    r, la = r + (0,) * (width - len(r)), la + (0,) * (width - len(la))
+    return r >= la if la_pre else r > la
+
+
+_RELEASES = {}
+
+
+def releases(ecosystem, name):
+    """The package's final, unyanked releases, or None if they cannot be listed.
+
+    PyPI only, from its JSON API (osv-scanner needs the network anyway). The
+    environment variable OSV_GATE_RELEASES may name a JSON file {name: [versions]}
+    used instead of PyPI (the unit tests)."""
+    key = (ecosystem, normalize_name("pypi", name) if ecosystem == "PyPI" else name.lower())
+    if key in _RELEASES:
+        return _RELEASES[key]
+    found = None
+    override = os.environ.get("OSV_GATE_RELEASES")
+    if override:
+        found = json.loads(Path(override).read_text()).get(key[1])
+    elif ecosystem == "PyPI":
+        try:
+            url = f"https://pypi.org/pypi/{key[1]}/json"
+            with urllib.request.urlopen(url, timeout=30) as r:
+                data = json.load(r)
+            found = [
+                v
+                for v, files in data.get("releases", {}).items()
+                if files and not all(f.get("yanked") for f in files)
+            ]
+        except (OSError, ValueError):
+            found = None
+    if found is not None:
+        found = [v for v in found if FINAL_RELEASE.fullmatch(v)]
+    _RELEASES[key] = found
+    return found
+
+
+def fix_after_last_affected(ecosystem, name, last):
+    """For a group whose records give only last_affected: the first final release
+    after it, as `>LAST (first: X)`; or, when the releases cannot be listed, fail
+    closed as `>LAST (releases unknown)`. None when no release is after it."""
+    newest = max(last, key=version_key)
+    known = releases(ecosystem, name)
+    if known is None:
+        return f">{newest} (releases unknown)"
+    after = sorted((v for v in known if is_after(v, newest)), key=version_key)
+    return f">{newest} (first: {after[0]})" if after else None
 
 
 def load_ignores(path):
@@ -215,11 +303,14 @@ def main():
             for group in pkg.get("groups", []):
                 sev = group.get("max_severity")
                 score = float(sev) if sev not in (None, "") else None
-                fixes = []
+                fixes, last = [], []
                 for vid in group.get("ids", []):
                     if vid in vulns:
                         fixes += fixed_versions(vulns[vid], name)
+                        last += last_affected_versions(vulns[vid], name)
                 fix = max(fixes, key=version_key) if fixes else None
+                if fix is None and last:
+                    fix = fix_after_last_affected(ecosystem, name, last)
                 ids = group_ids(group)
                 listed = [e for e in live if e["id"] in ids]
                 hit = {

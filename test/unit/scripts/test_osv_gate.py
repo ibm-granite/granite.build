@@ -10,6 +10,7 @@ no expiry. `exp:` and `pkg:` fields narrow an entry.
 
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -25,8 +26,10 @@ osv_gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(osv_gate)
 
 
-def package(name, version, *groups, ecosystem="PyPI"):
-    """One package with HIGH (7.5), fixable advisory groups: (id, aliases) pairs."""
+def package(name, version, *groups, ecosystem="PyPI", score="7.5", end=("fixed", "99.0")):
+    """One package with advisory groups: (id, aliases) pairs, each scored `score` (CVSS,
+    "" for unscored) and ranged introduced 0 .. `end` (an OSV event: fixed or
+    last_affected, and its version)."""
     return {
         "package": {"name": name, "version": version, "ecosystem": ecosystem},
         "vulnerabilities": [
@@ -36,24 +39,29 @@ def package(name, version, *groups, ecosystem="PyPI"):
                 "affected": [
                     {
                         "package": {"name": name, "ecosystem": ecosystem},
-                        "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "99.0"}]}],
+                        "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {end[0]: end[1]}]}],
                     }
                 ],
             }
             for vid, aliases in groups
         ],
-        "groups": [{"ids": [vid], "aliases": [vid, *aliases], "max_severity": "7.5"} for vid, aliases in groups],
+        "groups": [{"ids": [vid], "aliases": [vid, *aliases], "max_severity": score} for vid, aliases in groups],
     }
 
 
-def run(tmp_path, packages, ignore_text=None, severity="HIGH"):
-    args = [sys.executable, "-I", str(SCRIPT), severity]
+def run(tmp_path, packages, ignore_text=None, severity="HIGH", releases=None, env=None, extra=()):
+    """Run the gate on a report. `releases` ({name: [versions]}) stands in for PyPI's
+    release list, so no test reaches the network."""
+    args = [sys.executable, "-I", str(SCRIPT), severity, *extra]
     if ignore_text is not None:
         ignore = tmp_path / "scan-ignore"
         ignore.write_text(ignore_text)
         args += ["--ignore", str(ignore)]
+    rel = tmp_path / "releases.json"
+    rel.write_text(json.dumps(releases or {}))
+    full_env = {**os.environ, "OSV_GATE_RELEASES": str(rel), **(env or {})}
     report = {"results": [{"packages": packages}]}
-    return subprocess.run(args, input=json.dumps(report), capture_output=True, text=True, check=False)
+    return subprocess.run(args, input=json.dumps(report), capture_output=True, text=True, check=False, env=full_env)
 
 
 PILLOW = ("PYSEC-2026-4327", ["GHSA-4558-3h8r-v8xp", "CVE-2026-112394"])
@@ -136,6 +144,58 @@ def test_malformed_entry_fails_the_gate(tmp_path, line):
     r = run(tmp_path, [package("pillow", "11.3.0", PILLOW)], line + "\n")
     assert r.returncode != 0
     assert "osv-gate:" in r.stderr and "scan-ignore:1" in r.stderr
+
+
+TRANSFORMERS = ("PYSEC-2026-4174", ["GHSA-x9r9-c232-4q39"])
+
+
+def test_last_affected_with_a_later_release_is_fixable(tmp_path):
+    """A record ranged introduced..last_affected is fixed by any later final release."""
+    pkg = package("transformers", "4.57.6", TRANSFORMERS, score="7.8", end=("last_affected", "5.8.1"))
+    r = run(tmp_path, [pkg], releases={"transformers": ["4.57.6", "5.8.1", "5.9.0rc1", "5.9.0", "5.17.0"]})
+    assert r.returncode == 1
+    assert "transformers 4.57.6 -> >5.8.1 (first: 5.9.0)" in r.stdout
+
+
+def test_last_affected_without_a_later_release_is_not_fixable(tmp_path):
+    pkg = package("sqlitedict", "2.1.0", ("PYSEC-2026-1939", []), score="8.8", end=("last_affected", "2.1.0"))
+    r = run(tmp_path, [pkg], releases={"sqlitedict": ["2.0.0", "2.1.0", "2.2.0a1"]})
+    assert r.returncode == 0, r.stdout
+    assert "sqlitedict 2.1.0 -> no fix" in r.stdout
+
+
+def test_last_affected_prerelease_is_fixed_by_its_final_release(tmp_path):
+    pkg = package("transformers", "4.57.6", ("PYSEC-2025-217", []), score="7.8", end=("last_affected", "5.0.0-rc0"))
+    r = run(tmp_path, [pkg], releases={"transformers": ["4.57.6", "5.0.0"]})
+    assert r.returncode == 1
+    assert "-> >5.0.0-rc0 (first: 5.0.0)" in r.stdout
+
+
+def test_last_affected_fails_closed_when_releases_are_unknown(tmp_path):
+    """A package the release list does not know (or a non-PyPI one) counts as fixable."""
+    pkg = package("left-pad", "1.0.0", ("GHSA-aaaa-bbbb-cccc", []), ecosystem="npm", end=("last_affected", "1.0.0"))
+    r = run(tmp_path, [pkg])
+    assert r.returncode == 1
+    assert "-> >1.0.0 (releases unknown)" in r.stdout
+
+
+def test_last_affected_entry_can_be_accepted(tmp_path):
+    pkg = package("transformers", "4.57.6", TRANSFORMERS, score="7.8", end=("last_affected", "5.8.1"))
+    r = run(
+        tmp_path,
+        [pkg],
+        "GHSA-x9r9-c232-4q39 exp:2999-12-31 pkg:pypi/transformers@4.57.6\n",
+        releases={"transformers": ["5.9.0"]},
+    )
+    assert r.returncode == 0, r.stdout
+
+
+@pytest.mark.parametrize(
+    ("release", "last", "after"),
+    [("5.9.0", "5.8.1", True), ("5.8.1", "5.8.1", False), ("5.0.0", "5.0.0-rc0", True), ("4.9", "5.0.0rc3", False), ("2.1", "2.1.0", False)],
+)
+def test_is_after(release, last, after):
+    assert osv_gate.is_after(release, last) is after
 
 
 def test_load_ignores_keeps_its_set_of_ids():
