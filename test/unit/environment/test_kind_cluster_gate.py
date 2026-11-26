@@ -47,6 +47,9 @@ def _stub_kubectl(
 def stub_path(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.delenv("GBTEST_SKY_KUBE_CONTEXT", raising=False)
+    monkeypatch.delenv("GBTEST_SKY_CPU_CONTEXT", raising=False)
+    monkeypatch.delenv("GBTEST_SKY_CPU_NAMESPACE", raising=False)
+    monkeypatch.delenv("GBTEST_SKY_CPU_CLAIM", raising=False)
     return tmp_path
 
 
@@ -89,6 +92,14 @@ class TestKindClusterGate:
         assert kube.expected_kind_context() == "kind-skypilot"
         assert not kube.kind_cluster_reachable()
 
+    def test_claim_is_looked_up_in_the_default_namespace(self, stub_path):
+        calls = stub_path / "calls"
+        _stub_kubectl(stub_path, calls=calls)
+        assert kube.kind_cluster_reachable()
+        assert "--context kind-skypilot -n default get pvc gb-shared" in (
+            calls.read_text()
+        )
+
 
 class TestProbeIsCached:
     """The gate runs from ``skipif`` in every kube module on every xdist worker."""
@@ -104,3 +115,53 @@ class TestProbeIsCached:
         """Same group as every skypilot_integration test, so kube never overlaps slurm."""
         assert kube.KUBE_XDIST_GROUP.name == "xdist_group"
         assert kube.KUBE_XDIST_GROUP.kwargs == {"name": "skypilot"}
+
+
+class TestCpuClusterGate:
+    """libgbtest.kube.cpu_cluster_reachable: gb-cpu-east alias, plus a namespace and claim
+    that come from the environment (the real ones are kept out of the repo)."""
+
+    @pytest.fixture
+    def cpu_site(self, stub_path, monkeypatch):
+        monkeypatch.setenv("GBTEST_SKY_CPU_NAMESPACE", "cpu-ns")
+        monkeypatch.setenv("GBTEST_SKY_CPU_CLAIM", "cpu-claim")
+        return stub_path
+
+    def test_ready_context_with_claim_passes(self, cpu_site):
+        _stub_kubectl(cpu_site, contexts=("other-cluster", "gb-cpu-east"))
+        assert kube.cpu_cluster_reachable()
+
+    def test_claim_is_looked_up_in_the_configured_namespace(self, cpu_site):
+        calls = cpu_site / "calls"
+        _stub_kubectl(cpu_site, contexts=("gb-cpu-east",), calls=calls)
+        assert kube.cpu_cluster_reachable()
+        assert "--context gb-cpu-east -n cpu-ns get pvc cpu-claim" in calls.read_text()
+
+    @pytest.mark.parametrize(
+        "unset", ["GBTEST_SKY_CPU_NAMESPACE", "GBTEST_SKY_CPU_CLAIM"]
+    )
+    def test_unset_site_config_skips_without_calling_kubectl(
+        self, cpu_site, monkeypatch, unset
+    ):
+        calls = cpu_site / "calls"
+        _stub_kubectl(cpu_site, contexts=("gb-cpu-east",), calls=calls)
+        monkeypatch.delenv(unset)
+        assert not kube.cpu_cluster_reachable()
+        assert not calls.exists()
+        assert unset in kube.cpu_skip_reason()
+
+    def test_missing_alias_is_refused(self, cpu_site):
+        _stub_kubectl(cpu_site, contexts=("other-cluster",))
+        assert not kube.cpu_cluster_reachable()
+        assert "gb-cpu-east" in kube.cpu_skip_reason()
+
+    def test_missing_claim_is_refused(self, cpu_site):
+        _stub_kubectl(cpu_site, contexts=("gb-cpu-east",), pvc_rc=1)
+        assert not kube.cpu_cluster_reachable()
+        assert "cpu-claim" in kube.cpu_skip_reason()
+
+    def test_context_override(self, cpu_site, monkeypatch):
+        monkeypatch.setenv("GBTEST_SKY_CPU_CONTEXT", "cpu-mine")
+        _stub_kubectl(cpu_site, contexts=("cpu-mine",))
+        assert kube.cpu_cluster_reachable()
+        assert "cpu-mine" in kube.cpu_skip_reason()
