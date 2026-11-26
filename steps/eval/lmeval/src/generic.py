@@ -431,6 +431,18 @@ def load_tasks(tasks: list[str]) -> tuple[dict, dict]:
     return dict(loaded["tasks"]), dict(loaded["groups"])
 
 
+def drop_failed_requests(cache_dir: Path) -> int:
+    """Drop both adapters' failed-request answers from the response cache, so
+    a rerun retries them instead of scoring them: chat_if's ERROR_MARKER
+    (chat mode) and include's ERROR_LL (base mode, otherwise scored as the
+    worst choice)."""
+    from granite_evals.benchmarks import chat_if, include
+
+    return chat_if.drop_errors_from_cache(cache_dir) + include.drop_errors_from_cache(
+        cache_dir
+    )
+
+
 def run_simple_evaluate(**kwargs):
     """lm-eval's ``simple_evaluate``, imported lazily (tests fake this)."""
     from lm_eval import simple_evaluate
@@ -706,9 +718,7 @@ class LMEval(Benchmark):
                     merged[key].update(value)
                 else:
                     merged[key] = value
-        from granite_evals.benchmarks.chat_if import drop_errors_from_cache
-
-        if dropped := drop_errors_from_cache(cache_dir):
+        if dropped := drop_failed_requests(cache_dir):
             log.warning(
                 "lm-eval repeat %d: %d failed requests dropped from the cache for retry",
                 k,

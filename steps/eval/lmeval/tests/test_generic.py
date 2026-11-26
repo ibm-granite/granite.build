@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from granite_evals.benchmarks import chat_if, generic
+from granite_evals.benchmarks import chat_if, generic, include
 from granite_evals.registry import RunConfig, get
 
 
@@ -383,7 +383,7 @@ def test_run_end_to_end(tmp_path, monkeypatch):
         "make_lm",
         lambda self, mode, base_url, served, seed: SimpleNamespace(mode=mode),
     )
-    monkeypatch.setattr(chat_if, "drop_errors_from_cache", lambda cache_dir: 0)
+    monkeypatch.setattr(generic, "drop_failed_requests", lambda cache_dir: 0)
 
     bench = generic.LMEval(_config(tmp_path, tasks="hellaswag,arc_easy,gsm8k"))
     outcome = bench.run("http://server/v1", "m")
@@ -450,7 +450,7 @@ def test_run_passes_the_loaded_group(tmp_path, monkeypatch):
         "make_lm",
         lambda self, mode, base_url, served, seed: SimpleNamespace(mode=mode),
     )
-    monkeypatch.setattr(chat_if, "drop_errors_from_cache", lambda cache_dir: 0)
+    monkeypatch.setattr(generic, "drop_failed_requests", lambda cache_dir: 0)
 
     outcome = generic.LMEval(_config(tmp_path, tasks="mc_group")).run(
         "http://s/v1", "m"
@@ -485,7 +485,7 @@ def test_chat_gen_kwargs(tmp_path, monkeypatch):
     }
 
 
-def _mixed_run(tmp_path, monkeypatch, tasks, samples=None, **options):
+def _mixed_run(tmp_path, monkeypatch, tasks, samples=None, repeats=None, **options):
     """run() over hellaswag (base) and ``tasks`` (chat), simple_evaluate
     faked: returns the outcome and the simple_evaluate calls."""
     hs = _task("multiple_choice", "acc", name="hellaswag")
@@ -513,8 +513,15 @@ def _mixed_run(tmp_path, monkeypatch, tasks, samples=None, **options):
             mode=mode, seed=seed
         ),
     )
-    monkeypatch.setattr(chat_if, "drop_errors_from_cache", lambda cache_dir: 0)
-    bench = generic.LMEval(_config(tmp_path, tasks=",".join(objects), **options))
+    if not getattr(generic.drop_failed_requests, "_recorder", False):
+        monkeypatch.setattr(generic, "drop_failed_requests", lambda cache_dir: 0)
+    config = RunConfig(
+        model="m",
+        output_dir=tmp_path,
+        repeats=repeats,
+        options={"tasks": ",".join(objects), **options},
+    )
+    bench = generic.LMEval(config)
     return bench.run("http://s/v1", "m"), calls
 
 
@@ -632,7 +639,7 @@ def test_tasks_are_built_after_seeding(tmp_path, monkeypatch, seed):
     monkeypatch.setattr(
         generic.LMEval, "make_lm", lambda self, mode, base_url, served, seed: None
     )
-    monkeypatch.setattr(chat_if, "drop_errors_from_cache", lambda cache_dir: 0)
+    monkeypatch.setattr(generic, "drop_failed_requests", lambda cache_dir: 0)
     config = RunConfig(
         model="m", output_dir=tmp_path, seed=seed, options={"tasks": "hellaswag"}
     )
@@ -647,3 +654,39 @@ def test_seed_like_simple_evaluate_seeds_numpy_too():
     first = (random.random(), numpy.random.random())
     generic.seed_like_simple_evaluate(3)
     assert (random.random(), numpy.random.random()) == first
+
+
+def test_failed_requests_are_dropped_in_both_modes(tmp_path, monkeypatch):
+    """Each repeat's cache cleanup drops chat_if's ERROR_MARKER and
+    include's ERROR_LL answers, so a resumed run retries them."""
+    seen = []
+    monkeypatch.setattr(
+        chat_if, "drop_errors_from_cache", lambda d: seen.append(("chat", d)) or 1
+    )
+    monkeypatch.setattr(
+        include, "drop_errors_from_cache", lambda d: seen.append(("base", d)) or 2
+    )
+    assert generic.drop_failed_requests(tmp_path) == 3
+    assert seen == [("chat", tmp_path), ("base", tmp_path)]
+
+    cleaned = []
+
+    def recorder(cache_dir):
+        cleaned.append(cache_dir)
+        return 0
+
+    recorder._recorder = True
+    monkeypatch.setattr(generic, "drop_failed_requests", recorder)
+    _mixed_run(tmp_path / "run", monkeypatch, [_gsm8k()], repeats=2)
+    assert cleaned == [tmp_path / "run" / f"repeat-{k}" / "lm_cache" for k in range(2)]
+
+
+def test_drop_failed_requests_on_a_real_cache(tmp_path):
+    sqlitedict = pytest.importorskip("sqlitedict")
+    with sqlitedict.SqliteDict(str(tmp_path / "cache_rank0.db"), autocommit=True) as db:
+        db["ll"] = include.ERROR_LL
+        db["gen"] = chat_if.ERROR_MARKER
+        db["ok"] = (-1.5, True)
+    assert generic.drop_failed_requests(tmp_path) == 2
+    with sqlitedict.SqliteDict(str(tmp_path / "cache_rank0.db")) as db:
+        assert dict(db) == {"ok": (-1.5, True)}
