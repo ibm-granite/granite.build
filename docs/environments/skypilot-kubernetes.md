@@ -122,6 +122,18 @@ otherwise be autodowned before the next one, and the poller then sees a missing 
 `FAILED`. gbserver enforces a floor of 2× the step's poll interval on Kubernetes, raising a shorter window
 and logging a warning; the shipped env uses 15. Set `null` to disable it entirely.
 
+**Autodown runs inside the pod, as the pod's service account.** When the env sets
+`remote_identity` to an account that may not delete pods and services (on OpenShift, often one with
+only the `view` role), every autodown is refused (`... cannot delete resource "services"`), the pod is
+never removed, and its SkyPilot record sticks at `AUTOSTOPPING`. So the safety net above does not work
+there: a pod orphaned by a crashed gbserver has to be removed with `sky down <cluster>` from a machine
+whose login can delete it. gbserver's own teardown does not depend on autodown: per-step cleanup runs
+`sky down` with the launching user's credentials, and the one-shot `td-` workdir cleanup is downed the
+same way once its job has finished (as on SLURM and LSF), so it also stops holding quota for the idle
+window. If gbserver can't confirm the cleanup job finished (it gives up waiting after its cleanup
+timeout), it leaves that `td-` cluster to autodown instead of cutting the `rm -rf` short, and logs a
+WARNING naming it; where autodown is refused, remove it with `sky down <cluster>`.
+
 > **`sbatch_options` is a no-op on Kubernetes.** The per-step `sbatch_options`
 > field ([skypilot.md](skypilot.md#config-overrides-docker-sbatch_options)) is a
 > **SLURM-only** knob; SkyPilot exposes no per-task equivalent on Kubernetes, so
@@ -232,6 +244,22 @@ Two requirements, both checked on a local kind cluster:
 - **With shared storage, the image needs nothing to fetch `hf://` inputs.** They are downloaded by the
   separate `hfpull` step into the shared volume and read from there. Inline pulls (`inline: true`) are
   legacy, kept only for existing environments; don't use them on Kubernetes.
+- **Some clusters reject SkyPilot's default image at admission.** OpenShift clusters with the RHACS
+  (StackRox) policy "Block Critical CVE older than 180 days" refuse it, because the Ray it ships has a
+  fixable critical CVE; the refusal comes back as `admission webhook "policyeval.stackrox.io" denied the
+  request`. The cluster may admit an image it has not scanned yet, so it can pass once and then fail on
+  every launch. Pick a current Debian/Ubuntu image with pip (the hf steps pip-install their client, e.g.
+  `public.ecr.aws/docker/library/python:3.12-slim`) and set it in three places. Two of them take a
+  SkyPilot `image_id`, so the image gets the `docker:` prefix; the third takes the bare image:
+
+  | Where | For | Value |
+  |---|---|---|
+  | `config.steps.hfpull` / `hfpush` → `launcher_config.image_id` | the built-in hf steps | `docker:public.ecr.aws/docker/library/python:3.12-slim` |
+  | `config.cleanup_image_id` | the `td-` workdir cleanup | `docker:public.ecr.aws/docker/library/python:3.12-slim` |
+  | each build's `command_config.image` | the command step | `public.ecr.aws/docker/library/python:3.12-slim` (the step adds `docker:` itself) |
+
+  The command step needs it in the build because its step.yaml sets `image: ""`, which outranks an env
+  default. SkyPilot installs its own runtime into the pod after admission, which the scan never sees.
 
 ## See also
 
