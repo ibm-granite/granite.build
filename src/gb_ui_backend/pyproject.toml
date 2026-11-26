@@ -2,7 +2,7 @@
 name = "granite-build-analytics"
 version = "0.0.0"
 description = "gb-ui analytics service (gb_ui_backend) — normally embedded in gbserver, independently installable so external consumers (e.g. the internal gb-ui deployment) can depend on it via pip's git+subdirectory syntax without pulling in the whole granite.build distribution"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 requires-python = ">=3.11,<3.14"
 
 dependencies = [
@@ -41,7 +41,7 @@ chat = [
 gb-ui-backend = "gb_ui_backend.__main__:main"
 
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
