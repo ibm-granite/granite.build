@@ -153,9 +153,9 @@ refuses `use_uld_loss` without `last_message_only=true` too, for a config that b
 renderer, as it already did for `use_sampled_opd_loss`. It exempts the two modes that render the
 teacher another way: `uld_per_turn_regions` (which requires false) and `uld_reuse_student_input`.
 
-The log line carries the window's global counts: `train/alignment_unaligned_rows` (was
-the rank-local count), and the new `train/alignment_rows` and
-`train/alignment_unaligned_rate`. All three are identical on every rank.
+Every log line carries three new keys, the counts since the previous line summed over
+ranks: `train/alignment_rows`, `train/alignment_unaligned_rows` and
+`train/alignment_unaligned_rate`. They are identical on every rank.
 
 ## Local fix: check-config's `last_message_only` rule
 

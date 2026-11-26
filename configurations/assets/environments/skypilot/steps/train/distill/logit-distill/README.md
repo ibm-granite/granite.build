@@ -419,6 +419,44 @@ The renderer also refuses an arm that contradicts a standalone flag (`use_liger_
 `LOSS_ARMS` in [`src/render_gold_config.py`](src/render_gold_config.py) lists each arm and
 why.
 
+### ULD alignment refusal
+
+Under `loss_arm: uld`, each row's student completion is aligned with the teacher's by text.
+A row whose alignment yields no groups contributes no loss and is skipped. That is right for
+the rare row, but when the two renders disagree for every row, the run trains at exactly zero
+gradient and still checkpoints and reports success. So the trainer sums, over every rank, the
+rows that reached alignment and the ones that did not, at every optimizer step, and fails the
+run with a `RuntimeError` in two cases.
+
+When every row of an optimizer step is unaligned, before the optimizer applies the step:
+
+```
+RuntimeError: ULD step <n>: all <rows> rows that reached alignment, across all ranks, yielded no alignment groups, so this step computed no loss at all. ...
+```
+
+When more than half the rows of a logging window (`logging_steps` optimizer steps) are
+unaligned. The final, partial window is judged when training ends:
+
+```
+RuntimeError: ULD steps <a>-<b>: <u> of <r> rows (<pct>) yielded no alignment groups and contributed no loss, more than uld_max_unaligned_fraction=0.5. ...
+```
+
+Every log line carries the counts since the previous line, summed over ranks:
+`train/alignment_rows`, `train/alignment_unaligned_rows` and
+`train/alignment_unaligned_rate`. On aligned data the rate is 0, or close to it. The
+known systematic cause, `last_message_only: false`, is refused before the run starts (see
+the `uld` row above), so the refusal is a backstop for causes nobody has met yet. If it
+fires, set `ULD_DEBUG=1` to print the first batch's spans.
+
+**Fixed through this step.** The threshold (0.5) and the window (`logging_steps`) are
+`CustomGOLDConfig` fields (`uld_max_unaligned_fraction`, `uld_unaligned_window_steps`). This
+step does not expose them, as it exposes no `uld_*` option (see
+[Choosing a student/teacher pair](#choosing-a-studentteacher-pair)). The all-unaligned rule
+has no threshold. At a global batch of 1 (one GPU, `per_device_train_batch_size` 1, no
+gradient accumulation), a single unaligned row is an all-unaligned step, so it fails the run:
+that step computed no loss at all. Raise `gradient_accumulation_steps` if a run must
+tolerate a rare unaligned row.
+
 ### Response template escape
 
 A trailing line boundary in `response_template` must be written as the two-character escape
