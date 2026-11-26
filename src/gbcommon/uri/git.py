@@ -23,12 +23,15 @@ from gbserver.types.constants import SPACE_REPO_CONFIG_BRANCH_NAME
 from gbserver.utils.filesystem import sync_or_copy
 from gbserver.utils.git_auth import (
     ENV_VAR_GIT_TRANSPORT,
+    SERVICE_TOKEN_ENV_PREFIX,
     GitToken,
     GitTransport,
     get_git_transport,
     get_service_token,
     get_token_candidates,
     git_auth_env,
+    host_slug,
+    secret_tokens,
 )
 from gbserver.utils.logger import get_logger
 from gbserver.utils.utils import short_alphanumeric_lower_hash
@@ -248,11 +251,16 @@ class GitURI(URI):
         )
         if cfg_branch:
             logger.info("cfg_branch: %s", cfg_branch)
-        else:
+        elif token == "":
+            host = uriobj.hostname or ""
             logger.warning(
-                "the 'cfg_branch' is empty '%s' , you might want to set the GITHUB_TOKEN env var",
-                cfg_branch,
+                "no GitHub token for %s, so not looking for a %s branch; set %s",
+                host,
+                config_branch_name,
+                SERVICE_TOKEN_ENV_PREFIX + host_slug(host),
             )
+        else:
+            logger.info("no %s branch in %s", config_branch_name, uri)
         path = (
             uriobj.path
             if cfg_branch is None or "@" in uriobj.path
@@ -305,11 +313,15 @@ class GitURI(URI):
         logger.info("repo ref: %s", ref)
         th_repo_cache = self._thread_local.repo_cache
         assert isinstance(th_repo_cache, Path)
-        # Keyed on the repo, not the clone URL: an ssh and an https clone of
-        # the same repo share an entry.
+        # Keyed on the repo, not the clone URL, so ssh and https share an entry.
+        # The build's own token is in the (hashed) key, so a clone made with it
+        # is never reused by a build without it.
         host, owner, repo = self._repo_parts()
+        build_tokens = "".join(c.token for c in secret_tokens(host, self.secrets))
         repo_cache_path = th_repo_cache / short_alphanumeric_lower_hash(
-            f"{host}/{owner}/{repo}".lower() + ("#" + ref if ref else "")
+            f"{host}/{owner}/{repo}".lower()
+            + ("#" + ref if ref else "")
+            + ("|" + build_tokens if build_tokens else "")
         )
         if repo_cache_path.is_dir():
             if not force:
@@ -341,12 +353,15 @@ class GitURI(URI):
         transport = get_git_transport()
         if transport == GitTransport.HTTPS:
             reason = f"{ENV_VAR_GIT_TRANSPORT}={transport.value}"
+        elif transport == GitTransport.SSH:
+            return self._clone_with_retry(self.get_repo_url(), path, **kwargs)
         else:
+            # One ssh attempt: https, with its own retries, is the backup.
+            from git import Repo
+
             try:
-                return self._clone_with_retry(self.get_repo_url(), path, **kwargs)
+                return Repo.clone_from(self.get_repo_url(), path, **kwargs)
             except GitCommandError as e:
-                if transport == GitTransport.SSH:
-                    raise
                 shutil.rmtree(path, ignore_errors=True)
                 reason = f"ssh failed: {_git_error_summary(e)}"
         return self._clone_https(path, fallback_reason=reason, **kwargs)
@@ -361,6 +376,8 @@ class GitURI(URI):
         """
         from git.exc import GitCommandError
 
+        from gbserver.utils.git_retry import GIT_STALL_ENV
+
         host, owner, repo = self._repo_parts()
         url = f"https://{host}/{owner}/{repo}"
         # Only secrets handed to this URI: a thread-local could still hold
@@ -372,7 +389,10 @@ class GitURI(URI):
         failures: List[Tuple[str, GitCommandError]] = []
         for candidate in candidates:
             label = candidate.label if candidate else "anonymous"
-            env = git_auth_env(host, candidate.token if candidate else None)
+            env = {
+                **GIT_STALL_ENV,
+                **git_auth_env(host, candidate.token if candidate else None),
+            }
             try:
                 cloned = self._clone_with_retry(url, path, env=env, **kwargs)
             except GitCommandError as e:

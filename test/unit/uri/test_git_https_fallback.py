@@ -272,3 +272,50 @@ def test_transport_unset_or_empty_is_default(monkeypatch, value, expected):
     if value is not None:
         monkeypatch.setenv(ENV_VAR_GIT_TRANSPORT, value)
     assert get_git_transport() == expected
+
+
+def test_clone_with_a_build_token_is_not_shared(monkeypatch):
+    """A clone made with one build's token is not reused by a build without it."""
+    monkeypatch.setenv("GBSERVER_GIT_TRANSPORT", "https")
+    url = "https://github.com/org/assets"
+    fake = FakeClone({(url, None): HTTPS_NOT_FOUND})
+    with patch.object(Repo, "clone_from", side_effect=fake):
+        _ssh_uri(
+            "github.com", secrets={"GIT_TOKEN_GITHUB_COM": "usr"}
+        ).get_repo_from_cache()
+        with pytest.raises(GitCommandError):
+            _ssh_uri("github.com").get_repo_from_cache()
+    assert fake.calls == [(url, "usr"), (url, None)]
+
+
+def test_ssh_is_tried_once_before_falling_back():
+    """Even a transient-looking ssh error goes straight to https."""
+    ssh_url = "git@github.com:org/assets"
+    fake = FakeClone({(ssh_url, None): "fatal: early EOF"})
+    with patch.object(Repo, "clone_from", side_effect=fake):
+        _ssh_uri("github.com").get_repo_from_cache()
+    assert fake.calls == [(ssh_url, None), ("https://github.com/org/assets", None)]
+
+
+def test_refused_credentials_are_not_retried(monkeypatch):
+    monkeypatch.setenv("GBSERVER_GIT_TRANSPORT", "https")
+    monkeypatch.setenv("GBSERVER_GITHUB_TOKEN", "svc")
+    url = f"https://{DEFAULT_GH_DOMAIN}/org/assets"
+    fake = FakeClone(
+        {
+            (url, "svc"): (
+                f"fatal: unable to access '{url}/': "
+                "The requested URL returned error: 403"
+            ),
+            (url, None): (
+                "fatal: could not read Username for 'https://x': "
+                "terminal prompts disabled"
+            ),
+        }
+    )
+    with (
+        patch.object(Repo, "clone_from", side_effect=fake),
+        pytest.raises(GitCommandError),
+    ):
+        _ssh_uri().get_repo_from_cache()
+    assert fake.calls == [(url, "svc"), (url, None)]

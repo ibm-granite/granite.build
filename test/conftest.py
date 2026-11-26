@@ -498,13 +498,12 @@ def pytest_sessionstart(session):
         importlib.reload(gbserver.types.constants)
         importlib.reload(libgbtest.constants)
 
-        # gbcommon.uri.git captures GBSERVER_GITHUB_TOKEN / SPACE_REPO_CONFIG_BRANCH_NAME
-        # as *frozen default args* (e.g. get_gb_space_config_uri) at import time —
-        # which, via the buildconfig -> gbcommon.uri handler-load chain, happens when
-        # this conftest is first imported, BEFORE the token env var is set above.
-        # Reloading constants alone doesn't refresh those already-bound defaults, so
-        # tokenless callers would still see an empty token. Reload git after constants
-        # (so it re-binds the now-set token), then re-run URI handler registration so
+        # gbcommon.uri.git captures SPACE_REPO_CONFIG_BRANCH_NAME as a *frozen default
+        # arg* (get_gb_space_config_uri) at import time — which, via the buildconfig ->
+        # gbcommon.uri handler-load chain, happens when this conftest is first
+        # imported, BEFORE the env vars are set above. Reloading constants alone
+        # doesn't refresh that already-bound default. Reload git after constants
+        # (so it re-binds the now-set value), then re-run URI handler registration so
         # URI.uri_handler_classes points at the reloaded classes (uri.py/URI is not
         # reloaded, so issubclass and resolution stay consistent).
         import gbcommon.uri.git
