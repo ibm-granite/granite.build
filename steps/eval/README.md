@@ -126,8 +126,10 @@ Every character of the name is one a Hydra override value takes unquoted
 break its parser or make a sweep), none is a shell glob character, and there is
 no `%`. A name over 200 bytes is cut to 180 plus `@h-` and 16 hex of its sha256
 (ns-math-500's URL pin is). The options are read without glob expansion.
-A benchmark run without a selection (every curated recipe, a dataset swap on a
-curated id included) keeps `$OUTPUT_ROOT/$RUN_NAME/<id>`.
+A run without a selection keeps `$OUTPUT_ROOT/$RUN_NAME/<id>`: a curated recipe that
+passes none of those options, a dataset swap on a curated id included. The curated
+recipes that do select (the bfcl `categories=` recipes, `bfcl-v4@categories-live`)
+get the selection form like the bridges.
 
 ## The warm HF cache
 

@@ -16,7 +16,9 @@ SERVED_MODEL_NAME: ""
 # artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
 # Empty derives it from MODEL_PATH's basename (the step's own defaulting).
 RUN_NAME: ""
-# Runs land in $OUTPUT_ROOT/$RUN_NAME/<benchmark>. Required, no default: pass
+# Runs land in $OUTPUT_ROOT/$RUN_NAME/<dir>, the dir named after the recipe's
+# selection (steps/eval/README.md, Run dirs): terminal-bench@dataset-harborframework+2Fterminal-bench-2.0@dataset_revision-f2e8c75e23add71613117eecc9498f53bcd7e04e.
+# Required, no default: pass
 # --param OUTPUT_ROOT=<root>, somewhere the dispatching user can write.
 OUTPUT_ROOT: ""
 # HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.

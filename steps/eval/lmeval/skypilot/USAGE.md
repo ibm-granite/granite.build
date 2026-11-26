@@ -93,8 +93,12 @@ missing metric is never written as a null score.
 
 `auto` picks each task's protocol from its `output_type`: generation tasks run in
 chat mode (`local-chat-completions`, `apply_chat_template`, `fewshot_as_multiturn`,
-like mmlu-prox-lite), multiple-choice and loglikelihood tasks in base mode (like
-include-44). A task list that mixes them runs as two passes over the same output dir
+the adapter mmlu-prox-lite uses), multiple-choice and loglikelihood tasks in base mode
+(include-44's adapter). Unlike mmlu-prox-lite, chat mode keeps each task's own
+generation kwargs (sampling, stop strings, `max_gen_toks`) instead of Granite's card
+sampling (temperature 1.0, top_p 0.95, 32768 tokens), and has no answer extraction of
+its own: the task's filters grade. Only the thinking budget (below) is added, and only
+where a task sets no `max_gen_toks`. A task list that mixes them runs as two passes over the same output dir
 and cache.
 
 The headline is the macro mean over the resolved tasks of each task's primary

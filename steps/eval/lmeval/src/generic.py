@@ -21,8 +21,9 @@ Options (all through ``--option`` / the step's ``options`` config):
   fast, before vLLM starts, with near-miss suggestions.
 * ``mode``: ``auto`` (default), ``chat`` or ``base``. ``chat`` is
   ``local-chat-completions`` with ``apply_chat_template`` and
-  ``fewshot_as_multiturn`` (the mmlu-prox-lite protocol); ``base`` is
-  ``local-completions`` loglikelihood (the include-44 protocol). ``auto``
+  ``fewshot_as_multiturn`` (mmlu-prox-lite's adapter, but each task's own
+  generation kwargs, not mmlu-prox-lite's card sampling); ``base`` is
+  ``local-completions`` loglikelihood (include-44's adapter). ``auto``
   picks per task from its ``output_type``: ``generate_until`` runs chat,
   ``multiple_choice``/``loglikelihood`` run base. A task list that mixes
   them is fine: the modes run as two passes over the same output dir.
