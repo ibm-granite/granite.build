@@ -1800,7 +1800,10 @@ class CustomULDLoss(ULDLoss):
     ):
         """The non-hybrid ULD loss: trl 0.26.2's ULDLoss._compute_distillation_loss
         (trl v0.26.2 trl/experimental/gold/gold_trainer.py:325-423), owned here, with two
-        fixes to it. The rest is TRL 0.26.2's arithmetic unchanged. trl 1.x replaced that
+        fixes to it. The rest is TRL 0.26.2's arithmetic unchanged, less one dead branch:
+        TRL's loop also tested `use_hybrid_loss and _vocab_mapping` per row and called the
+        hybrid loss, which _compute_distillation_loss's dispatch makes unreachable here (it
+        routes exactly that case to the hybrid path), so it is gone. trl 1.x replaced the
         path with a byte-offset alignment that raises on token-ID inputs without offsets,
         which is all this trainer passes (#676), so it calls this class's
         _build_alignment_groups_from_ids and the vendored 0.26.2 merge below.
@@ -1818,9 +1821,12 @@ class CustomULDLoss(ULDLoss):
            "observed", still reads the unshifted positions.)
         2. NO ALIGNMENT, NO LOSS. When _build_alignment_groups_from_ids returns no groups,
            _merge_probabilities_with_alignment_groups returns the probabilities UNMERGED
-           (trl 0.26.2's gold_trainer.py:532-533, kept in the vendored merge): a
-           RuntimeError when the two completions have different lengths, and a distance
-           between unaligned positions when they do not. Such a row is skipped as the
+           (trl 0.26.2's gold_trainer.py:532-533, kept in the vendored merge). The L1 below
+           then compares positions that were never paired: when the two completions have
+           different lengths it raises a shape RuntimeError, unless one side has a single
+           position, which F.l1_loss broadcasts against every position of the other with
+           only a UserWarning; when they have the same length it is a distance between
+           unaligned positions. Such a row is skipped as the
            hybrid path skips it (zero loss, graph kept) and counted in
            `_alignment_unaligned`, rather than killing a long run over one row. SKIPPING IS
            NOT ALLOWED TO BECOME THE WHOLE RUN: a rate near 1 is the signature of a

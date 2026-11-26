@@ -112,8 +112,15 @@ its docstring and pinned in
   the JSD path do. trl 1.18.2 has the same default, `uld_token_merge_strategy="observed"`
   (its opt-in `"bayesian"` strategy shifts).
 - A row whose alignment yields no groups reached the merge, which then returned the
-  probabilities unmerged: a shape `RuntimeError`, or a distance between unaligned
-  positions. Such a row now contributes no loss, as on the hybrid path, and is counted.
+  probabilities unmerged, so the L1 compared positions that were never paired: a shape
+  `RuntimeError` when the completions differ in length, except when one side has a single
+  position, which `F.l1_loss` broadcasts against every position of the other with only a
+  `UserWarning`; and a distance between unaligned positions when they have the same
+  length. Such a row now contributes no loss, as on the hybrid path, and is counted.
+
+One branch is removed rather than fixed: TRL's loop also called the hybrid loss per row
+when `use_hybrid_loss` and a vocabulary mapping were set. `_compute_distillation_loss`
+dispatches exactly that case to the hybrid path, so the branch was unreachable here.
 
 Because it reads start-1, a completion that starts at position 0 would have no predictor
 and would slice from the end of the row. Both ULD paths now raise `ValueError` on one

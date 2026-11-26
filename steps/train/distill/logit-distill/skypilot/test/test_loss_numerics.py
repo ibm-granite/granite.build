@@ -629,8 +629,10 @@ class TestULDLogitAlignment:
 
 class TestULDUnalignedRow:
     """A row whose alignment yields NO groups. TRL's merge then returns the probabilities
-    unmerged (gold_trainer.py:532-533), so the base path either raised (the completions
-    differ in length) or scored unaligned positions against each other (they do not). The
+    unmerged (gold_trainer.py:532-533), so the base path scored positions that were never
+    paired: a shape RuntimeError when the completions differ in length, unless one side has
+    a single position, which F.l1_loss broadcasts against the other's with only a warning;
+    and unaligned positions against each other when they have the same length. The
     class's alignment returns no groups when the decoded completions differ before the
     first common boundary (a tokenizer or render mismatch: special tokens, whitespace,
     normalisation, truncation) or when matching texts reach max_alignment_group_size
@@ -670,8 +672,11 @@ class TestULDUnalignedRow:
             ([1, 2, S_EOS], [5, T_EOS]),
             # "ab" vs "abc", 2 positions each: TRL compared position k with position k.
             ([4, S_EOS], [5, T_EOS]),
+            # "ab" (no EOS) vs "abc", 1 position vs 2: TRL's L1 broadcast the one student
+            # position against both teacher positions, with only a UserWarning.
+            ([4], [5, T_EOS]),
         ],
-        ids=["lengths-differ", "lengths-equal"],
+        ids=["lengths-differ", "lengths-equal", "one-position-broadcasts"],
     )
     def test_texts_that_differ_contribute_nothing_and_are_counted(self, s_bad, t_bad):
         loss_fn = _custom_uld()

@@ -587,7 +587,8 @@ class CustomGOLDConfig(GOLDConfig):
                 raise ValueError(
                     "uld_per_turn_regions requires uld_use_hybrid_loss=true. Only the hybrid "
                     "path's loss (custom_gold_trainer._compute_distillation_loss) iterates "
-                    "regions; the base path delegates to trl's, which derives ONE region per "
+                    "regions; the base path (CustomULDLoss._compute_base_distillation_loss, "
+                    "trl 0.26.2's non-hybrid loss vendored here) derives ONE region per "
                     "row from _get_start_and_size_answers (first supervised index + total "
                     "supervised count) and would slice a single span straddling the user and "
                     "tool turns in between."
