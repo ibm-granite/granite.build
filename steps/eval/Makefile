@@ -221,7 +221,7 @@ prefetch:
 check-pins:
 	$(PYTHON) scripts/prefetch_datasets.py --check
 
-# Pre-build dependency gate: trivy over the resolved dependency sets -- the
+# Pre-build dependency gate: trivy and osv-scanner over the resolved dependency sets -- the
 # shared uv.lock (every family's forks resolve in it) and every family's nested
 # requirement files (e.g. nemoskills' comet-requirements.txt). Catches the
 # lock-level CVE class (a pinned dependency with a fix available) in seconds,
@@ -241,6 +241,15 @@ check-pins:
 # the project's default dependencies as dev and leaves it out, which skipped
 # diskcache 5.6.3 (bird, ifbench and nemoskills install it through an extra) and
 # pytest's set. With the flag, trivy reads all 460 packages, as osv-scanner does.
+#
+# Each file then goes through osv-scanner (OSV_IMAGE, pinned) and distill's
+# osv-gate.py, as steps/train/distill's scan-lock-* does. trivy rates a Python
+# advisory by its GHSA severity, and several that GHSA rates MODERATE, or not at all,
+# carry a CVSS of 7 and above in their OSV record. osv-gate.py rates each advisory
+# group by its highest CVSS, fails closed on an unscored fixable one, and reads
+# scan-ignore with its package scopes, so a finding passes only if both gates pass.
+OSV_IMAGE ?= ghcr.io/google/osv-scanner:v2.7.1@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde
+OSV_GATE  ?= $(CURDIR)/../train/distill/images/osv-gate.py
 scan-deps:
 	$(check-severity)
 	@mkdir -p "$(SCAN_CACHE)/trivy"
@@ -254,11 +263,21 @@ scan-deps:
 	    $${ign:+-v "$$ign:/scan/ignore.yaml:ro,Z"} $(TRIVY_IMAGE) fs --quiet --scanners vuln --timeout $(TRIVY_TIMEOUT) \
 	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed --include-dev-deps $${ign:+--ignorefile /scan/ignore.yaml} \
 	    --exit-code 3 --format table /scan/src; frc=$$?; \
-	  rm -rf "$$d"; \
 	  case $$frc in \
 	    0) echo "OK: $$f has no fixable $(TRIVY_GATE_SEVERITY) vulnerabilities" ;; \
 	    3) echo "SCAN-DEPS FAILED: $$f has fixable $(TRIVY_GATE_SEVERITY) vulnerabilities (above); raise them or record them in $(SCAN_IGNORE)" >&2; rc=1 ;; \
 	    *) echo "SCAN-DEPS FAILED: trivy did not run on $$f (exit $$frc)" >&2; rc=1 ;; \
 	  esac; \
+	  case "$$f" in *.txt) lf="requirements.txt:/scan/src/requirements.txt";; *) lf="/scan/src/uv.lock";; esac; \
+	  echo "== $$f (osv-scanner; gate: fixable $(SCAN_SEVERITY) by the advisory group's highest CVSS)"; \
+	  $(DOCKER) run --rm -v "$$d:/scan/src:ro,Z" $(OSV_IMAGE) scan source --lockfile "$$lf" --format json > "$$d/osv.json"; orc=$$?; \
+	  if [ $$orc -ne 0 ] && [ $$orc -ne 1 ]; then \
+	    echo "SCAN-DEPS FAILED: osv-scanner did not run on $$f (exit $$orc)" >&2; rc=1; \
+	  elif $(PYTHON3) "$(OSV_GATE)" $(SCAN_SEVERITY) $${ignsrc:+--ignore "$$ignsrc"} < "$$d/osv.json"; then \
+	    echo "OK: $$f has no fixable $(SCAN_SEVERITY) vulnerabilities by CVSS"; \
+	  else \
+	    echo "SCAN-DEPS FAILED: $$f has fixable $(SCAN_SEVERITY) vulnerabilities by CVSS (above); raise them or record them in $(SCAN_IGNORE)" >&2; rc=1; \
+	  fi; \
+	  rm -rf "$$d"; \
 	done; \
 	[ $$rc -eq 0 ] && echo "OK: dependencies clean" || exit 1
