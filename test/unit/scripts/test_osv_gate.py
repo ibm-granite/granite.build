@@ -130,6 +130,62 @@ def test_expired_entry_stops_suppressing(tmp_path):
     assert "IGNORED" not in r.stdout
 
 
+def test_scope_compares_the_name(tmp_path):
+    """Same type and version, another package: not covered."""
+    r = run(tmp_path, [package("vllm", "11.3.0", PILLOW)], "PYSEC-2026-4327 pkg:pypi/pillow@11.3.0\n")
+    assert r.returncode == 1
+    assert "not vllm 11.3.0" in r.stdout
+
+
+@pytest.mark.parametrize(
+    ("severity", "score", "fails"),
+    [
+        ("HIGH", "7.0", True),  # the floor itself is HIGH
+        ("HIGH", "6.9", False),
+        ("CRITICAL", "9.0", True),
+        ("CRITICAL", "8.9", False),
+        ("MEDIUM", "4.0", True),
+    ],
+)
+def test_severity_floor_is_inclusive(tmp_path, severity, score, fails):
+    r = run(tmp_path, [package("pillow", "11.3.0", PILLOW, score=score)], severity=severity)
+    assert (r.returncode == 1) is fails, r.stdout
+
+
+def test_unscored_fixable_finding_fails_closed(tmp_path):
+    r = run(tmp_path, [package("pillow", "11.3.0", PILLOW, score="")])
+    assert r.returncode == 1
+    assert "UNKNOWN" in r.stdout and "pillow 11.3.0 -> 99.0" in r.stdout
+
+
+def test_unscored_finding_without_a_fix_passes(tmp_path):
+    r = run(tmp_path, [package("pillow", "11.3.0", PILLOW, score="", end=("last_affected", "11.3.0"))], releases={"pillow": ["11.3.0"]})
+    assert r.returncode == 0, r.stdout
+
+
+def test_expiry_uses_the_utc_date_not_the_local_one(tmp_path):
+    """Run the gate in a time zone whose local date differs from UTC's right now, with
+    an entry whose expiry sits between the two dates: only the UTC rule gives the
+    expected verdict. UTC-12 is a day behind until 12:00 UTC, UTC+14 a day ahead from
+    10:00 UTC, so one of them always differs."""
+    now = osv_gate.datetime.datetime.now(osv_gate.datetime.timezone.utc)
+    utc_date = now.date()
+    if now.hour < 12:
+        tz, exp, expect_expired = "Etc/GMT+12", utc_date, True  # local date is yesterday
+    else:
+        tz, exp, expect_expired = "Etc/GMT-14", utc_date + osv_gate.datetime.timedelta(days=1), False  # local is tomorrow
+    r = run(
+        tmp_path,
+        [package("pillow", "11.3.0", PILLOW)],
+        f"PYSEC-2026-4327 exp:{exp.isoformat()} pkg:pypi/pillow@11.3.0\n",
+        env={"TZ": tz},
+    )
+    if expect_expired:
+        assert r.returncode == 1 and "expired on" in r.stdout, r.stdout
+    else:
+        assert r.returncode == 0 and "IGNORED" in r.stdout, r.stdout
+
+
 def test_expiry_is_trivys_utc_date_rule():
     entry = osv_gate.parse_ignore_line("CVE-1 exp:2027-05-31")
     assert not osv_gate.is_expired(entry, osv_gate.datetime.date(2027, 5, 30))
