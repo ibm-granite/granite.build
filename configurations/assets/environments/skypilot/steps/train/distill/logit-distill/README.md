@@ -518,7 +518,8 @@ RuntimeError: ULD steps <a>-<b>: <u> of <r> rows (<pct>) yielded no alignment gr
 
 When any row of an optimizer step has a completion at position 0, where no logit predicts
 its first token. The loss skips such a row, and the check at the optimizer step fails the run
-on every rank together, as in the first case. No layout this step builds produces one:
+on every rank together, as in the first case; a row evaluated after the last step fails it
+when training ends (`ULD, at train end: ...`). No layout this step builds produces one:
 
 ```
 RuntimeError: ULD step <n>: <k> rows (regions, on the hybrid path) across all ranks have a completion at position 0, so no logit predicts their first token; they were skipped. ...

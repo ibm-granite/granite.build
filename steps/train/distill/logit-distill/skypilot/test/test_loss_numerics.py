@@ -760,6 +760,25 @@ class TestULDCompletionAtPositionZero:
             guard.end_step(loss_fn, step=3, reduce=_one_rank, window_steps=10)
         assert loss_fn._alignment_unpredictable == 0
 
+    def test_train_end_refuses_what_no_step_judged(self):
+        """A row counted after the last optimizer step (an evaluation) is refused when
+        training ends, and the counter is drained."""
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=1.0)
+        guard.end_train(_counts(0, 0), _one_rank)
+        counts = _counts(0, 0, unpredictable=2)
+        with pytest.raises(
+            RuntimeError, match="ULD, at train end: 2 rows .* position 0"
+        ):
+            guard.end_train(counts, _one_rank)
+        assert counts._alignment_unpredictable == 0
+
+    def test_two_ranks_refuse_it_together_at_train_end(self, tmp_path):
+        """The same through _uld_alignment_train_end, on two real gloo ranks: only rank 0
+        counted a row after the last step, and both raise."""
+        _spawn_two_ranks(_train_end_rank, tmp_path)
+        for rank in (0, 1):
+            assert (tmp_path / f"rank{rank}.txt").read_text() == "raised"
+
     def test_two_ranks_refuse_it_together(self, tmp_path):
         """Two real gloo ranks, through the real loss and _uld_alignment_step_end. Rank 0's
         row starts at position 0, rank 1's rows align. Both raise, at the same step, so
@@ -841,6 +860,39 @@ def _position_zero_rank(rank, world, rendezvous, out_dir):
             outcome = "raised" if ok else f"wrong: {e}"
         except Exception as e:  # the loss's own raise, on one rank
             outcome = f"wrong: {type(e).__name__}: {e}"
+        Path(os.path.join(out_dir, f"rank{rank}.txt")).write_text(outcome)
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def _train_end_rank(rank, world, rendezvous, out_dir):
+    """One rank of test_two_ranks_refuse_it_together_at_train_end."""
+    import datetime
+    import os
+    from pathlib import Path
+
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{rendezvous}",
+        rank=rank,
+        world_size=world,
+        timeout=datetime.timedelta(seconds=20),
+    )
+    try:
+        trainer = types.SimpleNamespace(
+            accelerator=types.SimpleNamespace(
+                distributed_type=cgt.DistributedType.MULTI_CPU,
+                device=torch.device("cpu"),
+            ),
+            uld_loss_fn=_counts(0, 0, unpredictable=1 if rank == 0 else 0),
+            _uld_alignment_guard=cgt.ULDAlignmentGuard(max_unaligned_fraction=1.0),
+        )
+        try:
+            CustomGOLDTrainer._uld_alignment_train_end(trainer)
+            outcome = "did not raise"
+        except RuntimeError as e:
+            ok = "ULD, at train end: 1 rows" in str(e)
+            outcome = "raised" if ok else f"wrong: {e}"
         Path(os.path.join(out_dir, f"rank{rank}.txt")).write_text(outcome)
     finally:
         torch.distributed.destroy_process_group()

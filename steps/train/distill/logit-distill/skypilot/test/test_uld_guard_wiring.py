@@ -170,6 +170,11 @@ def _trainer(
         teacher_model=teacher,
         args=args,
         train_dataset=Dataset.from_list([{"messages": m} for m in rows]),
+        eval_dataset=(
+            Dataset.from_list([{"messages": m} for m in rows])
+            if kw.get("eval_strategy", "no") != "no"
+            else None
+        ),
         processing_class=tok,
         data_collator=collator,
     )
@@ -255,6 +260,31 @@ def test_a_run_shorter_than_one_window_is_judged_at_train_end(tmp_path):
     with pytest.raises(RuntimeError, match=r"ULD steps 1-2: 2 of 4 rows"):
         trainer.train()
     assert trainer.state.global_step == 2
+
+
+def test_a_position_zero_row_in_the_final_evaluation_is_refused_at_train_end(
+    tmp_path,
+):
+    """An evaluation at the last step runs after that step's guard, so no later optimizer
+    step would see its rows; on_train_end must. The rows align, and every evaluated row is
+    made to report a completion at position 0."""
+    trainer = _trainer(tmp_path, max_steps=2, eval_strategy="steps", eval_steps=2)
+    loss_fn = trainer.uld_loss_fn
+    real = loss_fn._unpredictable_start
+    evaluated = {"rows": 0}
+
+    def at_zero_when_evaluating(student_start, teacher_start):
+        if trainer.model.training:
+            return real(student_start, teacher_start)
+        evaluated["rows"] += 1
+        loss_fn._alignment_unpredictable += 1
+        return True
+
+    loss_fn._unpredictable_start = at_zero_when_evaluating
+    with pytest.raises(RuntimeError, match="ULD, at train end: .* position 0"):
+        trainer.train()
+    assert trainer.state.global_step == 2
+    assert evaluated["rows"] > 0
 
 
 # ── Before the guard: the config refuses the known systematic cause ──────────────────

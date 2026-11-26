@@ -159,7 +159,8 @@ optimizer step and sums them over ranks. It raises `RuntimeError`:
 
 - when any row of a step, on any rank, was skipped for a completion at position 0
   (`_alignment_unpredictable`, reduced in the same all-reduce as the other two counts);
-  always on, whatever the threshold. An evaluated row counts towards the next step;
+  always on, whatever the threshold. An evaluated row counts towards the next step, and
+  one evaluated after the last step is reduced and refused at train end (`on_train_end`);
 - when every row of a step, across all ranks, was unaligned; always on;
 - when more than `uld_max_unaligned_fraction` (default 0.5; 1.0 turns it off) of the rows
   in a window of `uld_unaligned_window_steps` optimizer steps (default 0 = `logging_steps`)

@@ -2816,6 +2816,17 @@ def _all_reduce_sum(values, device, distributed: bool) -> list[float]:
     return vec.tolist()
 
 
+def _guard_reduce(accelerator):
+    """ULDAlignmentGuard's `reduce` for this accelerator: _all_reduce_sum over its ranks,
+    or the values as they are when it is not distributed."""
+    distributed = (
+        getattr(accelerator, "distributed_type", DistributedType.NO)
+        != DistributedType.NO
+    )
+    device = getattr(accelerator, "device", torch.device("cpu"))
+    return lambda values: _all_reduce_sum(values, device, distributed)
+
+
 class ULDAlignmentGuard:
     """Refuse to let skipped ULD rows become a run that trains on nothing.
 
@@ -2833,7 +2844,8 @@ class ULDAlignmentGuard:
     - at every optimizer step: if any row (region), on any rank, was skipped because a
       completion starts at position 0 (`_alignment_unpredictable`), raise. That is a
       construction error, not a rate to tolerate; it is counted rather than raised in the
-      loss so that every rank raises here together.
+      loss so that every rank raises here together. Rows counted after the last step (an
+      evaluation) are reduced and refused at train end (`end_train`).
     - at every optimizer step: if every row that reached alignment, on every rank, was
       unaligned, raise. No loss term was computed for the step at all.
     - over each window of `window_steps` optimizer steps (default: the logging window's
@@ -2884,14 +2896,7 @@ class ULDAlignmentGuard:
         loss_fn._alignment_rows = 0
         loss_fn._alignment_unpredictable = 0
         unaligned, rows, unpredictable = (int(round(v)) for v in reduce(local))
-        if unpredictable > 0:
-            raise RuntimeError(
-                f"ULD step {step}: {unpredictable} rows (regions, on the hybrid path) across "
-                "all ranks have a completion at position 0, so no logit predicts their first "
-                "token; they were skipped. Every layout the trainer builds puts a prompt "
-                "before the completion, so these inputs were built wrongly (a row with no "
-                "prompt, for one). Rows evaluated since the previous step count too."
-            )
+        self._refuse_unpredictable(unpredictable, f"ULD step {step}")
         self._log_unaligned += unaligned
         self._log_rows += rows
         if rows > 0 and unaligned == rows:
@@ -2913,12 +2918,33 @@ class ULDAlignmentGuard:
         if self._win_steps >= window:
             self._judge_window()
 
-    def end_train(self) -> None:
-        """Judge the final, partial window, if training ended inside one. The counts are
-        already summed over ranks, so this needs no collective and raises on every rank
-        alike."""
+    def end_train(self, loss_fn=None, reduce=None) -> None:
+        """Judge what no optimizer step has: the position-0 completions counted since the
+        last one (an evaluation after it), and the final, partial window, if training
+        ended inside one.
+
+        With `loss_fn`, its `_alignment_unpredictable` is drained and summed over ranks with
+        `reduce`, as in end_step. The trainer calls this on every rank, once, at train end,
+        so that reduction is rank-uniform; it runs before either check can raise. The
+        window's counts are already summed over ranks. Raises on every rank alike."""
+        if loss_fn is not None:
+            local = [loss_fn._alignment_unpredictable]
+            loss_fn._alignment_unpredictable = 0
+            (unpredictable,) = (int(round(v)) for v in reduce(local))
+            self._refuse_unpredictable(unpredictable, "ULD, at train end")
         if self._win_steps:
             self._judge_window()
+
+    @staticmethod
+    def _refuse_unpredictable(unpredictable: int, where: str) -> None:
+        if unpredictable > 0:
+            raise RuntimeError(
+                f"{where}: {unpredictable} rows (regions, on the hybrid path) across all "
+                "ranks have a completion at position 0, so no logit predicts their first "
+                "token; they were skipped. Every layout the trainer builds puts a prompt "
+                "before the completion, so these inputs were built wrongly (a row with no "
+                "prompt, for one). Rows evaluated since the previous step count too."
+            )
 
     def _judge_window(self) -> None:
         win_unaligned, win_rows = self._win_unaligned, self._win_rows
@@ -2967,15 +2993,17 @@ class _ULDAlignmentGuardCallback(TrainerCallback):
         return control
 
     def on_train_end(self, args, state, control, **kwargs):
-        # The steps after the last full window, or a run shorter than one.
-        self._trainer._uld_alignment_guard.end_train()
+        # The steps after the last full window, or a run shorter than one, and an
+        # evaluation's position-0 rows after the last optimizer step.
+        self._trainer._uld_alignment_train_end()
         return control
 
     def on_evaluate(self, args, state, control, **kwargs):
         # Rows the loss counted during evaluation are not a training step's; the training
         # counters were drained at the step that preceded the evaluation. Not
         # `_alignment_unpredictable`: a completion at position 0 is refused wherever it
-        # came from, so an evaluated one is left for the next step's guard to refuse.
+        # came from, so an evaluated one is left for the guard to refuse at the next step,
+        # or at train end after the last one.
         loss_fn = self._trainer.uld_loss_fn
         loss_fn._alignment_unaligned = 0
         loss_fn._alignment_rows = 0
@@ -5342,19 +5370,21 @@ class CustomGOLDTrainer(GOLDTrainer):
         """One optimizer step of ULDAlignmentGuard, from _ULDAlignmentGuardCallback. The
         window defaults to the logging window's length (see ULDAlignmentGuard for when the
         two cover different steps)."""
-        distributed = (
-            getattr(self.accelerator, "distributed_type", DistributedType.NO)
-            != DistributedType.NO
-        )
-        device = getattr(self.accelerator, "device", torch.device("cpu"))
         self._uld_alignment_guard.end_step(
             self.uld_loss_fn,
             state.global_step
             + 1,  # the step being taken; global_step counts completed ones
-            lambda values: _all_reduce_sum(values, device, distributed),
+            _guard_reduce(self.accelerator),
             window_steps=int(
                 getattr(state, "logging_steps", 0) or self.args.logging_steps or 1
             ),
+        )
+
+    def _uld_alignment_train_end(self) -> None:
+        """ULDAlignmentGuard's train-end judgement, from _ULDAlignmentGuardCallback's
+        on_train_end, which every rank reaches once."""
+        self._uld_alignment_guard.end_train(
+            self.uld_loss_fn, _guard_reduce(self.accelerator)
         )
 
     def _student_rows_end_with_eos(self, inputs) -> list[bool]:
