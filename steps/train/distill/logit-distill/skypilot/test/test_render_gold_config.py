@@ -178,6 +178,32 @@ class TestOnPolicyBlockGating:
         )
         assert all(k in config for k in self.ONLINE_KEYS)
 
+    @pytest.mark.parametrize("lmo", ["false", "true"])
+    def test_off_policy_refuses_the_sampled_opd_switch(self, tmp_path, lmo):
+        """use_sampled_opd_loss is one of these keys, so off-policy it was dropped with
+        exit 0 and the run trained plain JSD. It selects the objective, so it is refused
+        rather than dropped, as the distill recipe refuses it off-policy."""
+        result = _render(
+            tmp_path,
+            total_nodes=1,
+            extra=[
+                "--lmbda",
+                "0.0",
+                "--use-sampled-opd-loss",
+                "true",
+                "--last-message-only",
+                lmo,
+            ],
+            expect_rc=2,
+        )
+        assert "use_sampled_opd_loss" in result.stderr
+        assert "vllm_num_servers" in result.stderr
+
+    def test_off_policy_takes_the_sampled_opd_switch_off(self, tmp_path):
+        """False is the default, and off-policy it is still not emitted."""
+        config = _render(tmp_path, extra=["--use-sampled-opd-loss", "false"])
+        assert "use_sampled_opd_loss" not in config
+
     def test_off_policy_still_carries_lmbda_and_beta(self, tmp_path):
         """These are loss knobs, not online-only ones; lmbda=0 IS off-policy."""
         config = _render(tmp_path)

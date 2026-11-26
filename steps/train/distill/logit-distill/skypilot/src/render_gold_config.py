@@ -610,6 +610,17 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
             "the vLLM path's). Set vllm_num_servers > 0 for on-policy, or lmbda 0 for "
             "off-policy"
         )
+    # use_sampled_opd_loss is _ONLINE_ONLY, so off-policy it would be dropped like the other
+    # online keys. Unlike them it selects the objective: the run would train plain JSD while
+    # the config asks for the sampled-OPD loss. Refused, as the distill recipe refuses it.
+    # After _validate_arm, so loss_arm sampled_opd's own refusal is the one reported.
+    if args.use_sampled_opd_loss and not online:
+        raise ValueError(
+            "use_sampled_opd_loss is emitted only on the on-policy path (vllm_num_servers "
+            "> 0); off-policy it would be dropped and the run would train plain JSD instead "
+            "of the sampled-OPD loss. Set vllm_num_servers > 0 (the loss needs lmbda 1.0), "
+            "or leave use_sampled_opd_loss false"
+        )
 
     # The one exception to _ONLINE_ONLY: keys an arm needs off-policy too. The trainer reads
     # last_message_only off-policy (the collator's labels), so dropping it there made the uld
