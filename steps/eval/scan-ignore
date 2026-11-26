@@ -278,3 +278,117 @@ PYSEC-2026-2290 exp:2027-05-31 pkg:pypi/transformers@4.57.6
 CVE-2026-9856 exp:2027-05-31 pkg:pypi/transformers@4.57.6
 GHSA-xrqw-3rrv-vx5w exp:2027-05-31 pkg:pypi/transformers@4.57.6
 PYSEC-2026-3929 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+
+# ---- vllm 0.27.1: HIGH by CVSS, MODERATE or unrated by GHSA (every GPU image) ---------
+# The OSV records score these 7.1-8.7 (CVSS); GHSA rates them MODERATE or not at all,
+# which is why trivy's gate (it rates by GHSA) did not fail on them and osv-scanner's
+# (osv-gate.py, the group's highest CVSS) does. Fixed in 0.28.0-0.32.0, the uplift that
+# re-baselines every benchmark (see the first vllm section). Checked against the vllm
+# 0.27.1 source and the steps' server: granite_evals/serving.py starts `vllm serve
+# <checkpoint> --host 127.0.0.1` with tool and reasoning parsers, plus the step's
+# vllm_args, which default to empty and which no recipe under recipes/evals sets. The
+# harness in the same job is its only client, sending the pinned benchmarks' text
+# prompts. None is reachable there:
+# - PYSEC-2026-3985: LlavaOnevision2's processor loader ignores trust_remote_code=False.
+#   Needs a LlavaOnevision2 checkpoint; the steps serve the build's own text checkpoint,
+#   already with --trust-remote-code.
+# - PYSEC-2026-3996, -4004, -4005, -4008 (prefill/decode disaggregation, the NIXL
+#   connector) and -4006 (OffloadingConnector's P2P tier): all go through a KV
+#   connector, which the scheduler creates only with --kv-transfer-config
+#   (vllm/v1/core/sched/scheduler.py); the server is never given one.
+# - PYSEC-2026-3997: negative token ids on /v1/embeddings and /pooling. Those routes are
+#   registered only for pooling models (vllm/entrypoints/openai/api_server.py); the
+#   steps serve generative ones.
+# - PYSEC-2026-4184: media fetched and decoded before the size and count limits. Needs a
+#   request with audio, image or video parts; no harness sends one.
+# - PYSEC-2026-4324: --revision is not passed on to the FunAudioChat and Tarsier2
+#   processors. Only those architectures, and the steps pass no --revision.
+# - PYSEC-2026-4325: the Rust frontend's metrics middleware. The Rust frontend runs only
+#   with VLLM_USE_RUST_FRONTEND=1 (vllm/envs.py), which nothing sets.
+# - PYSEC-2026-4353: inconsistent multimodal metadata on /inference/v1/generate crashes
+#   Qwen2.5-VL's position code. Needs a Qwen2.5-VL model and a multimodal request.
+# - PYSEC-2026-4361: MOSS-Audio's per-mm_processor_kwargs processor cache. Only the
+#   MossAudioModel architecture.
+# - PYSEC-2026-4362: cache-key collisions through an image's EXIF ImageID or a
+#   cache_salt matching a LoRA name. Needs a second, hostile client sharing the cache;
+#   the server has one client, serves no images and loads no LoRA (--enable-lora is
+#   off by default).
+# Issue: #768 (the vLLM uplift). Until 2027-05-31.
+CVE-2026-90553 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-3c86-2m5g-59q7 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-3985 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-93436 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-3996 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-93592 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-25q3-v2hm-8vpf exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-3997 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-94622 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4004 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-94623 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4005 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-94624 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-frvg-qw88-hww9 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4006 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-94626 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4008 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-100650 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-p6g9-7v3x-m8mv exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4184 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-100653 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-hhv2-872h-628q exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4324 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-105759 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-5fj9-pfhr-6j48 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4325 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-116178 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-34qw-q2h2-jp3m exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4353 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-114052 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-823j-m4cj-hmjf exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4361 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-114054 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-rh6f-3x46-j33q exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4362 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+
+# ---- pillow 11.3.0 (judged), 12.3.0 (nemoskills' SciCode sandbox): HIGH by CVSS --------
+# Scored 7.5-8.2 by OSV (CVSS), MODERATE or unrated by GHSA; one (GHSA-wqgw-9xfh-qf2g)
+# has no score at all, which osv-gate.py fails closed on. All fixed only in 13.0.0, which
+# neither environment can take (see the pillow section above). Each needs a crafted
+# image in a specific format: the P;2L / P;4L raw decoders (-4327), TIFF encoding to an
+# in-memory buffer (-4328), the XBM header parser (-4335), TIFF and EXIF IFD parsing
+# (GHSA-wqgw-9xfh-qf2g). That is the same exposure, and the same reasoning, as the
+# pillow section above: judged's images come from GDPval's pinned reference files and the
+# evaluated model's own deliverables, and the SciCode sandbox runs the model's code
+# regardless of pillow. Issue: #770. Until 2027-05-31.
+CVE-2026-112394 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-4558-3h8r-v8xp exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4327 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112396 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-4rr5-89j8-mwwm exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4328 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112901 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-xgh8-jp6q-p5x8 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4335 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-128066 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-wqgw-9xfh-qf2g exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+
+# ---- litellm 1.82.6 (tau), 1.80.0 (mcpmark): HIGH by CVSS ----------------------------------
+# PYSEC-2026-4067: improper authentication in the LiteLLM proxy's MCP server
+# (litellm/proxy/_experimental/mcp_server/auth/). Scored 7.3 by OSV, fixed in 1.84.0,
+# which tau2-bench's litellm<1.82.7 and MCPMark's litellm==1.80.0 pins rule out. The
+# proxy is never started (see the litellm section above). Issue: #770 (the tau2-bench
+# and MCPMark refreshes). Until 2027-05-31.
+CVE-2026-12773 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-4jcj-7x88-m979 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-4067 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+
+# ---- transformers 4.57.6: nemoskills' COMET env (/opt/comet), HIGH by CVSS ----------------
+# PYSEC-2026-2288: Trainer._load_rng_state calls torch.load without weights_only, which
+# matters only on torch below 2.6. Scored 7.8 by OSV, fixed in 5.0.0, which comet rules
+# out (see the COMET section above). Not reachable twice over: the env has torch 2.13.0
+# (comet-requirements.txt), and it only runs COMET's scorer, which never uses
+# transformers' Trainer or resumes training from a checkpoint. Issue: #770 (a COMET
+# release on transformers 5). Until 2027-05-31.
+CVE-2026-1839 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+GHSA-69w3-r845-3855 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+PYSEC-2026-2288 exp:2027-05-31 pkg:pypi/transformers@4.57.6
