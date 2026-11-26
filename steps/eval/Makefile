@@ -209,6 +209,10 @@ check-pins:
 #
 # Each file is copied alone into a temp dir under SCAN_CACHE (which a podman machine
 # shares with its VM, unlike /tmp on macOS) and scanned there by the pinned TRIVY_IMAGE.
+# --include-dev-deps: trivy's uv.lock parser marks every package it cannot reach from
+# the project's default dependencies as dev and leaves it out, which skipped
+# diskcache 5.6.3 (bird, ifbench and nemoskills install it through an extra) and
+# pytest's set. With the flag, trivy reads all 460 packages, as osv-scanner does.
 scan-deps:
 	$(check-severity)
 	@mkdir -p "$(SCAN_CACHE)/trivy"
@@ -220,7 +224,7 @@ scan-deps:
 	  case "$$f" in *.txt) cp "$$f" "$$d/requirements.txt";; *) cp "$$f" "$$d/";; esac || { rm -rf "$$d"; exit 1; }; \
 	  $(DOCKER) run --rm -v "$$d:/scan/src:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" \
 	    $${ign:+-v "$$ign:/scan/ignore.yaml:ro,Z"} $(TRIVY_IMAGE) fs --quiet --scanners vuln --timeout $(TRIVY_TIMEOUT) \
-	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed $${ign:+--ignorefile /scan/ignore.yaml} \
+	    --severity $(TRIVY_GATE_SEVERITY) --ignore-unfixed --include-dev-deps $${ign:+--ignorefile /scan/ignore.yaml} \
 	    --exit-code 3 --format table /scan/src; frc=$$?; \
 	  rm -rf "$$d"; \
 	  case $$frc in \
