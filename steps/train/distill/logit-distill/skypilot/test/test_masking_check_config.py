@@ -80,23 +80,40 @@ def test_the_message_names_who_refuses_it(arm):
     assert "CustomGOLDConfig refuses it at startup" in problem
 
 
-@pytest.mark.parametrize(
-    "mode",
-    [
-        "uld_per_turn_regions",
-        "uld_reuse_student_input",
-        "uld_rebuild_student_input_with_teacher_template",
-    ],
-)
+_ULD_EXEMPT_MODES = [
+    "uld_per_turn_regions",
+    "uld_reuse_student_input",
+    "uld_rebuild_student_input_with_teacher_template",
+]
+
+
+@pytest.mark.parametrize("mode", _ULD_EXEMPT_MODES)
 def test_uld_modes_that_render_the_teacher_otherwise_are_exempt(mode):
     """The exemptions CustomGOLDConfig makes: per-turn regions require false, a teacher
     reusing the student's input needs no last-turn render, and a student rebuilt from the
     teacher's texts is supervised on the last turn alone whatever the collator labelled.
+    For the switch form only, which is what reaches CustomGOLDConfig."""
+    _, switch = _forms("uld")
+    cfg = {"response_template": _TEMPLATE, mode: True, **switch}
+    assert masking.check_config(_DOC, cfg) == []
+    assert masking.check_config(_DOC, {**cfg, "last_message_only": False}) == []
+
+
+@pytest.mark.parametrize("mode", _ULD_EXEMPT_MODES)
+@pytest.mark.parametrize("lmo", [None, False], ids=["unset", "false"])
+def test_a_named_uld_arm_takes_no_exemption(mode, lmo):
+    """The renderer renders none of those modes and refuses `loss_arm: uld` without
+    last_message_only: true in every case, so a named arm is a problem with any of them,
+    and the message names the renderer alone: CustomGOLDConfig would take the exemption.
     """
-    for form in _forms("uld"):
-        cfg = {"response_template": _TEMPLATE, mode: True, **form}
-        assert masking.check_config(_DOC, cfg) == []
-        assert masking.check_config(_DOC, {**cfg, "last_message_only": False}) == []
+    named, _ = _forms("uld")
+    cfg = {"response_template": _TEMPLATE, mode: True, **named}
+    if lmo is not None:
+        cfg["last_message_only"] = lmo
+    (problem,) = _lmo_problems(cfg)
+    assert "loss_arm uld requires last_message_only: true" in problem
+    assert problem.endswith("; render_gold_config.py refuses it at render.")
+    assert masking.check_config(_DOC, {**cfg, "last_message_only": True}) == []
 
 
 @pytest.mark.parametrize("arm", _REQUIRING)

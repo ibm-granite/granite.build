@@ -173,7 +173,9 @@ masking.json describes. For the two arms whose `render_gold_config.py` LOSS_ARMS
 requires it, `uld` and `sampled_opd`, that inverted the renderer's rule. It now follows that
 rule: for those arms, true is the contract and false or unset is the problem. The arms are
 recognised from `loss_arm` or from the switch they render (`use_uld_loss`,
-`use_sampled_opd_loss`), with the same three ULD exemptions as `CustomGOLDConfig`. Only the
+`use_sampled_opd_loss`). The `use_uld_loss` switch, which is what reaches `CustomGOLDConfig`,
+takes the same three ULD exemptions; a named `loss_arm: uld` takes none, because the renderer
+renders none of those modes and refuses the arm without `true` in every case. Only the
 boolean `true` satisfies the rule. Every other arm keeps the old report.
 `steps/train/distill/logit-distill/skypilot/test/test_masking_check_config.py` pins both
 directions against the renderer's table.

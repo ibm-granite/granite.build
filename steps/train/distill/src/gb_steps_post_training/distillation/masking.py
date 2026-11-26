@@ -481,11 +481,16 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
         # render_gold_config.py and CustomGOLDConfig.__post_init__ both enforce.
         if lmo is not True:
             given = "unset (the trainer's default, false)" if lmo is None else repr(lmo)
-            refused_by = (
-                "render_gold_config.py refuses it at render and CustomGOLDConfig at startup"
-                if named
-                else "CustomGOLDConfig refuses it at startup"
-            )
+            if not named:
+                refused_by = "CustomGOLDConfig refuses it at startup"
+            elif arm == "uld" and _uld_exempt(cfg):
+                # CustomGOLDConfig would take the mode's exemption; the renderer would not.
+                refused_by = "render_gold_config.py refuses it at render"
+            else:
+                refused_by = (
+                    "render_gold_config.py refuses it at render and CustomGOLDConfig at "
+                    "startup"
+                )
             problems.append(
                 f"loss_arm {arm} requires last_message_only: true, and it is {given}. "
                 "Without it the collator labels every assistant turn while the arm "
@@ -509,14 +514,29 @@ def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool]:
     `use_sampled_opd_loss` for sampled_opd. Kept in step with those two `requires` entries
     by test_masking_check_config.py, which reads the renderer's table.
 
-    ULD is exempt in the modes that do not pair the collator's labels with the last-turn
-    teacher, the same exemptions CustomGOLDConfig makes: per-turn teacher regions
-    (uld_per_turn_regions, which require last_message_only false), the student's own input
-    reused as the teacher's (uld_reuse_student_input), and the student rebuilt from the
-    teacher's texts (uld_rebuild_student_input_with_teacher_template). None is reachable
-    through the logit-distill step, whose renderer exposes no uld_* option.
+    The switch form of ULD (`use_uld_loss`, what reaches CustomGOLDConfig) is exempt in the
+    modes `_uld_exempt` names, the same exemptions CustomGOLDConfig makes. A named
+    `loss_arm: uld` is not: the renderer renders none of those modes and refuses the arm
+    without last_message_only: true in every case.
     """
-    uld_exempt = any(
+    arm = cfg.get("loss_arm")
+    if arm in ("sampled_opd", "uld"):
+        return arm, True
+    if cfg.get("use_uld_loss") is True and not _uld_exempt(cfg):
+        return "uld", False
+    if cfg.get("use_sampled_opd_loss") is True:
+        return "sampled_opd", False
+    return None, False
+
+
+def _uld_exempt(cfg: dict) -> bool:
+    """Whether `cfg` sets a ULD mode that does not pair the collator's labels with the
+    last-turn teacher: per-turn teacher regions (uld_per_turn_regions, which require
+    last_message_only false), the student's own input reused as the teacher's
+    (uld_reuse_student_input), or the student rebuilt from the teacher's texts
+    (uld_rebuild_student_input_with_teacher_template). None is reachable through the
+    logit-distill step, whose renderer exposes no uld_* option."""
+    return any(
         cfg.get(mode) is True
         for mode in (
             "uld_per_turn_regions",
@@ -524,14 +544,6 @@ def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool]:
             "uld_rebuild_student_input_with_teacher_template",
         )
     )
-    arm = cfg.get("loss_arm")
-    if arm == "sampled_opd" or (arm == "uld" and not uld_exempt):
-        return arm, True
-    if cfg.get("use_uld_loss") is True and not uld_exempt:
-        return "uld", False
-    if cfg.get("use_sampled_opd_loss") is True:
-        return "sampled_opd", False
-    return None, False
 
 
 def _self_test() -> int:
