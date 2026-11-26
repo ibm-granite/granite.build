@@ -151,13 +151,21 @@ override-dependencies = [
     # above. None runs in granite-evals, and wandb brings wandb-core's Go toolchain and
     # cwevals, a 0.0.1 beta, so it is dropped the same way.
     "wandb ; python_version < '3'",
+    # bfcl-eval pins datamodel-code-generator==0.25.7, under fixable HIGH advisories
+    # (fixed by 0.81.0). bfcl-eval imports with a fixed release and its OpenAI-compatible
+    # FC handler, the one the bfcl step registers, never calls it; only the MiniCPM
+    # handler's jsonschema_to_code does, and fails on it (DataModelType.PydanticBaseModel
+    # is gone). The step never selects MiniCPM. 0.84.0: the newest release without a
+    # pydantic>=2.14 floor for Python 3.15, which would fork the shared pydantic 2.13.5.
+    # The bfcl-v3 side venv carries the same override (../../bfcl/bfcl-v3-overrides.txt).
+    "datamodel-code-generator==0.84.0",
 ]
 # Floors at the fix for the fixable HIGH-and-above advisories the dependency and image
 # gates reported (scan-deps, scan-image-* in steps/eval/Makefile), so a later re-lock
 # cannot move a package back below its fix. Not floored, because a harness pins below
 # the fix in one family's fork: filelock (bfcl-eval ==3.20.0, which the advisory does
-# not affect), litellm (tau2 <1.82.7, NeMo-Skills ==1.84.10) and datamodel-code-generator
-# (bfcl-eval ==0.25.7); the accepted ones are listed in ../../scan-ignore.
+# not affect) and litellm (tau2 <1.82.7, NeMo-Skills ==1.84.10); the accepted ones are
+# listed in ../../scan-ignore. datamodel-code-generator is overridden above instead.
 constraint-dependencies = [
     "aiohttp>=3.14.4",
     "black>=26.10.1",

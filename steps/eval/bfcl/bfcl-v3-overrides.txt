@@ -1,0 +1,9 @@
+# bfcl-v3 side venv: overrides of bfcl-eval 2025.8.6.2's own pins, for the compile of
+# bfcl-v3-requirements.txt (the command is in its header). The install (extras.sh) takes the
+# compiled, hash-pinned file as it is, with --no-deps.
+#
+# datamodel-code-generator: bfcl-eval pins ==0.25.7, under fixable HIGH advisories (fixed by
+# 0.81.0). 0.84.0, the version the job venv overrides it to (../src/core/pyproject.toml).
+# bfcl-eval imports with it, and the handlers the step uses (fc, legacy-granite) never call
+# it; only the MiniCPM handler does, and fails on it.
+datamodel-code-generator==0.84.0

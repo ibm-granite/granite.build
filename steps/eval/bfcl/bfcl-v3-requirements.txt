@@ -3,7 +3,11 @@
 # v4's bfcl-eval (same import name, conflicting pins). soundfile: imported by
 # bfcl_eval (through qwen-agent), undeclared, as for the bfcl extra.
 # Compiled from (bfcl-v3.in): bfcl-eval==2025.8.6.2 soundfile==0.13.1
-#   UV_NO_CONFIG=1 uv pip compile bfcl-v3.in --python-version 3.12 \
+#   with (bfcl-v3-overrides.txt): datamodel-code-generator==0.84.0, over bfcl-eval's ==0.25.7
+#   (the fix for its HIGH advisories; only the MiniCPM handler, which the step never selects,
+#   calls it; the job venv's override in ../src/core/pyproject.toml says more). So the file
+#   installs with --no-deps (extras.sh): bfcl-eval still declares ==0.25.7.
+#   UV_NO_CONFIG=1 uv pip compile bfcl-v3.in --overrides bfcl-v3-overrides.txt --python-version 3.12 \
 #     --python-platform x86_64-manylinux_2_28 --generate-hashes --no-header
 aiohappyeyeballs==2.7.1 \
     --hash=sha256:065665c041c42a5938ed220bdcd7230f22527fbec085e1853d2402c8a3615d9d \
@@ -621,27 +625,21 @@ dashscope==2.1.1 \
     --hash=sha256:f60b4279e52ec170e9a1b0b4529c4757cf371b1d370beec8caf9184394261748 \
     --hash=sha256:fdabe219716d8bcd34cdc47174d58a678c1ed3d3092db58d153d7922fa4bf542
     # via qwen-agent
-datamodel-code-generator==0.25.7 \
-    --hash=sha256:0b890a0c2bfe8c250f1ddc9656fabeb85db289d4d497a616c19bd80db004dd9a \
-    --hash=sha256:975079cb3776f10a71d6aa9914b73149c3fdf4c71825b0977951a959fefc77f6
-    # via bfcl-eval
+datamodel-code-generator==0.84.0 \
+    --hash=sha256:b887be83ad9c810fbaca642622724eb02d0a4f0c857e0fc57829dbec53460adf \
+    --hash=sha256:bb3d44d8e4d89f2fc17c5af3f5b64eb662f46bdb10e4f126e62bd44e67d0d4bc
+    # via
+    #   --override bfcl-v3-overrides.txt
+    #   bfcl-eval
 distro==1.9.0 \
     --hash=sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed \
     --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2
     # via
     #   anthropic
     #   writer-sdk
-dnspython==2.9.2 \
-    --hash=sha256:8d4d39a513e649d634004ce4d39ade2352efcea472a0247535a5c2d18a9d7ba9 \
-    --hash=sha256:af15f7d385a6ae2fb35a796fde2138004c8c42c7389090e2addc83e3b3340fd8
-    # via email-validator
 dotenv==0.9.9 \
     --hash=sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9
     # via qwen-agent
-email-validator==2.4.0 \
-    --hash=sha256:4454e41c4e1c6b6caee34a1dc71d5e736791562be8fd179b02e298f796522684 \
-    --hash=sha256:be487bc50bc3bd832a98515a55a15649d9bec06d954fa178663190714b6c4ee1
-    # via pydantic
 eval-type-backport==0.4.0 \
     --hash=sha256:8397d25e6524c2e67b9576bb0636be27dea2192017711220c534ec2de921e9b0 \
     --hash=sha256:ad5e2a8db71b6696a56eafb938b0f5a337d3217f256b8e158b469422b4772b20
@@ -915,7 +913,6 @@ idna==3.20 \
     --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
     # via
     #   anyio
-    #   email-validator
     #   httpx
     #   httpx2
     #   requests
@@ -1464,7 +1461,6 @@ packaging==26.4 \
     --hash=sha256:c4b671c41ddb9bf26e543c37723610d28fb6bf7affc4da17cf048d419d2c062a
     # via
     #   black
-    #   datamodel-code-generator
     #   huggingface-hub
 pandas==3.0.6 \
     --hash=sha256:0704044b676496b8350e023b09f174a26772456c974a2b11c36bebb558c9490d \
@@ -2583,6 +2579,7 @@ typing-extensions==4.16.0 \
     #   anyio
     #   cohere
     #   dashscope
+    #   datamodel-code-generator
     #   fastapi
     #   google-genai
     #   httpx2

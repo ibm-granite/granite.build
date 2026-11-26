@@ -229,42 +229,6 @@ CVE-2026-96778 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
 GHSA-g7cr-3p24-7wf7 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
 GHSA-78g4-xqwv-q3g8 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
 
-# ---- datamodel-code-generator 0.25.7: bfcl ------------------------------------------------
-# HIGH, fixed in 0.60.1-0.64.0. bfcl-eval 2026.3.23 pins datamodel-code-generator==0.25.7,
-# and so does 2025.8.6.2 in the bfcl-v3 side venv (/opt/bfcl-v3, bfcl-v3-requirements.txt),
-# where too only the MiniCPM handler calls it.
-# Overriding it was tried: bfcl-eval still imports with any fixed release, but its
-# MiniCPM handler's jsonschema_to_code fails on all of them (DataModelType.
-# PydanticBaseModel is gone), so the harness would not work as shipped. Not reachable:
-# only that MiniCPM handler calls it, to turn the benchmark's own function schemas into
-# code; the bfcl step runs the model through the OpenAI-compatible handlers and never
-# selects it. The advisories need attacker-written schemas or URLs. Issue: #770
-# (a bfcl-eval release that lifts the pin). Until 2027-05-31.
-CVE-2026-54621 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-GHSA-j884-q54q-mmx3 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-PYSEC-2026-3561 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-CVE-2026-54653 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-GHSA-386q-5hp3-95m9 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-PYSEC-2026-3555 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-CVE-2026-54654 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-GHSA-wjv6-jcfj-mf9r exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-PYSEC-2026-3566 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-CVE-2026-54690 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-GHSA-954p-556p-r752 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-PYSEC-2026-3560 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-CVE-2026-54691 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-GHSA-rfr2-mq9m-x2qx exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-PYSEC-2026-3564 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-CVE-2026-55389 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-GHSA-8359-h9fx-j6v9 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-PYSEC-2026-3558 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-CVE-2026-55391 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-GHSA-vx7x-vcc2-c44g exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-PYSEC-2026-3565 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-CVE-2026-55415 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-GHSA-5578-w22f-pfx9 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-PYSEC-2026-3557 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
-
 # ---- protobuf 4.25.9, transformers 4.57.6: nemoskills' COMET env (/opt/comet) ------------
 # HIGH, fixed in protobuf 5.29.6 and transformers 5.3.0-5.10.0. unbabel-comet 2.2.7,
 # the last release, requires protobuf<5 and transformers<5 (nemoskills/

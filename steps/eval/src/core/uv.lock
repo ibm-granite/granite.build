@@ -320,6 +320,7 @@ constraints = [
     { name = "virtualenv", specifier = ">=21.14.13" },
 ]
 overrides = [
+    { name = "datamodel-code-generator", specifier = "==0.84.0" },
     { name = "nemo-evaluator-launcher", marker = "python_full_version < '3'" },
     { name = "nemo-run", marker = "python_full_version < '3'" },
     { name = "numpy", specifier = ">=2" },
@@ -799,12 +800,12 @@ name = "black"
 version = "26.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "mypy-extensions" },
-    { name = "packaging" },
-    { name = "pathspec" },
-    { name = "platformdirs" },
-    { name = "pytokens" },
+    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "mypy-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "packaging", marker = "sys_platform != 'emscripten'" },
+    { name = "pathspec", marker = "sys_platform != 'emscripten'" },
+    { name = "platformdirs", marker = "sys_platform != 'emscripten'" },
+    { name = "pytokens", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f8/65/a9611a6ec0a8c88d86e59385da02d68d9533f7e86a05913d20c67be54029/black-26.10.1.tar.gz", hash = "sha256:5f9f83beae62437e060dafd53d7f1fc327e3d3494f74d72ee5c2b73eb90fc4e7", size = 741979, upload-time = "2026-10-10T04:13:40.776Z" }
 wheels = [
@@ -1939,22 +1940,22 @@ wheels = [
 
 [[package]]
 name = "datamodel-code-generator"
-version = "0.25.7"
+version = "0.84.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
-    { name = "black" },
+    { name = "black", marker = "sys_platform != 'emscripten'" },
     { name = "genson" },
     { name = "inflect" },
-    { name = "isort" },
+    { name = "isort", marker = "sys_platform != 'emscripten'" },
     { name = "jinja2" },
-    { name = "packaging" },
-    { name = "pydantic", extra = ["email"], marker = "(python_full_version < '4' and extra == 'extra-13-granite-evals-bfcl') or (extra == 'extra-13-granite-evals-bfcl' and extra == 'extra-13-granite-evals-bird') or (extra == 'extra-13-granite-evals-bfcl' and extra == 'extra-13-granite-evals-ifbench') or (extra == 'extra-13-granite-evals-bfcl' and extra == 'extra-13-granite-evals-judged') or (extra == 'extra-13-granite-evals-bfcl' and extra == 'extra-13-granite-evals-nemoskills') or (extra == 'extra-13-granite-evals-bfcl' and extra == 'extra-13-granite-evals-swebench') or (extra == 'extra-13-granite-evals-bfcl' and extra == 'extra-13-granite-evals-tau') or (extra == 'extra-13-granite-evals-bfcl' and extra == 'extra-13-granite-evals-tbench') or (extra == 'extra-13-granite-evals-bird' and extra == 'extra-13-granite-evals-judged') or (extra == 'extra-13-granite-evals-bird' and extra == 'extra-13-granite-evals-swebench') or (extra == 'extra-13-granite-evals-bird' and extra == 'extra-13-granite-evals-tau') or (extra == 'extra-13-granite-evals-bird' and extra == 'extra-13-granite-evals-tbench') or (extra == 'extra-13-granite-evals-ifbench' and extra == 'extra-13-granite-evals-judged') or (extra == 'extra-13-granite-evals-ifbench' and extra == 'extra-13-granite-evals-swebench') or (extra == 'extra-13-granite-evals-ifbench' and extra == 'extra-13-granite-evals-tau') or (extra == 'extra-13-granite-evals-ifbench' and extra == 'extra-13-granite-evals-tbench') or (extra == 'extra-13-granite-evals-judged' and extra == 'extra-13-granite-evals-nemoskills') or (extra == 'extra-13-granite-evals-judged' and extra == 'extra-13-granite-evals-officeqa') or (extra == 'extra-13-granite-evals-judged' and extra == 'extra-13-granite-evals-swebench') or (extra == 'extra-13-granite-evals-judged' and extra == 'extra-13-granite-evals-tau') or (extra == 'extra-13-granite-evals-judged' and extra == 'extra-13-granite-evals-tbench') or (extra == 'extra-13-granite-evals-nemoskills' and extra == 'extra-13-granite-evals-swebench') or (extra == 'extra-13-granite-evals-nemoskills' and extra == 'extra-13-granite-evals-tau') or (extra == 'extra-13-granite-evals-nemoskills' and extra == 'extra-13-granite-evals-tbench') or (extra == 'extra-13-granite-evals-swebench' and extra == 'extra-13-granite-evals-tau') or (extra == 'extra-13-granite-evals-tau' and extra == 'extra-13-granite-evals-tbench')" },
+    { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/2e/e4622a10da4cd26bcbd7ad7acf5669c309331bf773073a38cba6c5cd81f8/datamodel_code_generator-0.25.7.tar.gz", hash = "sha256:975079cb3776f10a71d6aa9914b73149c3fdf4c71825b0977951a959fefc77f6", size = 86628, upload-time = "2024-06-11T17:16:13.189Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/64/4235e7e4e6ac6a6c76516f09cbb6a86269d7dc3891f2701a19478ea76693/datamodel_code_generator-0.84.0.tar.gz", hash = "sha256:bb3d44d8e4d89f2fc17c5af3f5b64eb662f46bdb10e4f126e62bd44e67d0d4bc", size = 5629988, upload-time = "2026-10-15T16:23:38.379Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/da/047d2e14ecc04000881ed5dabae9ac51591721bd9ff67d6e9742f474fc1b/datamodel_code_generator-0.25.7-py3-none-any.whl", hash = "sha256:0b890a0c2bfe8c250f1ddc9656fabeb85db289d4d497a616c19bd80db004dd9a", size = 108588, upload-time = "2024-06-11T17:15:09.567Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/b0/7af5ffc79e3dcd0925f1865b9902e5c0751383e73fe48435420e889c7cf3/datamodel_code_generator-0.84.0-py3-none-any.whl", hash = "sha256:b887be83ad9c810fbaca642622724eb02d0a4f0c857e0fc57829dbec53460adf", size = 1490627, upload-time = "2026-10-15T16:23:35.725Z" },
 ]
 
 [[package]]
