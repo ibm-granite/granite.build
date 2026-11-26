@@ -1354,7 +1354,8 @@ class TestSlurmExecutorEnv:
 # just before the train_dir change, and pin that nothing train_dir (or rollout_stop_file)
 # adds leaks into a render that does not set it. Regenerated since only for changes that
 # legitimately alter the no-train_dir render, each named in its commit: the shared
-# completeness rule in the watcher, and the move-aside's skip for seeded checkpoints.
+# completeness rule in the watcher, the move-aside's skip for seeded checkpoints, and the
+# watcher's backgrounded, killable sleep (the emit cases only).
 _GOLDEN = Path(__file__).resolve().parent / "golden_run_scripts.json"
 
 
@@ -1820,20 +1821,27 @@ class TestRolloutStopFile:
         }
 
         def run(script):
+            # The timeout is well under the watcher's 60 s poll interval. Its sleep used to
+            # run in the foreground, so cleanup_watcher's kill of the watcher subshell left
+            # the sleep alive, holding this pipe open for up to 60 s after the script had
+            # exited. Whether it was asleep yet when the script exited was a race, so this
+            # test hit its timeout only on a slow or loaded machine.
             return subprocess.run(
                 ["bash", "-c", "set -eu\n" + head + script],
                 env=env,
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=60,
+                timeout=30,
             )
 
         # Failing under the handshake's trap (mid-preparation), then under the
-        # watcher's (after it started).
+        # watcher's (after it started). `sleep 1` lets the watcher reach its own sleep
+        # first, so the case above is exercised every time, not only when the race is lost.
         seeding = body.replace('RESUME_HELD=""', 'exit 6\nRESUME_HELD=""', 1)
         assert seeding != body
-        for label, script in (("seed", seeding), ("watch", body + "exit 6\n")):
+        watching = body + "sleep 1\nexit 6\n"
+        for label, script in (("seed", seeding), ("watch", watching)):
             if stop.exists():
                 stop.unlink()
             result = run(script)

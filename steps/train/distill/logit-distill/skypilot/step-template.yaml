@@ -922,10 +922,20 @@ environment_configs:
               done
             }
 
+            # The sleep runs in the background and is waited on, with a TERM trap that
+            # kills it. A foreground sleep would outlive cleanup_watcher's kill of this
+            # subshell (the signal reaches the subshell, not its child) and hold the
+            # script's stdout and stderr open for up to CKPT_WATCH_INTERVAL after the
+            # script has exited. `wait` returns at once on a trapped signal.
             watch_checkpoints() {
+              _watch_sleep=""
+              trap '[ -n "$_watch_sleep" ] && kill "$_watch_sleep" 2>/dev/null; exit 0' TERM
               while true; do
                 emit_new_checkpoints
-                sleep "$CKPT_WATCH_INTERVAL"
+                sleep "$CKPT_WATCH_INTERVAL" &
+                _watch_sleep=$!
+                wait "$_watch_sleep" || true
+                _watch_sleep=""
               done
             }
 
