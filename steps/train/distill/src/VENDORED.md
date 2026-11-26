@@ -115,6 +115,12 @@ its docstring and pinned in
   probabilities unmerged: a shape `RuntimeError`, or a distance between unaligned
   positions. Such a row now contributes no loss, as on the hybrid path, and is counted.
 
+Because it reads start-1, a completion that starts at position 0 would have no predictor
+and would slice from the end of the row. Both ULD paths now raise `ValueError` on one
+(`CustomULDLoss._require_predictable_start`; on the hybrid path before every start-1 read).
+No layout this trainer builds puts a completion there, so the guard only catches a
+construction error.
+
 ## Local addition: refusing a ULD run that trains on nothing
 
 Skipping an unaligned row is right for the rare row and silent when the two renders

@@ -676,6 +676,8 @@ class CustomULDLoss(ULDLoss):
       `_alignment_rows`, and every one that yields no groups in `_alignment_unaligned`. The
       trainer's ULDAlignmentGuard drains both at each optimizer step, reduces them across
       ranks, and raises when a whole step, or too much of a window, trained on nothing.
+    - A completion that starts at position 0 has no logit predicting its first token; both
+      paths raise on it (`_require_predictable_start`).
     """
 
     def __init__(
@@ -1862,14 +1864,7 @@ class CustomULDLoss(ULDLoss):
             if student_size <= 0 or teacher_size <= 0:
                 distillation_losses.append(student_logits[i].sum() * 0.0)
                 continue
-            if student_start < 1 or teacher_start < 1:
-                # No logit predicts a completion that starts at position 0. Every layout this
-                # trainer builds has a prompt (the teacher crop keeps one position of it), so
-                # this is a construction error, not a data condition to degrade over.
-                raise ValueError(
-                    f"ULD row {i}: completion starts at position 0 (student {student_start}, "
-                    f"teacher {teacher_start}), so no logit predicts its first token"
-                )
+            self._require_predictable_start(i, student_start, teacher_start)
 
             # Fix 1: logits at start-1 .. start+size-2, so probs[k] predicts token_ids[k].
             student_probs = F.softmax(
@@ -1919,6 +1914,25 @@ class CustomULDLoss(ULDLoss):
             distillation_losses.append(aligned_loss / student_aligned.size(0))
 
         return self.distillation_weight * torch.stack(distillation_losses).mean()
+
+    @staticmethod
+    def _require_predictable_start(i, student_start, teacher_start, region=False):
+        """Raise unless both completions start at position 1 or later.
+
+        Both ULD paths read the logits at start-1 .. start+size-2, because logits[t] predict
+        token t + 1. A completion at position 0 has no predictor, and start-1 = -1 would
+        silently slice from the END of the row instead. Every layout this trainer builds has
+        a prompt: the collator's spans start after the response template or the rendered
+        prompt, the single-region teacher crop keeps `teacher_prompt_length - 1`, and the
+        per-turn teacher pack puts each region at block offset + 1. So this is a
+        construction error, not a data condition to degrade over.
+        """
+        if student_start < 1 or teacher_start < 1:
+            kind = "region" if region else "row"
+            raise ValueError(
+                f"ULD {kind} {i}: completion starts at position 0 (student {student_start}, "
+                f"teacher {teacher_start}), so no logit predicts its first token"
+            )
 
     def _merge_probabilities_with_alignment_groups(
         self, probs, alignment_groups, token_ids=None
@@ -2199,6 +2213,11 @@ class CustomULDLoss(ULDLoss):
                 opd_losses.append(student_logits[row].sum() * 0.0)
                 opd_token_counts.append(0)
                 continue
+            # Before every start-1 read below (the full-vocab softmax, the chunked region
+            # terms, the OPD slices). The scaffold trim above only moves a start forward.
+            self._require_predictable_start(
+                i, student_start, teacher_start, region=True
+            )
 
             # Logits at positions start-1 .. start+size-2: probs[k] predicts token_ids[k]
             # (includes first answer token, excludes prediction after EOS)

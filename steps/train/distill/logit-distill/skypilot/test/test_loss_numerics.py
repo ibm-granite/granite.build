@@ -713,6 +713,30 @@ class TestULDUnalignedRow:
         assert loss_fn._alignment_unaligned == 1
 
 
+class TestULDCompletionAtPositionZero:
+    """Both paths read the logits at start-1. A completion at position 0 has no logit
+    predicting its first token, and start-1 = -1 would slice from the end of the row, so
+    each path refuses it rather than scoring the wrong positions."""
+
+    @pytest.mark.parametrize("path", ["base", "hybrid"])
+    @pytest.mark.parametrize("side", ["student", "teacher"])
+    def test_raises(self, path, side):
+        s_c, t_c = S_ROWS[0][1], T_ROWS[0][1]
+        batch = _single_row(
+            s_c,
+            t_c,
+            seed=14,
+            s_prompt=() if side == "student" else (5,),
+            t_prompt=() if side == "teacher" else (7,),
+        )
+        first = "student 0" if side == "student" else "teacher 0"
+        loss_fn = _custom_uld(uld_use_hybrid_loss=(path == "hybrid"))
+        assert loss_fn.use_hybrid_loss is (path == "hybrid")
+        kind = "region" if path == "hybrid" else "row"
+        with pytest.raises(ValueError, match=f"ULD {kind} 0: .*{first}"):
+            loss_fn(**batch)
+
+
 def _counts(unaligned, rows):
     """A stand-in for the loss object's two rank-local counters, which is all the guard
     reads."""
