@@ -91,7 +91,9 @@ Used when `GBSERVER_DEFAULT_BUILDRUNNER_TYPE=job`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GBSERVER_GITHUB_TOKEN` (aka `GBSERVER_DEFAULT_GITHUB_TOKEN`) | `` | GHE token (falls back to `GITHUB_TOKEN`). |
+| `GBSERVER_GITHUB_TOKEN` (aka `GBSERVER_DEFAULT_GITHUB_TOKEN`) | `` | GHE token (falls back to `GITHUB_TOKEN`). Also the service token for git over https to `GB_GH_DOMAIN`, unless `GBSERVER_GIT_TOKEN_<HOST>` is set for it. |
+| `GBSERVER_GIT_TOKEN_<HOST>` | `` | Service token for git over https to one host. `<HOST>` is the hostname in upper case with every other character replaced by `_`, e.g. `GBSERVER_GIT_TOKEN_GITHUB_COM`, `GBSERVER_GIT_TOKEN_GIT_EXAMPLE_COM`. Each host's token is sent to that host only. |
+| `GBSERVER_GIT_TRANSPORT` | `ssh_then_https` | Unset or empty means the default. How server-side clones of `git+ssh://` URIs (space, step `uri`, `base_uris`, `validator_uri`, monitors) connect. `ssh_then_https`: try ssh, and clone over https if it fails. `https`: skip ssh. `ssh`: ssh only. A clone that falls back logs a warning. Over https, the host's service token is tried first, then the build's `GIT_TOKEN_<HOST>` secret (a user secret overrides a space secret), then anonymous access. |
 | `GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT` | `60` | GitHub request timeout (seconds). |
 | `GITHUB_API_MAX_RETRIES` / `_RETRY_BASE_DELAY` / `_RETRY_MAX_DELAY` | `10` / `1.0` / `60.0` | GitHub API retry policy. |
 | `BUILD_GIT_MAX_CONSECUTIVE_FAILURES` / `BUILD_GIT_OPERATION_DEADLINE` | `3` / `120` | A build's PR and PR messages are optional: if the PR is never created, the rest of the build runs without it. Each git clone, pull or push for the PR is killed after the deadline (seconds; API calls have `GBSERVER_DEFAULT_GH_REQUEST_TIMEOUT`), and retries stop at it. After this many consecutive failures the rest of that build run, in-place retries included, skips them (a build that started without a PR stays without one). |

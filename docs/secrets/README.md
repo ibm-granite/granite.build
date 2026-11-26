@@ -51,6 +51,14 @@ name**. Examples from `environment.yaml`:
 
 Per-user secrets (when supported) are merged over space secrets by the space at fetch time.
 
+**Git tokens.** When gbserver clones a repo over https (a `git+https://` URI, or a `git+ssh://` URI
+falling back to https, see `GBSERVER_GIT_TRANSPORT` in
+[environment-variables.md](../configuration/environment-variables.md#github--git)), it tries the
+deployment's token for the host first, then a secret named `GIT_TOKEN_<HOST>`. `<HOST>` is the
+hostname in upper case with every other character replaced by `_`: `GIT_TOKEN_GITHUB_COM`,
+`GIT_TOKEN_GIT_EXAMPLE_COM`. Add one as a user or space secret when the deployment's token can't
+read a repo your build uses.
+
 ## Security
 
 Keep secret **names** — not values — in any git-tracked asset (`environment.yaml`, `build.yaml`). The

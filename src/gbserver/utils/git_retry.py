@@ -84,10 +84,15 @@ NON_RETRYABLE_ERROR_PATTERNS = [
     "invalid credentials",
     "http 401",
     "http 403",
+    "returned error: 401",
+    "returned error: 403",
     "fatal: authentication failed",
+    "could not read username",
+    "terminal prompts disabled",
     # Repository not found
     "repository not found",
     "http 404",
+    "returned error: 404",
     "could not read from remote repository",
     "fatal: repository",
     # Invalid configuration
