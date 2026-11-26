@@ -97,8 +97,16 @@ $${ MIN_COMPLETION_LENGTH_must_be_empty_or_0_when_LMBDA_MODE_is_off_policy }
 # only once the allocation is up). Refused here rather than set for you, because it
 # changes which turns are supervised: the final assistant turn only.
 <%- set ULD = LOSS_ARM | string | trim | lower == "uld" %>
-<%- if ULD and (LAST_MESSAGE_ONLY | string | trim | lower) not in YES %>
+<%- set LMO = (LAST_MESSAGE_ONLY | string | trim | lower) in YES %>
+<%- if ULD and not LMO %>
 $${ LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld }
+<%- endif %>
+# The sampled-OPD loss has the same requirement (the step's renderer and the trainer's
+# config both refuse it without), whether it is named as LOSS_ARM sampled_opd or switched
+# on by USE_SAMPLED_OPD_LOSS.
+<%- set SOPD = LOSS_ARM | string | trim | lower == "sampled_opd" or (USE_SAMPLED_OPD_LOSS | string | trim | lower) in YES %>
+<%- if SOPD and not LMO %>
+$${ LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss }
 <%- endif %>
 # ── CKPT_LADDER, checked once ──────────────────────────────────────────────
 # Every rung binds a checkpoint the trainer emits MID-RUN. A rung it never

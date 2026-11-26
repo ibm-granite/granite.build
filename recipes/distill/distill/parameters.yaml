@@ -182,7 +182,8 @@ TOP_P: 0.95
 # The sampled-OPD (REINFORCE-style) loss is a different objective; off.
 USE_SAMPLED_OPD_LOSS: false
 # Supervise the final assistant turn only. Required true by LOSS_ARM uld (in every
-# mode) and by the sampled-OPD loss; otherwise read on-policy only.
+# mode) and by the sampled-OPD loss (LOSS_ARM sampled_opd or USE_SAMPLED_OPD_LOSS); the
+# render fails without it. Otherwise read on-policy only.
 LAST_MESSAGE_ONLY: false
 CLIP_ALPHA: 0.1
 OPD_IMPORTANCE_SAMPLING: false
