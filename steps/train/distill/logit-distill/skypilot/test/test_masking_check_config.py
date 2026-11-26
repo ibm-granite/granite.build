@@ -113,7 +113,85 @@ def test_a_named_uld_arm_takes_no_exemption(mode, lmo):
     (problem,) = _lmo_problems(cfg)
     assert "loss_arm uld requires last_message_only: true" in problem
     assert problem.endswith("; render_gold_config.py refuses it at render.")
-    assert masking.check_config(_DOC, {**cfg, "last_message_only": True}) == []
+
+
+# check-config against CustomGOLDConfig and the renderer, for every ULD form, mode and
+# last_message_only. The verdict is whether the run would start: the renderer must accept a
+# named arm (it requires last_message_only: true for `loss_arm: uld`), and CustomGOLDConfig
+# must accept the config the trainer gets. Per-turn regions also need the hybrid loss
+# (CustomGOLDConfig refuses them without), which is set so that only last_message_only varies.
+_ULD_MODES = {
+    "none": {},
+    "rebuild": {"uld_rebuild_student_input_with_teacher_template": True},
+    "reuse": {"uld_reuse_student_input": True},
+    "per-turn": {"uld_per_turn_regions": True, "uld_use_hybrid_loss": True},
+}
+_LMO_VALUES = {"unset": None, "false": False, "true": True}
+# (form, mode) -> the last_message_only values that start a run.
+_STARTS_WITH = {
+    ("switch", "none"): {"true"},
+    ("switch", "rebuild"): {"unset", "false", "true"},
+    ("switch", "reuse"): {"unset", "false", "true"},
+    ("switch", "per-turn"): {"unset", "false"},
+    ("named", "none"): {"true"},
+    ("named", "rebuild"): {"true"},
+    ("named", "reuse"): {"true"},
+    (
+        "named",
+        "per-turn",
+    ): set(),  # the renderer needs true, CustomGOLDConfig refuses it
+}
+_ULD_MATRIX = [
+    (form, mode, lmo)
+    for form in ("switch", "named")
+    for mode in _ULD_MODES
+    for lmo in _LMO_VALUES
+]
+
+
+def _uld_cfg(form, mode, lmo):
+    cfg = {"response_template": _TEMPLATE, **_ULD_MODES[mode]}
+    cfg.update({"use_uld_loss": True} if form == "switch" else {"loss_arm": "uld"})
+    if _LMO_VALUES[lmo] is not None:
+        cfg["last_message_only"] = _LMO_VALUES[lmo]
+    return cfg
+
+
+@pytest.mark.parametrize("form, mode, lmo", _ULD_MATRIX)
+def test_check_config_passes_exactly_the_uld_configs_that_start(form, mode, lmo):
+    problems = masking.check_config(_DOC, _uld_cfg(form, mode, lmo))
+    if lmo in _STARTS_WITH[(form, mode)]:
+        assert problems == []
+    else:
+        (problem,) = problems
+        assert "last_message_only" in problem
+
+
+@pytest.mark.parametrize("form, mode, lmo", _ULD_MATRIX)
+def test_the_table_is_what_the_renderer_and_custom_gold_config_decide(
+    tmp_path, form, mode, lmo
+):
+    """_STARTS_WITH, checked against the two real gates: the renderer's LOSS_ARMS rule
+    for a named arm, and CustomGOLDConfig.__post_init__ on what the trainer receives."""
+    pytest.importorskip("trl")
+    from gb_steps_post_training.distillation.custom_gold_config import (
+        CustomGOLDConfig,
+    )
+
+    value = _LMO_VALUES[lmo]
+    starts = True
+    if form == "named":
+        need = rgc.LOSS_ARMS["uld"]["requires"]["last_message_only"]
+        starts = value is need
+    kw = dict(output_dir=str(tmp_path), report_to=[], use_cpu=True, use_uld_loss=True)
+    kw.update(_ULD_MODES[mode])
+    if value is not None:
+        kw["last_message_only"] = value
+    try:
+        CustomGOLDConfig(**kw)
+    except ValueError:
+        starts = False
+    assert starts is (lmo in _STARTS_WITH[(form, mode)])
 
 
 @pytest.mark.parametrize("arm", _REQUIRING)

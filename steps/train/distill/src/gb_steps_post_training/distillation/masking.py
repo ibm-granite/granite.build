@@ -472,14 +472,16 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
             f"on this student implies {want!r}. The config was not derived from the template it "
             "will train against."
         )
-    arm, named = _arm_requiring_last_message_only(cfg)
+    arm, named, required = _arm_requiring_last_message_only(cfg)
     lmo = cfg.get("last_message_only")
     if arm is not None:
         # The positional split IS this arm's masking policy, so true is the contract and
         # anything else -- false, unset, or a non-boolean like the string "true", which the
         # trainer's parser would not read as the boolean -- is the problem: the rule
-        # render_gold_config.py and CustomGOLDConfig.__post_init__ both enforce.
-        if lmo is not True:
+        # render_gold_config.py and CustomGOLDConfig.__post_init__ both enforce. A ULD mode
+        # that does not need it (`_uld_exempt`) takes either value, and true is not the
+        # scan bypass below either: CustomGOLDConfig accepts it.
+        if required and lmo is not True:
             given = "unset (the trainer's default, false)" if lmo is None else repr(lmo)
             if not named:
                 refused_by = "CustomGOLDConfig refuses it at startup"
@@ -496,6 +498,12 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
                 "Without it the collator labels every assistant turn while the arm "
                 f"supervises only the last; {refused_by}."
             )
+        if arm == "uld" and lmo is True and cfg.get("uld_per_turn_regions") is True:
+            problems.append(
+                "uld_per_turn_regions is incompatible with last_message_only: true: the "
+                "per-turn teacher has one region per assistant turn, and the collator would "
+                "label the last one only; CustomGOLDConfig refuses it at startup."
+            )
     elif lmo is True:
         problems.append(
             "last_message_only: true bypasses the response_template scan entirely "
@@ -505,9 +513,10 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
     return problems
 
 
-def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool]:
+def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool, bool]:
     """The loss arm in `cfg` whose render_gold_config.py LOSS_ARMS entry requires
-    last_message_only: true, and whether `cfg` names it as `loss_arm`; (None, False) if none.
+    last_message_only: true, whether `cfg` names it as `loss_arm`, and whether the
+    requirement holds for this config; (None, False, False) if there is no such arm.
 
     Read either from `loss_arm` (a step's gold_config block) or from the switch the arm
     renders (a rendered gold config has no `loss_arm` key): `use_uld_loss` for uld,
@@ -521,12 +530,12 @@ def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool]:
     """
     arm = cfg.get("loss_arm")
     if arm in ("sampled_opd", "uld"):
-        return arm, True
-    if cfg.get("use_uld_loss") is True and not _uld_exempt(cfg):
-        return "uld", False
+        return arm, True, True
+    if cfg.get("use_uld_loss") is True:
+        return "uld", False, not _uld_exempt(cfg)
     if cfg.get("use_sampled_opd_loss") is True:
-        return "sampled_opd", False
-    return None, False
+        return "sampled_opd", False, True
+    return None, False, False
 
 
 def _uld_exempt(cfg: dict) -> bool:
