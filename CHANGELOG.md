@@ -524,6 +524,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `sampled_opd` instead of reporting it.
   - Separately, the checkpoint watcher's `sleep` no longer holds rank 0's output open for
     up to 60 s after the script exits.
+- **distill: ULD edge cases off the logit-distill step's path (#781).** None of the trainer
+  changes is reachable through that step, whose renderer exposes no `uld_*` option; they
+  matter for `gold.py` run with a hand-written config.
+  - A ULD completion at position 0 no longer raises `ValueError` in the loss, on the one
+    rank whose row it is, which left the other ranks waiting in backward's collective until
+    the NCCL timeout. The loss skips the row and counts it, and the alignment guard raises
+    `RuntimeError` at the optimizer step on every rank together, whatever
+    `uld_max_unaligned_fraction` is.
+  - `uld_reuse_student_input` at a batch above 1 cropped the teacher at the batch's longest
+    prompt, which cut into any row whose completion starts earlier. It now crops at the
+    earliest completion, so every row's completion is kept whole.
+  - `CustomGOLDConfig` and `masking.py check-config` no longer refuse
+    `uld_rebuild_student_input_with_teacher_template` without `last_message_only: true`:
+    that mode rebuilds the student's labels from the teacher's last-turn texts. And
+    check-config applies its ULD exemptions to `use_uld_loss` only, not to a named
+    `loss_arm: uld`, which the step's renderer refuses without `last_message_only: true` in
+    every case.
+  - The distill recipe refuses `USE_SAMPLED_OPD_LOSS=true` and `LOSS_ARM=sampled_opd` with
+    `LMBDA_MODE=off-policy` before submission. Off-policy the switch was dropped, and the
+    run trained plain JSD.
 - **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
   longer share a pull dir (#715).** `<cache>/<owner>/<repo>/<revision>` ignored all three, so a
   model and a same-named dataset overwrote each other's files, two paths of one bucket synced into
