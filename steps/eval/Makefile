@@ -98,10 +98,10 @@ define scan-image
 	$(check-severity)
 	@$(DOCKER) image exists $(1) 2>/dev/null || $(DOCKER) image inspect $(1) >/dev/null 2>&1 || { echo "[scan] $(1) is not in local storage: build it first" >&2; exit 1; }
 	@mkdir -p "$(SCAN_CACHE)/trivy"
-	@tar="$(SCAN_CACHE)/$(2)-$(IMAGE_VERSION).tar"; rm -f "$$tar"; \
+	@$(call gen-ignore,$(2)); \
+	tar="$(SCAN_CACHE)/$(2)-$(IMAGE_VERSION).tar"; rm -f "$$tar"; \
 	echo "[scan] saving $(1)"; \
 	$(DOCKER) save -o "$$tar" $(1) || { rm -f "$$tar"; exit 1; }; \
-	$(call gen-ignore,$(2)); \
 	t() { $(DOCKER) run --rm -v "$$tar:/scan/image.tar:ro,Z" -v "$(SCAN_CACHE)/trivy:/root/.cache/trivy:Z" \
 		$${ign:+-v "$$ign:/scan/ignore.yaml:ro,Z"} $(TRIVY_IMAGE) image --quiet --input /scan/image.tar --scanners vuln --timeout $(TRIVY_TIMEOUT) \
 		$${ign:+--ignorefile /scan/ignore.yaml} "$$@"; }; \
@@ -162,11 +162,11 @@ endef
 publish-images: $(if $(filter true,$(SKIP_SCAN)),,scan-images)
 	$(require_registry)
 	$(call check-all-absent,$(ALL_REFS))
-	@$(MAKE) --no-print-directory $(addprefix push-image-,$(FAMILIES)) $(addprefix push-image-cpu-,$(CPU_FAMILIES))
+	@$(MAKE) --no-print-directory IMAGE_VERSION=$(IMAGE_VERSION) $(addprefix push-image-,$(FAMILIES)) $(addprefix push-image-cpu-,$(CPU_FAMILIES))
 publish-images-cpu: $(if $(filter true,$(SKIP_SCAN)),,scan-images-cpu)
 	$(require_registry)
 	$(call check-all-absent,$(CPU_REFS))
-	@$(MAKE) --no-print-directory $(addprefix push-image-cpu-,$(CPU_FAMILIES))
+	@$(MAKE) --no-print-directory IMAGE_VERSION=$(IMAGE_VERSION) $(addprefix push-image-cpu-,$(CPU_FAMILIES))
 
 # push-image-<family> / push-image-cpu-<family>: the push alone, tag guard included,
 # for publish-images after its scans. Run publish-image-* to scan and push one image.
