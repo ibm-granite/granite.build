@@ -757,7 +757,42 @@ $(VENVDIR): pyproject.toml
 	${PIP} install -e '$(VENV_INSTALL_TARGET)'
 	@test -x $(VENVDIR)/bin/gbserver ||					\
 		{ echo "venv install failed: $(VENVDIR)/bin/gbserver missing" >&2; exit 1; }
+	@# Only a hint: the git hook is opt-in (see pre-commit-install below).
+	@if [ -z "$$CI" ] && [ -d .git ] && [ ! -e .git/hooks/pre-commit ]; then \
+		echo "Hint: run 'make pre-commit-install' once to enable the git pre-commit hooks (see CONTRIBUTING.md)"; \
+	fi
 	echo '$(if $(VENV_USE_ARTIFACTORY),ibm,standalone)' > $(VENV_FLAVOR_FILE)
+
+# One-time, opt-in: register the git pre-commit hook (.pre-commit-config.yaml).
+# Deliberately not part of the $(VENVDIR) rule: the hook embeds the absolute path of the
+# Python that runs pre-commit, and that rule deletes and recreates $(VENVDIR) whenever
+# pyproject.toml changes, which would leave the hook pointing at a missing interpreter.
+# Git worktrees share one .git/hooks, so the hook is installed only from the main
+# checkout (.git is a directory). When CI is set, or core.hooksPath is set (pre-commit
+# refuses to install then), it prints a message and exits 0.
+# Prefers a pre-commit on PATH (pipx / uv tool install) over $(VENVDIR)/bin/pre-commit.
+.PHONY: pre-commit-install
+pre-commit-install:
+	@if [ -n "$$CI" ]; then \
+		echo "CI is set; not installing the git pre-commit hook"; exit 0; \
+	fi; \
+	if [ ! -d .git ]; then \
+		echo "Not the main checkout of a git repository (.git is not a directory); run 'make pre-commit-install' from the main checkout"; exit 0; \
+	fi; \
+	if git config --get core.hooksPath >/dev/null 2>&1; then \
+		echo "core.hooksPath is set, so 'pre-commit install' would refuse to run; unset it or install the hook manually"; exit 0; \
+	fi; \
+	if command -v pre-commit >/dev/null 2>&1; then \
+		pc=$$(command -v pre-commit); \
+	elif [ -x $(VENVDIR)/bin/pre-commit ]; then \
+		pc=$(CURDIR)/$(VENVDIR)/bin/pre-commit; \
+	else \
+		echo "pre-commit not found; install it with 'pipx install pre-commit' or 'uv tool install pre-commit' (or run 'make venv')" >&2; exit 1; \
+	fi; \
+	case "$$pc" in \
+		*/$(VENVDIR)/*) echo "NOTE: $$pc lives in $(VENVDIR); the hook stops working while $(VENVDIR) is rebuilt or deleted. Prefer 'pipx install pre-commit' or 'uv tool install pre-commit'." ;; \
+	esac; \
+	"$$pc" install
 
 gbcli:
 	source $(VENVDIR)/bin/activate &&	\
