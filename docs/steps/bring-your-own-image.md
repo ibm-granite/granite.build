@@ -140,4 +140,4 @@ gb build log <build-id> --all
 - [Bring Your Own Step](bring-your-own-step.md) — custom code from a Git repo
 - [Custom code steps](custom-code-steps.md) — inline commands without images
 - [Steps overview](README.md) — all step types
-- [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema
+- [`build.yaml` specification](../builds/build-yaml-specification.md) — full schema

@@ -128,13 +128,30 @@ inputs:
 ```
 
 In the launcher's `run` (or `setup`, `envs`, `file_mounts`), refer to an input by the
-name the step declares:
+name the step declares. Every target input is resolved before the step starts, whether it
+is a direct `uri` or a `binding`, and appears in `bindings` under its input name:
 
 | Input | Expression |
 |-------|------------|
 | A path input (model, dataset, fileset) | `{{ bindings.model.binding.path }}` |
 | A `mem://` value input (a server URL, a cluster name) | `{{ bindings.vllm.binding.state }}` |
 | An optional input | `{% if bindings.tokenizer is defined %}…{% endif %}`, or `bindings.tokenizer.binding.path if bindings.tokenizer is defined else ""` |
+
+A step written this way needs nothing from the build.yaml except target inputs with the
+declared names. For example, a SkyPilot launcher that reads the `model` and `tokenizer`
+inputs declared above:
+
+```yaml
+environment_configs:
+  Skypilot:
+    launchers:
+      main:
+        type: skypilot
+        config:
+          run: |
+            python serve.py --model "{{ bindings.model.binding.path }}" \
+              --tokenizer "{{ bindings.tokenizer.binding.path if bindings.tokenizer is defined else '' }}"
+```
 
 - **Launcher config is rendered strictly.** An unbound optional input raises an error, it
   doesn't render as empty, so always guard it. Treat "not bound" as "not provided".
@@ -156,6 +173,19 @@ name the step declares:
   a key that is still set alongside it gets a warning too.
   Make it required in a later release.
 
+### Producing outputs
+
+A step produces an output by printing an **artifact marker** in its log. The step's monitor
+matches the marker, registers the artifact, and binds it to the target output named by the ID:
+
+```text
+GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:out/checkpoint-final      # filesystem artifact
+GB_ARTIFACT_ID:server_url GB_ARTIFACT_STATE:http://node12:8000      # mem:// value
+```
+
+The full marker convention, and which monitors recognize each form, is in
+[Monitoring and artifact events](monitoring-and-artifact-events.md#the-gb_artifact_-marker-convention).
+
 ## Step configuration in build.yaml
 
 The `config` block in a step entry is merged with the step's own defaults:
@@ -172,7 +202,7 @@ steps:
         learning_rate: 2e-5
 ```
 
-See the [`build.yaml` reference](../builds/build-yaml-reference.md#steps)
+See the [`build.yaml` specification](../builds/build-yaml-specification.md#ii4-steps)
 for the full set of fields.
 
 ## Extending with custom steps
@@ -214,5 +244,5 @@ for the full cross-environment reference.
 - [Monitoring and artifact events](monitoring-and-artifact-events.md) — how a step captures its outputs by parsing workload logs
 - [bash environment](../environments/bash.md) — how bash steps execute (inputs, config, outputs)
 - [Templates](../templates/README.md) — reusable build.yaml patterns
-- [`build.yaml` reference](../builds/build-yaml-reference.md) — full schema
+- [`build.yaml` specification](../builds/build-yaml-specification.md) — full schema
 - [`environment.yaml` reference](../environments/README.md) — environment definitions

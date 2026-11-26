@@ -178,7 +178,7 @@ llm.build:
         - step_uri: space://steps/my-eval
 ```
 
-For the full schema, see [`docs/builds/build-yaml-reference.md`](docs/builds/build-yaml-reference.md).
+For the full schema, see [`docs/builds/build-yaml-specification.md`](docs/builds/build-yaml-specification.md).
 
 ## Repository layout
 
@@ -380,7 +380,7 @@ still has to click through — never a direct mutation.
 
 The [`docs/`](docs/) directory has complete reference material. Three reading paths from the [docs index](docs/README.md):
 
-- **Writing a build** → [`build.yaml` reference](docs/builds/build-yaml-reference.md), [CLI reference](docs/cli/gb-cli-reference.md), [HuggingFace push](docs/builds/hf-push.md), [build features](docs/builds/README.md#advanced) (retry, target reuse, lineage), [gbtest](docs/cli/gbtest-cli-reference.md).
+- **Writing a build** → [`build.yaml` specification](docs/builds/build-yaml-specification.md), [CLI reference](docs/cli/gb-cli-reference.md), [HuggingFace push](docs/builds/hf-push.md), [build features](docs/builds/README.md#advanced) (retry, target reuse, lineage), [gbtest](docs/cli/gbtest-cli-reference.md).
 - **Running gbserver** → [environments](docs/environments/README.md), [configuration](docs/configuration/README.md), [REST API](docs/rest-api/README.md), [troubleshooting](docs/help/troubleshooting.md).
 - **Changing gbserver** → [architecture diagram](docs/architecture/arch-diagram.md), [environment classes](docs/architecture/environment-classes.md).
 
