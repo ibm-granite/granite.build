@@ -428,7 +428,10 @@ gradient and still checkpoints and reports success. So the trainer sums, over ev
 rows that reached alignment and the ones that did not, at every optimizer step, and fails the
 run with a `RuntimeError` in two cases.
 
-When every row of an optimizer step is unaligned, before the optimizer applies the step:
+When every row of an optimizer step is unaligned. The check runs at the optimizer step
+(`on_pre_optimizer_step`). Under this step's DeepSpeed ZeRO-3, accelerate's backward has
+already run `engine.step()` by then, so the run takes that step's update, with zero
+gradient, once. The raise then stops the run before the step is counted or saved:
 
 ```
 RuntimeError: ULD step <n>: all <rows> rows that reached alignment, across all ranks, yielded no alignment groups, so this step computed no loss at all. ...
@@ -441,9 +444,11 @@ unaligned. The final, partial window is judged when training ends:
 RuntimeError: ULD steps <a>-<b>: <u> of <r> rows (<pct>) yielded no alignment groups and contributed no loss, more than uld_max_unaligned_fraction=0.5. ...
 ```
 
-Every log line carries the counts since the previous line, summed over ranks:
+A log line carries the counts since the previous line, summed over ranks:
 `train/alignment_rows`, `train/alignment_unaligned_rows` and
-`train/alignment_unaligned_rate`. On aligned data the rate is 0, or close to it. The
+`train/alignment_unaligned_rate`. It carries them only when at least one row reached
+alignment since the previous line. A row reaches alignment when it has a completion on both
+sides. On aligned data the rate is 0, or close to it. The
 known systematic cause, `last_message_only: false`, is refused before the run starts (see
 the `uld` row above), so the refusal is a backstop for causes nobody has met yet. If it
 fires, set `ULD_DEBUG=1` to print the first batch's spans.

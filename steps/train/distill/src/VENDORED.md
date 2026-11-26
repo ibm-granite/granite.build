@@ -125,8 +125,14 @@ dispatches exactly that case to the hybrid path, so the branch was unreachable h
 Because it reads start-1, a completion that starts at position 0 would have no predictor
 and would slice from the end of the row. Both ULD paths now raise `ValueError` on one
 (`CustomULDLoss._require_predictable_start`; on the hybrid path before every start-1 read).
-No layout this trainer builds puts a completion there, so the guard only catches a
-construction error.
+The layouts the logit-distill step builds never put a completion there: the collator's spans
+start after the response template or the prompt, and the single-region teacher crop keeps
+`teacher_prompt_length - 1`. One mode the step cannot reach can: `uld_reuse_student_input`
+with a batch larger than 1. The collator left-pads, and the crop then uses the batch's
+longest prompt, so a row whose completion starts earlier is cut into, and its labels can
+start at position 0. That mis-crop is older than this guard; the guard turns it from a wrong
+slice into a ValueError. `_require_predictable_start`'s docstring still says no layout can
+do this. It is an image input, so it is left as it is, and the follow-up issue records it.
 
 ## Local addition: refusing a ULD run that trains on nothing
 
