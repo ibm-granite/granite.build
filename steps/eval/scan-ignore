@@ -37,9 +37,12 @@
 # benchmark number and is its own change, not a security bump. Not reachable: all four
 # are in multimodal processing (mm_processor_kwargs code_revision RCE and DoS, the
 # multimodal shared-memory handle reaching pickle.loads, EPS image decoding through
-# Ghostscript). The eval steps serve a text model on 127.0.0.1 inside the job
-# (granite_evals/serving.py), and its only caller is the harness, sending the pinned
-# benchmarks' text prompts. Issue: #768 (the vLLM uplift, which re-baselines the evals).
+# Ghostscript). The eval steps serve a text-only model on 127.0.0.1 inside the job
+# (granite_evals/serving.py), and the harness sends it the pinned benchmarks' text
+# prompts, never an image or other media. 127.0.0.1 keeps other hosts out, not other
+# processes on the same node: "the harness is the only client" assumes the node runs no
+# other user's job, which holds on an exclusive allocation and is the residual risk on
+# a shared one. Issue: #768 (the vLLM uplift, which re-baselines the evals).
 # Until 2027-05-31.
 CVE-2026-114053 exp:2027-05-31 pkg:pypi/vllm@0.27.1
 GHSA-h3rc-6mm3-gc2m exp:2027-05-31 pkg:pypi/vllm@0.27.1
@@ -290,15 +293,18 @@ PYSEC-2026-3929 exp:2027-05-31 pkg:pypi/transformers@4.57.6
 # 0.27.1 source and the steps' server: granite_evals/serving.py starts `vllm serve
 # <checkpoint> --host 127.0.0.1` with tool and reasoning parsers, plus the step's
 # vllm_args, which default to empty and which no recipe under recipes/evals sets. The
-# harness in the same job is its only client, sending the pinned benchmarks' text
-# prompts. None is reachable there:
+# harness in the same job is its only client (on a node no other job shares; see the
+# first vllm section), sending the pinned benchmarks' text prompts. None is reachable
+# there:
 # - PYSEC-2026-3985: LlavaOnevision2's processor loader ignores trust_remote_code=False.
-#   Needs a LlavaOnevision2 checkpoint; the steps serve the build's own text checkpoint,
-#   already with --trust-remote-code.
+#   Needs a LlavaOnevision2 checkpoint, a multimodal one; the steps serve the build's
+#   own text-only checkpoint.
 # - PYSEC-2026-3996, -4004, -4005, -4008 (prefill/decode disaggregation, the NIXL
 #   connector) and -4006 (OffloadingConnector's P2P tier): all go through a KV
-#   connector, which the scheduler creates only with --kv-transfer-config
-#   (vllm/v1/core/sched/scheduler.py); the server is never given one.
+#   connector. The scheduler creates one only when a KV transfer config is set
+#   (vllm/v1/core/sched/scheduler.py), which takes --kv-transfer-config or
+#   --kv-offloading-size (that one creates an OffloadingConnector config,
+#   vllm/config/vllm.py). The server is given neither.
 # - PYSEC-2026-3997: negative token ids on /v1/embeddings and /pooling. Those routes are
 #   registered only for pooling models (vllm/entrypoints/openai/api_server.py); the
 #   steps serve generative ones.
@@ -309,7 +315,9 @@ PYSEC-2026-3929 exp:2027-05-31 pkg:pypi/transformers@4.57.6
 # - PYSEC-2026-4325: the Rust frontend's metrics middleware. The Rust frontend runs only
 #   with VLLM_USE_RUST_FRONTEND=1 (vllm/envs.py), which nothing sets.
 # - PYSEC-2026-4353: inconsistent multimodal metadata on /inference/v1/generate crashes
-#   Qwen2.5-VL's position code. Needs a Qwen2.5-VL model and a multimodal request.
+#   Qwen2.5-VL's position code. That route is served by default for every generative
+#   model (vllm/entrypoints/scale_out), so it is open here, but the crash needs a
+#   Qwen2.5-VL model and a multimodal request.
 # - PYSEC-2026-4361: MOSS-Audio's per-mm_processor_kwargs processor cache. Only the
 #   MossAudioModel architecture.
 # - PYSEC-2026-4362: cache-key collisions through an image's EXIF ImageID or a
