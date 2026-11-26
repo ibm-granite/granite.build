@@ -15,6 +15,8 @@
  */
 import { apiBase, createApiClient } from './client'
 import { isLaterAttempt } from './targetAttempts'
+import axios from 'axios'
+import { isBuildId, nameContainsWildcard } from '../lib/buildSearch'
 import type {
   Build,
   BuildStatus,
@@ -305,6 +307,8 @@ export interface ListBuildsParams {
   sort?: string
   page_index?: number
   page_size?: number
+  /** Build name: exact, or a case-insensitive match if it contains a `*` wildcard. */
+  name?: string
 }
 
 export interface BuildListResult {
@@ -324,6 +328,7 @@ export async function listBuilds(params: ListBuildsParams): Promise<BuildListRes
   if (params.page_index != null) qp.set('page_index', String(params.page_index))
   if (params.page_size)   qp.set('page_size', String(params.page_size))
   for (const tag of params.tags ?? []) qp.append('tag', tag)
+  if (params.name)        qp.set('name', params.name)
 
   const [{ data }, total] = await Promise.all([
     client.get<{ builds: Record<string, unknown>[]; total?: number; count?: number }>(
@@ -334,6 +339,7 @@ export async function listBuilds(params: ListBuildsParams): Promise<BuildListRes
       username: params.username,
       status: params.status,
       tags: params.tags,
+      name: params.name,
     }),
   ])
   const items = (data.builds ?? []).map(adaptBuild)
@@ -342,14 +348,35 @@ export async function listBuilds(params: ListBuildsParams): Promise<BuildListRes
   return { items, total: resolvedTotal, page: (params.page_index ?? 0) + 1, page_size: pageSize }
 }
 
-export async function getBuildCount(params: Pick<ListBuildsParams, 'space_name' | 'username' | 'status' | 'tags'>): Promise<number> {
+export async function getBuildCount(params: Pick<ListBuildsParams, 'space_name' | 'username' | 'status' | 'tags' | 'name'>): Promise<number> {
   const qp = new URLSearchParams()
   if (params.space_name) qp.set('space_name', params.space_name)
   if (params.username)   qp.set('username', params.username)
   for (const s of Array.isArray(params.status) ? params.status : params.status ? [params.status] : []) qp.append('status', s.toUpperCase())
   for (const tag of params.tags ?? []) qp.append('tag', tag)
+  if (params.name)       qp.set('name', params.name)
   const { data } = await client.get<{ count: number }>(`/builds/count?${qp.toString()}`)
   return data.count ?? 0
+}
+
+/**
+ * Search builds by `term`: names containing it (case-insensitive, via gbserver's
+ * `name` wildcard), one page at a time. A term shaped like a build id is first
+ * looked up directly, since ids aren't part of the name; if there is no such
+ * build, or it isn't visible to the caller, the name search runs instead. The
+ * id lookup returns that one build regardless of the other filters.
+ */
+export async function searchBuilds(params: ListBuildsParams, term: string): Promise<BuildListResult> {
+  if (isBuildId(term)) {
+    try {
+      const build = await getBuild(term.trim())
+      return { items: [build], total: 1, page: 1, page_size: params.page_size ?? 1 }
+    } catch (err) {
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined
+      if (status !== 404 && status !== 403) throw err
+    }
+  }
+  return listBuilds({ ...params, name: nameContainsWildcard(term) })
 }
 
 export async function getBuild(buildId: string): Promise<Build> {

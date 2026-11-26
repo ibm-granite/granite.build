@@ -11,7 +11,13 @@ from pydantic import BaseModel
 
 from gbserver.spaces.space_access_manager import get_space_access_manager
 from gbserver.spaces.user_spaces_list import space_access_check, space_admin_check
-from gbserver.storage.storage import Pagination, QueryControl, SortOrder, TaggedItem
+from gbserver.storage.storage import (
+    Like,
+    Pagination,
+    QueryControl,
+    SortOrder,
+    TaggedItem,
+)
 from gbserver.types.constants import PUBLIC_SPACE_NAME, SYSTEM_TAG_PREFIX
 from gbserver.utils.remote_files_ops import (
     RemoteFileBadRequest,
@@ -64,6 +70,40 @@ def translate_remote_file_errors() -> Iterator[None]:
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "login node is slow or unreachable; please retry",
         ) from e
+
+
+def parse_name_filter(value: str) -> Union[str, Like]:
+    """Parse a ``*`` wildcard filter value into an exact literal or a ``Like``.
+
+    ``*`` matches any run of characters (AIP-160's string wildcard); ``\\*`` and
+    ``\\\\`` are a literal ``*`` and ``\\`` in either case. ``%``, ``_`` and any
+    other ``\\`` are literal. Without an unescaped ``*``, returns the value with
+    those escapes resolved, for an exact match.
+
+    Example: ``parse_name_filter("*sft*") == Like("%sft%")``,
+    ``parse_name_filter("a\\*b") == "a*b"``.
+    """
+    out, literal = [], []
+    wildcard = False
+    i = 0
+    while i < len(value):
+        char = value[i]
+        if char == "\\" and value[i + 1 : i + 2] in ("*", "\\"):
+            # "*" isn't special in LIKE; "\\" is its escape character.
+            out.append("*" if value[i + 1] == "*" else "\\\\")
+            literal.append(value[i + 1])
+            i += 2
+            continue
+        if char == "*":
+            out.append("%")
+            wildcard = True
+        elif char in "%_\\":
+            out.append("\\" + char)
+        else:
+            out.append(char)
+        literal.append(char)
+        i += 1
+    return Like("".join(out)) if wildcard else "".join(literal)
 
 
 def get_row_filter(**kwargs):

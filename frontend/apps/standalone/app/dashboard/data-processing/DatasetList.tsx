@@ -47,6 +47,12 @@ function formatAge(iso: string): string {
 export function DatasetList({ datasets, search, isLoading }: Props) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  // A new search starts on page 1, like every other search box.
+  const [pageSearch, setPageSearch] = useState(search);
+  if (search !== pageSearch) {
+    setPageSearch(search);
+    setPage(1);
+  }
 
   if (isLoading)
     return (
@@ -68,8 +74,8 @@ export function DatasetList({ datasets, search, isLoading }: Props) {
       )
     : datasets;
 
-  // A search, a shorter `days` window or `completedOnly` can shrink the list
-  // under the current page; show its last page rather than an empty one.
+  // A shorter `days` window or `completedOnly` can still shrink the list under
+  // the current page; show its last page rather than an empty one.
   const currentPage = clampPage(page, filtered.length, pageSize);
   const paged = pageSlice(filtered, currentPage, pageSize);
 
