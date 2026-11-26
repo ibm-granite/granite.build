@@ -33,8 +33,9 @@ def isolated_gb_config(monkeypatch, tmp_path):
 
 
 class TestAuth:
+    @patch("gbcommon.types.gbenvconfig.is_standalone", return_value=False)
     @patch("gbcli.services.service_auth._request_github_user")
-    def test_gh_login(self, mock_request_user):
+    def test_gh_login(self, mock_request_user, _standalone):
         """
         Test login to GitHub
         """
@@ -83,3 +84,17 @@ class TestAuth:
         assert credentials.get("email", section=gh_section) == "gh@example.com"
         assert credentials.get("default_provider", section="user") == "github"
         assert credentials.get("login", section="user.ibmid") == "sso@example.com"
+
+    @patch("gbcommon.types.gbenvconfig.is_standalone", return_value=True)
+    @patch(
+        "gbcli.utils.gh_auth.requests.get",
+        side_effect=AssertionError("unexpected network"),
+    )
+    def test_gh_login_standalone_skips_github(self, _get, _standalone, monkeypatch):
+        """Standalone stores its synthetic user without calling GitHub."""
+        monkeypatch.delenv("GBSERVER_API_USER", raising=False)
+
+        assert gh_login("token") == "standalone"
+        assert GBCredentials().get("login", section=get_gh_credentials_section()) == (
+            "standalone"
+        )

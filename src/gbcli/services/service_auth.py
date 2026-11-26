@@ -39,8 +39,14 @@ def gh_token_verify(device_code: str) -> TokenURLResponse:
 
 
 def gh_login(gh_access_token: str):
-    # Not get_user(): it follows the default_provider this login replaces.
-    user_obj = _request_github_user(gh_access_token)
+    from gbcommon.types.gbenvconfig import is_standalone
+
+    # Record the token's own GitHub identity, whatever default_provider this
+    # login replaces. Standalone has no GitHub: keep its synthetic user.
+    if is_standalone():
+        user_obj = get_user(token=gh_access_token)
+    else:
+        user_obj = _request_github_user(gh_access_token)
     gh_section = get_gh_credentials_section()
     credentials = GBCredentials()
     credentials.set("token", gh_access_token, section=gh_section)
