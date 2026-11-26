@@ -67,6 +67,10 @@ _ONLINE_ONLY = (
     "opd_importance_sampling",
 )
 
+# Per arm, the _ONLINE_ONLY keys that arm emits off-policy as well. Only `uld`: it
+# requires last_message_only=true, and the collator reads that key on every path.
+_OFF_POLICY_ARM_KEYS: Dict[str, Tuple[str, ...]] = {"uld": ("last_message_only",)}
+
 
 # ─── Loss arms ────────────────────────────────────────────────────────────────────────
 #
@@ -199,6 +203,22 @@ LOSS_ARMS: Dict[str, Dict[str, Any]] = {
         # and student need not share a vocabulary. The arm for a genuinely cross-tokenizer
         # pair; for Granite/Granite it buys nothing over an aligned comparison.
         "doc": "Universal Logit Distillation over sorted logits; the cross-tokenizer arm",
+        # The trainer renders the ULD teacher as msgs[:-1] against msgs, so the teacher's
+        # completion is the LAST assistant turn. The base ULD path takes one student region
+        # per row (first labelled position, total labelled count). Under
+        # last_message_only=false the collator labels every assistant turn, so that region
+        # starts at the first turn and runs across the user turns after it, and on a ChatML
+        # template it also opens with the generation prompt's '\n<think></think>'. No row
+        # of a multi-turn corpus aligns, and on ChatML none at all: measured on CPU through
+        # the real trainer, 0 of 48 build-test rows, against 48 of 48 with it true. Hence
+        # also the one off-policy emission of last_message_only (_OFF_POLICY_ARM_KEYS).
+        "requires": {"last_message_only": True},
+        "why": (
+            "ULD's teacher is rendered as the last assistant turn only, and with "
+            "last_message_only=false the student's span starts at the first assistant turn "
+            "(and, on a ChatML template, with the generation prompt's think scaffold), so no "
+            "row of a multi-turn corpus aligns and the loss is zero"
+        ),
     },
     "ce": {
         "flags": {"use_ce_loss": True},
@@ -320,7 +340,11 @@ def _validate_arm(args: argparse.Namespace, *, online: bool) -> Dict[str, Any]:
             )
         if kind == "last_message_only" and bool(args.last_message_only) != bool(bound):
             raise ValueError(
-                f"loss_arm={args.loss_arm!r} requires last_message_only={bound}.{tail}"
+                f"loss_arm={args.loss_arm!r} requires last_message_only="
+                f"{str(bound).lower()}; got {str(bool(args.last_message_only)).lower()} "
+                "(false is also the default). Set gold_config.last_message_only: "
+                f"{str(bound).lower()} (in the distill recipe: --param "
+                f"LAST_MESSAGE_ONLY={str(bound).lower()}).{tail}"
             )
         if kind not in _REQUIREMENT_KINDS:
             raise ValueError(
@@ -586,6 +610,16 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
             "the vLLM path's). Set vllm_num_servers > 0 for on-policy, or lmbda 0 for "
             "off-policy"
         )
+
+    # The one exception to _ONLINE_ONLY: keys an arm needs off-policy too. The trainer reads
+    # last_message_only off-policy (the collator's labels), so dropping it there made the uld
+    # arm's requirement unreachable: checked above, then not emitted, and the trainer ran
+    # with its default, false. Scoped to the arm, so every other arm's off-policy config is
+    # byte-identical to before (test_render_gold_config_arms_golden.py); on-policy the
+    # block below emits it for every arm, as it always has.
+    if not online:
+        for key in _OFF_POLICY_ARM_KEYS.get(args.loss_arm, ()):
+            config[key] = getattr(args, key)
 
     if online:
         config.update(

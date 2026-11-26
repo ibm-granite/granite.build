@@ -316,6 +316,8 @@ config:
     vllm_sync_frequency: 1
     top_p: 0.95
     use_sampled_opd_loss: false
+    # Supervise only the final assistant turn. Emitted on-policy, and off-policy for
+    # loss_arm uld alone, which requires it true (ULD's teacher is the last turn only).
     last_message_only: false
     clip_alpha: 0.1
     opd_importance_sampling: false

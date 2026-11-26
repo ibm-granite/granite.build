@@ -124,7 +124,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `vllm_sync_frequency` | integer | How often, in optimizer steps, the trainer pushes updated weights to the server; a larger value samples from a staler policy. Passed to the trainer only on the external-server path. Default: `1`. |
 | `top_p` | number | Rollout sampling `top_p`; emitted only on-policy. Default: `0.95`. |
 | `use_sampled_opd_loss` | boolean | Sampled on-policy-distillation loss; emitted only on-policy. Prefer `loss_arm: sampled_opd`, which enforces its requirements. Default: `false`. |
-| `last_message_only` | boolean | Trainer `last_message_only`; emitted only on-policy. Required `true` by the `sampled_opd` arm. Default: `false`. |
+| `last_message_only` | boolean | Trainer `last_message_only`: supervise only the final assistant turn. Emitted on-policy, and off-policy only for `loss_arm: uld` (every other off-policy render leaves the trainer at its default, `false`). Required `true` by the `sampled_opd` and `uld` arms. Default: `false`. |
 | `clip_alpha` | number | Trainer `clip_alpha`; emitted only on-policy. Default: `0.1`. |
 | `opd_importance_sampling` | boolean | Truncated importance sampling for the sampled OPD loss; emitted only on-policy. Default: `false`. |
 | `lmbda_schedule` | string | `constant`, or `linear` to ramp `lmbda` from `lmbda_init` up to `lmbda` across training — off-policy early, on-policy later. `linear` needs `vllm_num_servers > 0`; the renderer refuses it otherwise. Default: `constant`. |
@@ -407,7 +407,7 @@ it silently becomes a different arm.
 | `distillm2_like` | DistiLLM-2 shape, non-comparative; policy class per microbatch | `0 < lmbda < 1` |
 | `reversed_distillm2_like` | `distillm2_like` with the divergence roles exchanged | `0 < lmbda < 1` |
 | `sampled_opd` | REINFORCE-style policy gradient on sampled tokens; optional truncated IS | `lmbda == 1.0`, `last_message_only: true` |
-| `uld` | Universal Logit Distillation over sorted logits; the cross-tokenizer arm | — |
+| `uld` | Universal Logit Distillation over sorted logits; the cross-tokenizer arm | `last_message_only: true` (ULD's teacher is the last assistant turn; with `false` the student's span starts at the first, so no multi-turn row aligns and the loss is zero) |
 | `ce` | cross entropy only — in-trainer SFT control; the teacher is still loaded | `lmbda == 0.0` |
 
 Under `lmbda_schedule: linear`, `0 < lmbda < 1` is judged over the whole ramp: a ramp from

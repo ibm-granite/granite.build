@@ -144,6 +144,11 @@ optimizer step and sums them over ranks. It raises `RuntimeError`:
   in a window of `uld_unaligned_window_steps` optimizer steps (default 0 = `logging_steps`)
   were unaligned. Both are new `CustomGOLDConfig` fields.
 
+The guard is the runtime backstop. The known systematic cause, `last_message_only=false`
+under the single-region ULD teacher, is refused before training: the logit-distill step's
+renderer requires `last_message_only: true` for `loss_arm: uld` and, for that arm alone,
+emits it off-policy (`render_gold_config.py`, outside this package).
+
 The log line carries the window's global counts: `train/alignment_unaligned_rows` (was
 the rank-local count), and the new `train/alignment_rows` and
 `train/alignment_unaligned_rate`. All three are identical on every rank.

@@ -520,8 +520,40 @@ class TestLossArms:
         """The point of the table: these switches are CustomGOLDConfig fields that
         no CLI flag on this renderer could previously set at all."""
 
-        config = _render(tmp_path, extra=["--loss-arm", arm])
+        config = _render(
+            tmp_path, extra=["--loss-arm", arm, "--last-message-only", "true"]
+        )
         assert config[key] is True
+
+    @pytest.mark.parametrize("given", [None, "false"])
+    def test_uld_without_last_message_only_is_refused_at_render(self, tmp_path, given):
+        """Unset (the default, false) or false: the student's span and ULD's last-turn
+        teacher never align on a multi-turn row, and the run would train at zero gradient.
+        The message names both keys and the recipe parameter that sets the second."""
+        extra = ["--loss-arm", "uld"]
+        if given is not None:
+            extra += ["--last-message-only", given]
+        result = _render(tmp_path, extra=extra, expect_rc=2)
+        assert "loss_arm='uld' requires last_message_only=true; got false" in (
+            result.stderr
+        )
+        assert "--param LAST_MESSAGE_ONLY=true" in result.stderr
+
+    def test_uld_emits_last_message_only_off_policy(self, tmp_path):
+        """Off-policy, last_message_only is otherwise never emitted (_ONLINE_ONLY), so the
+        requirement above would be checked and then dropped, and the trainer would run
+        with its default, false. For uld alone it is emitted."""
+        config = _render(
+            tmp_path, extra=["--loss-arm", "uld", "--last-message-only", "true"]
+        )
+        assert config["last_message_only"] is True
+        assert "vllm_num_servers" not in config
+
+    def test_no_other_arm_emits_last_message_only_off_policy(self, tmp_path):
+        """The exception is the uld arm's alone; every other arm off-policy is pinned
+        byte for byte in test_render_gold_config_arms_golden.py."""
+        config = _render(tmp_path, extra=["--last-message-only", "true"])
+        assert "last_message_only" not in config
 
     def test_adaptive_kld_is_refused_with_the_reason(self, tmp_path):
         """The arm's trainer implementation does not compute the paper's objective
@@ -582,7 +614,14 @@ class TestLossArms:
         rendered config said ULD."""
         result = _render(
             tmp_path,
-            extra=["--loss-arm", "uld", "--use-liger-fused-jsd", "true"],
+            extra=[
+                "--loss-arm",
+                "uld",
+                "--last-message-only",
+                "true",
+                "--use-liger-fused-jsd",
+                "true",
+            ],
             expect_rc=2,
         )
         assert "implies use_liger_fused_jsd=False" in result.stderr

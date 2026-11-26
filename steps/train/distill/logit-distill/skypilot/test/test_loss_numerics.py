@@ -260,8 +260,9 @@ class TestComputeLossKd:
 
 # --- ULD -----------------------------------------------------------------------------------
 #
-# What the reference follows. `loss_arm: uld` renders `use_uld_loss: true` and nothing else
-# (render_gold_config.py LOSS_ARMS["uld"]), so every other ULD knob is a dataclass default:
+# What the reference follows. `loss_arm: uld` renders `use_uld_loss: true` and, required by
+# the arm, `last_message_only: true` (render_gold_config.py LOSS_ARMS["uld"]); the latter
+# shapes the collator's labels, not the loss. So every other ULD knob is a dataclass default:
 # use_extended_uld True, uld_use_hybrid_loss False, cross-entropy weight 0, distillation
 # weight 1, both temperatures 1. With the hybrid loss off, CustomULDLoss runs
 # _compute_base_distillation_loss: TRL's non-hybrid ULD (trl 0.26.2,
