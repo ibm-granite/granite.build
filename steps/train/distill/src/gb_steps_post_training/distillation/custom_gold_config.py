@@ -474,14 +474,17 @@ class CustomGOLDConfig(GOLDConfig):
         # is the LAST assistant turn. With last_message_only=false the collator labels every
         # assistant turn, the base path's one region per row starts at the first, and no
         # multi-turn row aligns (render_gold_config.py's uld arm requires it for the same
-        # reason; this catches a config that bypasses the renderer). The two exceptions
-        # render the teacher another way: per-turn regions (one teacher region per assistant
-        # turn, and they require false), and reusing the student's own input as the teacher's.
+        # reason; this catches a config that bypasses the renderer). The three exceptions
+        # do not pair the collator's labels with that render: per-turn regions (one teacher
+        # region per assistant turn, and they require false), reusing the student's own
+        # input as the teacher's, and rebuilding the student's input and labels from the
+        # teacher's (prompt, last-turn completion) texts.
         if (
             self.use_uld_loss
             and not self.last_message_only
             and not self.uld_per_turn_regions
             and not self.uld_reuse_student_input
+            and not self.uld_rebuild_student_input_with_teacher_template
         ):
             raise ValueError(
                 "use_uld_loss requires last_message_only=true: the ULD teacher is rendered as "

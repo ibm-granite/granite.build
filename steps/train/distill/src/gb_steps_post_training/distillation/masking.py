@@ -509,14 +509,20 @@ def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool]:
     `use_sampled_opd_loss` for sampled_opd. Kept in step with those two `requires` entries
     by test_masking_check_config.py, which reads the renderer's table.
 
-    ULD is exempt in the two modes that render the teacher another way and so do not need
-    the last turn alone, the same exemptions CustomGOLDConfig makes: per-turn teacher regions
-    (uld_per_turn_regions, which require last_message_only false) and the student's own input
-    reused as the teacher's (uld_reuse_student_input). Neither is reachable through the
-    logit-distill step, whose renderer exposes no uld_* option.
+    ULD is exempt in the modes that do not pair the collator's labels with the last-turn
+    teacher, the same exemptions CustomGOLDConfig makes: per-turn teacher regions
+    (uld_per_turn_regions, which require last_message_only false), the student's own input
+    reused as the teacher's (uld_reuse_student_input), and the student rebuilt from the
+    teacher's texts (uld_rebuild_student_input_with_teacher_template). None is reachable
+    through the logit-distill step, whose renderer exposes no uld_* option.
     """
-    uld_exempt = cfg.get("uld_per_turn_regions") is True or (
-        cfg.get("uld_reuse_student_input") is True
+    uld_exempt = any(
+        cfg.get(mode) is True
+        for mode in (
+            "uld_per_turn_regions",
+            "uld_reuse_student_input",
+            "uld_rebuild_student_input_with_teacher_template",
+        )
     )
     arm = cfg.get("loss_arm")
     if arm == "sampled_opd" or (arm == "uld" and not uld_exempt):

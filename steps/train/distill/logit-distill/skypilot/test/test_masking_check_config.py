@@ -80,10 +80,19 @@ def test_the_message_names_who_refuses_it(arm):
     assert "CustomGOLDConfig refuses it at startup" in problem
 
 
-@pytest.mark.parametrize("mode", ["uld_per_turn_regions", "uld_reuse_student_input"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "uld_per_turn_regions",
+        "uld_reuse_student_input",
+        "uld_rebuild_student_input_with_teacher_template",
+    ],
+)
 def test_uld_modes_that_render_the_teacher_otherwise_are_exempt(mode):
-    """The exemptions CustomGOLDConfig makes: per-turn regions require false, and a
-    teacher reusing the student's input needs no last-turn render."""
+    """The exemptions CustomGOLDConfig makes: per-turn regions require false, a teacher
+    reusing the student's input needs no last-turn render, and a student rebuilt from the
+    teacher's texts is supervised on the last turn alone whatever the collator labelled.
+    """
     for form in _forms("uld"):
         cfg = {"response_template": _TEMPLATE, mode: True, **form}
         assert masking.check_config(_DOC, cfg) == []

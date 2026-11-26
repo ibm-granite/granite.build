@@ -156,8 +156,10 @@ under the single-region ULD teacher, is refused before training: the logit-disti
 renderer requires `last_message_only: true` for `loss_arm: uld` and, for that arm alone,
 emits it off-policy (`render_gold_config.py`, outside this package). `CustomGOLDConfig.__post_init__`
 refuses `use_uld_loss` without `last_message_only=true` too, for a config that bypasses the
-renderer, as it already did for `use_sampled_opd_loss`. It exempts the two modes that render the
-teacher another way: `uld_per_turn_regions` (which requires false) and `uld_reuse_student_input`.
+renderer, as it already did for `use_sampled_opd_loss`. It exempts the three modes that do not
+pair the collator's labels with the last-turn teacher: `uld_per_turn_regions` (which requires
+false), `uld_reuse_student_input`, and `uld_rebuild_student_input_with_teacher_template`, which
+rebuilds the student's input and labels from the teacher's (prompt, last-turn completion) texts.
 
 Every log line carries three new keys, the counts since the previous line summed over
 ranks: `train/alignment_rows`, `train/alignment_unaligned_rows` and
@@ -171,7 +173,7 @@ masking.json describes. For the two arms whose `render_gold_config.py` LOSS_ARMS
 requires it, `uld` and `sampled_opd`, that inverted the renderer's rule. It now follows that
 rule: for those arms, true is the contract and false or unset is the problem. The arms are
 recognised from `loss_arm` or from the switch they render (`use_uld_loss`,
-`use_sampled_opd_loss`), with the same two ULD exemptions as `CustomGOLDConfig`. Only the
+`use_sampled_opd_loss`), with the same three ULD exemptions as `CustomGOLDConfig`. Only the
 boolean `true` satisfies the rule. Every other arm keeps the old report.
 `steps/train/distill/logit-distill/skypilot/test/test_masking_check_config.py` pins both
 directions against the renderer's table.

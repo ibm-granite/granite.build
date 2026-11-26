@@ -65,6 +65,21 @@ _ROWS = [
         {"role": "assistant", "content": "1, 2, 3."},
     ],
 ]
+# Two assistant turns per row: what last_message_only decides about.
+_MULTI_TURN_ROWS = [
+    [
+        {"role": "user", "content": "say hi."},
+        {"role": "assistant", "content": "hi there!"},
+        {"role": "user", "content": "what is two plus two?"},
+        {"role": "assistant", "content": "four."},
+    ],
+    [
+        {"role": "user", "content": "name a colour."},
+        {"role": "assistant", "content": "red is one."},
+        {"role": "user", "content": "count to 3."},
+        {"role": "assistant", "content": "1, 2, 3."},
+    ],
+]
 
 
 def _model_dir(path, assistant_prefix):
@@ -103,10 +118,22 @@ def _model_dir(path, assistant_prefix):
     return str(path), tok
 
 
-def _trainer(tmp_path, *, teacher_prefix="", max_steps=2, logging_steps=1):
+def _trainer(
+    tmp_path,
+    *,
+    teacher_prefix="",
+    max_steps=2,
+    logging_steps=1,
+    rows=_ROWS,
+    collator_lmo=None,
+    **config,
+):
+    """`config` overrides the CustomGOLDConfig fields below. `collator_lmo` gives the
+    collator a last_message_only other than the config's, i.e. a config that bypassed
+    CustomGOLDConfig's check."""
     student, tok = _model_dir(tmp_path / "student", "")
     teacher, _ = _model_dir(tmp_path / "teacher", teacher_prefix)
-    args = CustomGOLDConfig(
+    kw = dict(
         output_dir=str(tmp_path / "out"),
         use_uld_loss=True,
         teacher_model_name_or_path=teacher,
@@ -128,17 +155,21 @@ def _trainer(tmp_path, *, teacher_prefix="", max_steps=2, logging_steps=1):
         use_vllm=False,
         seed=0,
     )
+    kw.update(config)
+    args = CustomGOLDConfig(**kw)
     collator = CustomDataCollatorForChatML(
         tokenizer=tok,
         max_length=args.max_length,
         response_template=args.response_template,
-        last_message_only=args.last_message_only,
+        last_message_only=(
+            args.last_message_only if collator_lmo is None else collator_lmo
+        ),
     )
     return cgt.CustomGOLDTrainer(
         model=student,
         teacher_model=teacher,
         args=args,
-        train_dataset=Dataset.from_list([{"messages": m} for m in _ROWS]),
+        train_dataset=Dataset.from_list([{"messages": m} for m in rows]),
         processing_class=tok,
         data_collator=collator,
     )
@@ -250,13 +281,45 @@ def test_the_config_accepts_uld_with_last_message_only(tmp_path):
     [
         {"uld_per_turn_regions": True, "uld_use_hybrid_loss": True},
         {"uld_reuse_student_input": True},
+        {"uld_rebuild_student_input_with_teacher_template": True},
     ],
-    ids=["per-turn-regions", "reuse-student-input"],
+    ids=["per-turn-regions", "reuse-student-input", "rebuild-with-teacher-template"],
 )
 def test_the_config_exempts_the_modes_that_render_the_teacher_otherwise(tmp_path, mode):
     """Per-turn regions give the teacher one region per assistant turn and REQUIRE false;
-    reusing the student's input gives the teacher the student's own spans."""
+    reusing the student's input gives the teacher the student's own spans; rebuilding the
+    student from the teacher's texts gives the student the teacher's last-turn span."""
     assert _config(tmp_path, last_message_only=False, **mode).use_uld_loss is True
+
+
+def test_last_message_only_false_leaves_multi_turn_rows_unaligned(tmp_path):
+    """The control for the test below: the collator labels both assistant turns, the
+    teacher renders the last one alone, and no row aligns (the config is bypassed to get
+    here, as a config that never went through CustomGOLDConfig would)."""
+    trainer = _trainer(tmp_path, rows=_MULTI_TURN_ROWS, max_steps=1, collator_lmo=False)
+    with pytest.raises(RuntimeError, match="ULD step 1: all 2 rows"):
+        trainer.train()
+
+
+def test_rebuilding_the_student_aligns_multi_turn_rows_without_last_message_only(
+    tmp_path,
+):
+    """uld_rebuild_student_input_with_teacher_template replaces the student's input_ids
+    and labels with ones built from the teacher's (prompt, completion) texts, so the
+    student's span is the last turn alone whatever the collator labelled: every row
+    aligns with last_message_only false, which is why the config exempts the mode."""
+    trainer = _trainer(
+        tmp_path,
+        rows=_MULTI_TURN_ROWS,
+        max_steps=1,
+        last_message_only=False,
+        uld_rebuild_student_input_with_teacher_template=True,
+    )
+    assert trainer.data_collator.last_message_only is False
+    trainer.train()
+    (line,) = [h for h in trainer.state.log_history if "loss" in h]
+    assert line["train/alignment_rows"] == 2
+    assert line["train/alignment_unaligned_rows"] == 0
 
 
 def test_the_config_leaves_other_arms_alone(tmp_path):
