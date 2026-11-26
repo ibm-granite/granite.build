@@ -569,11 +569,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - raise the shared lock's vulnerable packages to their fixes, and drop wandb, which
     NeMo-Skills declares only for optional logging.
 
-  `make -C steps/eval scan-deps` and `scan-image-*` now gate every publish: no fixable
-  HIGH or above. The scanners are pinned: trivy, which rates by GHSA, and, on the lock,
-  osv-scanner with distill's `osv-gate.py`, which rates by CVSS. Accepted advisories in
-  `steps/eval/scan-ignore` carry an expiry and a package scope (`pkg:` purls). Both
-  gates enforce the scope, so an accepted id still fails in any other package or
-  version. `osv-gate.py` reads the same optional `exp:` / `pkg:` fields, and bare ids
-  keep their old meaning. `publish-images` scans every image and checks every tag
-  before the first push.
+  `make -C steps/eval scan-deps` and `scan-image-*` now gate every publish target (no
+  fixable HIGH or above), unless `SKIP_SCAN=true` is given, which each push then says.
+  `publish-images` scans every image and checks every tag before the first push. The
+  bare push targets it uses refuse on their own. The scanners are pinned:
+  - trivy, which rates by GHSA, on the lock and the image;
+  - osv-scanner with distill's `osv-gate.py`, which rates by CVSS, on the lock and on
+    the environments an image resolves at build time (its `granite-freeze.txt` files).
+
+  Accepted advisories in `steps/eval/scan-ignore` carry an expiry and a package scope
+  (`pkg:` purls). Both gates enforce the scope, so an accepted id still fails in any
+  other package or version. `osv-gate.py` reads the same optional `exp:` / `pkg:`
+  fields, and bare ids keep their old meaning. It also counts an OSV range that ends
+  in `last_affected` as fixable when a later release exists.
