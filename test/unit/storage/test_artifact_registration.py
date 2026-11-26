@@ -50,3 +50,14 @@ class TestArtifactRegistration:
         self._test_tags(["a\r"], True)
         self._test_tags(["a", " b "], True)
         self._test_tags(["a", " b "], True)
+
+    def test_uuid_normalized_to_lowercase(self) -> None:
+        raw_uuid = "0B6C0000-0000-0000-0000-000000000000"
+        artifact = ArtifactRegistration(
+            uuid=raw_uuid,
+            type=ArtifactType.MODEL,
+            uri="https://foo.bar",
+            username="me",
+            space_name="space",
+        )
+        assert artifact.uuid == raw_uuid.lower()
