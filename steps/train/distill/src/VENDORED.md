@@ -7,9 +7,9 @@ from that commit in these ways, and in no other:
 
 - **Formatting.** Every file is reformatted with `black` and `isort`, which CI enforces
   repo-wide. To compare against upstream, format both sides the same way first.
-- **Local patches** in `custom_gold_config.py` and `custom_gold_trainer.py`, described
-  below: the two on-policy study patches, the ULD base-path fix, and the ULD
-  alignment guard.
+- **Local patches** in `custom_gold_config.py`, `custom_gold_trainer.py` and `masking.py`,
+  described below: the two on-policy study patches, the ULD base-path fix, the ULD
+  alignment guard, and check-config's `last_message_only` rule.
 
 ## Licence
 
@@ -152,6 +152,18 @@ emits it off-policy (`render_gold_config.py`, outside this package).
 The log line carries the window's global counts: `train/alignment_unaligned_rows` (was
 the rank-local count), and the new `train/alignment_rows` and
 `train/alignment_unaligned_rate`. All three are identical on every rank.
+
+## Local fix: check-config's `last_message_only` rule
+
+`masking.check_config` (`masking.py check-config`) reported `last_message_only: true` as a
+problem on every gold config, because it bypasses the response_template scan that
+masking.json describes. For the two arms whose `render_gold_config.py` LOSS_ARMS entry
+requires it, `uld` and `sampled_opd`, that inverted the renderer's rule. It now follows that
+rule: for those arms, true is the contract and false or unset is the problem. The arms are
+recognised from `loss_arm` or from the switch they render (`use_uld_loss`,
+`use_sampled_opd_loss`). Every other arm keeps the old report.
+`steps/train/distill/logit-distill/skypilot/test/test_masking_check_config.py` pins both
+directions against the renderer's table.
 
 ## A second copy elsewhere
 

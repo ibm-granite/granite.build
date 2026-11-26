@@ -472,13 +472,44 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
             f"on this student implies {want!r}. The config was not derived from the template it "
             "will train against."
         )
-    if cfg.get("last_message_only") is True:
+    arm = _arm_requiring_last_message_only(cfg)
+    lmo = cfg.get("last_message_only")
+    if arm is not None:
+        # The positional split IS this arm's masking policy, so true is the contract and
+        # false or unset is the problem -- the same rule render_gold_config.py enforces.
+        if lmo is not True:
+            given = "unset (the trainer's default, false)" if lmo is None else repr(lmo)
+            problems.append(
+                f"loss_arm {arm} requires last_message_only: true, and it is {given}. "
+                "Without it the collator labels every assistant turn while the arm "
+                "supervises only the last; render_gold_config.py refuses this config."
+            )
+    elif lmo is True:
         problems.append(
             "last_message_only: true bypasses the response_template scan entirely "
             "(utils.py:470) for a positional split. A different masking policy; masking.json "
             "describes the scanning one."
         )
     return problems
+
+
+def _arm_requiring_last_message_only(cfg: dict) -> str | None:
+    """The loss arm in `cfg` whose render_gold_config.py LOSS_ARMS entry requires
+    last_message_only: true, or None.
+
+    Read either from `loss_arm` (a step's gold_config block) or from the switch the arm
+    renders (a rendered gold config has no `loss_arm` key): `use_uld_loss` for uld,
+    `use_sampled_opd_loss` for sampled_opd. Kept in step with those two `requires` entries
+    by test_masking_check_config.py, which reads the renderer's table.
+    """
+    arm = cfg.get("loss_arm")
+    if arm in ("uld", "sampled_opd"):
+        return arm
+    if cfg.get("use_uld_loss") is True:
+        return "uld"
+    if cfg.get("use_sampled_opd_loss") is True:
+        return "sampled_opd"
+    return None
 
 
 def _self_test() -> int:
@@ -570,11 +601,28 @@ def _self_test() -> int:
             {"response_template": "<|im_start|>assistant\n", "last_message_only": True},
             "bypasses",
         ),
+        (
+            "uld without last_message_only",
+            {"response_template": "<|im_start|>assistant\n", "use_uld_loss": True},
+            "requires last_message_only: true",
+        ),
     ):
         got = check_config(doc, cfg)
         if not any(needle in g for g in got):
             print(f"  FAIL config check {name}: expected {needle!r}, got {got}")
             bad = 1
+    eq(
+        "config check, uld with last_message_only",
+        check_config(
+            doc,
+            {
+                "response_template": "<|im_start|>assistant\n",
+                "use_uld_loss": True,
+                "last_message_only": True,
+            },
+        ),
+        [],
+    )
 
     if not bad:
         print(
