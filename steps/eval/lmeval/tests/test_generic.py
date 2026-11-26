@@ -593,6 +593,19 @@ def test_response_counts():
     }
 
 
+def test_response_counts_count_each_doc_once():
+    """lm-eval logs one sample row per doc per filter (gsm8k: strict-match and
+    flexible-extract, the same raw resps): the second gsm8k cluster smoke
+    reported docs 20 for --limit 10. Each doc counts once, by doc_id."""
+    rows = []
+    for doc_id, resp in enumerate(["#### 18", "", chat_if.ERROR_MARKER]):
+        for filt in ("strict-match", "flexible-extract"):
+            rows.append({"doc_id": doc_id, "filter": filt, "resps": [[resp]]})
+    assert generic.response_counts({"gsm8k": rows}, {"gsm8k"}) == {
+        "gsm8k": {"docs": 3, "empty": 1, "errors": 1}
+    }
+
+
 def test_empty_responses_fail_the_run(tmp_path, monkeypatch):
     """The cluster smoke's shape: every gsm8k response empty (the thought
     ran out of tokens, content null). Counted, and over max_failed_frac the

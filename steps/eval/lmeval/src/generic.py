@@ -361,14 +361,20 @@ def is_empty_response(text: Any) -> bool:
 def response_counts(samples: dict, chat_tasks: set[str]) -> dict[str, dict[str, int]]:
     """Per task: docs, docs with an empty chat response, docs with a failed
     request (chat_if's ERROR_MARKER, include's ERROR_LL), from lm-eval's
-    logged samples."""
+    logged samples. lm-eval logs one row per doc per filter (gsm8k: two), all
+    with the same raw ``resps``: each doc counts once, by its ``doc_id``."""
     from granite_evals.benchmarks.chat_if import ERROR_MARKER
     from granite_evals.benchmarks.include import ERROR_LL
 
     out: dict[str, dict[str, int]] = {}
     for task, rows in (samples or {}).items():
         docs = empty = errors = 0
-        for row in rows:
+        seen: set = set()
+        for index, row in enumerate(rows):
+            doc = row.get("doc_id", ("row", index))
+            if doc in seen:
+                continue
+            seen.add(doc)
             docs += 1
             resps = [r for choice in row.get("resps") or [] for r in choice]
             if task in chat_tasks:
