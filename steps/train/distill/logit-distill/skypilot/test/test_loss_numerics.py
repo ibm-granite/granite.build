@@ -805,6 +805,27 @@ class TestULDAlignmentGuard:
         for step in (1, 2, 3, 4):
             guard.end_step(_counts(1, 4), step=step, reduce=_one_rank, window_steps=2)
 
+    def test_the_final_partial_window_is_judged_at_train_end(self):
+        """A run shorter than one window (max_steps < logging_steps), or the steps after
+        the last full window, would otherwise never be judged."""
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=0.2)
+        guard.end_step(_counts(1, 4), step=1, reduce=_one_rank, window_steps=10)
+        guard.end_step(_counts(1, 4), step=2, reduce=_one_rank, window_steps=10)
+        with pytest.raises(RuntimeError, match=r"steps 1-2: 2 of 8 rows"):
+            guard.end_train()
+
+    def test_train_end_judges_only_what_no_window_has(self):
+        """A window that closed is not judged twice, and a run with no step since is
+        not judged at all."""
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=0.2)
+        guard.end_train()
+        guard.end_step(_counts(0, 4), step=1, reduce=_one_rank, window_steps=1)
+        guard.end_train()
+        guard.end_step(_counts(0, 4), step=2, reduce=_one_rank, window_steps=1)
+        guard.end_step(_counts(1, 4), step=3, reduce=_one_rank, window_steps=10)
+        with pytest.raises(RuntimeError, match=r"steps 3-3: 1 of 4 rows"):
+            guard.end_train()
+
     def test_the_window_resets_and_its_own_setting_wins(self):
         """A bad window followed by a clean one: the clean one is judged on its own rows.
         And `window_steps` set on the guard (uld_unaligned_window_steps) overrides the

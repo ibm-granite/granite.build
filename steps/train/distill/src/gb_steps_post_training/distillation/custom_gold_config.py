@@ -407,8 +407,8 @@ class CustomGOLDConfig(GOLDConfig):
         default=0,
         metadata={
             "help": "Optimizer steps per uld_max_unaligned_fraction window. 0 (default) "
-            "uses the logging window (logging_steps), so the guard judges the same rate "
-            "the log line shows as train/alignment_unaligned_rate."
+            "uses the logging window's length (logging_steps). The final, partial window "
+            "is judged at train end."
         },
     )
     uld_renormalize_probs: bool = field(

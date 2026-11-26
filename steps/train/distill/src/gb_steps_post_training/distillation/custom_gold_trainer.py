@@ -2797,11 +2797,24 @@ class ULDAlignmentGuard:
 
     - at every optimizer step: if every row that reached alignment, on every rank, was
       unaligned, raise. No loss term was computed for the step at all.
-    - over each window of `window_steps` optimizer steps (default: the logging window): if
-      more than `max_unaligned_fraction` of the window's rows were unaligned, raise.
-    - for logging: the window's unaligned count, row count and rate, as
+    - over each window of `window_steps` optimizer steps (default: the logging window's
+      length): if more than `max_unaligned_fraction` of the window's rows were unaligned,
+      raise. The final, partial window is judged at train end (`end_train`), so a run
+      shorter than one window, and the steps after the last full one, are judged too.
+    - for logging: the unaligned count, row count and rate since the last log line, as
       `train/alignment_unaligned_rows`, `train/alignment_rows` and
-      `train/alignment_unaligned_rate`, the same on every rank.
+      `train/alignment_unaligned_rate`, the same on every rank. The window and the log line
+      count separately. With the default window they cover the same steps when logging runs
+      every logging_steps from step 1, but not, for instance, on a resumed run whose first
+      step is off the logging grid.
+
+    THERE IS NO MINIMUM ROW COUNT, deliberately. With a global batch of 1 (one GPU, batch 1,
+    no accumulation), a single unaligned row is an all-unaligned step and raises. But that
+    step computed no loss at all, so the premise of skipping (the other rows of the step
+    still train) does not hold. And a minimum would blind the guard on exactly the small
+    runs that most need it: the 2-step, 2-rank build test has 4 rows in total. A run that
+    must tolerate a rare unaligned row should have more than one row per optimizer step
+    (gradient_accumulation_steps).
 
     Rows with no completion on either side never reach alignment and are not counted here.
     """
@@ -2812,6 +2825,7 @@ class ULDAlignmentGuard:
         self._win_unaligned = 0
         self._win_rows = 0
         self._win_steps = 0
+        self._last_step = 0
         self._log_unaligned = 0
         self._log_rows = 0
 
@@ -2842,14 +2856,25 @@ class ULDAlignmentGuard:
         self._win_unaligned += unaligned
         self._win_rows += rows
         self._win_steps += 1
+        self._last_step = step
         window = max(1, int(self.window_steps or window_steps or 1))
-        if self._win_steps < window:
-            return
+        if self._win_steps >= window:
+            self._judge_window()
+
+    def end_train(self) -> None:
+        """Judge the final, partial window, if training ended inside one. The counts are
+        already summed over ranks, so this needs no collective and raises on every rank
+        alike."""
+        if self._win_steps:
+            self._judge_window()
+
+    def _judge_window(self) -> None:
         win_unaligned, win_rows = self._win_unaligned, self._win_rows
+        first, last = self._last_step - self._win_steps + 1, self._last_step
         self._win_unaligned = self._win_rows = self._win_steps = 0
         if win_rows > 0 and win_unaligned / win_rows > self.max_unaligned_fraction:
             raise RuntimeError(
-                f"ULD steps {step - window + 1}-{step}: {win_unaligned} of {win_rows} rows "
+                f"ULD steps {first}-{last}: {win_unaligned} of {win_rows} rows "
                 f"({win_unaligned / win_rows:.1%}) yielded no alignment groups and "
                 "contributed no loss, more than uld_max_unaligned_fraction="
                 f"{self.max_unaligned_fraction}. A rare unaligned row is skipped; this many "
@@ -2887,6 +2912,11 @@ class _ULDAlignmentGuardCallback(TrainerCallback):
 
     def on_pre_optimizer_step(self, args, state, control, **kwargs):
         self._trainer._uld_alignment_step_end(state)
+        return control
+
+    def on_train_end(self, args, state, control, **kwargs):
+        # The steps after the last full window, or a run shorter than one.
+        self._trainer._uld_alignment_guard.end_train()
         return control
 
     def on_evaluate(self, args, state, control, **kwargs):
@@ -5256,8 +5286,8 @@ class CustomGOLDTrainer(GOLDTrainer):
 
     def _uld_alignment_step_end(self, state) -> None:
         """One optimizer step of ULDAlignmentGuard, from _ULDAlignmentGuardCallback. The
-        window defaults to the logging window, so the rate the guard judges is the rate the
-        log line shows."""
+        window defaults to the logging window's length (see ULDAlignmentGuard for when the
+        two cover different steps)."""
         distributed = (
             getattr(self.accelerator, "distributed_type", DistributedType.NO)
             != DistributedType.NO
