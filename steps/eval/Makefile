@@ -76,7 +76,7 @@ TRIVY_GATE_SEVERITY   = UNKNOWN,$(SEVERITY_UP_$(SCAN_SEVERITY))
 TRIVY_REPORT_SEVERITY = UNKNOWN,$(SEVERITY_UP_$(if $(filter CRITICAL,$(SCAN_SEVERITY)),HIGH,$(SCAN_SEVERITY)))
 check-severity = $(if $(SEVERITY_UP_$(SCAN_SEVERITY)),,$(error SCAN_SEVERITY=$(SCAN_SEVERITY) is not one of CRITICAL HIGH MEDIUM LOW))
 # Does a tag exist on its registry (present / absent / unknown)? Manifest only, no pull.
-TAG_STATUS    := $(CURDIR)/../scripts/registry-tag-status.sh
+TAG_STATUS    := sh "$(CURDIR)/../scripts/registry-tag-status.sh"
 
 # scan-ignore scopes each accepted id to the packages (purls) it names, and trivy's
 # plain-text ignore format cannot say that: it would accept the id in every package.
