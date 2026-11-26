@@ -690,3 +690,69 @@ def test_drop_failed_requests_on_a_real_cache(tmp_path):
     assert generic.drop_failed_requests(tmp_path) == 2
     with sqlitedict.SqliteDict(str(tmp_path / "cache_rank0.db")) as db:
         assert dict(db) == {"ok": (-1.5, True)}
+
+
+def test_primary_metric_is_the_first_metric_list_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gpqa"])
+    bench = generic.LMEval(_config(tmp_path, tasks="gpqa"))
+    task = _task(metrics=["acc", "acc_norm"], name="gpqa")
+    assert bench.primary_metrics({"gpqa": task}) == {"gpqa": "acc"}
+
+
+def _repeated_run(tmp_path, monkeypatch, values, **config):
+    """run() over one base task with simple_evaluate faked to answer the
+    k-th call with values[k]; returns the outcome and the calls."""
+    task = _task(name="hellaswag")
+    monkeypatch.setattr(generic, "task_index", lambda: ["hellaswag"])
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"hellaswag": task}, {}))
+    calls = []
+
+    def fake_simple_evaluate(**kwargs):
+        calls.append(kwargs)
+        return {
+            "results": {"hellaswag": {"acc,none": values[len(calls) - 1]}},
+            "n-samples": {"hellaswag": {"effective": 10}},
+        }
+
+    monkeypatch.setattr(generic, "run_simple_evaluate", fake_simple_evaluate)
+    monkeypatch.setattr(
+        generic.LMEval,
+        "make_lm",
+        lambda self, mode, base_url, served, seed: SimpleNamespace(
+            mode=mode, seed=seed
+        ),
+    )
+    monkeypatch.setattr(generic, "drop_failed_requests", lambda cache_dir: 0)
+    run_config = RunConfig(
+        model="m",
+        output_dir=tmp_path,
+        options={"tasks": "hellaswag", **config.pop("options", {})},
+        **config,
+    )
+    return generic.LMEval(run_config).run("http://s/v1", "m"), calls
+
+
+def test_repeats_average_and_reseed(tmp_path, monkeypatch):
+    """repeats=k: k passes, each with its own LM seed (seed + 1234 + k) and
+    the run's random_seed; the headline averages all k."""
+    outcome, calls = _repeated_run(
+        tmp_path, monkeypatch, [0.2, 0.4, 0.9], repeats=3, seed=5
+    )
+    assert outcome["value"] == pytest.approx((0.2 + 0.4 + 0.9) / 3)
+    assert [r["value"] for r in outcome["per_repeat"]] == [0.2, 0.4, 0.9]
+    assert [c["model"].seed for c in calls] == [5 + 1234, 5 + 1234 + 1, 5 + 1234 + 2]
+    assert {c["random_seed"] for c in calls} == {5}
+    assert [c["use_cache"] for c in calls] == [
+        str(tmp_path / f"repeat-{k}" / "lm_cache" / "cache") for k in range(3)
+    ]
+
+
+def test_limit_and_num_fewshot_reach_the_harness(tmp_path, monkeypatch):
+    _, calls = _repeated_run(
+        tmp_path, monkeypatch, [0.5], limit=7, options={"num_fewshot": "3"}
+    )
+    (call,) = calls
+    assert call["limit"] == 7
+    assert call["num_fewshot"] == 3
+    _, calls = _repeated_run(tmp_path / "default", monkeypatch, [0.5])
+    assert calls[0]["limit"] is None and calls[0]["num_fewshot"] is None
