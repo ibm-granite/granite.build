@@ -134,7 +134,7 @@ endef
 .PHONY: help $(addprefix push-image-,$(FAMILIES)) $(addprefix push-image-cpu-,$(CPU_FAMILIES)) scan-deps scan-images scan-images-cpu images-cpu publish-images-cpu $(addprefix image-cpu-,$(CPU_FAMILIES)) $(addprefix publish-image-cpu-,$(CPU_FAMILIES)) images publish-images test-src prefetch check-pins $(addprefix image-,$(FAMILIES)) $(addprefix publish-image-,$(FAMILIES)) $(addprefix scan-image-,$(FAMILIES)) $(addprefix scan-image-cpu-,$(CPU_FAMILIES))
 
 help:
-	@echo "Targets: images, scan-images, publish-images (all scans, then all pushes), image-<family>, scan-image-<family>, publish-image-<family>, push-image-<family> (no scan) (and the -cpu- forms), test-src, prefetch, check-pins, scan-deps"
+	@echo "Targets: images, scan-images, publish-images (all scans, then all pushes), image-<family>, scan-image-<family>, publish-image-<family> (and the -cpu- forms; push-image-<family> is publish-images' push step and refuses on its own), test-src, prefetch, check-pins, scan-deps"
 	@echo "Families: $(FAMILIES)"
 	@echo "Set REGISTRY (e.g. quay.io/myorg); IMAGE_VERSION defaults to the git short SHA ($(IMAGE_VERSION))."
 
@@ -162,19 +162,27 @@ endef
 publish-images: $(if $(filter true,$(SKIP_SCAN)),,scan-images)
 	$(require_registry)
 	$(call check-all-absent,$(ALL_REFS))
-	@$(MAKE) --no-print-directory IMAGE_VERSION=$(IMAGE_VERSION) $(addprefix push-image-,$(FAMILIES)) $(addprefix push-image-cpu-,$(CPU_FAMILIES))
+	@$(MAKE) --no-print-directory IMAGE_VERSION=$(IMAGE_VERSION) PUSH_AFTER_SCAN=1 $(addprefix push-image-,$(FAMILIES)) $(addprefix push-image-cpu-,$(CPU_FAMILIES))
 publish-images-cpu: $(if $(filter true,$(SKIP_SCAN)),,scan-images-cpu)
 	$(require_registry)
 	$(call check-all-absent,$(CPU_REFS))
-	@$(MAKE) --no-print-directory IMAGE_VERSION=$(IMAGE_VERSION) $(addprefix push-image-cpu-,$(CPU_FAMILIES))
+	@$(MAKE) --no-print-directory IMAGE_VERSION=$(IMAGE_VERSION) PUSH_AFTER_SCAN=1 $(addprefix push-image-cpu-,$(CPU_FAMILIES))
 
-# push-image-<family> / push-image-cpu-<family>: the push alone, tag guard included,
-# for publish-images after its scans. Run publish-image-* to scan and push one image.
+# push-image-<family> / push-image-cpu-<family>: the push alone, tag guard included, for
+# publish-images after its scans. Run directly, they would push an unscanned image, so
+# they refuse unless publish-images calls them (PUSH_AFTER_SCAN=1, internal: do not
+# pass it yourself) or SKIP_SCAN=true is given, in which case each push says it is
+# unscanned. Use publish-image-<family> to scan and push one image.
+define require-scanned-push
+	@[ "$(PUSH_AFTER_SCAN)" = 1 ] || [ "$(SKIP_SCAN)" = true ] || { echo "[publish] refusing: $@ pushes without scanning. Run publish-image-$(patsubst push-image-%,%,$@) (scan, then push), publish-images, or pass SKIP_SCAN=true to push unscanned on purpose." >&2; exit 1; }
+endef
 $(addprefix push-image-,$(FAMILIES)): push-image-%:
 	$(require_registry)
+	$(require-scanned-push)
 	$(call push-image,$(call gpu_ref,$*))
 $(addprefix push-image-cpu-,$(CPU_FAMILIES)): push-image-cpu-%:
 	$(require_registry)
+	$(require-scanned-push)
 	$(call push-image,$(call cpu_ref,$*))
 
 $(addprefix image-cpu-,$(CPU_FAMILIES)): image-cpu-%:
