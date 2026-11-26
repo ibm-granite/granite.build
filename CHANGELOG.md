@@ -477,6 +477,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **logit-distill: `loss_arm: uld` trains on what it aligns, or fails loudly (#754, #760).**
+  It had never run end to end, and at the step's defaults it could not align a single
+  multi-turn row (or, on a ChatML template, any row).
+  - **New render refusal:** `loss_arm: uld` requires `last_message_only: true`. The ULD
+    teacher is the last assistant turn alone, so with `false` the student's span starts at
+    the first turn, and the loss is exactly zero. The step's renderer refuses `false` or
+    unset, and, for this arm alone, now emits `last_message_only` off-policy (before, it
+    was dropped whenever `vllm_num_servers` was 0). `CustomGOLDConfig` refuses it at
+    startup for a config that bypasses the renderer. The distill recipe refuses
+    `LOSS_ARM=uld` without `--param LAST_MESSAGE_ONLY=true` before submission, and the
+    sampled-OPD loss without it likewise. Every other arm renders byte-identically.
+  - **Changed numerics:** the non-hybrid ULD loss (trl 0.26.2's, vendored) read each
+    completion token's distribution at the token itself, one position late. It now reads
+    the logits one position earlier (start-1), as the hybrid ULD path and the JSD path do,
+    so ULD losses differ from earlier runs. A row whose alignment yields no groups now
+    contributes no loss; before, it raised a shape `RuntimeError` or scored unaligned
+    positions against each other.
+  - **New runtime `RuntimeError` and metrics:** the trainer now sums ULD rows over all ranks
+    at every optimizer step. It raises when every row of a step is unaligned, or when more
+    than half the rows of a logging window are (`uld_max_unaligned_fraction`, default 0.5;
+    the final partial window is judged at train end). The log line carries the new
+    `train/alignment_rows`, `train/alignment_unaligned_rows` and
+    `train/alignment_unaligned_rate`, all summed over ranks.
+  - A completion starting at position 0 now raises `ValueError` on both ULD paths.
+    `masking.py check-config` now requires `last_message_only: true` for `uld` and
+    `sampled_opd` instead of reporting it.
+  - Separately, the checkpoint watcher's `sleep` no longer holds rank 0's output open for
+    up to 60 s after the script exits.
 - **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
   longer share a pull dir (#715).** `<cache>/<owner>/<repo>/<revision>` ignored all three, so a
   model and a same-named dataset overwrote each other's files, two paths of one bucket synced into
