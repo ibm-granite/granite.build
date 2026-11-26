@@ -469,6 +469,49 @@ def test_install_guards_wraps_load_dataset(monkeypatch):
         fake.load_dataset("json", data_files="hf://datasets/a/b.zip")
     assert calls == ["json"]
     assert urllib.request.urlopen is generic.guard["guarded_urlopen"]
+    assert sys.excepthook is generic.guard["redacting_excepthook"]
+    # _prepare_main runs prepare.py through runpy.run_path: now the guarded one.
+    assert runpy.run_path is not ORIGINAL_RUN_PATH
+    assert "guarded_run_path" in runpy.run_path.__qualname__
+
+
+ORIGINAL_RUN_PATH = __import__("runpy").run_path
+
+
+def test_guarded_run_path_redacts_a_system_exit(monkeypatch):
+    """The base class's refusals are SystemExits whose message Python prints
+    itself (no excepthook): the wrapper re-raises them with URLs cut and
+    secrets redacted; other exits pass through unchanged."""
+    monkeypatch.setenv("HF_TOKEN", SECRET)
+
+    def refuses(*a, **k):
+        raise SystemExit(
+            f"prepare.py fetches https://h.example/x.csv?token={SECRET}, which the "
+            f"benchmark does not pin; token {SECRET}"
+        )
+
+    with pytest.raises(SystemExit) as err:
+        generic.guard["guarded_run_path"](refuses)("prepare.py")
+    assert str(err.value.code) == (
+        "prepare.py fetches https://h.example/x.csv, which the benchmark does not pin; "
+        "token <redacted>"
+    )
+
+    def exits(*a, **k):
+        raise SystemExit(3)
+
+    with pytest.raises(SystemExit) as err:
+        generic.guard["guarded_run_path"](exits)("prepare.py")
+    assert err.value.code == 3
+
+
+def test_redacting_excepthook_cuts_urls(capsys):
+    try:
+        raise RuntimeError(f"GET https://h.example/data?token={SECRET} failed")
+    except RuntimeError as e:
+        generic.guard["redacting_excepthook"](type(e), e, e.__traceback__)
+    err = capsys.readouterr().err
+    assert "GET https://h.example/data failed" in err and SECRET not in err
 
 
 def test_the_pin_must_be_read(tmp_path, monkeypatch, served):
