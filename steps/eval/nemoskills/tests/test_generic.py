@@ -459,6 +459,10 @@ def test_install_guards_wraps_load_dataset(monkeypatch):
     import urllib.request
 
     monkeypatch.setattr(urllib.request, "urlopen", urllib.request.urlopen)
+    import runpy
+
+    monkeypatch.setattr(runpy, "run_path", runpy.run_path)
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
     generic.guard["install_guards"]()
     assert fake.load_dataset("json", data_files="/x.jsonl") == "ok"
     with pytest.raises(SystemExit, match="not local"):
@@ -494,3 +498,128 @@ def test_pins():
 
 def test_registry():
     assert get("nemoskills") is generic.Nemoskills
+
+
+def test_redact_authorization_without_bearer(monkeypatch):
+    redact = generic.guard["redact"]
+    assert redact("-H 'Authorization: Basic dXNlcjpwYXNzd29yZA=='") == (
+        "-H 'Authorization: Basic <redacted>'"
+    )
+    assert redact("authorization: tok123456") == "authorization: <redacted>"
+
+
+def test_redact_urls():
+    redact_urls = generic.guard["redact_urls"]
+    text = f"fetches https://u:{SECRET}@h.example/x.csv?token={SECRET}#f, or http://h/y"
+    assert redact_urls(text) == "fetches https://h.example/x.csv, or http://h/y"
+
+
+NS_PREPARE_URLRETRIEVE = (
+    "import urllib.request\n"
+    f"urllib.request.urlretrieve('https://h.example/x.csv?token={SECRET}', 'raw')\n"
+)
+
+
+def test_a_base_refusal_prints_no_url_query(tmp_path, monkeypatch, capfd):
+    """The real base prepare (_prepare_main) on an ns prepare.py whose
+    urlretrieve URL the recipe does not pin: the base class refuses it with
+    the full URL, query and token included; through the bridge's guards the
+    message shows scheme://host/path only."""
+    pytest.importorskip("datasets")
+    pytest.importorskip("huggingface_hub")
+    mod = tmp_path / "nsmod"
+    mod.mkdir()
+    (mod / "__init__.py").write_text("EVAL_SPLIT = 'test'\n")
+    (mod / "prepare.py").write_text(NS_PREPARE_URLRETRIEVE)
+    monkeypatch.setattr(
+        generic.Nemoskills,
+        "ns_module",
+        lambda self: types.SimpleNamespace(__file__=str(mod / "__init__.py")),
+    )
+    bench = _bench(
+        tmp_path / "run",
+        dataset="https://h.example/pinned.csv",
+        dataset_revision="sha256:" + "0" * 64,
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        bench.prepare_data()
+    err = capfd.readouterr().err
+    assert (
+        "prepare.py fetches https://h.example/x.csv, which the benchmark does not pin"
+        in err
+    )
+    assert SECRET not in err
+
+
+def test_the_hub_pin_needs_its_revision(tmp_path, monkeypatch, served):
+    """The hub form's pin check compares the revision too: a read of the
+    pinned repo at another revision is not the pin."""
+    other = [{"hf_dataset": "org/data", "revision": "f" * 40}]
+    _with_prepare(monkeypatch, lambda d: other)
+    with pytest.raises(SystemExit, match="never read the pinned"):
+        _bench(tmp_path / "a").prepare_data()
+
+
+URLOPEN_REQUEST = (
+    "import sys, urllib.request\n"
+    "req = urllib.request.Request(sys.argv[1], headers={'Authorization': sys.argv[2]})\n"
+    "sys.stdout.write(urllib.request.urlopen(req).read().decode())\n"
+)
+
+
+def test_urlopen_forwards_request_headers(tmp_path, monkeypatch, served):
+    url, body, sha = served
+    _Handler.seen_auth.clear()
+    out = {}
+
+    def run(ddir):
+        out["proc"] = subprocess.run(
+            [sys.executable, "-c", URLOPEN_REQUEST, url, f"Bearer {SECRET}"],
+            capture_output=True,
+            text=True,
+        )
+
+    _with_prepare(monkeypatch, run)
+    _bench(
+        tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    assert out["proc"].returncode == 0 and out["proc"].stdout == body.decode()
+    assert _Handler.seen_auth == [f"Bearer {SECRET}"]
+
+
+def test_wget_to_stdout(tmp_path, monkeypatch, served):
+    url, body, sha = served
+    out = {}
+
+    def run(ddir):
+        out["proc"] = subprocess.run(
+            ["wget", "-q", "-O", "-", url], capture_output=True
+        )
+
+    _with_prepare(monkeypatch, run)
+    _bench(
+        tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    assert out["proc"].returncode == 0 and out["proc"].stdout == body
+
+
+def test_the_guards_leave_the_environment_as_it_was(tmp_path, monkeypatch, served):
+    url, _, sha = served
+    monkeypatch.setenv("PYTHONPATH", os.environ.get("PYTHONPATH", "") or "/keep")
+    monkeypatch.delenv("GRANITE_NS_READS", raising=False)
+    before = {
+        k: os.environ.get(k)
+        for k in ("PATH", "PYTHONPATH", "GRANITE_NS_READS", "GRANITE_NS_PINNED_URLS")
+    }
+    inside = {}
+
+    def run(ddir):
+        inside.update({k: os.environ.get(k) for k in before})
+        return [{"url": url}]
+
+    _with_prepare(monkeypatch, run)
+    _bench(
+        tmp_path / "run", dataset=url, dataset_revision=f"sha256:{sha}"
+    ).prepare_data()
+    assert inside["GRANITE_NS_READS"] and inside["PATH"] != before["PATH"]
+    assert {k: os.environ.get(k) for k in before} == before

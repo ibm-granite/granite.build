@@ -29,18 +29,24 @@ class pins ``datasets.load_dataset`` on hub ids, ``huggingface_hub``'s
 its header values forwarded, never printed), and a refusal of remote
 ``data_files``/``data_dir`` (``hf://``, ``https://``, ...) given to the local
 ``load_dataset`` builders (``json``, ``csv``, ``parquet``, ...). A checked read
-the recipe does not pin fails the prepare, naming only its http(s) URL; an
-uncaught error in prepare.py (a failed ``subprocess.run(..., check=True)``
-prints its argv) is printed with the values of secret-looking environment
-variables and of Authorization/Bearer headers redacted. After the prepare the
+the recipe does not pin fails the prepare, naming only its http(s) URL; the
+base class's own refusals, which print the full URL, are re-raised with every
+URL cut to scheme://host/path. An uncaught error in prepare.py (a failed
+``subprocess.run(..., check=True)`` prints its argv) is printed with the
+values of secret-looking environment variables, of Authorization/Bearer
+headers and of URL queries redacted. After the prepare the
 run fails unless the recorded reads include the recipe's pin, and unless the
 guards' sitecustomize recorded that it loaded in the prepare (fail closed). The
 wget shim prints no traceback: an unexpected error is reported by type only.
 
-Not intercepted: ``requests``, ``httpx``, the ``wget`` Python package, ``git``,
-``curl`` and any other subprocess. A prepare that fetches that way still runs,
-so it can read data beyond the pin (the pin check above still demands the
-pinned data was read too): give such a benchmark a local ``dataset=``. The
+Not intercepted: ``requests``, ``httpx``, ``aiohttp``, ``fsspec`` reads
+(``hf://``, ``https://`` paths opened directly), the ``wget`` Python package,
+``git``, ``curl`` and any other subprocess, and remote ``data_files`` given
+to a pinned hub id (``load_dataset(<pinned repo>, data_files="https://...")``:
+the revision pin covers the repo, not the URL). A prepare that fetches that
+way still runs, so it can read data beyond the pin (the pin check above
+still demands the pinned data was read too): give such a benchmark a local
+``dataset=``. The
 run's provenance records each checked read (``reads``) and the pin
 (``pinned_by``).
 
@@ -289,10 +295,37 @@ def redact(text):
     return re.sub(r"(?i)(bearer\s+)[^\s'\",\]]+", r"\1<redacted>", text)
 
 
+def redact_urls(text):
+    """Every http(s) URL in ``text`` as scheme://host/path: a query string or
+    userinfo may carry a token. A URL ends at whitespace, a quote, <, > or a
+    comma (the base class's messages put one right after the URL)."""
+    import re
+
+    return re.sub(r"https?://[^\s'\",<>]+", lambda m: safe_url(m.group(0)), text)
+
+
 def redacting_excepthook(kind, value, tb):
     import traceback
 
-    sys.stderr.write(redact("".join(traceback.format_exception(kind, value, tb))))
+    text = "".join(traceback.format_exception(kind, value, tb))
+    sys.stderr.write(redact(redact_urls(text)))
+
+
+def guarded_run_path(original):
+    """runpy.run_path, which _prepare_main runs prepare.py with: a SystemExit
+    message (the base class's refusals print the full unpinned URL, query
+    included) is re-raised with its URLs and secrets redacted. Python prints
+    a SystemExit's message itself, bypassing sys.excepthook."""
+
+    def run_path(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except SystemExit as e:
+            if isinstance(e.code, str):
+                raise SystemExit(redact(redact_urls(e.code))) from None
+            raise
+
+    return run_path
 
 
 def install_guards():
@@ -300,7 +333,10 @@ def install_guards():
         return
     import urllib.request
 
+    import runpy
+
     sys.excepthook = redacting_excepthook
+    runpy.run_path = guarded_run_path(runpy.run_path)
     urllib.request.urlopen = guarded_urlopen
     try:
         import datasets
