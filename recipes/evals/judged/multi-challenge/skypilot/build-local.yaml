@@ -5,9 +5,10 @@ granite.build:
   # (same as build.yaml); `multi-challenge-fetch` copies its output dir (generation.json and the
   # per-item responses under items/, which the score phase reads) back with scp on the local Bash
   # environment; `multi-challenge` scores it in the CPU image on the local Docker environment.
-  # Needs a standalone gbserver (Bash, Docker), `ssh -F ~/$${SCORE_SSH_CONFIG} $${SCORE_REMOTE_HOST}`
-  # working for the gbserver user, and the EVAL_JUDGE_API_KEY gb secret. Shares
-  # parameters.yaml with build.yaml.
+  # Needs a standalone gbserver (Bash, Docker), `ssh -F ~/$${SCORE_SSH_CONFIG} $${SCORE_REMOTE_HOST | default(CLUSTER, true)}`
+  # working for the gbserver user (the host is the site file's SCORE_REMOTE_HOST, or CLUSTER when
+  # that is unset or empty), and the EVAL_JUDGE_API_KEY gb secret. Shares parameters.yaml and the
+  # site file with build.yaml.
   retries:
     max_retries: $${MAX_RETRIES}
     target_reuse_enabled: true
@@ -38,9 +39,9 @@ granite.build:
             hf_home: "$${HF_HOME}"
             launcher_config:
               resources:
-                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                accelerators: "$${EVAL_ACCELERATOR}:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${EVAL_PARTITION}"
                 memory: $${GPU_MEMORY}
     multi-challenge-fetch:
       environment_uri: "space://environments/bash"
@@ -64,7 +65,7 @@ granite.build:
                 SRC="{{ bindings.generation.binding.path }}"; SRC_DIR="${SRC%/*}";
                 DEST="$GB_BASH_OUTPUT_DIR/${SRC_DIR##*/}"; /usr/bin/rm -rf "$DEST";
                 /usr/bin/scp -r -F "$HOME_DIR/$${SCORE_SSH_CONFIG}" -o BatchMode=yes
-                "$${SCORE_REMOTE_HOST}:$SRC_DIR" "$GB_BASH_OUTPUT_DIR/";
+                "$${SCORE_REMOTE_HOST | default(CLUSTER, true)}:$SRC_DIR" "$GB_BASH_OUTPUT_DIR/";
                 test -s "$DEST/generation.json" || { echo "fetch: no $DEST/generation.json"; exit 1; };
                 test -d "$DEST/items" || { echo "fetch: no $DEST/items"; exit 1; };
                 echo "GB_ARTIFACT_ID:granite_generation GB_ARTIFACT_PATH:$DEST/generation.json"

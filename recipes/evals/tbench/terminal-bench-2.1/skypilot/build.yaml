@@ -32,7 +32,7 @@ granite.build:
             sandbox_cache: "$${SANDBOX_CACHE if SANDBOX_CACHE else OUTPUT_ROOT ~ '/' ~ RUN_NAME ~ '/enroot-cache'}"
             launcher_config:
               resources:
-                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                accelerators: "$${EVAL_ACCELERATOR}:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${EVAL_PARTITION}"
                 memory: $${GPU_MEMORY}

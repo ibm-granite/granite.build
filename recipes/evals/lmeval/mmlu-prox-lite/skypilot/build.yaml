@@ -31,7 +31,7 @@ granite.build:
             hf_home: "$${HF_HOME}"
             launcher_config:
               resources:
-                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                accelerators: "$${EVAL_ACCELERATOR}:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${EVAL_PARTITION}"
                 memory: $${GPU_MEMORY}

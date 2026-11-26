@@ -9,7 +9,8 @@ command is a `>-` folded scalar holding `<% if %>` blocks for the optional flags
 line made only of those blocks renders empty when every flag is unset, and YAML then
 folds that empty line into a literal newline: `bash -c` runs the command in two parts,
 the first without the judge options. Only the full-benchmark default hits that case,
-so every flag combination is rendered here.
+so every flag combination is rendered here. The site keys come from
+recipes/evals/site.example.yaml, layered over parameters.yaml as `--param-file` does.
 """
 
 import itertools
@@ -18,7 +19,7 @@ import pathlib
 import pytest
 import yaml
 
-from gbcli.services.service_build import get_params_from_file
+from gbcli.services.service_build import load_layered_params
 from gbcli.utils.buildutil import apply_parameters
 
 _RECIPE = (
@@ -29,6 +30,7 @@ _RECIPE = (
     / "multi-challenge"
     / "skypilot"
 )
+_SITE = _RECIPE.parents[2] / "site.example.yaml"
 _REQUIRED = [
     "JUDGE_BASE_URL=https://judge.example/v1",
     "GENERATION_PATH=/tmp/run/multi-challenge/generation.json",
@@ -45,7 +47,7 @@ _COMBOS = list(itertools.product([False, True], repeat=len(_OPTIONAL)))
 
 def _commands(build_file, params, tmp_path):
     contents = (_RECIPE / build_file).read_text(encoding="utf-8")
-    defaults = get_params_from_file(str(_RECIPE / "parameters.yaml"))
+    defaults = load_layered_params(str(_RECIPE / build_file), [str(_SITE)])
     rendered = yaml.safe_load(
         apply_parameters(contents, params, defaults, str(tmp_path))
     )
@@ -88,7 +90,7 @@ def test_optional_flags_reach_the_score_command(flag, expected, tmp_path):
 
 def test_build_yaml_has_no_local_targets(tmp_path):
     contents = (_RECIPE / "build.yaml").read_text(encoding="utf-8")
-    defaults = get_params_from_file(str(_RECIPE / "parameters.yaml"))
+    defaults = load_layered_params(str(_RECIPE / "build.yaml"), [str(_SITE)])
     rendered = yaml.safe_load(apply_parameters(contents, [], defaults, str(tmp_path)))
     assert set(rendered["granite.build"]["targets"]) == {
         "multi-challenge-generate",

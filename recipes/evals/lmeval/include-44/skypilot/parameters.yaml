@@ -1,10 +1,10 @@
-# include-44 on BlueVela (SkyPilot / SLURM), lmeval family image.
+# include-44 on SkyPilot/SLURM, lmeval family image.
 # Data: https://huggingface.co/datasets/CohereLabs/include-base-44 @ d2e1f6015f67a43c02a9a68db98e2298e2d6a660
 # (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/lmeval/include-44/skypilot/build.yaml --space <space> --param LIMIT=5
+#   gb build start -f recipes/evals/lmeval/include-44/skypilot/build.yaml --param-file <site.yaml> --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────
@@ -19,7 +19,7 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU only) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:ea0bc96d"
+IMAGE: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:136b0f80"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
@@ -29,11 +29,10 @@ OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Cluster ──────────────────────────────────────────────────────────
-ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
-CLUSTER: "bluevela"
-QUEUE: "gpu-mid"
+# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) and on which GPU
+# model (EVAL_ACCELERATOR) come from the site file passed with --param-file;
+# recipes/evals/site.example.yaml lists every key, and none may also be set here.
 GPU_MEMORY: 256
-CPU_QUEUE: "cpu"
 SCORE_CPUS: 8
 SCORE_MEMORY: 64
 MAX_RETRIES: 2

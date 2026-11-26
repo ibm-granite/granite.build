@@ -1,4 +1,4 @@
-# mcpmark-playwright on BlueVela (SkyPilot / SLURM), mcpmark family image.
+# mcpmark-playwright on SkyPilot/SLURM, mcpmark family image.
 # Harness + task definitions: github.com/eval-sys/mcpmark @ cd45b7f57923b9b3985467f5139927575f83141c
 # (pinned in the image's code; Apache-2.0). The four standard tasks drive the LIVE
 # public web with in-image chromium (no easy suite exists): expect run-to-run variance
@@ -6,8 +6,8 @@
 #
 # LIMIT is empty: the full 4-task standard suite. For a quick functional check, the
 # first task (there is no easy suite to shrink to):
-#   gb build start -f recipes/evals/mcpmark/mcpmark-playwright/skypilot/build.yaml \
-#     --space <space> --param RUN_NAME=<unique> --param LIMIT=1
+#   gb build start -f recipes/evals/mcpmark/mcpmark-playwright/skypilot/build.yaml --param-file <site.yaml> \
+#     --space <space> --param OUTPUT_ROOT=<root> --param RUN_NAME=<unique> --param LIMIT=1
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ HF_HOME: ""
 # Fill with the tag of a built + pushed family image before the first run:
 #   make -C steps/eval image-mcpmark REGISTRY=quay.io/granitebuild publish-image-mcpmark REGISTRY=...
 # (the tag defaults to the building checkout's git short SHA).
-IMAGE: "quay.io/granitebuild/steps/eval/mcpmark/images/gpu:ea0bc96d"
+IMAGE: "quay.io/granitebuild/steps/eval/mcpmark/images/gpu:136b0f80"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
@@ -41,9 +41,9 @@ TENSOR_PARALLEL_SIZE: 1
 MAX_MODEL_LEN: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
-ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
-CLUSTER: "bluevela"
-QUEUE: "gpu-mid"
+# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) and on which GPU
+# model (EVAL_ACCELERATOR) come from the site file passed with --param-file;
+# recipes/evals/site.example.yaml lists every key, and none may also be set here.
 GPU_MEMORY: 64
 # A retried target resumes per task from the harness's own results tree.
 MAX_RETRIES: 3

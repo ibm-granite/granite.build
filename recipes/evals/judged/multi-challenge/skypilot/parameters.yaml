@@ -3,7 +3,7 @@
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/build.yaml --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
+#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/build.yaml --param-file <site.yaml> --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────
@@ -21,8 +21,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/judged/images/gpu:ea0bc96d"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/judged/images/cpu:ea0bc96d"
+IMAGE: "quay.io/granitebuild/steps/eval/judged/images/gpu:136b0f80"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/judged/images/cpu:136b0f80"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
@@ -38,11 +38,10 @@ JUDGE_BASE_URL: ""
 JUDGE_MODEL: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
-ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
-CLUSTER: "bluevela"
-QUEUE: "gpu-mid"
+# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) and on which GPU
+# model (EVAL_ACCELERATOR) come from the site file passed with --param-file;
+# recipes/evals/site.example.yaml lists every key, and none may also be set here.
 GPU_MEMORY: 256
-CPU_QUEUE: "cpu"
 SCORE_CPUS: 8
 SCORE_MEMORY: 64
 MAX_RETRIES: 2
@@ -52,13 +51,14 @@ LOG_RETRIEVAL_INTERVAL_SECONDS: 300
 # ─── Local scoring (build-local.yaml only) ────────────────────────────
 # build-local.yaml generates on SkyPilot/SLURM as above, then copies the output dir (generation.json and
 # items/) to the gbserver host and scores it there in IMAGE_CPU (local Docker), for a judge the cluster cannot reach. E.g.:
-#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/build-local.yaml --space <space> \
+#   gb build start -f recipes/evals/judged/multi-challenge/skypilot/build-local.yaml --param-file <site.yaml> --space <space> \
 #     --param OUTPUT_ROOT=<root> \
 #     --param JUDGE_BASE_URL=<judge-base-url> \
 #     --param JUDGE_MODEL=<judge-model> --param LIMIT=5
 # SCORE_CPUS / SCORE_MEMORY above size the local container.
-SCORE_REMOTE_HOST: "bluevela"
-# ssh config for SCORE_REMOTE_HOST, relative to the gbserver user's home (the step gets no HOME).
+# The host scp copies from is a site key, SCORE_REMOTE_HOST; unset or empty, it is CLUSTER, the Host
+# alias gbserver writes for the environment into ~/.slurm/config.
+# ssh config for that host, relative to the gbserver user's home (the step gets no HOME).
 SCORE_SSH_CONFIG: ".slurm/config"
 
 # ─── Re-scoring (score-local.yaml only) ───────────────────────────────

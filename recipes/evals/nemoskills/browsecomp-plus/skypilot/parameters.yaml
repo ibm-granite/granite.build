@@ -1,11 +1,11 @@
-# browsecomp-plus on BlueVela (SkyPilot / SLURM), nemoskills family image.
+# browsecomp-plus on SkyPilot/SLURM, nemoskills family image.
 # Data: https://huggingface.co/datasets/Tevatron/browsecomp-plus @ 144cff8e35b5eaef7e526346aa60774a9deb941f
 # (pinned in the image's code; canary-decrypted at run time; fetch it into the HF cache with
 # `make -C steps/eval prefetch HF_HOME=<cache>`).
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/nemoskills/browsecomp-plus/skypilot/build.yaml --space <space> --param LIMIT=5
+#   gb build start -f recipes/evals/nemoskills/browsecomp-plus/skypilot/build.yaml --param-file <site.yaml> --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────
@@ -20,8 +20,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:ba1c2bbe"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:ba1c2bbe"
+IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:136b0f80"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:136b0f80"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
@@ -44,11 +44,10 @@ JUDGE_BASE_URL: ""
 SEARCH_MCP_URL: ""
 
 # ─── Cluster ──────────────────────────────────────────────────────────
-ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
-CLUSTER: "bluevela"
-QUEUE: "gpu-mid"
+# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) and on which GPU
+# model (EVAL_ACCELERATOR) come from the site file passed with --param-file;
+# recipes/evals/site.example.yaml lists every key, and none may also be set here.
 GPU_MEMORY: 256
-CPU_QUEUE: "cpu"
 SCORE_CPUS: 8
 SCORE_MEMORY: 64
 MAX_RETRIES: 2

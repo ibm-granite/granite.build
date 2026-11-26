@@ -2,6 +2,7 @@
 # SkyPilot/SLURM from a site file:
 #
 #   recipes/distill/                                    site.example.yaml
+#   recipes/evals/                                      site.example.yaml
 #   recipes/granite-switch/skypilot/slurm/<recipe>/     site.example.yaml
 #
 # This file is not an environment and is not in any space. Every site-specific

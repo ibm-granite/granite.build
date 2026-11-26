@@ -1,4 +1,4 @@
-# officeqa-full on BlueVela (SkyPilot / SLURM), officeqa family image.
+# officeqa-full on SkyPilot/SLURM, officeqa family image.
 #
 # Data: huggingface.co/datasets/databricks/OfficeQA @ 763a8366abf2a3605c381d53586d844dc60fa756
 # — the 246 officeqa_full.csv questions plus the parsed U.S. Treasury Bulletin
@@ -19,10 +19,10 @@
 #
 # LIMIT is empty: the full benchmark (246 questions). For a quick functional
 # check, score only the first N questions (3-10 is enough to prove the plumbing):
-#   gb build start -f recipes/evals/officeqa/officeqa-full/skypilot/build.yaml --space <space> --param LIMIT=3
+#   gb build start -f recipes/evals/officeqa/officeqa-full/skypilot/build.yaml --param-file <site.yaml> --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=3
 # For a model-free plumbing check (fetch, pins, page extraction, scorer), score
 # the gold answers through the same path:
-#   gb build start -f recipes/evals/officeqa/officeqa-full/skypilot/build.yaml --space <space> \
+#   gb build start -f recipes/evals/officeqa/officeqa-full/skypilot/build.yaml --param-file <site.yaml> --space <space> --param OUTPUT_ROOT=<root> \
 #     --param MODEL_PATH=none --param OPTIONS=answers=gold
 # Override any value with --param KEY=VALUE.
 
@@ -45,8 +45,8 @@ HF_HOME: ""
 # (the tag defaults to the building checkout's git short SHA). The family image adds
 # only pandas and lxml (both BSD-3) on top of granite-evals, so any officeqa image
 # tag is license-clean to redistribute; the gated dataset is never baked in.
-IMAGE: "quay.io/granitebuild/steps/eval/officeqa/images/gpu:ea0bc96d"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/officeqa/images/cpu:ea0bc96d"
+IMAGE: "quay.io/granitebuild/steps/eval/officeqa/images/gpu:136b0f80"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/officeqa/images/cpu:136b0f80"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
@@ -59,11 +59,10 @@ OPTIONS: ""
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Cluster ──────────────────────────────────────────────────────────
-ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
-CLUSTER: "bluevela"
-QUEUE: "gpu-mid"
+# Where the targets run (ENVIRONMENT_URI, CLUSTER, the partitions) and on which GPU
+# model (EVAL_ACCELERATOR) come from the site file passed with --param-file;
+# recipes/evals/site.example.yaml lists every key, and none may also be set here.
 GPU_MEMORY: 256
-CPU_QUEUE: "cpu"
 SCORE_CPUS: 8
 SCORE_MEMORY: 64
 MAX_RETRIES: 2

@@ -36,9 +36,9 @@ granite.build:
                   - env_name: HF_TOKEN
             launcher_config:
               resources:
-                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                accelerators: "$${EVAL_ACCELERATOR}:$${TENSOR_PARALLEL_SIZE}"
                 cluster: "$${CLUSTER}"
-                zone: "$${QUEUE}"
+                zone: "$${EVAL_PARTITION}"
                 memory: $${GPU_MEMORY}
     hle-tools:
       environment_uri: "$${ENVIRONMENT_URI}"
@@ -76,6 +76,6 @@ granite.build:
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"
-                zone: "$${CPU_QUEUE}"
+                zone: "$${CPU_PARTITION}"
                 memory: $${SCORE_MEMORY}
                 cpus: "$${SCORE_CPUS}"

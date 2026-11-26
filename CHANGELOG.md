@@ -112,6 +112,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The eval recipes run on any SLURM cluster, from a site file (#772).** The 57 recipes
+  under `recipes/evals/` defaulted to one cluster in their `parameters.yaml`. They now take
+  every site key from one private site file, whose keys
+  `recipes/evals/site.example.yaml` lists with fake values, and render their environment
+  from `recipes/environments/skypilot-slurm.template.yaml` with
+  `scripts/setup-local-space.sh`. The keys share distill's names, so distill's site file
+  serves both groups. `recipes/evals/README.md` describes the setup. **Breaking:** a run
+  needs `--param-file <site.yaml>` and fails to render without one. `parameters.yaml` no
+  longer has `ENVIRONMENT_URI`, `CLUSTER`, `QUEUE`, `CPU_QUEUE` or `SCORE_REMOTE_HOST`.
+  `QUEUE` is renamed `EVAL_PARTITION` and `CPU_QUEUE` is renamed `CPU_PARTITION`, so a
+  `--param QUEUE=…` becomes `--param EVAL_PARTITION=…`. The GPU model, until now a fixed
+  `H200`, comes from the site's `EVAL_ACCELERATOR`. `judged/multi-challenge`'s
+  `build-local.yaml` copies from the site's `SCORE_REMOTE_HOST`, or from `CLUSTER` when
+  it is unset.
 - **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
   site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
   moved to `recipes/granite-switch/skypilot/slurm-bluevela/answerability-lora` in #639 (the
