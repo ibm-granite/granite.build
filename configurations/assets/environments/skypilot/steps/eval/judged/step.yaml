@@ -182,8 +182,11 @@ environment_configs:
 
             # options, split on whitespace (no quoting) and never glob-expanded: read -a
             # over a single-quoted word, not an unquoted for, so a * or ? in a value (a
-            # tasks= pattern) stays literal here and in the harness call below.
-            read -r -a OPT_WORDS <<< '{{ config.options | replace("'", "'\"'\"'") }}'
+            # tasks= pattern) stays literal here and in the harness call below. -d ''
+            # reads past newlines (a YAML block scalar spreads options over lines; plain
+            # read -a keeps only the first); it then returns 1 at the end of input. A CR
+            # (CRLF lines) separates words too.
+            IFS=$' \t\r\n' read -r -d '' -a OPT_WORDS <<< '{{ config.options | replace("'", "'\"'\"'") }}' || true
 
             OUTPUT_DIR="{{ config.output_dir }}"
             OUTPUT_ROOT="{{ config.output_root }}"

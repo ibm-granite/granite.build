@@ -213,6 +213,7 @@ def _run_until_output_dir(step, tmp_path, **config):
         head
         + made
         + 'echo "OUT=$OUTPUT_DIR"; echo "OFF=${HF_HUB_OFFLINE:-}"\n'
+        + 'echo "DOFF=${HF_DATASETS_OFFLINE:-}"\n'
         + 'for w in "${OPT_WORDS[@]}"; do echo "OPT=$w"; done\n'
     )
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path)}
@@ -226,7 +227,7 @@ def _out(proc):
     return {
         k: v
         for k, _, v in (ln.partition("=") for ln in proc.stdout.splitlines())
-        if k in ("OUT", "OFF")
+        if k in ("OUT", "OFF", "DOFF")
     }
 
 
@@ -247,6 +248,7 @@ def test_hf_offline_with_hf_home_runs_offline(step, tmp_path):
         step, tmp_path, benchmark="b", hf_offline="1", hf_home=str(cache)
     )
     assert _out(proc)["OFF"] == "1"
+    assert _out(proc)["DOFF"] == "1"  # datasets' own offline switch too
     assert cache.is_dir()
 
 
@@ -400,6 +402,19 @@ def test_options_are_split_but_never_globbed(step, tmp_path):
     )
     assert _opts(proc) == ["tasks=glob*", "metric=it's"]
     assert "${OPT_WORDS[@]}" in _launcher(step)["run"].split("OPTS=()", 1)[1]
+
+
+def test_options_over_several_lines_are_all_read(step, tmp_path):
+    # A YAML block scalar spreads options over lines; every word reaches the
+    # harness call and the run dir, not only the first line's.
+    proc = _run_until_output_dir(
+        step,
+        tmp_path,
+        benchmark="lm-eval",
+        options="tasks=a metric=m\n  exclude=b\r\n\tsplit=c\n",
+    )
+    assert _opts(proc) == ["tasks=a", "metric=m", "exclude=b", "split=c"]
+    assert Path(_dir(proc)).name == "lm-eval@tasks-a@exclude-b@split-c"
 
 
 def test_a_long_selection_is_shortened_but_stays_distinct(step, tmp_path):
