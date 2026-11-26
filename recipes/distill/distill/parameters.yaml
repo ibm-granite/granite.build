@@ -179,7 +179,8 @@ VLLM_HEALTH_TIMEOUT_SECONDS: 1800
 # must cover the trainer's queue wait plus its run. Raise it for a longer one.
 VLLM_MAX_LIFETIME_SECONDS: 43200
 TOP_P: 0.95
-# The sampled-OPD (REINFORCE-style) loss is a different objective; off.
+# The sampled-OPD (REINFORCE-style) loss is a different objective; off. It needs
+# LMBDA_MODE ramp or on-policy, and the render fails off-policy.
 USE_SAMPLED_OPD_LOSS: false
 # Supervise the final assistant turn only. Required true by LOSS_ARM uld (in every
 # mode) and by the sampled-OPD loss (LOSS_ARM sampled_opd or USE_SAMPLED_OPD_LOSS); the

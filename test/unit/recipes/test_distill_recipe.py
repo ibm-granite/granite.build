@@ -330,6 +330,26 @@ def test_other_arms_pass_no_last_message_only_off_policy(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+def test_sampled_opd_off_policy_fails_to_render(tmp_path, sopd):
+    """Off-policy the recipe passes use_sampled_opd_loss nowhere (only its on-policy
+    block carries it), so the switch was dropped and the run trained plain JSD while
+    its parameters asked for the sampled-OPD loss. The arm reached the step, whose
+    renderer refuses it, but only once the allocation is up. Both are refused before
+    submission, with LAST_MESSAGE_ONLY set so that refusal is not the one that fires."""
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(
+            tmp_path, LMBDA_MODE="off-policy", LAST_MESSAGE_ONLY="true", **sopd
+        )
+    assert "LMBDA_MODE_must_be_ramp_or_on_policy_for_the_sampled_OPD_loss" in str(
+        err.value
+    )
+
+
 @pytest.mark.parametrize("mode", ["ramp", "on-policy"])
 def test_generation_floor_defaults_to_16_online(tmp_path, mode):
     assert _gold(_render(tmp_path, LMBDA_MODE=mode))["min_completion_length"] == 16
