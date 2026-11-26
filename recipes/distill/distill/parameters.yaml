@@ -152,7 +152,8 @@ BETA: 0.5
 # Leave false: granite's logits_scaling overflows the fused bf16 kernel (NaN loss).
 USE_LIGER_FUSED_JSD: false
 # The objective as a validated preset; empty keeps jsd at BETA. distillm2_like
-# needs 0 < lambda < 1 over the run, which a 0 -> 1 ramp satisfies.
+# needs 0 < lambda < 1 over the run, which a 0 -> 1 ramp satisfies. uld needs
+# LAST_MESSAGE_ONLY true, and the render fails without it.
 LOSS_ARM: ""
 # The assistant turn header of the pair's chat markup, which locates the completion
 # span. A marker that matches nothing trains on NOTHING while still logging a loss.
@@ -180,6 +181,8 @@ VLLM_MAX_LIFETIME_SECONDS: 43200
 TOP_P: 0.95
 # The sampled-OPD (REINFORCE-style) loss is a different objective; off.
 USE_SAMPLED_OPD_LOSS: false
+# Supervise the final assistant turn only. Required true by LOSS_ARM uld (in every
+# mode) and by the sampled-OPD loss; otherwise read on-policy only.
 LAST_MESSAGE_ONLY: false
 CLIP_ALPHA: 0.1
 OPD_IMPORTANCE_SAMPLING: false

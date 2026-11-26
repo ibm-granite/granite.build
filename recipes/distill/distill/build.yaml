@@ -9,6 +9,8 @@
 #     --param-file <site.yaml> [--param-file recipes/distill/distill/smoke.yaml] \
 #     --param RUN_NAME=<name> --param LMBDA_MODE=off-policy|ramp|on-policy
 #
+# LOSS_ARM=uld also needs --param LAST_MESSAGE_ONLY=true; the render fails without it.
+#
 # Layers: this directory's parameters.yaml (the experiment), then the site file,
 # then smoke.yaml (a plumbing-scale run), then each --param. Later layers win.
 #
@@ -89,6 +91,15 @@ $${ LMBDA_RAMP_START_STEP_and_LMBDA_RAMP_STEPS_must_be_0_unless_LMBDA_MODE_is_ra
 $${ MIN_COMPLETION_LENGTH_must_be_empty_or_0_when_LMBDA_MODE_is_off_policy }
 <%- endif %>
 <%- set FLOOR = (FLOOR or "16") | int %>
+# LOSS_ARM uld needs LAST_MESSAGE_ONLY true. ULD's teacher is the last assistant turn
+# alone; with false the student's span starts at the first one, so no multi-turn row
+# aligns and the run trains at zero gradient (the step's renderer refuses it too, but
+# only once the allocation is up). Refused here rather than set for you, because it
+# changes which turns are supervised: the final assistant turn only.
+<%- set ULD = LOSS_ARM | string | trim | lower == "uld" %>
+<%- if ULD and (LAST_MESSAGE_ONLY | string | trim | lower) not in YES %>
+$${ LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld }
+<%- endif %>
 # ── CKPT_LADDER, checked once ──────────────────────────────────────────────
 # Every rung binds a checkpoint the trainer emits MID-RUN. A rung it never
 # writes is not a late error but a target that never dispatches, so the ladder
@@ -653,6 +664,11 @@ $${ corpus_inputs() }
               beta: $${BETA}
               use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
               loss_arm: "$${LOSS_ARM}"
+<%- if ULD and not ONLINE %>
+              # The step emits this off-policy for the uld arm alone, and the on-policy
+              # block below, which carries it otherwise, is not rendered here.
+              last_message_only: $${LAST_MESSAGE_ONLY}
+<%- endif %>
               # Stated in every target: the step's default is ChatML's marker, and a
               # marker that matches nothing trains on NOTHING while still producing a
               # loss curve and checkpoints.
