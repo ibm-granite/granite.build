@@ -37,6 +37,16 @@ def generate(tmp_path, source):
     return yaml.safe_load(out.read_text())
 
 
+def test_every_eval_entry_is_scoped_and_expires():
+    entries = osv_gate.load_ignore_entries(SCAN_IGNORE)
+    assert entries
+    unscoped = [e["line"] for e in entries if not e["purls"]]
+    assert not unscoped, f"entries without a pkg: scope: {unscoped}"
+    no_expiry = [e["line"] for e in entries if e["expires"] is None]
+    assert not no_expiry, f"entries without exp: {no_expiry}"
+    versionless = [e["line"] for e in entries if any(v is None for _, _, v in e["purls"])]
+    assert not versionless, f"entries scoped to every version of a package: {versionless}"
+
 
 def test_each_id_is_listed_once():
     ids = [e["id"] for e in osv_gate.load_ignore_entries(SCAN_IGNORE)]

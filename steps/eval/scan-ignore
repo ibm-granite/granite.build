@@ -1,21 +1,31 @@
-# Vulnerabilities the eval gates accept on purpose: `make scan-deps` and the image gate,
+# Vulnerabilities the eval gates accept on purpose: `make scan-deps` (trivy and
+# osv-scanner over the lock and the nested requirements files) and the image gate,
 # `make scan-image-<family>` / `scan-image-cpu-<family>`, which publish-image-* runs.
-# trivy reads this file as --ignorefile.
 #
-# One advisory id per line; `#` starts a comment. Every alias of an advisory is listed
-# (CVE, GHSA, PYSEC), because trivy reports by CVE or, when an advisory has none, by
-# GHSA, while osv-scanner and quay's scanner name the same advisory by GHSA or PYSEC.
-# The aliases were taken from the advisory records at osv.dev; do not derive one id
-# from another. Each id carries trivy's expiry, exp:YYYY-MM-DD: past that date the line
-# no longer applies and the gate fails again, so the entry is re-reviewed (until
-# 2027-05-31 unless the entry says otherwise). Every entry names the images it
-# applies to, why the finding is accepted, and the issue that removes it; delete the
-# entry when that lands.
+# One advisory id per line, `#` starts a comment:
 #
-# One file serves every family, and trivy matches ids alone: an id accepted here is
-# accepted in every image. Each entry is scoped by package and version in its comment,
-# so a new finding with a listed id in another package or image is not covered by it
-# and needs an entry (or a fix) of its own.
+#   <id> exp:<YYYY-MM-DD> pkg:<type>/<name>@<version> [pkg:... ...]
+#
+# - Aliases. Every alias of an advisory is listed (CVE, GHSA, PYSEC), because trivy
+#   reports by CVE or, when an advisory has none, by GHSA, while osv-scanner and quay's
+#   scanner name the same advisory by GHSA or PYSEC. The aliases were taken from the
+#   advisory records at osv.dev; do not derive one id from another.
+# - Expiry. exp: is trivy's expiry: from that date the line no longer applies and both
+#   gates fail again, so the entry is re-reviewed (2027-05-31 unless the entry says
+#   otherwise).
+# - Scope. pkg: names the packages, by package URL with name and version, that the id is
+#   accepted in, and the gates accept it nowhere else: the same id in another package,
+#   or another version of the same one, fails. osv-gate.py
+#   (steps/train/distill/images/) reads this file as it is. trivy gets the YAML ignore
+#   file scripts/trivy-ignore.py writes from it at gate time (its `purls` field). The
+#   scopes were taken from what the gates report in the 19 published images and the
+#   lock, so a new version of a listed package needs a new review, not a wider scope.
+#   One file serves every family. An entry names packages, not images, so it covers
+#   that package and version in every image that installs it; the comment says which
+#   images those are.
+#
+# Every entry also says why the finding is accepted and which issue removes it;
+# delete the entry when that issue lands.
 
 # ---- vllm 0.27.1: every GPU image (the `serve` extra) ----------------------------------
 # HIGH, fixed in 0.31.0 / 0.32.0. vllm is pinned exactly in src/core/pyproject.toml's
@@ -28,16 +38,16 @@
 # (granite_evals/serving.py), and its only caller is the harness, sending the pinned
 # benchmarks' text prompts. Issue: #768 (the vLLM uplift, which re-baselines the evals).
 # Until 2027-05-31.
-CVE-2026-114053 exp:2027-05-31
-GHSA-h3rc-6mm3-gc2m exp:2027-05-31
-CVE-2026-114055 exp:2027-05-31
-GHSA-gx7p-2j49-hfq4 exp:2027-05-31
-CVE-2026-115912 exp:2027-05-31
-GHSA-6757-hggm-hp2w exp:2027-05-31
-PYSEC-2026-4345 exp:2027-05-31
-CVE-2026-115915 exp:2027-05-31
-GHSA-h3rc-j82p-2c3h exp:2027-05-31
-PYSEC-2026-4346 exp:2027-05-31
+CVE-2026-114053 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-h3rc-6mm3-gc2m exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-114055 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-gx7p-2j49-hfq4 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-115912 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-6757-hggm-hp2w exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4345 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+CVE-2026-115915 exp:2027-05-31 pkg:pypi/vllm@0.27.1
+GHSA-h3rc-j82p-2c3h exp:2027-05-31 pkg:pypi/vllm@0.27.1
+PYSEC-2026-4346 exp:2027-05-31 pkg:pypi/vllm@0.27.1
 
 # ---- litellm 1.82.6 (tau), 1.80.0 (mcpmark), 1.84.10 (bird, ifbench, nemoskills) ------
 # CRITICAL and HIGH, fixed in 1.83.0-1.95.0. Each version is a harness's own pin:
@@ -51,41 +61,41 @@ PYSEC-2026-4346 exp:2027-05-31
 # vertex_ai_credentials of a proxy user). The harnesses use litellm as a client library
 # and none starts the proxy. Issues: #770 (tau2-bench and MCPMark refreshes) and #769
 # (the NeMo-Skills bump). Until 2027-05-31.
-CVE-2026-35029 exp:2027-05-31
-GHSA-53mr-6c8q-9789 exp:2027-05-31
-PYSEC-2026-2597 exp:2027-05-31
-CVE-2026-35030 exp:2027-05-31
-GHSA-jjhc-v7c2-5hh6 exp:2027-05-31
-PYSEC-2026-390 exp:2027-05-31
-CVE-2026-37004 exp:2027-05-31
-GHSA-6wvf-77m9-58rm exp:2027-05-31
-PYSEC-2026-3861 exp:2027-05-31
-CVE-2026-40217 exp:2027-05-31
-GHSA-wxxx-gvqv-xp7p exp:2027-05-31
-PYSEC-2026-2601 exp:2027-05-31
-CVE-2026-42203 exp:2027-05-31
-GHSA-xqmj-j6mv-4862 exp:2027-05-31
-PYSEC-2026-2602 exp:2027-05-31
-CVE-2026-42208 exp:2027-05-31
-GHSA-r75f-5x8p-qvmc exp:2027-05-31
-PYSEC-2026-391 exp:2027-05-31
-CVE-2026-42271 exp:2027-05-31
-GHSA-v4p8-mg3p-g94g exp:2027-05-31
-PYSEC-2026-2599 exp:2027-05-31
-CVE-2026-47101 exp:2027-05-31
-GHSA-qrc4-49gv-mv9m exp:2027-05-31
-PYSEC-2026-2598 exp:2027-05-31
-CVE-2026-47102 exp:2027-05-31
-GHSA-wpfp-gwwc-vwq6 exp:2027-05-31
-PYSEC-2026-2600 exp:2027-05-31
-CVE-2026-49468 exp:2027-05-31
-GHSA-4xpc-pv4p-pm3w exp:2027-05-31
-PYSEC-2026-388 exp:2027-05-31
-CVE-2026-59822 exp:2027-05-31
-GHSA-7488-6r32-c95q exp:2027-05-31
-PYSEC-2026-3479 exp:2027-05-31
-GHSA-69x8-hrgq-fjj8 exp:2027-05-31
-GHSA-g5ff-637f-6q2m exp:2027-05-31
+CVE-2026-35029 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-53mr-6c8q-9789 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-2597 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+CVE-2026-35030 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-jjhc-v7c2-5hh6 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-390 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+CVE-2026-37004 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-6wvf-77m9-58rm exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-3861 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+CVE-2026-40217 exp:2027-05-31 pkg:pypi/litellm@1.82.6
+GHSA-wxxx-gvqv-xp7p exp:2027-05-31 pkg:pypi/litellm@1.82.6
+PYSEC-2026-2601 exp:2027-05-31 pkg:pypi/litellm@1.82.6
+CVE-2026-42203 exp:2027-05-31 pkg:pypi/litellm@1.82.6
+GHSA-xqmj-j6mv-4862 exp:2027-05-31 pkg:pypi/litellm@1.82.6
+PYSEC-2026-2602 exp:2027-05-31 pkg:pypi/litellm@1.82.6
+CVE-2026-42208 exp:2027-05-31 pkg:pypi/litellm@1.82.6
+GHSA-r75f-5x8p-qvmc exp:2027-05-31 pkg:pypi/litellm@1.82.6
+PYSEC-2026-391 exp:2027-05-31 pkg:pypi/litellm@1.82.6
+CVE-2026-42271 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-v4p8-mg3p-g94g exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-2599 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+CVE-2026-47101 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-qrc4-49gv-mv9m exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-2598 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+CVE-2026-47102 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-wpfp-gwwc-vwq6 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-2600 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+CVE-2026-49468 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-4xpc-pv4p-pm3w exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-388 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+CVE-2026-59822 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-7488-6r32-c95q exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+PYSEC-2026-3479 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-69x8-hrgq-fjj8 exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6
+GHSA-g5ff-637f-6q2m exp:2027-05-31 pkg:pypi/litellm@1.80.0 pkg:pypi/litellm@1.82.6 pkg:pypi/litellm@1.84.10
 
 # ---- pillow 11.3.0 (judged), 12.3.0 (nemoskills' SciCode sandbox) ------------------------
 # CRITICAL and HIGH, fixed in 12.1.1-13.0.0. judged: stirrup 0.2.0 (the GDPval
@@ -103,115 +113,115 @@ GHSA-g5ff-637f-6q2m exp:2027-05-31
 # regardless of pillow. Issue: #770 (moviepy relaxing its pillow cap for stirrup; the
 # SciCode sandbox moving to Python 3.11 with NeMo-Skills).
 # Until 2027-05-31.
-CVE-2026-112390 exp:2027-05-31
-GHSA-22hg-r758-rrw9 exp:2027-05-31
-CVE-2026-112392 exp:2027-05-31
-GHSA-27h8-gf7j-v5hc exp:2027-05-31
-PYSEC-2026-4326 exp:2027-05-31
-CVE-2026-112393 exp:2027-05-31
-GHSA-332p-7hrc-92wf exp:2027-05-31
-CVE-2026-112397 exp:2027-05-31
-GHSA-58r4-6rv3-gfh8 exp:2027-05-31
-PYSEC-2026-4329 exp:2027-05-31
-CVE-2026-112398 exp:2027-05-31
-GHSA-5x8w-8jj5-q52h exp:2027-05-31
-PYSEC-2026-4330 exp:2027-05-31
-CVE-2026-112399 exp:2027-05-31
-GHSA-5xm2-6676-qcp9 exp:2027-05-31
-CVE-2026-112400 exp:2027-05-31
-GHSA-65qm-jvmh-6pqg exp:2027-05-31
-CVE-2026-112402 exp:2027-05-31
-GHSA-7mwm-ghpf-9vrm exp:2027-05-31
-PYSEC-2026-4331 exp:2027-05-31
-CVE-2026-112403 exp:2027-05-31
-GHSA-8g5g-8vmr-9782 exp:2027-05-31
-PYSEC-2026-4332 exp:2027-05-31
-CVE-2026-112404 exp:2027-05-31
-GHSA-c6hw-5grf-ff96 exp:2027-05-31
-CVE-2026-112405 exp:2027-05-31
-GHSA-cp9v-662q-vvx9 exp:2027-05-31
-PYSEC-2026-4333 exp:2027-05-31
-CVE-2026-112406 exp:2027-05-31
-GHSA-f2g6-542v-9j58 exp:2027-05-31
-CVE-2026-112892 exp:2027-05-31
-GHSA-gg2r-wvfm-q9rx exp:2027-05-31
-CVE-2026-112893 exp:2027-05-31
-GHSA-j4m9-6w36-pw47 exp:2027-05-31
-CVE-2026-112894 exp:2027-05-31
-GHSA-jg86-v3jv-hrpm exp:2027-05-31
-CVE-2026-112895 exp:2027-05-31
-GHSA-p4wg-p73j-c528 exp:2027-05-31
-CVE-2026-112896 exp:2027-05-31
-GHSA-pchr-8j38-3x4p exp:2027-05-31
-PYSEC-2026-4334 exp:2027-05-31
-CVE-2026-112897 exp:2027-05-31
-GHSA-q45j-58j2-45rg exp:2027-05-31
-CVE-2026-112900 exp:2027-05-31
-GHSA-w889-685w-c8fh exp:2027-05-31
-CVE-2026-112902 exp:2027-05-31
-GHSA-xvh5-g6gv-559v exp:2027-05-31
-PYSEC-2026-4363 exp:2027-05-31
-CVE-2026-128067 exp:2027-05-31
-GHSA-xcvg-w56q-r89m exp:2027-05-31
-CVE-2026-25990 exp:2027-05-31
-GHSA-cfh3-3jmp-rvhc exp:2027-05-31
-PYSEC-2026-2249 exp:2027-05-31
-CVE-2026-40192 exp:2027-05-31
-GHSA-whj4-6x5x-4v2j exp:2027-05-31
-PYSEC-2026-2250 exp:2027-05-31
-CVE-2026-42311 exp:2027-05-31
-GHSA-pwv6-vv43-88gr exp:2027-05-31
-PYSEC-2026-2252 exp:2027-05-31
-CVE-2026-54058 exp:2027-05-31
-GHSA-62p4-gmf7-7g93 exp:2027-05-31
-PYSEC-2026-3493 exp:2027-05-31
-CVE-2026-54059 exp:2027-05-31
-GHSA-8v84-f9pq-wr9x exp:2027-05-31
-PYSEC-2026-2253 exp:2027-05-31
-CVE-2026-54060 exp:2027-05-31
-GHSA-5x94-69rx-g8h2 exp:2027-05-31
-PYSEC-2026-2254 exp:2027-05-31
-CVE-2026-55379 exp:2027-05-31
-GHSA-45hq-cxwh-f6vc exp:2027-05-31
-PYSEC-2026-2255 exp:2027-05-31
-CVE-2026-55380 exp:2027-05-31
-GHSA-phj9-mv4w-65pm exp:2027-05-31
-PYSEC-2026-2256 exp:2027-05-31
-CVE-2026-59197 exp:2027-05-31
-GHSA-xj96-63gp-2gmr exp:2027-05-31
-PYSEC-2026-3454 exp:2027-05-31
-CVE-2026-59199 exp:2027-05-31
-GHSA-6r8x-57c9-28j4 exp:2027-05-31
-PYSEC-2026-3451 exp:2027-05-31
-CVE-2026-59200 exp:2027-05-31
-GHSA-jjj6-mw9f-p565 exp:2027-05-31
-PYSEC-2026-3495 exp:2027-05-31
-CVE-2026-59204 exp:2027-05-31
-GHSA-vjc4-5qp5-m44j exp:2027-05-31
-PYSEC-2026-3496 exp:2027-05-31
-CVE-2026-59205 exp:2027-05-31
-GHSA-9hw9-ch79-4vh6 exp:2027-05-31
-PYSEC-2026-3453 exp:2027-05-31
-CVE-2026-96637 exp:2027-05-31
-GHSA-g842-9rc4-69pw exp:2027-05-31
-PYSEC-2026-4338 exp:2027-05-31
-CVE-2026-96639 exp:2027-05-31
-GHSA-v9pv-5gc8-w2m6 exp:2027-05-31
-PYSEC-2026-4339 exp:2027-05-31
-CVE-2026-96640 exp:2027-05-31
-GHSA-mrfp-p49p-3hf2 exp:2027-05-31
-CVE-2026-96642 exp:2027-05-31
-GHSA-3j72-p6qg-6xp7 exp:2027-05-31
-PYSEC-2026-4341 exp:2027-05-31
-CVE-2026-96643 exp:2027-05-31
-GHSA-g4qv-2jxx-769h exp:2027-05-31
-PYSEC-2026-4342 exp:2027-05-31
-CVE-2026-96644 exp:2027-05-31
-GHSA-9v9v-9qvf-h2hj exp:2027-05-31
-PYSEC-2026-4343 exp:2027-05-31
-CVE-2026-96778 exp:2027-05-31
-GHSA-g7cr-3p24-7wf7 exp:2027-05-31
-GHSA-78g4-xqwv-q3g8 exp:2027-05-31
+CVE-2026-112390 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-22hg-r758-rrw9 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112392 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-27h8-gf7j-v5hc exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4326 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112393 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-332p-7hrc-92wf exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112397 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-58r4-6rv3-gfh8 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4329 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112398 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-5x8w-8jj5-q52h exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4330 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112399 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-5xm2-6676-qcp9 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112400 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-65qm-jvmh-6pqg exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112402 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-7mwm-ghpf-9vrm exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4331 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112403 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-8g5g-8vmr-9782 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4332 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112404 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-c6hw-5grf-ff96 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112405 exp:2027-05-31 pkg:pypi/pillow@12.3.0
+GHSA-cp9v-662q-vvx9 exp:2027-05-31 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4333 exp:2027-05-31 pkg:pypi/pillow@12.3.0
+CVE-2026-112406 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-f2g6-542v-9j58 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112892 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-gg2r-wvfm-q9rx exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112893 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-j4m9-6w36-pw47 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112894 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-jg86-v3jv-hrpm exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112895 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-p4wg-p73j-c528 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112896 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-pchr-8j38-3x4p exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4334 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112897 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-q45j-58j2-45rg exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112900 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-w889-685w-c8fh exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-112902 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-xvh5-g6gv-559v exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4363 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-128067 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-xcvg-w56q-r89m exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-25990 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-cfh3-3jmp-rvhc exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-2249 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-40192 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-whj4-6x5x-4v2j exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-2250 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-42311 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-pwv6-vv43-88gr exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-2252 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-54058 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-62p4-gmf7-7g93 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-3493 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-54059 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-8v84-f9pq-wr9x exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-2253 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-54060 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-5x94-69rx-g8h2 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-2254 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-55379 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-45hq-cxwh-f6vc exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-2255 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-55380 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-phj9-mv4w-65pm exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-2256 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-59197 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-xj96-63gp-2gmr exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-3454 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-59199 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-6r8x-57c9-28j4 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-3451 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-59200 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-jjj6-mw9f-p565 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-3495 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-59204 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-vjc4-5qp5-m44j exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-3496 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-59205 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+GHSA-9hw9-ch79-4vh6 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+PYSEC-2026-3453 exp:2027-05-31 pkg:pypi/pillow@11.3.0
+CVE-2026-96637 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-g842-9rc4-69pw exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4338 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-96639 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-v9pv-5gc8-w2m6 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4339 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-96640 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-mrfp-p49p-3hf2 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-96642 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-3j72-p6qg-6xp7 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4341 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-96643 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-g4qv-2jxx-769h exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4342 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-96644 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-9v9v-9qvf-h2hj exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+PYSEC-2026-4343 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+CVE-2026-96778 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-g7cr-3p24-7wf7 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
+GHSA-78g4-xqwv-q3g8 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0
 
 # ---- datamodel-code-generator 0.25.7: bfcl ------------------------------------------------
 # HIGH, fixed in 0.60.1-0.64.0. bfcl-eval 2026.3.23 pins datamodel-code-generator==0.25.7.
@@ -222,30 +232,30 @@ GHSA-78g4-xqwv-q3g8 exp:2027-05-31
 # code; the bfcl step runs the model through the OpenAI-compatible handlers and never
 # selects it. The advisories need attacker-written schemas or URLs. Issue: #770
 # (a bfcl-eval release that lifts the pin). Until 2027-05-31.
-CVE-2026-54621 exp:2027-05-31
-GHSA-j884-q54q-mmx3 exp:2027-05-31
-PYSEC-2026-3561 exp:2027-05-31
-CVE-2026-54653 exp:2027-05-31
-GHSA-386q-5hp3-95m9 exp:2027-05-31
-PYSEC-2026-3555 exp:2027-05-31
-CVE-2026-54654 exp:2027-05-31
-GHSA-wjv6-jcfj-mf9r exp:2027-05-31
-PYSEC-2026-3566 exp:2027-05-31
-CVE-2026-54690 exp:2027-05-31
-GHSA-954p-556p-r752 exp:2027-05-31
-PYSEC-2026-3560 exp:2027-05-31
-CVE-2026-54691 exp:2027-05-31
-GHSA-rfr2-mq9m-x2qx exp:2027-05-31
-PYSEC-2026-3564 exp:2027-05-31
-CVE-2026-55389 exp:2027-05-31
-GHSA-8359-h9fx-j6v9 exp:2027-05-31
-PYSEC-2026-3558 exp:2027-05-31
-CVE-2026-55391 exp:2027-05-31
-GHSA-vx7x-vcc2-c44g exp:2027-05-31
-PYSEC-2026-3565 exp:2027-05-31
-CVE-2026-55415 exp:2027-05-31
-GHSA-5578-w22f-pfx9 exp:2027-05-31
-PYSEC-2026-3557 exp:2027-05-31
+CVE-2026-54621 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+GHSA-j884-q54q-mmx3 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+PYSEC-2026-3561 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+CVE-2026-54653 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+GHSA-386q-5hp3-95m9 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+PYSEC-2026-3555 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+CVE-2026-54654 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+GHSA-wjv6-jcfj-mf9r exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+PYSEC-2026-3566 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+CVE-2026-54690 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+GHSA-954p-556p-r752 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+PYSEC-2026-3560 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+CVE-2026-54691 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+GHSA-rfr2-mq9m-x2qx exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+PYSEC-2026-3564 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+CVE-2026-55389 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+GHSA-8359-h9fx-j6v9 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+PYSEC-2026-3558 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+CVE-2026-55391 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+GHSA-vx7x-vcc2-c44g exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+PYSEC-2026-3565 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+CVE-2026-55415 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+GHSA-5578-w22f-pfx9 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
+PYSEC-2026-3557 exp:2027-05-31 pkg:pypi/datamodel-code-generator@0.25.7
 
 # ---- protobuf 4.25.9, transformers 4.57.6: nemoskills' COMET env (/opt/comet) ------------
 # HIGH, fixed in protobuf 5.29.6 and transformers 5.3.0-5.10.0. unbabel-comet 2.2.7,
@@ -256,15 +266,15 @@ PYSEC-2026-3557 exp:2027-05-31
 # crafted checkpoint or chat template name (save_pretrained, LightGlue, remote code),
 # protobuf's a crafted JSON message. Issue: #770 (a COMET release on transformers 5).
 # Until 2027-05-31.
-CVE-2026-0994 exp:2027-05-31
-GHSA-7gcm-g887-7qv7 exp:2027-05-31
-PYSEC-2026-1805 exp:2027-05-31
-CVE-2026-4372 exp:2027-05-31
-GHSA-29pf-2h5f-8g72 exp:2027-05-31
-PYSEC-2026-2289 exp:2027-05-31
-CVE-2026-5241 exp:2027-05-31
-GHSA-fgcw-684q-jj6r exp:2027-05-31
-PYSEC-2026-2290 exp:2027-05-31
-CVE-2026-9856 exp:2027-05-31
-GHSA-xrqw-3rrv-vx5w exp:2027-05-31
-PYSEC-2026-3929 exp:2027-05-31
+CVE-2026-0994 exp:2027-05-31 pkg:pypi/protobuf@4.25.9
+GHSA-7gcm-g887-7qv7 exp:2027-05-31 pkg:pypi/protobuf@4.25.9
+PYSEC-2026-1805 exp:2027-05-31 pkg:pypi/protobuf@4.25.9
+CVE-2026-4372 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+GHSA-29pf-2h5f-8g72 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+PYSEC-2026-2289 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+CVE-2026-5241 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+GHSA-fgcw-684q-jj6r exp:2027-05-31 pkg:pypi/transformers@4.57.6
+PYSEC-2026-2290 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+CVE-2026-9856 exp:2027-05-31 pkg:pypi/transformers@4.57.6
+GHSA-xrqw-3rrv-vx5w exp:2027-05-31 pkg:pypi/transformers@4.57.6
+PYSEC-2026-3929 exp:2027-05-31 pkg:pypi/transformers@4.57.6
