@@ -4,14 +4,14 @@
 # (steps/train/distill/src/gb_steps_post_training/distillation/export_state.py) so this generic step
 # owns its resume gate and imports nothing from steps/train/distill. Same marker format, so
 # markers written by either copy read the same.
-"""Resume state for hf-export: is `dest` already this checkpoint, exported this way?
+"""Resume state for distill-hf-export: is `dest` already this checkpoint, exported this way?
 
 The general contract lives in step_state.py (RUN / SKIP / REFUSE, a `.step-done.json` written
 last and atomically). This module supplies the two step-specific halves: what the EXPECTATION is,
 and what the declared OUTPUTS are.
 
 WHY THIS MODULE HOLDS NO `check`/`mark` CLI, unlike align_state.py.
-tokenizer-align is driven by run-align.sh, so its gate has to be reachable from shell and
+distill-tokenizer-align is driven by run-align.sh, so its gate has to be reachable from shell and
 that means a subprocess entrypoint. This step has no wrapper at all -- both launchers in
 step-template.yaml invoke export_hf_model.py directly -- so the gate belongs inside its main(),
 where it is a function call and cannot drift out of step with the export it guards. A CLI here

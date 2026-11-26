@@ -7,8 +7,8 @@
 """One definition of "which tokenizer is this", shared by every step that has an opinion.
 
 WHY IT IS SHARED CODE AND NOT A CONVENTION. Three steps need to agree about this:
-tokenizer-align WRITES an identity onto the retagged student, data-prep
-COPIES it into the corpus manifest, and logit-distill COMPARES the two and refuses a
+distill-tokenizer-align WRITES an identity onto the retagged student, distill-corpus-prep
+COPIES it into the corpus manifest, and distill-gold-train COMPARES the two and refuses a
 mismatch. If any of the three computed it differently the guard would either fire on
 matching tokenizers or -- much worse -- pass on mismatched ones. So it is one function.
 
@@ -94,7 +94,7 @@ def comparable_hash(model_dir: Path) -> str | None:
     building the bullet-4 pair:
 
         granite-4.0-1b-base_retagged_v2   'ibm-granite/granite-4.2-30b'  (retagged today,
-                                           so tokenizer-align wrote an identity file)
+                                           so distill-tokenizer-align wrote an identity file)
         en-sft-4.1-0.2-16K-v2 manifest    'sha256:883975314d587437'      (prepped 2026-08-26
                                            from a student that had no identity file to copy)
 

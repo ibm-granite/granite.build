@@ -25,7 +25,7 @@
 """Turn a training output directory into a publishable HF model directory.
 
 This step is a SELECTOR/PRUNER, not a format converter. That is a verified property, not
-an assumption: the DeepSpeed config used by `logit-distill` sets
+an assumption: the DeepSpeed config used by `distill-gold-train` sets
 `zero3_save_16bit_model: true`, so `Trainer.save_model` already writes HF-native
 `model.safetensors` at the checkpoint root. Confirmed directly on job 1136274's
 checkpoint-25 -- a 704786224-byte `model.safetensors` (350M params x 2 bytes) sitting
@@ -276,7 +276,7 @@ PADDING_SIDES = ("right", "left", "keep")
 # and records that it did.
 THINKING_POLICIES = ("keep", "default-off")
 
-# NOT to be confused with data-prep's `think_policy` (keep | strip | require),
+# NOT to be confused with distill-corpus-prep's `think_policy` (keep | strip | require),
 # which is a decision about the TRAINING DATA -- whether reasoning traces are kept in the
 # supervised targets at all. This one edits a DEFAULT in the published chat template and
 # touches no data. They are related in one direction only: a corpus prepared with
