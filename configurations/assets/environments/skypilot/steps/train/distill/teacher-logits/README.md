@@ -156,7 +156,7 @@ granite.build:
 |---|---|
 | **Type** | `data_generation` — it samples from a model (the distinction the `space://steps/train/distill/data-prep` step draws from the other side) |
 | **Environment** | SkyPilot, LSF and SLURM (`subtypes: [lsf, slurm]`) |
-| **Image** | `docker:quay.io/granitebuild/steps/train/distill/images/gpu:534644e8` (prebuilt; builds none) |
+| **Image** | `docker:quay.io/granitebuild/steps/train/distill/images/gpu:a6a41e9a` (prebuilt; builds none) |
 | **GPU** | yes — this is the only step that holds the teacher without a student |
 | **Nodes** | 1 only; more is refused, and the reason is unusual (below) |
 | **Emits** | `teacher_logits` (`type: fileset`) → `<output_dir>/{shards/,index.jsonl,meta.json}` |
