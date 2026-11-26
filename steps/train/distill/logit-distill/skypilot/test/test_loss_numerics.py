@@ -35,6 +35,7 @@ torch = pytest.importorskip("torch")
 F = torch.nn.functional
 pytest.importorskip("trl")  # custom_gold_trainer imports trl at module load
 
+from gb_steps_post_training.distillation import custom_gold_trainer as cgt  # noqa: E402
 from gb_steps_post_training.distillation.custom_gold_config import (  # noqa: E402
     CustomGOLDConfig,
 )
@@ -683,8 +684,22 @@ class TestULDUnalignedRow:
         expected = self._row0_reference(batch) / 2
         assert loss.item() == pytest.approx(expected.item(), abs=ULD_TOL)
         assert loss_fn._alignment_unaligned == 1
+        assert loss_fn._alignment_rows == 2
         loss.backward()
         assert batch["student_logits"].grad[1].abs().max().item() == 0.0
+
+    def test_the_hybrid_path_counts_an_unaligned_region(self):
+        """The hybrid path skips an unaligned region the same way and must count it the
+        same way, or the guard below cannot see a hybrid arm training on nothing."""
+        loss_fn = _custom_uld(uld_use_hybrid_loss=True)
+        assert loss_fn.use_hybrid_loss and loss_fn._vocab_mapping is not None
+        batch = self._with_good_row([1, 2, S_EOS], [5, T_EOS])
+        batch["student_logits"].requires_grad_(True)
+        loss_fn(**batch).backward()
+        assert loss_fn._alignment_unaligned == 1
+        assert loss_fn._alignment_rows == 2
+        assert batch["student_logits"].grad[1].abs().max().item() == 0.0
+        assert batch["student_logits"].grad[0].abs().max().item() > 0.0
 
     def test_matching_texts_past_the_group_size_limit_contribute_nothing(self):
         """Not only a mismatch: "abcab" aligns at the default limit (S_GROUPS), but its
@@ -696,3 +711,160 @@ class TestULDUnalignedRow:
         batch = _single_row(s_c, t_c, seed=12)
         assert loss_fn(**batch).item() == 0.0
         assert loss_fn._alignment_unaligned == 1
+
+
+def _counts(unaligned, rows):
+    """A stand-in for the loss object's two rank-local counters, which is all the guard
+    reads."""
+    return types.SimpleNamespace(_alignment_unaligned=unaligned, _alignment_rows=rows)
+
+
+def _one_rank(values):
+    return list(values)
+
+
+class TestULDAlignmentGuard:
+    """Skipping an unaligned row is allowed; skipping every row is not. Without the guard a
+    step whose rows were all unaligned trained at loss 0.0 and grad_norm 0.0, and the run
+    checkpointed and reported success: what the step's defaults (last_message_only=false,
+    response_template <|im_start|>assistant) do to granite-4.2 data, where the student's
+    span opens with '\\n<think></think>' and the teacher's does not."""
+
+    def test_a_step_with_every_row_unaligned_raises(self):
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=1.0)
+        with pytest.raises(RuntimeError, match="all 2 rows .* no alignment groups"):
+            guard.end_step(_counts(2, 2), step=7, reduce=_one_rank, window_steps=10)
+
+    def test_an_all_unaligned_batch_through_the_loss_raises(self):
+        """The same, from a real loss call rather than hand-set counters."""
+        loss_fn = _custom_uld()
+        loss_fn(**_single_row([4, S_EOS], [5, T_EOS], seed=13))
+        assert (loss_fn._alignment_unaligned, loss_fn._alignment_rows) == (1, 1)
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=1.0)
+        with pytest.raises(RuntimeError, match="all 1 rows"):
+            guard.end_step(loss_fn, step=1, reduce=_one_rank, window_steps=1)
+
+    def test_a_rare_unaligned_row_is_skipped_and_the_counters_drained(self):
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=0.5)
+        counts = _counts(1, 4)
+        guard.end_step(counts, step=1, reduce=_one_rank, window_steps=1)
+        assert (counts._alignment_unaligned, counts._alignment_rows) == (0, 0)
+        assert guard.pop_log() == {
+            "train/alignment_unaligned_rows": 1,
+            "train/alignment_rows": 4,
+            "train/alignment_unaligned_rate": 0.25,
+        }
+        assert guard.pop_log() == {}
+
+    def test_no_aligned_rows_at_all_is_not_judged(self):
+        """A step with no row that reached alignment (no completions, or an arm without
+        extended alignment) has no rate; it is neither all-unaligned nor logged."""
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=0.0)
+        guard.end_step(_counts(0, 0), step=1, reduce=_one_rank, window_steps=1)
+        assert guard.pop_log() == {}
+
+    def test_the_window_threshold(self):
+        """Two steps of 1 in 4 unaligned: 0.25 over the window. Strictly above the
+        threshold raises, at the step that closes the window; at it, it does not."""
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=0.2)
+        guard.end_step(_counts(1, 4), step=1, reduce=_one_rank, window_steps=2)
+        with pytest.raises(RuntimeError, match=r"steps 1-2: 2 of 8 rows \(25.0%\)"):
+            guard.end_step(_counts(1, 4), step=2, reduce=_one_rank, window_steps=2)
+
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=0.25)
+        for step in (1, 2, 3, 4):
+            guard.end_step(_counts(1, 4), step=step, reduce=_one_rank, window_steps=2)
+
+    def test_the_window_resets_and_its_own_setting_wins(self):
+        """A bad window followed by a clean one: the clean one is judged on its own rows.
+        And `window_steps` set on the guard (uld_unaligned_window_steps) overrides the
+        logging window the trainer passes."""
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=0.5, window_steps=1)
+        guard.end_step(_counts(2, 4), step=1, reduce=_one_rank, window_steps=100)
+        guard.end_step(_counts(0, 4), step=2, reduce=_one_rank, window_steps=100)
+        with pytest.raises(RuntimeError, match="3 of 4 rows"):
+            guard.end_step(_counts(3, 4), step=3, reduce=_one_rank, window_steps=100)
+
+    def test_the_default_threshold_passes_one_bad_row_in_a_small_step(self):
+        """The default is loose on purpose: 2 rows a step, logged every step, and one of
+        them unaligned is exactly 0.5, which does not stop the run."""
+        assert (
+            CustomGOLDConfig.__dataclass_fields__["uld_max_unaligned_fraction"].default
+            == 0.5
+        )
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=0.5)
+        guard.end_step(_counts(1, 2), step=1, reduce=_one_rank, window_steps=1)
+
+    def test_the_trainer_wires_the_guard_to_its_loss_and_logging_window(self):
+        """CustomGOLDTrainer._uld_alignment_step_end, on a single process: it drains the
+        trainer's own loss object, numbers the step being taken, and defaults the window to
+        the logging window."""
+        loss_fn = _counts(1, 3)
+        trainer = types.SimpleNamespace(
+            accelerator=types.SimpleNamespace(
+                distributed_type=cgt.DistributedType.NO, device=torch.device("cpu")
+            ),
+            args=types.SimpleNamespace(logging_steps=2),
+            uld_loss_fn=loss_fn,
+            _uld_alignment_guard=cgt.ULDAlignmentGuard(max_unaligned_fraction=0.3),
+        )
+        state = types.SimpleNamespace(global_step=4, logging_steps=2)
+        CustomGOLDTrainer._uld_alignment_step_end(trainer, state)  # window 1 of 2: 1/3
+        assert (loss_fn._alignment_unaligned, loss_fn._alignment_rows) == (0, 0)
+        loss_fn._alignment_unaligned, loss_fn._alignment_rows = 1, 3
+        with pytest.raises(RuntimeError, match="ULD steps 5-6: 2 of 6 rows"):
+            CustomGOLDTrainer._uld_alignment_step_end(
+                trainer, types.SimpleNamespace(global_step=5, logging_steps=2)
+            )
+
+    def test_the_rate_is_reduced_across_ranks(self, tmp_path):
+        """Two real gloo ranks. Rank 0 aligned both its rows, rank 1 neither of its: the
+        step is NOT all-unaligned (2 of 4), and both ranks log the global rate 0.5, not
+        their own 0.0 and 1.0. Then both ranks all-unaligned: both raise, together, so
+        neither is left waiting in a collective."""
+        mp = pytest.importorskip("torch.multiprocessing")
+        if not torch.distributed.is_available():
+            pytest.skip("torch.distributed is not available")
+        mp.spawn(
+            _guard_rank,
+            args=(2, str(tmp_path / "rdzv"), str(tmp_path)),
+            nprocs=2,
+            join=True,
+        )
+        for rank in (0, 1):
+            log, raised = (tmp_path / f"rank{rank}.txt").read_text().split("|")
+            assert log == "2/4/0.5"
+            assert raised == "raised"
+
+
+def _guard_rank(rank, world, rendezvous, out_dir):
+    """One rank of test_the_rate_is_reduced_across_ranks (module level: spawn pickles it)."""
+    import os
+    from pathlib import Path
+
+    torch.distributed.init_process_group(
+        "gloo", init_method=f"file://{rendezvous}", rank=rank, world_size=world
+    )
+    try:
+        device = torch.device("cpu")
+
+        def reduce(values):
+            return cgt._all_reduce_sum(values, device, distributed=True)
+
+        guard = cgt.ULDAlignmentGuard(max_unaligned_fraction=1.0)
+        mine = _counts(0, 2) if rank == 0 else _counts(2, 2)
+        guard.end_step(mine, step=1, reduce=reduce, window_steps=1)
+        log = guard.pop_log()
+        result = "%d/%d/%s" % (
+            log["train/alignment_unaligned_rows"],
+            log["train/alignment_rows"],
+            log["train/alignment_unaligned_rate"],
+        )
+        try:
+            guard.end_step(_counts(2, 2), step=2, reduce=reduce, window_steps=1)
+            outcome = "did not raise"
+        except RuntimeError as e:
+            outcome = "raised" if "all 4 rows" in str(e) else f"wrong: {e}"
+        Path(os.path.join(out_dir, f"rank{rank}.txt")).write_text(f"{result}|{outcome}")
+    finally:
+        torch.distributed.destroy_process_group()

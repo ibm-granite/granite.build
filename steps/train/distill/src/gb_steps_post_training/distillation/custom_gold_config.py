@@ -387,6 +387,30 @@ class CustomGOLDConfig(GOLDConfig):
             "hybrid weights, and RAISES on anything else rather than falling back."
         },
     )
+    uld_max_unaligned_fraction: float = field(
+        default=0.5,
+        metadata={
+            "help": "Raise when more than this fraction of the ULD rows (regions, on the "
+            "per-turn path) in a window of uld_unaligned_window_steps optimizer steps "
+            "yielded no alignment groups. Such a row is skipped with zero loss, which is "
+            "right for the rare row and silent training on nothing when the two renders "
+            "disagree systematically. Counted over every rank. Independently of this, a "
+            "step in which EVERY row is unaligned always raises. The default 0.5 is "
+            "deliberately loose, so it does not stop a healthy run: the trainer's notes "
+            "record 371 of 373 real regions aligning (_THINK_SCAFFOLD_RE), and on a small window "
+            "(2 rows a step, logging every step) a single bad row is 0.5 and passes. "
+            "Tighten it (e.g. 0.05) for a large global batch, where the rate is stable. "
+            "1.0 turns the window check off."
+        },
+    )
+    uld_unaligned_window_steps: int = field(
+        default=0,
+        metadata={
+            "help": "Optimizer steps per uld_max_unaligned_fraction window. 0 (default) "
+            "uses the logging window (logging_steps), so the guard judges the same rate "
+            "the log line shows as train/alignment_unaligned_rate."
+        },
+    )
     uld_renormalize_probs: bool = field(
         default=False,
         metadata={
@@ -594,6 +618,17 @@ class CustomGOLDConfig(GOLDConfig):
         # Validate uld_matched_top_k requires uld_ignore_multi_loss
         if self.uld_matched_top_k > 0 and not self.uld_ignore_multi_loss:
             raise ValueError("uld_matched_top_k requires uld_ignore_multi_loss=true.")
+
+        if not 0.0 <= self.uld_max_unaligned_fraction <= 1.0:
+            raise ValueError(
+                "uld_max_unaligned_fraction must be in [0, 1] (1.0 turns the window check "
+                f"off); got {self.uld_max_unaligned_fraction}."
+            )
+        if self.uld_unaligned_window_steps < 0:
+            raise ValueError(
+                "uld_unaligned_window_steps must be >= 0 (0 uses logging_steps); got "
+                f"{self.uld_unaligned_window_steps}."
+            )
 
         # Validate uld_region_chunk_groups. The trainer's own gate raises at step 0 too, but the
         # combinations are decidable HERE, before ~10 minutes of teacher weight loading, and a

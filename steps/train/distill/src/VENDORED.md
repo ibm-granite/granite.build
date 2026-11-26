@@ -8,7 +8,8 @@ from that commit in these ways, and in no other:
 - **Formatting.** Every file is reformatted with `black` and `isort`, which CI enforces
   repo-wide. To compare against upstream, format both sides the same way first.
 - **Local patches** in `custom_gold_config.py` and `custom_gold_trainer.py`, described
-  below: the two on-policy study patches, and the ULD base-path fix.
+  below: the two on-policy study patches, the ULD base-path fix, and the ULD
+  alignment guard.
 
 ## Licence
 
@@ -112,8 +113,27 @@ its docstring and pinned in
   (its opt-in `"bayesian"` strategy shifts).
 - A row whose alignment yields no groups reached the merge, which then returned the
   probabilities unmerged: a shape `RuntimeError`, or a distance between unaligned
-  positions. Such a row now contributes no loss, as on the hybrid path, and is counted in
-  `train/alignment_unaligned_rows`.
+  positions. Such a row now contributes no loss, as on the hybrid path, and is counted.
+
+## Local addition: refusing a ULD run that trains on nothing
+
+Skipping an unaligned row is right for the rare row and silent when the two renders
+disagree systematically: every row is skipped, the loss and the gradient are exactly zero,
+and the run checkpoints and reports success. So both ULD paths count, rank-locally, every
+row (region, on the hybrid path) that reaches alignment (`CustomULDLoss._alignment_rows`)
+and every one that yields no groups (`_alignment_unaligned`; the hybrid path's skip now
+increments it too), and `ULDAlignmentGuard` in `custom_gold_trainer.py`, run by
+`_ULDAlignmentGuardCallback` at `on_pre_optimizer_step` on every rank, drains them at each
+optimizer step and sums them over ranks. It raises `RuntimeError`:
+
+- when every row of a step, across all ranks, was unaligned; always on;
+- when more than `uld_max_unaligned_fraction` (default 0.5; 1.0 turns it off) of the rows
+  in a window of `uld_unaligned_window_steps` optimizer steps (default 0 = `logging_steps`)
+  were unaligned. Both are new `CustomGOLDConfig` fields.
+
+The log line carries the window's global counts: `train/alignment_unaligned_rows` (was
+the rank-local count), and the new `train/alignment_rows` and
+`train/alignment_unaligned_rate`. All three are identical on every rank.
 
 ## A second copy elsewhere
 

@@ -663,11 +663,19 @@ def _is_weight_stats(weights: torch.Tensor) -> dict:
 
 
 class CustomULDLoss(ULDLoss):
-    """ULDLoss that fixes the EOS bug for empty completions.
+    """trl's ULDLoss with this trainer's fixes. Each is described where it is made:
 
-    When the teacher generates only an EOS token, the parent ULDLoss produces zero loss because
-    skip_student_eos=True decrements answer_size from 1 to 0. This subclass forces EOS inclusion
-    and ensures EOS tokens are properly aligned between student and teacher vocabularies.
+    - EOS for empty completions. When the teacher generates only an EOS token, the parent
+      ULDLoss produces zero loss because skip_student_eos=True decrements answer_size from 1
+      to 0. This subclass forces EOS inclusion and ensures EOS tokens are properly aligned
+      between student and teacher vocabularies.
+    - The base (non-hybrid) path, `_compute_base_distillation_loss`: trl 0.26.2's, owned
+      here, reading the logits before each token rather than at it, and skipping a row whose
+      alignment yields no groups instead of scoring it unmerged.
+    - Every row (region, on the hybrid path) that reaches alignment is counted in
+      `_alignment_rows`, and every one that yields no groups in `_alignment_unaligned`. The
+      trainer's ULDAlignmentGuard drains both at each optimizer step, reduces them across
+      ranks, and raises when a whole step, or too much of a window, trained on nothing.
     """
 
     def __init__(
@@ -777,8 +785,11 @@ class CustomULDLoss(ULDLoss):
 
         self._alignment_total = 0
         self._alignment_truncated = 0
-        # Rows (regions, on the hybrid path) whose alignment produced no groups at all, and so
-        # contributed no loss. Logged as `train/alignment_unaligned_rows`.
+        # Rows (regions, on the hybrid path) that reached alignment, and those of them whose
+        # alignment produced no groups at all and so contributed no loss. RANK-LOCAL and
+        # drained at every optimizer step by ULDAlignmentGuard, which reduces them across
+        # ranks before it checks or logs them (`train/alignment_unaligned_rate`).
+        self._alignment_rows = 0
         self._alignment_unaligned = 0
 
         self._opd_batch_norm_stats_accum = {"mean": 0.0, "std": 0.0}
@@ -1809,9 +1820,14 @@ class CustomULDLoss(ULDLoss):
            RuntimeError when the two completions have different lengths, and a distance
            between unaligned positions when they do not. Such a row is skipped as the
            hybrid path skips it (zero loss, graph kept) and counted in
-           `train/alignment_unaligned_rows`, rather than killing a long run over one row. A
-           rate near 1 is the signature of a systematic text mismatch between the two
-           renders, the failure the per-turn byte path's scaffold trim was for.
+           `_alignment_unaligned`, rather than killing a long run over one row. SKIPPING IS
+           NOT ALLOWED TO BECOME THE WHOLE RUN: a rate near 1 is the signature of a
+           systematic text mismatch between the two renders (a think scaffold in one span
+           and not the other, or a student span that runs across later turns), and then
+           every row trains at exactly zero gradient while the run looks healthy. The
+           trainer's ULDAlignmentGuard reduces the counts across ranks at every optimizer
+           step and raises when every row of a step is unaligned, or when more than
+           `uld_max_unaligned_fraction` of a window's rows are.
         """
         student_answer_index, student_answer_size = self._get_start_and_size_answers(
             student_labels
@@ -1877,8 +1893,9 @@ class CustomULDLoss(ULDLoss):
                 s_groups, t_groups = self._build_alignment_groups_from_ids(
                     student_token_ids, teacher_token_ids
                 )
+                self._alignment_rows += 1
                 if not s_groups:
-                    # Fix 2.
+                    # Fix 2. Counted, and refused in bulk by ULDAlignmentGuard.
                     self._alignment_unaligned += 1
                     distillation_losses.append(student_logits[i].sum() * 0.0)
                     continue
@@ -2230,9 +2247,11 @@ class CustomULDLoss(ULDLoss):
                         student_token_ids, teacher_token_ids
                     )
 
+                self._alignment_rows += 1
                 if not s_groups:
                     # Alignment failed entirely (e.g. full Unicode mismatch + truncation);
-                    # skip this sample with a zero-gradient-preserving loss.
+                    # skip this sample with a zero-gradient-preserving loss. Counted, and
+                    # refused in bulk by ULDAlignmentGuard, as on the base path.
                     self._alignment_unaligned += 1
                     uld_losses.append(student_logits[row].sum() * 0.0)
                     uld_token_counts.append(0)
@@ -2725,6 +2744,135 @@ class _StopAtStepCallback(TrainerCallback):
         return control
 
 
+def _all_reduce_sum(values, device, distributed: bool) -> list[float]:
+    """Sum `values` over every rank (float64), or return them as they are on one process.
+
+    Every rank must call this the same number of times, so callers gate it on configuration
+    only, never on the values: a rank that skipped it would hang the others.
+    """
+    vec = torch.tensor([float(v) for v in values], dtype=torch.float64, device=device)
+    if distributed and dist.is_available() and dist.is_initialized():
+        dist.all_reduce(vec, op=dist.ReduceOp.SUM)
+    return vec.tolist()
+
+
+class ULDAlignmentGuard:
+    """Refuse to let skipped ULD rows become a run that trains on nothing.
+
+    CustomULDLoss skips a row (a region, on the hybrid path) whose alignment yields no groups:
+    zero loss, graph kept. That is the right answer for the rare row, and the WRONG answer
+    when the two renders disagree systematically, because then every row is skipped, every
+    step has exactly zero gradient, and the run checkpoints and reports success. That is not
+    hypothetical here: a think scaffold in the student's span and not the teacher's, or a
+    student span that runs across later turns, leaves every row unaligned (custom_gold_config's
+    `uld_per_turn_regions` help records a run that trained 100 steps at loss 0.0 that way).
+
+    So the counts are checked, after being summed over every rank (a rank-local count is
+    wrong on N GPUs, and a rank-local raise would hang the other ranks):
+
+    - at every optimizer step: if every row that reached alignment, on every rank, was
+      unaligned, raise. No loss term was computed for the step at all.
+    - over each window of `window_steps` optimizer steps (default: the logging window): if
+      more than `max_unaligned_fraction` of the window's rows were unaligned, raise.
+    - for logging: the window's unaligned count, row count and rate, as
+      `train/alignment_unaligned_rows`, `train/alignment_rows` and
+      `train/alignment_unaligned_rate`, the same on every rank.
+
+    Rows with no completion on either side never reach alignment and are not counted here.
+    """
+
+    def __init__(self, max_unaligned_fraction: float, window_steps: int = 0):
+        self.max_unaligned_fraction = float(max_unaligned_fraction)
+        self.window_steps = int(window_steps)
+        self._win_unaligned = 0
+        self._win_rows = 0
+        self._win_steps = 0
+        self._log_unaligned = 0
+        self._log_rows = 0
+
+    def end_step(self, loss_fn, step: int, reduce, window_steps: int = 0) -> None:
+        """Account for one optimizer step: drain `loss_fn`'s rank-local counters, reduce them
+        with `reduce` (a list -> list sum over ranks), check, and accumulate.
+
+        `window_steps` is the window to use when the guard was built with 0 (the trainer
+        passes its logging window). Raises RuntimeError, on every rank alike, as above.
+        """
+        local = [loss_fn._alignment_unaligned, loss_fn._alignment_rows]
+        loss_fn._alignment_unaligned = 0
+        loss_fn._alignment_rows = 0
+        unaligned, rows = (int(round(v)) for v in reduce(local))
+        self._log_unaligned += unaligned
+        self._log_rows += rows
+        if rows > 0 and unaligned == rows:
+            raise RuntimeError(
+                f"ULD step {step}: all {rows} rows that reached alignment, across all ranks, "
+                "yielded no alignment groups, so this step computed no loss at all. The "
+                "student's and the teacher's completion texts do not line up. Known causes: "
+                "last_message_only=false, under which the student's span covers every "
+                "assistant turn while the teacher renders only the last; and a "
+                "response_template that leaves template scaffolding (e.g. granite-4.2's "
+                "'\\n<think></think>') in the student's labels but not in the teacher's "
+                "completion. Set ULD_DEBUG=1 for the spans of the first batch."
+            )
+        self._win_unaligned += unaligned
+        self._win_rows += rows
+        self._win_steps += 1
+        window = max(1, int(self.window_steps or window_steps or 1))
+        if self._win_steps < window:
+            return
+        win_unaligned, win_rows = self._win_unaligned, self._win_rows
+        self._win_unaligned = self._win_rows = self._win_steps = 0
+        if win_rows > 0 and win_unaligned / win_rows > self.max_unaligned_fraction:
+            raise RuntimeError(
+                f"ULD steps {step - window + 1}-{step}: {win_unaligned} of {win_rows} rows "
+                f"({win_unaligned / win_rows:.1%}) yielded no alignment groups and "
+                "contributed no loss, more than uld_max_unaligned_fraction="
+                f"{self.max_unaligned_fraction}. A rare unaligned row is skipped; this many "
+                "means the student's and the teacher's completions do not line up for a "
+                "whole class of rows (multi-turn rows under last_message_only=false are the "
+                "known one)."
+            )
+
+    def pop_log(self) -> dict:
+        """The counts since the last call, for the log line, and reset them. Empty when no
+        row reached alignment (an arm that does not align, or no step since)."""
+        if self._log_rows <= 0:
+            return {}
+        out = {
+            "train/alignment_unaligned_rows": self._log_unaligned,
+            "train/alignment_rows": self._log_rows,
+            "train/alignment_unaligned_rate": self._log_unaligned / self._log_rows,
+        }
+        self._log_unaligned = self._log_rows = 0
+        return out
+
+
+class _ULDAlignmentGuardCallback(TrainerCallback):
+    """Run the trainer's ULDAlignmentGuard once per optimizer step, on every rank.
+
+    on_pre_optimizer_step, not on_step_end, so a step whose rows were all skipped is refused
+    before the optimizer applies it. (Under DeepSpeed, accelerate's backward has already
+    run engine.step() at the accumulation boundary, so there the refusal follows that one
+    update.) It is called on every rank at every optimizer step, which is what keeps the
+    guard's all-reduce rank-uniform.
+    """
+
+    def __init__(self, trainer):
+        self._trainer = trainer
+
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        self._trainer._uld_alignment_step_end(state)
+        return control
+
+    def on_evaluate(self, args, state, control, **kwargs):
+        # Rows the loss counted during evaluation are not a training step's; the training
+        # counters were drained at the step that preceded the evaluation.
+        loss_fn = self._trainer.uld_loss_fn
+        loss_fn._alignment_unaligned = 0
+        loss_fn._alignment_rows = 0
+        return control
+
+
 class _VLLMWeightSyncCallback(TrainerCallback):
     """Push the student's weights to vLLM at the end of every vllm_sync_frequency-th step.
 
@@ -3058,6 +3206,18 @@ class CustomGOLDTrainer(GOLDTrainer):
                     f"uld_reuse_student_input requires identical tokenizers (jaccard=1.0), "
                     f"but got jaccard={self.uld_loss_fn.jaccard}"
                 )
+
+        # Gated on configuration alone (the loss class), so every rank registers it and the
+        # guard's per-step all-reduce runs on every rank alike.
+        self._uld_alignment_guard = None
+        if self.use_uld_loss and isinstance(
+            getattr(self, "uld_loss_fn", None), CustomULDLoss
+        ):
+            self._uld_alignment_guard = ULDAlignmentGuard(
+                self.args.uld_max_unaligned_fraction,
+                self.args.uld_unaligned_window_steps,
+            )
+            self.add_callback(_ULDAlignmentGuardCallback(self))
 
         if self.use_uld_loss and self.teacher_tokenizer is not None:
             _s = [{"role": "user", "content": ""}]
@@ -5069,6 +5229,25 @@ class CustomGOLDTrainer(GOLDTrainer):
         else:
             return jsd
 
+    def _uld_alignment_step_end(self, state) -> None:
+        """One optimizer step of ULDAlignmentGuard, from _ULDAlignmentGuardCallback. The
+        window defaults to the logging window, so the rate the guard judges is the rate the
+        log line shows."""
+        distributed = (
+            getattr(self.accelerator, "distributed_type", DistributedType.NO)
+            != DistributedType.NO
+        )
+        device = getattr(self.accelerator, "device", torch.device("cpu"))
+        self._uld_alignment_guard.end_step(
+            self.uld_loss_fn,
+            state.global_step
+            + 1,  # the step being taken; global_step counts completed ones
+            lambda values: _all_reduce_sum(values, device, distributed),
+            window_steps=int(
+                getattr(state, "logging_steps", 0) or self.args.logging_steps or 1
+            ),
+        )
+
     def _student_rows_end_with_eos(self, inputs) -> list[bool]:
         """Per row: did the student's sequence end with EOS, i.e. was it NOT truncated?
 
@@ -6209,12 +6388,12 @@ class CustomGOLDTrainer(GOLDTrainer):
             logs["train/alignment_total"] = total
             logs["train/alignment_truncated"] = trunc
             logs["train/alignment_truncation_rate"] = trunc / total
-            logs["train/alignment_unaligned_rows"] = (
-                self.uld_loss_fn._alignment_unaligned
-            )
             self.uld_loss_fn._alignment_total = 0
             self.uld_loss_fn._alignment_truncated = 0
-            self.uld_loss_fn._alignment_unaligned = 0
+
+        # Already summed over ranks, step by step, by the guard; no collective here.
+        if mode == "train" and getattr(self, "_uld_alignment_guard", None) is not None:
+            logs.update(self._uld_alignment_guard.pop_log())
 
         if (
             mode == "train"
