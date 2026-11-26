@@ -593,14 +593,16 @@ def test_vllm_tokens_failures_are_retried_on_resume(tmp_path, fake_vllm, quick_r
     assert bfcl.prune_infra_errors(result) == 1, str(err.value)
 
 
-@pytest.mark.parametrize("failure", ["404", "not json"])
+@pytest.mark.parametrize("failure", ["404", "not json", "no count"])
 def test_vllm_tokens_mid_run_failures_are_infra_errors(tmp_path, fake_vllm, quick_retries, failure):
-    """After a passing startup probe: a 4xx (not retried) or a reply that is not
-    JSON (retried) is an infrastructure error, not a silently scored wrong answer."""
-    fake_vllm.fail["/tokenize"] = [404] if failure == "404" else [b"<html>proxy error</html>"] * 4
+    """After a passing startup probe: a 4xx or a JSON reply without a count (neither
+    retried), or a reply that is not JSON (retried), is an infrastructure error, not a
+    silently scored wrong answer."""
+    fake_vllm.fail["/tokenize"] = {"404": [404], "not json": [b"<html>proxy error</html>"] * 4,
+                                   "no count": [b'{"tokens": [1, 2]}']}[failure]
     with pytest.raises(bfcl_v3_child.EndpointError, match="vLLM endpoint error") as err:
         bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m").count("p")
-    assert len(fake_vllm.seen) == (1 if failure == "404" else 4)
+    assert len(fake_vllm.seen) == (4 if failure == "not json" else 1)
     result = tmp_path / "BFCL_v3_simple_result.json"
     result.write_text(json.dumps({"id": "simple_0", "result": f"Error during inference: {err.value}"}) + "\n")
     assert bfcl.prune_infra_errors(result) == 1, str(err.value)

@@ -290,8 +290,15 @@ class VLLMTokens:
         return self._context
 
     def count(self, prompt: str) -> int:
-        out = self._json(f"{self.root}/tokenize", {"model": self.model, "prompt": prompt, "add_special_tokens": False})
-        return int(out["count"])
+        url = f"{self.root}/tokenize"
+        out = self._json(url, {"model": self.model, "prompt": prompt, "add_special_tokens": False})
+        try:
+            return int(out["count"])
+        except (KeyError, TypeError, ValueError):
+            # A reply of the wrong shape is no answer of the model's: an infrastructure
+            # error, like a 4xx or a reply that is not JSON (see EndpointError).
+            raise EndpointError(f"vLLM endpoint error: a /tokenize reply without a count from {url}: "
+                                f"{json.dumps(out)[:80]}") from None
 
 
 # -- handlers (bfcl_eval imported here, in the side venv only) ------------------------
