@@ -13,6 +13,11 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from autotunex.core.logging import get_logger
+from autotunex.core.urls import split_origin
+
+logger = get_logger(__name__)
+
 AuthProviderName = Literal["disabled", "api_key", "oidc", "session"]
 """``"session"`` backs the browser backend-for-frontend flow: a session JWT this
 service mints and verifies itself, distinct from the bearer tokens "oidc" verifies
@@ -808,7 +813,28 @@ class Settings(BaseSettings):
     backend-for-frontend requires, a wildcard origin would let
     ``CORSMiddleware`` echo back any request's ``Origin`` header with the
     session cookie attached — see the validator below for the mechanism.
+
+    Each entry is rewritten to the bare origin a browser sends (see
+    :meth:`_normalize_origins`). Unless ``return_to_allow_origins`` is set, it
+    is also the allowlist for ``/auth/login``'s ``return_to``.
     """
+
+    return_to_allow_origins: list[str] | None = None
+    """Origins ``/auth/login``'s ``return_to`` may send the browser back to.
+
+    Unset (the default) means ``cors_allow_origins``: an origin trusted to make
+    credentialed calls is one a login may land on. Set it to keep the two
+    decisions apart, e.g. ``[]`` to ignore ``return_to`` while keeping CORS.
+    Entries are normalized like ``cors_allow_origins``'s, and ``"*"`` is
+    refused. Read it through :attr:`resolved_return_to_allow_origins`.
+    """
+
+    @property
+    def resolved_return_to_allow_origins(self) -> list[str]:
+        """The ``return_to`` allowlist, falling back to ``cors_allow_origins`` when unset."""
+        if self.return_to_allow_origins is None:
+            return self.cors_allow_origins
+        return self.return_to_allow_origins
 
     @property
     def dataset_staging_dir(self) -> Path:
@@ -914,6 +940,46 @@ class Settings(BaseSettings):
             return None
         return value.strip().lower() or None
 
+    @field_validator("cors_allow_origins", "return_to_allow_origins", mode="after")
+    @classmethod
+    def _normalize_origins(cls, value: list[str] | None) -> list[str] | None:
+        """Rewrite each entry to the bare origin a browser sends; drop one that has none.
+
+        Both lists are matched exactly against a browser-serialized origin, so
+        ``https://ui.example.com/`` or ``https://UI.example.com`` would match
+        nothing. 0.4.0 loaded such entries, so refusing them would stop an
+        upgraded deployment from starting, whatever its auth provider. They
+        are rewritten instead, and an entry with no origin at all
+        (``ui.example.com``, ``ftp://…``) is dropped, each with a WARNING
+        naming the entry. ``"*"`` is kept for ``_validate_auth`` to refuse.
+        """
+        if value is None:
+            return None
+        normalized: list[str] = []
+        for entry in value:
+            if entry == "*":
+                normalized.append(entry)
+                continue
+            split = split_origin(entry)
+            if split is None:
+                logger.warning(
+                    "Dropping origin allowlist entry %r: it is not an http(s) origin a "
+                    "browser can send (no scheme or host, userinfo, or an invalid host), "
+                    "so no request can match it.",
+                    entry,
+                )
+                continue
+            origin = split[0]
+            if origin != entry:
+                logger.warning(
+                    "Rewriting origin allowlist entry %r to %r, the form a browser "
+                    "sends. Write it that way to silence this warning.",
+                    entry,
+                    origin,
+                )
+            normalized.append(origin)
+        return normalized
+
     @model_validator(mode="after")
     def _validate_auth(self) -> Settings:
         """Fail startup rather than at request time on misconfiguration."""
@@ -1009,6 +1075,11 @@ class Settings(BaseSettings):
                 "requires, Starlette's CORSMiddleware echoes back any request's "
                 "Origin header with the session cookie attached, which defeats "
                 "the allowlist entirely."
+            )
+        if "*" in (self.return_to_allow_origins or []):
+            raise ValueError(
+                'return_to_allow_origins must not contain "*": it would let a login '
+                "redirect to any site."
             )
         if self.session_cookie_same_site == "none" and not self.cors_allow_origins:
             raise ValueError(

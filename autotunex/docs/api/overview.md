@@ -37,7 +37,7 @@ curl https://api.example.com/health
 ```
 
 ```json
-{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.0" }
+{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.1" }
 ```
 
 `GET /health` never touches the database — it is a liveness probe, not a
@@ -52,7 +52,7 @@ curl https://api.example.com/health/live
 ```
 
 ```json
-{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.0" }
+{ "status": "ok", "service": "AutoTuneX API", "version": "0.4.1" }
 ```
 
 `GET /health/ready` is the readiness half, and the one health endpoint that

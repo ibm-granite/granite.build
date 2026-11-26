@@ -120,6 +120,10 @@ backend-for-frontend session flow). If you do use one:
   AUTOTUNEX_CORS_ALLOW_ORIGINS=["https://app.example.com"]
   ```
 
+  Write each entry as a bare origin (`https://app.example.com`, no trailing slash,
+  lowercase, no `:443`). Startup rewrites any other spelling to that form, and
+  drops an entry with no http(s) origin, logging a WARNING for each.
+
 - **`AUTOTUNEX_SESSION_COOKIE_SAME_SITE=none` requires a non-empty allowlist.**
   Cross-site cookies are only legal alongside an explicit
   `AUTOTUNEX_CORS_ALLOW_ORIGINS`; startup rejects `none` with an empty list.

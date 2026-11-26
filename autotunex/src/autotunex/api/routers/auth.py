@@ -66,6 +66,7 @@ from autotunex.core.exceptions import (
     UserNotFoundError,
 )
 from autotunex.core.logging import get_logger
+from autotunex.core.urls import split_origin
 from autotunex.db.repositories.protocols import UserRepository
 from autotunex.models.auth import Principal
 
@@ -77,6 +78,12 @@ _SESSION_COOKIE = "session"
 _ASSUME_COOKIE = "autotunex_assume"
 _FLOW_TTL = timedelta(minutes=5)
 _FLOW_ALGORITHM = "HS256"
+# Bounds the flow cookie: an oversized return_to would push it past the
+# browser's ~4 KB cookie limit, the cookie would be dropped, and /callback
+# would 401 for a reason the caller cannot see. return_to must also be ASCII
+# (a browser-built URL is percent-encoded), so even if JSON escaping doubled
+# every character, base64 would bring the claim to ~2.7 KB.
+_RETURN_TO_MAX_LENGTH = 1024
 
 
 def _code_challenge(verifier: str) -> str:
@@ -205,8 +212,61 @@ def _clear_cookie(response: Response, key: str, settings: Settings) -> None:
     )
 
 
+def _allowed_return_to(return_to: str | None, settings: Settings) -> str | None:
+    """Return ``return_to`` if its origin is allowlisted, else ``None``.
+
+    The allowlist is :attr:`Settings.resolved_return_to_allow_origins`
+    (``return_to_allow_origins``, else ``cors_allow_origins``). ``return_to``'s
+    origin, serialized the way a browser does (:func:`split_origin`), must equal
+    an entry, so another host, scheme or port, a relative or scheme-relative
+    URL, userinfo, and a URL that does not parse all fall back to
+    ``public_base_url``. So do a non-ASCII value and one over the length cap.
+    An empty value is treated as absent.
+
+    Rejections are logged only at DEBUG, and without the value:
+    ``/auth/login`` is unauthenticated, so anyone can send a rejected
+    ``return_to``, and a WARNING per request would bury this module's real
+    warnings.
+    """
+    if not return_to:
+        return None
+    allowlist = settings.resolved_return_to_allow_origins
+    if not allowlist:
+        logger.debug(
+            "Ignoring return_to: the return_to allowlist is empty, so no origin is "
+            "allowed. The login lands on AUTOTUNEX_PUBLIC_BASE_URL."
+        )
+        return None
+    if len(return_to) > _RETURN_TO_MAX_LENGTH or not return_to.isascii():
+        logger.debug(
+            "Ignoring return_to: it is not ASCII or is over %d characters. The "
+            "login lands on AUTOTUNEX_PUBLIC_BASE_URL.",
+            _RETURN_TO_MAX_LENGTH,
+        )
+        return None
+    split = split_origin(return_to)
+    if split is None:
+        logger.debug(
+            "Ignoring return_to: it is not an absolute http(s) URL with a valid host, "
+            "it carries userinfo, or it does not parse. The login lands on "
+            "AUTOTUNEX_PUBLIC_BASE_URL."
+        )
+        return None
+    origin, parts = split
+    if origin not in allowlist:
+        logger.debug(
+            "Ignoring return_to: its origin is not in the return_to allowlist "
+            "(AUTOTUNEX_RETURN_TO_ALLOW_ORIGINS, else AUTOTUNEX_CORS_ALLOW_ORIGINS). "
+            "The login lands on AUTOTUNEX_PUBLIC_BASE_URL."
+        )
+        return None
+    # `urlsplit` drops tabs and newlines before parsing, so redirect to what it
+    # parsed (the URL just validated), not the raw string.
+    return parts.geturl()
+
+
 @router.get("/login", summary="Start the W3ID login flow")
-async def login(settings: SettingsDep) -> RedirectResponse:
+async def login(settings: SettingsDep, return_to: str | None = None) -> RedirectResponse:
     """Redirect to W3ID's authorization endpoint with state and a PKCE (S256) challenge.
 
     ``redirect_uri`` is built from ``settings.public_base_url`` only, never
@@ -214,13 +274,27 @@ async def login(settings: SettingsDep) -> RedirectResponse:
     attacker-controlled, and building the redirect target from them would let
     a poisoned value send the authorization code to a host of the attacker's
     choosing.
+
+    ``return_to`` is where ``/callback`` sends the browser once the session
+    is minted, if its origin is allowlisted (see
+    :func:`_allowed_return_to`); otherwise ``public_base_url``. It travels in
+    the signed flow cookie, so ``/callback`` never reads it from the request,
+    and ``/callback`` checks it against the allowlist again.
     """
     bff = _require_login_settings(settings)
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(64)
     now = datetime.now(UTC)
+    flow_claims: dict[str, object] = {
+        "state": state,
+        "verifier": verifier,
+        "exp": int((now + _FLOW_TTL).timestamp()),
+    }
+    allowed_return_to = _allowed_return_to(return_to, settings)
+    if allowed_return_to is not None:
+        flow_claims["return_to"] = allowed_return_to
     flow_token = jwt.encode(
-        {"state": state, "verifier": verifier, "exp": int((now + _FLOW_TTL).timestamp())},
+        flow_claims,
         bff.secret,
         algorithm=_FLOW_ALGORITHM,
     )
@@ -448,7 +522,13 @@ async def callback(
         email=email, secret=bff.secret, ttl_hours=settings.session_ttl_hours
     )
 
-    response = RedirectResponse(bff.base_url, status_code=HTTPStatus.FOUND)
+    # Checked again, not only at /login: an origin removed from the allowlist
+    # must stop receiving logins that were already in flight.
+    flow_return_to = flow_claims.get("return_to")
+    landing = (
+        _allowed_return_to(flow_return_to, settings) if isinstance(flow_return_to, str) else None
+    ) or bff.base_url
+    response = RedirectResponse(landing, status_code=HTTPStatus.FOUND)
     _clear_cookie(response, _FLOW_COOKIE, settings)
     response.set_cookie(
         _SESSION_COOKIE,

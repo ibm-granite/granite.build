@@ -47,8 +47,8 @@ Misconfiguration is caught at startup, not at request time. The service refuses 
   URL, and session secret).
 - **A session secret shorter than 32 characters.** `AUTOTUNEX_SESSION_SECRET` is refused
   below the HS256 key floor, even when the rest of the session set is present.
-- **A wildcard CORS origin.** `AUTOTUNEX_CORS_ALLOW_ORIGINS` must never contain `"*"`, in
-  any configuration.
+- **A wildcard origin.** Neither `AUTOTUNEX_CORS_ALLOW_ORIGINS` nor
+  `AUTOTUNEX_RETURN_TO_ALLOW_ORIGINS` may contain `"*"`, in any configuration.
 - **`same_site=none` without an allowlist.** `AUTOTUNEX_SESSION_COOKIE_SAME_SITE=none`
   requires a non-empty `AUTOTUNEX_CORS_ALLOW_ORIGINS`.
 - **A partial LLM configuration.** `AUTOTUNEX_LLM_BASE_URL`, `AUTOTUNEX_LLM_API_KEY`, and
@@ -320,7 +320,8 @@ settings above (the audience here is the ID token's, which is always the client 
 | `AUTOTUNEX_SESSION_SECRET` | Secret signing the session JWT (HS256). Must be **≥ 32 characters** (e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`). No random fallback. A secret — inject it. **Required** when `"session"` is enabled. | *(unset)* |
 | `AUTOTUNEX_SESSION_TTL_HOURS` | How long a minted session cookie remains valid. Bounded 1–24. | `8` |
 | `AUTOTUNEX_SESSION_COOKIE_SAME_SITE` | Cookie `SameSite` policy: `lax` (same-origin UI) or `none` (cross-origin UI — then a non-empty CORS allowlist is mandatory). | `lax` |
-| `AUTOTUNEX_CORS_ALLOW_ORIGINS` | JSON list of origins CORS allows, e.g. `["https://ui.example.com"]`. Must **never** contain `"*"`. | `[]` |
+| `AUTOTUNEX_CORS_ALLOW_ORIGINS` | JSON list of origins CORS allows, e.g. `["https://ui.example.com"]`. Must **never** contain `"*"`. An entry that is not a bare origin is rewritten to one (`https://UI.example.com/` becomes `https://ui.example.com`), and one with no http(s) origin is dropped, each with a startup WARNING. | `[]` |
+| `AUTOTUNEX_RETURN_TO_ALLOW_ORIGINS` | JSON list of origins `/auth/login`'s `return_to` may land on. Unset means `AUTOTUNEX_CORS_ALLOW_ORIGINS`; `[]` ignores `return_to`. Normalized like the CORS list; must **never** contain `"*"`. | *(unset)* |
 
 ---
 
