@@ -592,7 +592,7 @@ class TestULDLogitAlignment:
         assert _uld_reference(batch, groups, groups, at_labels=True).item() > 1e-3
         assert _custom_uld()(**batch).item() == pytest.approx(0.0, abs=ULD_TOL)
 
-    def test_trl_reads_the_logits_at_the_labels(self):
+    def test_trl_defaults_to_the_observed_strategy_and_needs_byte_offsets(self):
         """The upstream defect, pinned on the parent with the subclass's EOS settings, so
         the override has something to fix. trl 1.x's base path aligns by byte offsets,
         which this trainer does not pass, so the parent cannot score these inputs at all;
