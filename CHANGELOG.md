@@ -115,6 +115,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **granite-evals run dirs are named after every option that can change the results
+  (#766).** With `output_dir` empty, a run used to write `$OUTPUT_ROOT/$RUN_NAME/<benchmark>`
+  whatever its options. It now writes `$OUTPUT_ROOT/$RUN_NAME/<benchmark>@<key>-<value>...`
+  whenever it has a selection option (`tasks=`, `domains=`, `categories=`, `instances=`, ...),
+  a protocol option (`thinking=`, `num_fewshot=`, `judge_model=`, sampling or step limits, ...)
+  or a `dataset` / `dataset_revision`, every value escaped into one path segment (see
+  `steps/eval/README.md`, Run dirs). Only operational options (retries, request timeouts,
+  `max_failed_frac`, worker counts, endpoint addresses) leave the name alone. This applies to
+  the curated recipes too: one that passes options or swaps its data writes to a new dir (the
+  bfcl `categories=` recipes, a recipe run with `--param OPTIONS=...`, and a `DATASET` /
+  `DATASET_REVISION` swap on `bird/birdbench`, `ifbench/ifbench` or `judged/gdpval`), so a
+  rerun does **not** resume into a dir an older run wrote under `<benchmark>`; move that dir to
+  the new name to resume it. A curated recipe run with no options and its own data keeps
+  `<benchmark>`.
+
 - **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
   site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
   moved to `recipes/granite-switch/skypilot/slurm-bluevela/answerability-lora` in #639 (the
