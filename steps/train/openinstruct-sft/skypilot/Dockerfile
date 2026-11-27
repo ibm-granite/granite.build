@@ -93,7 +93,7 @@ RUN uv sync --frozen \
  && uv pip install --python .venv/bin/python \
       "pillow==13.0.0" "nltk==3.10.3" "litellm==1.84.0" "PyJWT==2.14.0" \
       "Authlib==1.9.5" "fastmcp==3.2.0" "anyio==4.14.2" "GitPython==3.1.59" \
-      "certifi==2026.10.19" "cryptography==46.0.7" "wandb==0.31.0" \
+      "certifi==2026.10.19" "cryptography==46.0.7" "wandb==0.31.2" \
  && chmod -R a+rX /opt/open-instruct /opt/uv-python
 
 # The step's scripts. step.yaml's setup:/run: call them at /opt/openinstruct-sft/.

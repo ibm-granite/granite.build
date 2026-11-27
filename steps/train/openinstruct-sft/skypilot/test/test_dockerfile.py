@@ -68,7 +68,7 @@ _PATCHED = {
     "GitPython": "3.1.59",
     "certifi": "2026.10.19",
     "cryptography": "46.0.7",
-    "wandb": "0.31.0",
+    "wandb": "0.31.2",
 }
 
 
