@@ -59,7 +59,7 @@ def test_scripts_land_where_step_yaml_calls_them():
 
 _PATCHED = {
     "pillow": "13.0.0",
-    "nltk": "3.10.3",
+    "nltk": "3.10.4",
     "litellm": "1.84.0",
     "PyJWT": "2.14.0",
     "Authlib": "1.9.5",
