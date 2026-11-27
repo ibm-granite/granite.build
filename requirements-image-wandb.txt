@@ -1,0 +1,7 @@
+# wandb for the gbserver image, installed by the Dockerfile with --no-deps --require-hashes
+# (SkyPilot caps click<8.2 and wandb requires click>=8.2; see the Dockerfile). Wheels only,
+# no sdist: manylinux_2_28 x86_64 (`make imagex`) and aarch64 (`make image` on an ARM host).
+# Hashes from PyPI's JSON API for wandb 0.31.2.
+wandb==0.31.2 \
+    --hash=sha256:d47d0c5ebcb5f91e4acb5e1546a8f553fa9e5590629c2fe24e666b98dc5ca3fb \
+    --hash=sha256:809f513214589958fddc3e86b98694009ff1222f16445c6b1509aa10ef84931c
