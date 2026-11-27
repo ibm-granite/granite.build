@@ -779,7 +779,13 @@ $${ corpus_inputs() }
               vllm_mode: "server"
               vllm_sync_frequency: $${VLLM_SYNC_FREQUENCY}
               top_p: $${TOP_P}
+<%- if SOPD %>
+              # LOSS_ARM sampled_opd implies the switch, and the step's renderer refuses
+              # the arm beside use_sampled_opd_loss false, so either form passes true.
+              use_sampled_opd_loss: true
+<%- else %>
               use_sampled_opd_loss: $${USE_SAMPLED_OPD_LOSS}
+<%- endif %>
               last_message_only: $${LAST_MESSAGE_ONLY}
               clip_alpha: $${CLIP_ALPHA}
               opd_importance_sampling: $${OPD_IMPORTANCE_SAMPLING}

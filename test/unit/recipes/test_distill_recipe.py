@@ -364,9 +364,107 @@ def test_sampled_opd_with_lmbda_other_than_1_fails_to_render(tmp_path, sopd, mod
     with pytest.raises(jinja2.exceptions.UndefinedError) as err:
         _render_text(tmp_path, **params)
     assert "LMBDA_must_be_1_for_the_sampled_OPD_loss" in str(err.value)
-    # An explicit 1 is the loss's own value, and renders.
-    gold = _gold(_render(tmp_path, **dict(params, LMBDA="1")))
-    assert gold["lmbda"] == 1.0
+    # An explicit 1 is the loss's own value: it renders, and the step's renderer takes it.
+    rendered = _render(tmp_path, **dict(params, LMBDA="1"))
+    assert _gold(rendered)["lmbda"] == 1.0
+    cfg = _logit_distill_renders(tmp_path, rendered)
+    assert cfg["use_sampled_opd_loss"] is True and cfg["lmbda"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"LMBDA_MODE": "off-policy"},
+        {"LMBDA_MODE": "on-policy"},
+        {"LMBDA_MODE": "ramp"},
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "uld", "LAST_MESSAGE_ONLY": "true"},
+        {"LMBDA_MODE": "on-policy", "LOSS_ARM": "uld", "LAST_MESSAGE_ONLY": "true"},
+        {
+            "LMBDA_MODE": "on-policy",
+            "LOSS_ARM": "sampled_opd",
+            "LAST_MESSAGE_ONLY": "true",
+        },
+        {"LMBDA_MODE": "ramp", "LOSS_ARM": "sampled_opd", "LAST_MESSAGE_ONLY": "true"},
+        {
+            "LMBDA_MODE": "on-policy",
+            "USE_SAMPLED_OPD_LOSS": "true",
+            "LAST_MESSAGE_ONLY": "true",
+        },
+    ],
+    ids=lambda p: ",".join(
+        f"{k}={v}" for k, v in p.items() if k != "LAST_MESSAGE_ONLY"
+    ),
+)
+def test_what_the_recipe_renders_the_step_renderer_accepts(tmp_path, params):
+    """End to end: the recipe's train target, through the logit-distill step's own
+    template and render_gold_config.py, renders a gold config. A config the recipe
+    accepts must not die at the step's launch. LOSS_ARM=sampled_opd once did: the
+    recipe passed use_sampled_opd_loss false beside it, which the renderer refuses."""
+    cfg = _logit_distill_renders(tmp_path, _render(tmp_path, **params))
+    if params.get("LOSS_ARM") == "sampled_opd" or "USE_SAMPLED_OPD_LOSS" in params:
+        assert cfg["use_sampled_opd_loss"] is True
+
+
+def _logit_distill_renders(tmp_path, rendered):
+    """Run the logit-distill step's render_gold_config.py exactly as its run script
+    calls it for this recipe's train target, and return the gold config it writes.
+
+    The step's config is the template's defaults with the target's config merged over
+    them (gbserver's merge_dicts). The run script is rendered from the template, and
+    its renderer command is cut out and run under bash with the shell variables it
+    reads set. Two keys are turned off, both checks of the delivered files, which this
+    test has none of: verify_trainer_accepts_keys (it imports CustomGOLDConfig) and
+    check_corpus_tokenizer (it reads the corpus)."""
+    import os
+    import subprocess
+    import sys
+
+    from gbserver.utils.filesystem import merge_dicts
+
+    template = _STEP_SCHEMAS["space://steps/train/distill/logit-distill"]
+    step = yaml.safe_load(template.read_text(encoding="utf-8"))
+    config = merge_dicts(step["config"], _config(rendered, "train"))
+    config["gold_config"]["verify_trainer_accepts_keys"] = False
+    config["gold_config"]["check_corpus_tokenizer"] = False
+    launcher = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"]
+    bindings = {
+        "student": {"binding": {"path": "/models/student"}},
+        "teacher": {"binding": {"path": "/models/teacher"}},
+        "corpus": {"binding": {"path": "/data/corpus/train.jsonl"}},
+    }
+    if config["gold_config"].get("vllm_num_servers", 0):
+        bindings["vllm"] = {"binding": {"state": "http://rollout:8000"}}
+    script = jinja2.Template(launcher["run"]).render(config=config, bindings=bindings)
+    start = script.index(
+        '"$PYBIN" "$DISTILL_HOME/steps/logit-distill/render_gold_config.py"'
+    )
+    lines = []
+    for line in script[start:].splitlines():
+        lines.append(line)
+        if not line.rstrip().endswith("\\"):
+            break
+    home = tmp_path / "distill-home"
+    (home / "steps").mkdir(parents=True, exist_ok=True)
+    link = home / "steps" / "logit-distill"
+    if not link.exists():
+        link.symlink_to(template.parent / "src")
+    out = tmp_path / "gold_config_rendered.yaml"
+    env = dict(
+        os.environ,
+        PYBIN=sys.executable,
+        DISTILL_HOME=str(home),
+        CFG=str(out),
+        NODES="2",
+    )
+    result = subprocess.run(
+        ["bash", "-c", "\n".join(lines)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return yaml.safe_load(out.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("mode", ["ramp", "on-policy"])
