@@ -77,7 +77,8 @@ def scan(cmd, ignores=()):
             for group in pkg.get("groups", []):
                 ids = osv_gate.group_ids(group)
                 if any(
-                    e["id"] in ids and osv_gate.scope_matches(e, ecosystem, name, version)
+                    e["id"] in ids
+                    and osv_gate.scope_matches(e, ecosystem, name, version)
                     for e in ignores
                 ):
                     continue  # accepted in <image dir>/scan-ignore

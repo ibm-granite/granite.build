@@ -92,13 +92,20 @@ def render(path):
     heading = sections(path)
     lines = Path(path).read_text().splitlines()
     index = {line.strip(): n for n, line in enumerate(lines, 1)}
-    out = ["# Generated from " + str(path) + " by steps/eval/scripts/trivy-ignore.py.", "vulnerabilities:"]
+    out = [
+        "# Generated from " + str(path) + " by steps/eval/scripts/trivy-ignore.py.",
+        "vulnerabilities:",
+    ]
     if not entries:
         out[-1] = "vulnerabilities: []"
     for e in entries:
         out.append(f"  - id: {json.dumps(e['id'])}")
         if e["purls"]:
-            out.append("    purls: [" + ", ".join(json.dumps(trivy_purl(p)) for p in e["raw_purls"]) + "]")
+            out.append(
+                "    purls: ["
+                + ", ".join(json.dumps(trivy_purl(p)) for p in e["raw_purls"])
+                + "]"
+            )
         if e["expires"]:
             out.append(f"    expired_at: {e['expires'].isoformat()}")
         statement = heading.get(index.get(e["line"], 0), "")

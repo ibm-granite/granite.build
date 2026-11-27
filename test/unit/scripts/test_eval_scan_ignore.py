@@ -32,7 +32,12 @@ osv_gate = trivy_ignore.osv_gate
 
 def generate(tmp_path, source):
     out = tmp_path / "ignore.yaml"
-    r = subprocess.run([sys.executable, "-I", str(SCRIPT), str(source), str(out)], capture_output=True, text=True, check=False)
+    r = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), str(source), str(out)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert r.returncode == 0, r.stderr
     return yaml.safe_load(out.read_text())
 
@@ -44,8 +49,12 @@ def test_every_eval_entry_is_scoped_and_expires():
     assert not unscoped, f"entries without a pkg: scope: {unscoped}"
     no_expiry = [e["line"] for e in entries if e["expires"] is None]
     assert not no_expiry, f"entries without exp: {no_expiry}"
-    versionless = [e["line"] for e in entries if any(v is None for _, _, v in e["purls"])]
-    assert not versionless, f"entries scoped to every version of a package: {versionless}"
+    versionless = [
+        e["line"] for e in entries if any(v is None for _, _, v in e["purls"])
+    ]
+    assert (
+        not versionless
+    ), f"entries scoped to every version of a package: {versionless}"
 
 
 def test_each_id_is_listed_once():
@@ -62,7 +71,9 @@ def test_generated_yaml_keeps_every_entry(tmp_path):
     for e, item in zip(entries, items, strict=True):
         assert set(item) <= {"id", "purls", "expired_at", "statement"}
         assert item["id"] == e["id"]
-        assert item.get("purls", []) == [trivy_ignore.trivy_purl(p) for p in e["raw_purls"]]
+        assert item.get("purls", []) == [
+            trivy_ignore.trivy_purl(p) for p in e["raw_purls"]
+        ]
         # yaml decodes the bare date as a date, as trivy's yaml.v3 decodes it into time.Time
         assert item.get("expired_at") == e["expires"]
         assert isinstance(item["statement"], str) and item["statement"]
@@ -74,7 +85,7 @@ def test_generated_yaml_shape(tmp_path):
         "# ---- pillow 11.3.0 (judged) ----\n"
         "# why\n"
         "PYSEC-2026-4327 exp:2027-05-31 pkg:pypi/pillow@11.3.0 pkg:pypi/pillow@12.3.0\n"
-        "# ---- second: \"quoted\" ----\n"
+        '# ---- second: "quoted" ----\n'
         "CVE-2026-1 pkg:pypi/Datamodel_Code_Generator@0.25.7\n"
     )
     doc = generate(tmp_path, src)
@@ -95,11 +106,17 @@ def test_generated_yaml_shape(tmp_path):
 
 def test_pypi_names_follow_trivys_normalisation(tmp_path):
     """trivy lowercases and turns `_` into `-` but keeps dots (zope.interface), and
-    compares names exactly; osv-gate compares PEP 503 names, so both forms match there."""
+    compares names exactly; osv-gate compares PEP 503 names, so both forms match there.
+    """
     src = tmp_path / "scan-ignore"
-    src.write_text("CVE-2026-2 pkg:pypi/Zope.Interface@7.2 pkg:pypi/ruamel.yaml_clib@0.2.12\n")
+    src.write_text(
+        "CVE-2026-2 pkg:pypi/Zope.Interface@7.2 pkg:pypi/ruamel.yaml_clib@0.2.12\n"
+    )
     item = generate(tmp_path, src)["vulnerabilities"][0]
-    assert item["purls"] == ["pkg:pypi/zope.interface@7.2", "pkg:pypi/ruamel.yaml-clib@0.2.12"]
+    assert item["purls"] == [
+        "pkg:pypi/zope.interface@7.2",
+        "pkg:pypi/ruamel.yaml-clib@0.2.12",
+    ]
     entry = osv_gate.load_ignore_entries(src)[0]
     assert osv_gate.scope_matches(entry, "PyPI", "zope.interface", "7.2")
     assert osv_gate.scope_matches(entry, "PyPI", "zope-interface", "7.2")
@@ -113,7 +130,13 @@ def test_empty_file_gives_an_empty_list(tmp_path):
 
 def test_refuses_a_non_yaml_output_name(tmp_path):
     r = subprocess.run(
-        [sys.executable, "-I", str(SCRIPT), str(SCAN_IGNORE), str(tmp_path / "ignore.txt")],
+        [
+            sys.executable,
+            "-I",
+            str(SCRIPT),
+            str(SCAN_IGNORE),
+            str(tmp_path / "ignore.txt"),
+        ],
         capture_output=True,
         text=True,
         check=False,

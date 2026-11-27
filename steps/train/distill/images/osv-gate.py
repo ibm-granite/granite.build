@@ -61,8 +61,8 @@ scope there would narrow this gate and leave trivy's unscoped.
 """
 
 import datetime
-import os
 import json
+import os
 import re
 import sys
 import urllib.request
@@ -110,7 +110,11 @@ def last_affected_versions(vuln, package):
         if affected.get("package", {}).get("name", "").lower() != package.lower():
             continue
         for rng in affected.get("ranges", []):
-            out += [e["last_affected"] for e in rng.get("events", []) if "last_affected" in e]
+            out += [
+                e["last_affected"]
+                for e in rng.get("events", [])
+                if "last_affected" in e
+            ]
     return out
 
 
@@ -145,7 +149,10 @@ def releases(ecosystem, name):
     PyPI only, from its JSON API (osv-scanner needs the network anyway). The
     environment variable OSV_GATE_RELEASES may name a JSON file {name: [versions]}
     used instead of PyPI (the unit tests)."""
-    key = (ecosystem, normalize_name("pypi", name) if ecosystem == "PyPI" else name.lower())
+    key = (
+        ecosystem,
+        normalize_name("pypi", name) if ecosystem == "PyPI" else name.lower(),
+    )
     if key in _RELEASES:
         return _RELEASES[key]
     found = None
@@ -204,11 +211,15 @@ def split_purl(token):
     are not supported: they are rejected rather than ignored."""
     body = token[len("pkg:") :]
     if "?" in body or "#" in body or "/" not in body:
-        raise ValueError(f"unsupported purl {token!r}: use pkg:<type>/<name>[@<version>]")
+        raise ValueError(
+            f"unsupported purl {token!r}: use pkg:<type>/<name>[@<version>]"
+        )
     ptype, rest = body.split("/", 1)
     name, _, version = rest.rpartition("@") if "@" in rest else (rest, "", "")
     if not ptype or not name:
-        raise ValueError(f"unsupported purl {token!r}: use pkg:<type>/<name>[@<version>]")
+        raise ValueError(
+            f"unsupported purl {token!r}: use pkg:<type>/<name>[@<version>]"
+        )
     return ptype.lower(), name, version or None
 
 
@@ -227,7 +238,13 @@ def parse_ignore_line(line):
     if not text:
         return None
     fields = text.split()
-    entry = {"id": fields[0], "expires": None, "purls": [], "raw_purls": [], "line": line.strip()}
+    entry = {
+        "id": fields[0],
+        "expires": None,
+        "purls": [],
+        "raw_purls": [],
+        "line": line.strip(),
+    }
     for field in fields[1:]:
         if field.startswith("exp:"):
             entry["expires"] = datetime.date.fromisoformat(field[len("exp:") :])
@@ -235,7 +252,9 @@ def parse_ignore_line(line):
             entry["purls"].append(parse_purl(field))
             entry["raw_purls"].append(split_purl(field))
         else:
-            raise ValueError(f"unknown field {field!r} in ignore entry {line.strip()!r}")
+            raise ValueError(
+                f"unknown field {field!r} in ignore entry {line.strip()!r}"
+            )
     return entry
 
 
@@ -338,9 +357,7 @@ def main():
                 out_of_scope += [
                     (e["id"], name, version) for e in listed if e["id"] not in hit
                 ]
-                findings.append(
-                    (score, name, version, fix, group.get("ids", []), hit)
-                )
+                findings.append((score, name, version, fix, group.get("ids", []), hit))
 
     findings.sort(key=lambda f: (-(f[0] or 0), f[1]))
     shown = [f for f in findings if f[0] is None or f[0] >= THRESHOLDS["HIGH"]]
