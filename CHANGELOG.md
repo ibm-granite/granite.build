@@ -561,3 +561,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Reflected XSS on the legacy SSO `/api/v1/auth/callback` page (#723).** The provider's
   `error_description` was put into the HTML unescaped; it is now escaped.
+- **The `space://steps/train/openinstruct-sft` Dockerfile moves wandb from 0.31.0 to 0.31.2,
+  and nltk from 3.10.3 to 3.10.4 (#786).** 0.31.0's bundled `wandb-core` binary carries
+  CVE-2026-78661 (`golang.org/x/net`) and CVE-2026-111943 (Go stdlib), both HIGH, and
+  GO-2026-5932; 0.31.2's has no trivy findings. nltk 3.10.4 fixes CVE-2026-128138 (CRITICAL).
+  The step still pins image `oi-v0.3.0-9`, built with the old versions, until a new image
+  tag is published from this Dockerfile.
