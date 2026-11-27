@@ -446,7 +446,8 @@ def dataset_form(dataset: str, revision: str) -> str:
         if revision:
             check_local_pin(Path(dataset), revision)
         return "local"
-    if dataset.startswith(("/", ".", "~")) or not HUB_ID.match(dataset):
+    # HUB_ID starts with a letter or digit, so a path (/, ., ~) never matches it
+    if not HUB_ID.match(dataset):
         raise SystemExit(
             f"nemoskills: dataset={dataset} is no existing path, hub id or URL"
         )

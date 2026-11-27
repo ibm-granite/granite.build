@@ -124,6 +124,23 @@ def test_a_bad_max_failed_frac_is_refused_at_startup(tmp_path, value, match):
     assert _bench(tmp_path).max_failed_frac == 0.05
 
 
+@pytest.mark.parametrize("dataset", ["~/data", "~user/data", "./org/data", "/org/data"])
+def test_a_missing_path_is_never_a_hub_id(tmp_path, dataset):
+    # A path the user meant (it starts with ~, . or /) must exist; it never
+    # falls through to the hub form (HUB_ID starts with a letter or digit).
+    with pytest.raises(SystemExit, match="no existing path, hub id or URL"):
+        generic.dataset_form(dataset, COMMIT)
+
+
+def test_an_http_error_is_named_not_a_digest_mismatch(tmp_path, monkeypatch, served):
+    url, body, sha = served
+    missing = url.rsplit("/", 1)[0] + "/missing.jsonl"
+    monkeypatch.setenv("GRANITE_NS_PINNED_URLS", json.dumps({missing: [missing, sha]}))
+    monkeypatch.setenv("GRANITE_NS_READS", str(tmp_path / "reads.jsonl"))
+    with pytest.raises(generic.guard["GuardError"], match="HTTP 404"):
+        generic.guard["fetch_pinned"](missing)
+
+
 def test_url_form_pins_urlretrieve(tmp_path):
     """The URL form feeds the base class's pinned_urls (prepare.py's
     urlretrieve) with the content pin."""
