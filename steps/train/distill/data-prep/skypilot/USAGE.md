@@ -215,7 +215,7 @@ generation markers its tokenizer does not have.
 
 ### Resume
 
-Like the align step, this one answers "has this already been done, and with what?" for itself,
+Like tokenizer-align, this one answers "has this already been done, and with what?" for itself,
 because a preemptable-queue recipe is restarted rather than resumed. Before the filtering loop,
 `src/prep_corpus.py` compares what is recorded in `out_dir` with what this run expects:
 
