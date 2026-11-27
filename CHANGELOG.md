@@ -557,10 +557,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `last_message_only` is read the way its parser reads it, so `"true"` and 1 now
       satisfy the uld and sampled_opd rule (they were reported), and `"true"` is reported
       as the scan bypass for every other arm (it was not).
+  - `uld_reuse_student_input` without `uld_use_hybrid_loss` no longer fails at trainer
+    init with `AttributeError: ... 'jaccard'` (#785). Its tokenizer check now compares the
+    two vocabularies and requires them to be equal, since the teacher reads the student's
+    token ids. The old check, a Jaccard index of 1.0, also passed a teacher with other ids.
   - The distill recipe refuses `USE_SAMPLED_OPD_LOSS=true` and `LOSS_ARM=sampled_opd` with
     `LMBDA_MODE=off-policy` before submission, and the logit-distill step's renderer
     refuses `use_sampled_opd_loss: true` off-policy. Off-policy the switch was dropped, and
     the run trained plain JSD.
+  - The sampled-OPD loss with an `LMBDA` other than 1 under `LMBDA_MODE` on-policy or
+    ramp is refused by the recipe before submission, for both forms, and the step's
+    renderer refuses `use_sampled_opd_loss: true` with `lmbda` other than 1.0. Before, the
+    switch form failed at trainer start in `CustomGOLDConfig` and the arm form at the
+    step's launch, both once the allocation was up.
 - **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
   longer share a pull dir (#715).** `<cache>/<owner>/<repo>/<revision>` ignored all three, so a
   model and a same-named dataset overwrote each other's files, two paths of one bucket synced into

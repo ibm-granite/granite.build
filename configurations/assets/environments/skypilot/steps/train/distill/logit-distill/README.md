@@ -123,7 +123,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `vllm_mode` | string | `server` = talk to a vLLM HTTP server (the reference launcher's value). Passed to the trainer on the external-server path; every on-policy config also states `vllm_mode: server`, because trl 1.x's own default is `colocate`. Default: `server`. |
 | `vllm_sync_frequency` | integer | How often, in optimizer steps, the trainer pushes updated weights to the server; a larger value samples from a staler policy. Passed to the trainer only on the external-server path. Default: `1`. |
 | `top_p` | number | Rollout sampling `top_p`; emitted only on-policy. Default: `0.95`. |
-| `use_sampled_opd_loss` | boolean | Sampled on-policy-distillation loss; emitted only on-policy, and `true` is refused off-policy. Prefer `loss_arm: sampled_opd`, which enforces its requirements. Default: `false`. |
+| `use_sampled_opd_loss` | boolean | Sampled on-policy-distillation loss; emitted only on-policy, and `true` is refused off-policy or with `lmbda` other than 1.0. Prefer `loss_arm: sampled_opd`, which enforces its requirements. Default: `false`. |
 | `last_message_only` | boolean | Trainer `last_message_only`: supervise only the final assistant turn. Emitted on-policy, and off-policy only for `loss_arm: uld` (every other off-policy render leaves the trainer at its default, `false`). Required `true` by the `sampled_opd` and `uld` arms. Default: `false`. |
 | `clip_alpha` | number | Trainer `clip_alpha`; emitted only on-policy. Default: `0.1`. |
 | `opd_importance_sampling` | boolean | Truncated importance sampling for the sampled OPD loss; emitted only on-policy. Default: `false`. |
