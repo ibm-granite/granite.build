@@ -364,6 +364,12 @@ def _dir(proc):
         ("tasks=x thinking=on thinking=off", "lm-eval@tasks-x@thinking-off"),
         ("tasks=x max_retries=3 max_failed_frac=0.1", "lm-eval@tasks-x"),
         (
+            "tasks=x judge_base_url=http://h:1/v1 user_base_url=http://u "
+            "search_mcp_url=http://m critpt_api_url=http://c judge_api_key_env=K",
+            "lm-eval@tasks-x",
+        ),  # endpoint addresses
+        ("tasks=x base_url_mode=y", "lm-eval@tasks-x@base_url_mode-y"),
+        (
             "a=0 split=10 instances=9 exclude=8 tasks=7 categories=6 domains=5 "
             "task_split=4 task_suite=3 service=2 benchmark=1",
             "lm-eval@benchmark-1@service-2@task_suite-3@task_split-4@domains-5"

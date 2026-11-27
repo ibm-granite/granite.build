@@ -194,9 +194,9 @@ environment_configs:
             # required pin or a curated id's swap), then every other option, sorted by
             # key -- protocol options such as lm-eval's mode, num_fewshot, gen_kwargs,
             # thinking and metric, sampling, agent and judge settings. Only the
-            # operational options in OPERATIONAL (retries, timeouts of a request, the
-            # failure threshold, endpoint addresses, worker counts) leave the name
-            # alone. E.g. lm-eval@tasks-hellaswag, tau3@domains-airline+2Cretail,
+            # operational options leave the name alone: OPERATIONAL (retries, timeouts
+            # of a request, the failure threshold, worker counts) and the endpoint
+            # addresses (*_base_url, *_api_url, *_mcp_url, *_api_key_env). E.g. lm-eval@tasks-hellaswag, tau3@domains-airline+2Cretail,
             # mcpmark@service-filesystem@task_suite-easy, lm-eval@tasks-gsm8k@thinking-on.
             # The @ keeps it apart from every curated id's dir (no id has one). A
             # repeated key takes its last value, as the harness reads it. A key is
@@ -232,7 +232,7 @@ environment_configs:
               return $found
             }
             SELECTION=" benchmark service task_suite task_split domains categories tasks exclude instances split "
-            OPERATIONAL=" max_failed_frac max_retries retry_delay request_timeout grade_workers comet_batch_size judge_base_url search_mcp_url critpt_api_url critpt_api_key_env "
+            OPERATIONAL=" max_failed_frac max_retries retry_delay request_timeout grade_workers comet_batch_size "
             SEL=""
             for key in $SELECTION; do
               if granite_val "$key"; then SEL="$SEL@$key-$(granite_enc "$GRANITE_VAL")"; fi
@@ -244,6 +244,8 @@ environment_configs:
             while IFS= read -r key; do
               [ -n "$key" ] || continue
               case "$SELECTION$OPERATIONAL" in (*" $key "*) continue ;; esac
+              # endpoint addresses: where a role is served, not what it does
+              case "$key" in (*_base_url|*_api_url|*_mcp_url|*_api_key_env) continue ;; esac
               granite_val "$key"
               k="$(granite_enc "$key")"
               SEL="$SEL@${k//-/+2D}-$(granite_enc "$GRANITE_VAL")"

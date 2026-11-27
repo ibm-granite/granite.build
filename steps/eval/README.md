@@ -118,8 +118,9 @@ id); then every other option, sorted by key: the protocol options (lm-eval's
 `mode=`, `num_fewshot=`, `gen_kwargs=`, `thinking=`, `metric=`; sampling, agent,
 judge and step-limit settings). Only operational options leave the name alone:
 `max_failed_frac`, `max_retries`, `retry_delay`, `request_timeout`,
-`grade_workers`, `comet_batch_size` and the endpoint addresses
-(`judge_base_url`, `search_mcp_url`, `critpt_api_url`, `critpt_api_key_env`).
+`grade_workers`, `comet_batch_size` and the endpoint addresses (any
+`*_base_url`, `*_api_url`, `*_mcp_url` or `*_api_key_env`: `judge_base_url`,
+`user_base_url`, `search_mcp_url`, `critpt_api_url`, ...).
 A repeated option counts once, its last value, as the harness reads it. So
 `lm-eval@tasks-hellaswag`, `tau3@domains-airline+2Cretail`,
 `mcpmark@service-filesystem@task_suite-easy`, `lm-eval@tasks-gsm8k@thinking-on`.
