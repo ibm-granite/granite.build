@@ -9,7 +9,8 @@ is the same aggregate shape -- the unweighted mean of the harness's pass^1 over
 the chosen domains (what ``tau3-bench`` computes over its official three).
 The curated ids stay as they are: ``tau3-bench`` is the official aggregate,
 the single-domain ids the official per-domain numbers. A domain the pinned
-data does not ship fails in the harness's own task lookup at run start.
+data does not ship is refused at startup, before the server starts, naming
+the ones it ships.
 
 Everything else is the base class's surface as is: ``task_split=`` (default
 ``base``) and ``tasks=`` (a task-name pattern) select within each domain, the
@@ -17,7 +18,9 @@ judge / user-simulator options (``judge_model=self`` for key-less smoke runs),
 the two phases, and the resume behavior. See ``tau.py`` for the protocol.
 """
 
-from granite_evals.benchmarks.tau import Tau3
+from pathlib import Path
+
+from granite_evals.benchmarks.tau import Tau3, resolve_data_dir
 from granite_evals.registry import register
 
 
@@ -36,3 +39,18 @@ class Tau3Domains(Tau3):
             )
         super().__init__(config)
         self.domains = domains
+        # Checked here, before the server starts (the CLI constructs the
+        # benchmark first), not in the harness's task lookup once it is up.
+        shipped = shipped_domains(*self.dataset_source())
+        if unknown := [d for d in domains if d not in shipped]:
+            raise SystemExit(
+                f"tau3: domain(s) {', '.join(unknown)} are not in the pinned data, which ships "
+                f"{', '.join(shipped)}"
+            )
+
+
+def shipped_domains(source: str, revision: str | None) -> list[str]:
+    """The domains the data ships: its ``tau2/domains/<name>`` dirs (the data
+    the harness reads each domain's tasks from)."""
+    root = Path(resolve_data_dir(source, revision)) / "tau2" / "domains"
+    return sorted(p.name for p in root.iterdir() if p.is_dir())
