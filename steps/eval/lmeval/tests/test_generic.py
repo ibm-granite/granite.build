@@ -65,6 +65,9 @@ def _config(tmp_path: Path, **options):
     return RunConfig(model="m", output_dir=tmp_path, options=options)
 
 
+REAL_PROBE = generic.chat_template_thinking  # the autouse fixture fakes it
+
+
 @pytest.fixture(autouse=True)
 def _fake_harness_load(monkeypatch):
     """The bridge loads the selected tasks when it is constructed (before
@@ -75,6 +78,23 @@ def _fake_harness_load(monkeypatch):
         "load_tasks",
         lambda names: ({name: _task(name=name) for name in names}, {}),
     )
+    monkeypatch.setattr(
+        generic, "chat_template_thinking", lambda model: dict(GRANITE_PROBE)
+    )
+
+
+GRANITE_PROBE = {
+    "switch": "enable_thinking",
+    "switches": {"enable_thinking": {"default": "on"}},
+    "think_tokens": [],
+    "error": None,
+}
+NO_SWITCH_PROBE = {
+    "switch": None,
+    "switches": {},
+    "think_tokens": ["<think>"],
+    "error": None,
+}
 
 
 def test_tasks_are_loaded_and_checked_before_the_server_starts(tmp_path, monkeypatch):
@@ -552,17 +572,220 @@ def test_init_rejects_bad_thinking(tmp_path, monkeypatch):
         generic.LMEval(_config(tmp_path, tasks="gsm8k", thinking="no"))
 
 
-def test_chat_gen_kwargs(tmp_path, monkeypatch):
+def test_thinking_is_off_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"gsm8k": _gsm8k()}, {}))
     bench = generic.LMEval(_config(tmp_path, tasks="gsm8k"))
-    assert bench.chat_gen_kwargs() is None
+    assert bench.thinking == "off"
+    assert bench.chat_gen_kwargs() == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
     bench = generic.LMEval(
-        _config(tmp_path, tasks="gsm8k", thinking="off", gen_kwargs="temperature=0.6")
+        _config(tmp_path, tasks="gsm8k", thinking="on", gen_kwargs="temperature=0.6")
     )
     assert bench.chat_gen_kwargs() == {
         "temperature": 0.6,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": {"enable_thinking": True},
     }
+
+
+@pytest.mark.parametrize(
+    ("probe", "thinking", "kwargs"),
+    [
+        (GRANITE_PROBE, "off", {"enable_thinking": False}),
+        (
+            {
+                "switch": "thinking",
+                "switches": {"thinking": {"default": "off"}},
+                "think_tokens": [],
+                "error": None,
+            },
+            "on",
+            {"thinking": True},
+        ),
+        (NO_SWITCH_PROBE, "off", {}),
+        (
+            {"switch": None, "switches": {}, "think_tokens": [], "error": "OSError: x"},
+            "off",
+            {"enable_thinking": False},
+        ),
+        (
+            {"switch": None, "switches": {}, "think_tokens": [], "error": "OSError: x"},
+            "on",
+            {"enable_thinking": True},
+        ),
+    ],
+)
+def test_requests_set_the_detected_switch(
+    tmp_path, monkeypatch, probe, thinking, kwargs
+):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"gsm8k": _gsm8k()}, {}))
+    monkeypatch.setattr(generic, "chat_template_thinking", lambda model: dict(probe))
+    bench = generic.LMEval(_config(tmp_path, tasks="gsm8k", thinking=thinking))
+    assert bench.thinking_kwargs() == kwargs
+    assert bench.chat_gen_kwargs() == (
+        {"chat_template_kwargs": kwargs} if kwargs else None
+    )
+
+
+@pytest.mark.parametrize(
+    ("probe", "options", "line"),
+    [
+        (
+            GRANITE_PROBE,
+            {},
+            "thinking=off (default); this checkpoint's chat template has a thinking switch "
+            "(enable_thinking), pass thinking=on to use it",
+        ),
+        (
+            GRANITE_PROBE,
+            {"thinking": "off"},
+            "thinking=off; this checkpoint's chat template has a thinking switch",
+        ),
+        (
+            NO_SWITCH_PROBE,
+            {},
+            "thinking=off (default); this checkpoint's chat template has no thinking switch "
+            "(its tokenizer has <think>, but the template renders the same either way)",
+        ),
+        (
+            GRANITE_PROBE,
+            {"thinking": "on"},
+            "thinking=on; requests set chat_template_kwargs.enable_thinking=true",
+        ),
+        (
+            {
+                "switch": None,
+                "switches": {},
+                "think_tokens": [],
+                "error": "OSError: no such dir",
+            },
+            {},
+            "thinking=off (default); could not read this checkpoint's chat template "
+            "(OSError: no such dir)",
+        ),
+    ],
+)
+def test_the_startup_status_line(tmp_path, monkeypatch, caplog, probe, options, line):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"gsm8k": _gsm8k()}, {}))
+    monkeypatch.setattr(generic, "chat_template_thinking", lambda model: dict(probe))
+    with caplog.at_level("INFO", logger=generic.log.name):
+        bench = generic.LMEval(_config(tmp_path, tasks="gsm8k", **options))
+    assert line in caplog.text
+    assert bench.thinking_switch == probe
+
+
+def test_no_chat_task_no_probe(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(generic, "task_index", lambda: ["hellaswag"])
+    probed = []
+    monkeypatch.setattr(
+        generic, "chat_template_thinking", lambda model: probed.append(model)
+    )
+    with caplog.at_level("INFO", logger=generic.log.name):
+        bench = generic.LMEval(_config(tmp_path, tasks="hellaswag"))
+    assert probed == [] and bench.thinking_switch is None
+    assert "thinking does not apply" in caplog.text
+    with pytest.raises(SystemExit, match="thinking=on applies to chat-mode tasks"):
+        generic.LMEval(_config(tmp_path, tasks="hellaswag", thinking="on"))
+
+
+def test_thinking_on_without_a_switch_is_refused_at_startup(tmp_path, monkeypatch):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"gsm8k": _gsm8k()}, {}))
+    monkeypatch.setattr(
+        generic, "chat_template_thinking", lambda model: dict(NO_SWITCH_PROBE)
+    )
+    with pytest.raises(SystemExit, match="has no thinking switch.*nothing to turn on"):
+        generic.LMEval(_config(tmp_path, tasks="gsm8k", thinking="on"))
+
+
+class _FakeTokenizer:
+    """A chat template as transformers renders it: Granite 4.x-style (an
+    enable_thinking switch, on by default), Granite 3.x-style (thinking,
+    off by default), or none."""
+
+    def __init__(self, style):
+        self.style = style
+
+    def apply_chat_template(self, messages, tokenize, add_generation_prompt, **kw):
+        assert tokenize is False and add_generation_prompt is True
+        text = (
+            "".join(f"<|{m['role']}|>{m['content']}" for m in messages)
+            + "<|assistant|>"
+        )
+        if self.style == "granite4" and kw.get("enable_thinking", True):
+            text += "<think>"
+        if self.style == "granite3" and kw.get("thinking", False):
+            text = "<|system|>think first" + text
+        return text
+
+    def get_vocab(self):
+        return {"<think>": 1, "</think>": 2} if self.style != "plain" else {"a": 1}
+
+
+@pytest.mark.parametrize(
+    ("style", "switch", "switches", "tokens"),
+    [
+        (
+            "granite4",
+            "enable_thinking",
+            {"enable_thinking": {"default": "on"}},
+            ["<think>", "</think>"],
+        ),
+        (
+            "granite3",
+            "thinking",
+            {"thinking": {"default": "off"}},
+            ["<think>", "</think>"],
+        ),
+        ("tokens-only", None, {}, ["<think>", "</think>"]),
+        ("plain", None, {}, []),
+    ],
+)
+def test_chat_template_thinking_renders_the_template(
+    monkeypatch, style, switch, switches, tokens
+):
+    import sys
+    from types import ModuleType
+
+    fake = ModuleType("transformers")
+    loaded = []
+
+    class AutoTokenizer:
+        @staticmethod
+        def from_pretrained(model, trust_remote_code):
+            loaded.append(model)
+            return _FakeTokenizer(style)
+
+    fake.AutoTokenizer = AutoTokenizer
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    probe = REAL_PROBE("/models/x")
+    assert loaded == ["/models/x"]
+    assert probe == {
+        "switch": switch,
+        "switches": switches,
+        "think_tokens": tokens,
+        "error": None,
+    }
+
+
+def test_chat_template_thinking_never_raises(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    fake = ModuleType("transformers")
+
+    class AutoTokenizer:
+        @staticmethod
+        def from_pretrained(model, trust_remote_code):
+            raise OSError("not a model dir")
+
+    fake.AutoTokenizer = AutoTokenizer
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    probe = REAL_PROBE("x")
+    assert probe["switch"] is None and probe["error"] == "OSError: not a model dir"
 
 
 def _mixed_run(tmp_path, monkeypatch, tasks, samples=None, repeats=None, **options):
@@ -607,11 +830,13 @@ def _mixed_run(tmp_path, monkeypatch, tasks, samples=None, repeats=None, **optio
 
 def test_thinking_off_reaches_the_chat_pass_only(tmp_path, monkeypatch):
     gsm8k = _gsm8k()
-    outcome, calls = _mixed_run(tmp_path, monkeypatch, [gsm8k], thinking="off")
+    outcome, calls = _mixed_run(tmp_path, monkeypatch, [gsm8k])  # off: the default
     by_mode = {c["model"].mode: c for c in calls}
     assert by_mode["chat"]["gen_kwargs"] == {
         "chat_template_kwargs": {"enable_thinking": False}
     }
+    assert outcome["thinking_switch"] == GRANITE_PROBE
+    assert outcome["thinking_kwargs"] == {"enable_thinking": False}
     assert by_mode["base"]["gen_kwargs"] is None  # gen_kwargs never reach base mode
     assert gsm8k.config.generation_kwargs == {}  # no thinking budget when off
     assert outcome["thinking"] == "off"
@@ -624,11 +849,14 @@ def test_gen_kwargs_never_reach_base_mode(tmp_path, monkeypatch):
     )
     by_mode = {c["model"].mode: c for c in calls}
     assert by_mode["base"]["gen_kwargs"] is None
-    assert by_mode["chat"]["gen_kwargs"] == {"temperature": 0.6}
+    assert by_mode["chat"]["gen_kwargs"] == {
+        "temperature": 0.6,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
 
 
 def test_thinking_on_gives_the_budget(tmp_path, monkeypatch):
-    """thinking on (the default): a chat task with no max_gen_toks of its
+    """thinking on: a chat task with no max_gen_toks of its
     own gets the thinking budget; a task that sets one keeps it; base tasks
     are untouched."""
     bare = _gsm8k()
@@ -639,18 +867,32 @@ def test_thinking_on_gives_the_budget(tmp_path, monkeypatch):
         filters=["strict-match"],
         generation_kwargs={"max_gen_toks": 64},
     )
-    outcome, _ = _mixed_run(tmp_path, monkeypatch, [bare, own])
+    outcome, _ = _mixed_run(tmp_path, monkeypatch, [bare, own], thinking="on")
     assert bare.config.generation_kwargs == {"max_gen_toks": generic.THINKING_BUDGET}
     assert own.config.generation_kwargs == {"max_gen_toks": 64}
     assert outcome["thinking_budget"] == {"max_gen_toks": 32768, "tasks": ["gsm8k"]}
 
 
+@pytest.mark.parametrize("where", ["gen_kwargs", "task"])
+def test_a_max_tokens_of_its_own_wins_over_the_budget(tmp_path, monkeypatch, where):
+    # lm-eval sends max_tokens over max_gen_toks: the budget would not apply,
+    # so it is neither set nor recorded.
+    bare = _gsm8k(generation_kwargs={"max_tokens": 512} if where == "task" else None)
+    options = {"gen_kwargs": "max_tokens=512"} if where == "gen_kwargs" else {}
+    outcome, _ = _mixed_run(tmp_path, monkeypatch, [bare], thinking="on", **options)
+    assert "max_gen_toks" not in bare.config.generation_kwargs
+    assert outcome["thinking_budget"]["tasks"] == []
+
+
 def test_gen_kwargs_max_gen_toks_wins_over_the_budget(tmp_path, monkeypatch):
     bare = _gsm8k()
-    _, calls = _mixed_run(tmp_path, monkeypatch, [bare], gen_kwargs="max_gen_toks=1024")
+    _, calls = _mixed_run(
+        tmp_path, monkeypatch, [bare], gen_kwargs="max_gen_toks=1024", thinking="on"
+    )
     assert bare.config.generation_kwargs == {}
     assert {c["model"].mode: c for c in calls}["chat"]["gen_kwargs"] == {
-        "max_gen_toks": 1024
+        "max_gen_toks": 1024,
+        "chat_template_kwargs": {"enable_thinking": True},
     }
 
 
@@ -723,79 +965,49 @@ def test_text_stops():
 GSM8K_UNTIL = {"until": ["Question:", "</s>", "<|im_end|>"]}
 
 
-def test_thinking_stops_warn_and_are_recorded(tmp_path, monkeypatch, caplog):
-    """The 2026-11-27 smoke's shape: gsm8k stops on Question:, thinking on."""
-    gsm8k = _gsm8k(generation_kwargs=dict(GSM8K_UNTIL))
-    with caplog.at_level("WARNING", logger=generic.log.name):
-        outcome, calls = _mixed_run(tmp_path, monkeypatch, [gsm8k])
-    assert outcome["thinking_stops"] == {"gsm8k": ["Question:"]}
-    assert "stop on text (gsm8k on ['Question:'])" in caplog.text
-    # the requests are unchanged: the task keeps its stop strings
-    assert gsm8k.config.generation_kwargs["until"] == GSM8K_UNTIL["until"]
-    assert {c["model"].mode: c for c in calls}["chat"]["gen_kwargs"] is None
-
-
 @pytest.mark.parametrize(
-    "options, expected",
+    ("until", "gen_kwargs", "named"),
     [
-        ({"thinking": "off"}, {}),
-        ({"gen_kwargs": "until=</s>"}, {}),
-        ({"gen_kwargs": "until=Q:"}, {"gsm8k": ["Q:"]}),
+        (GSM8K_UNTIL, "", "gsm8k stops on ['Question:']"),
+        ({"until": ["</s>"]}, "until=Q:", "gsm8k stops on ['Q:']"),
     ],
 )
-def test_thinking_stops_follow_thinking_and_gen_kwargs(
-    tmp_path, monkeypatch, caplog, options, expected
+def test_thinking_on_with_text_stops_is_refused_at_startup(
+    tmp_path, monkeypatch, until, gen_kwargs, named
 ):
-    gsm8k = _gsm8k(generation_kwargs=dict(GSM8K_UNTIL))
-    with caplog.at_level("WARNING", logger=generic.log.name):
-        outcome, _ = _mixed_run(tmp_path, monkeypatch, [gsm8k], **options)
-    assert outcome["thinking_stops"] == expected
-    assert ("stop on text" in caplog.text) == bool(expected)
-
-
-def test_empty_responses_name_the_stop_string_cause(tmp_path, monkeypatch):
-    empty = {"gsm8k": [{"resps": [[""]]}, {"resps": [[""]]}]}
-    gsm8k = _gsm8k(generation_kwargs=dict(GSM8K_UNTIL))
+    """The 2026-11-27 smoke's shape (gsm8k stops on Question:): refused at
+    construction, before the server starts, naming the stops and thinking=off."""
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    gsm8k = _gsm8k(generation_kwargs=dict(until))
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"gsm8k": gsm8k}, {}))
+    options = {"gen_kwargs": gen_kwargs} if gen_kwargs else {}
     with pytest.raises(SystemExit) as e:
-        _mixed_run(tmp_path, monkeypatch, [gsm8k], samples=empty)
+        generic.LMEval(_config(tmp_path, tasks="gsm8k", thinking="on", **options))
     msg = str(e.value)
-    assert msg.startswith("lm-eval: responses_failed 2/2 is above the allowed fraction")
-    assert "2 of them are empty responses with thinking on" in msg
-    assert "gsm8k stops on ['Question:']" in msg
-    assert "thinking=off" in msg and "gen_kwargs=until=" in msg
+    assert msg.startswith("lm-eval: thinking=on, but " + named)
+    assert "Use thinking=off" in msg and "gen_kwargs=until=" in msg
 
 
 @pytest.mark.parametrize(
-    "task_kwargs, samples, options",
+    ("options", "ok"),
     [
-        # no text stop: the plain message
-        ({}, [{"resps": [[""]]}] * 2, {}),
-        # failed requests, not empty responses: not the stop-string cause
-        (
-            {"generation_kwargs": dict(GSM8K_UNTIL)},
-            [{"resps": [[chat_if.ERROR_MARKER]]}] * 2,
-            {},
-        ),
-        # thinking off: not the cause either
-        (
-            {"generation_kwargs": dict(GSM8K_UNTIL)},
-            [{"resps": [[""]]}] * 2,
-            {"thinking": "off"},
-        ),
+        ({}, True),
+        ({"thinking": "off"}, True),
+        ({"thinking": "on", "gen_kwargs": "until=</s>"}, True),
     ],
 )
-def test_other_failures_keep_the_plain_message(
-    tmp_path, monkeypatch, task_kwargs, samples, options
+def test_text_stops_are_fine_with_thinking_off_or_special_stops(
+    tmp_path, monkeypatch, options, ok
 ):
-    with pytest.raises(SystemExit) as e:
-        _mixed_run(
-            tmp_path,
-            monkeypatch,
-            [_gsm8k(**task_kwargs)],
-            samples={"gsm8k": samples},
-            **options,
-        )
-    assert str(e.value).endswith("rerun to retry the failed ones")
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    gsm8k = _gsm8k(generation_kwargs=dict(GSM8K_UNTIL))
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"gsm8k": gsm8k}, {}))
+    generic.LMEval(_config(tmp_path, tasks="gsm8k", **options))  # no error
+
+
+def test_the_old_stop_hint_is_gone():
+    # Refused at startup instead of diagnosed after the run.
+    assert not hasattr(generic, "thinking_stop_hint")
 
 
 @pytest.mark.parametrize("seed", [0, 7])

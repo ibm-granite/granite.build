@@ -71,22 +71,25 @@ before vLLM starts, with near-miss suggestions), `mode` (`auto` — the default 
 of the tasks' generation kwargs, values percent-decoded like `stop=`), and `metric`
 (the primary metric for every task, or one exact results key `<metric>,<filter>` such
 as `exact_match,strict-match`; default: each task's own, its config's first
-`metric_list` entry), `thinking` (`on`, the default, or `off`) and `max_failed_frac`
+`metric_list` entry), `thinking` (`off`, the default, or `on`) and `max_failed_frac`
 (default 0.05).
 
-`thinking=off` sends `chat_template_kwargs.enable_thinking=false` (as mmlu-prox-lite's
-`thinking=off` does): the lm-eval generation tasks' own protocol. With thinking on
-(Granite 4.x's template default), a chat task that sets no `max_gen_toks` (and none in
-`gen_kwargs`) gets a 32768-token budget: lm-eval's 256-token default ends the thought
-before `</think>`, the server's reasoning parser returns no content, and the answer
-scores as `""`. vLLM applies the task's stop strings to the whole generation, thought
-included, so a stop string the thought contains (gsm8k's `Question:`) also ends it with
-no content. With thinking on, the run warns at startup naming each chat task that stops
-on text (any stop but a special token such as `</s>` or `<|im_end|>`) and records them in
-`details.thinking_stops`, and a failed response check that has such a task's empty
-responses names this cause and the remedies: `thinking=off`, or
-`gen_kwargs=until=<stop>` to replace the task's stop strings. The requests are not
-changed. Per task the run counts docs with an empty chat response and docs whose
+`thinking` applies to chat-mode tasks. Before vLLM starts, the bridge renders the
+checkpoint's chat template on a fixed message with each known switch
+(`enable_thinking`, Granite 3.x's `thinking`) set true and false: a switch is a kwarg
+whose two renders differ (the tokenizer's think tokens are only a hint). It prints one
+status line, e.g. `thinking=off (default); this checkpoint's chat template has a
+thinking switch (enable_thinking), pass thinking=on to use it`, or `... has no thinking
+switch`, and records the probe in `details.thinking_switch`. Requests set that switch
+(`chat_template_kwargs.<switch>=false`, `true` with `thinking=on`); a template without
+one gets no kwarg and refuses `thinking=on`. With thinking on, a chat task that sets no
+`max_gen_toks` or `max_tokens` (and none in `gen_kwargs`) gets a 32768-token budget:
+lm-eval's 256-token default ends the thought before `</think>`, and the server's
+reasoning parser returns no content. `thinking=on` with a task that stops on text (any
+stop but a special token such as `</s>` or `<|im_end|>`) is refused at startup, naming
+the stops: vLLM applies stop strings to the whole generation, thought included, so a
+thought that writes one (gsm8k's `Question:`) ends the response with no answer.
+`thinking=off` is the lm-eval generation tasks' own protocol. Per task the run counts docs with an empty chat response and docs whose
 request failed (`details.responses`); they stay in lm-eval's score as wrong answers,
 and the run fails when they exceed `max_failed_frac` of all docs.
 
@@ -163,7 +166,7 @@ the missing ones.
 | `repeats` | `""` (1) | Repeats of the whole run. mmlu-prox-lite samples afresh at temperature 1.0; include-44 reports pass@1[avg-of-k] with `details.pass_at_k`; lm-eval reports the mean over repeats (no pass@k). |
 | `workers` | `64` | Concurrent requests to vLLM. |
 | `dataset` / `dataset_revision` | `""` | Override the data pinned in granite-evals for the selected benchmark (`li-lab/MMLU-ProX-Lite` or `CohereLabs/include-base-44`); `lm-eval` rejects them — its tasks pin their own. |
-| `options` | `""` | Space-separated `key=value` benchmark options. Both: `answers=gold`, `max_retries`, `request_timeout`, `languages`. mmlu-prox-lite: `languages` takes `ibm`, `all` or a comma list; `temperature`, `top_p`, `max_tokens`, `stop` (`task`, `none` or a comma list of up to 4 percent-encoded strings, e.g. `stop=%3C/s%3E,Q:`), `thinking=off`. include-44: `languages` takes a comma list of the language slugs. lm-eval: `tasks` (required), `mode`, `num_fewshot`, `gen_kwargs`, `metric` (see above). |
+| `options` | `""` | Space-separated `key=value` benchmark options. Both: `answers=gold`, `max_retries`, `request_timeout`, `languages`. mmlu-prox-lite: `languages` takes `ibm`, `all` or a comma list; `temperature`, `top_p`, `max_tokens`, `stop` (`task`, `none` or a comma list of up to 4 percent-encoded strings, e.g. `stop=%3C/s%3E,Q:`), `thinking=off`. include-44: `languages` takes a comma list of the language slugs. lm-eval: `tasks` (required), `mode`, `num_fewshot`, `gen_kwargs`, `metric`, `thinking`, `max_failed_frac` (see above). |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
 | `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |

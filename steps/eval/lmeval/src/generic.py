@@ -34,23 +34,29 @@ Options (all through ``--option`` / the step's ``options`` config):
   Values are int/float when they parse, else percent-decoded strings
   (``%2C`` a comma, ``%20`` a space -- the ``stop=`` convention); applies
   to chat-mode generation only.
-* ``thinking``: ``on`` (default: the chat template's own default; Granite
-  4.x thinks) or ``off`` (``chat_template_kwargs.enable_thinking=false``, as
-  mmlu-prox-lite's ``thinking=off``). Chat mode only. With thinking on, a
-  chat task that sets no ``max_gen_toks`` (and none in ``gen_kwargs``) gets
-  a 32768-token budget (chat_if's ``CARD_SAMPLING``): lm-eval's default of
-  256 ends a Granite thought before its ``</think>``, the server's reasoning
-  parser then returns no content, and lm-eval scores an empty answer. vLLM
-  applies the task's stop strings to the whole generation, thought
-  included (its detokenizer checks them before the reasoning parser
-  splits the text), so a stop the thought happens to contain (gsm8k's
-  ``Question:``) also ends it with no content. ``thinking=off`` is the
-  harness's own protocol for the lm-eval generation tasks. With thinking
-  on, the run warns at startup naming every chat task that stops on text
-  (a stop other than a special token such as ``</s>`` or ``<|im_end|>``),
-  records them in ``details.thinking_stops``, and a response check that
-  fails on empty responses from such a task names this cause and the
-  remedies. The requests themselves are unchanged.
+* ``thinking``: ``off`` (default) or ``on``, chat mode only. Before the
+  server starts, the bridge renders the checkpoint's chat template on a
+  fixed message with each known switch (``enable_thinking``, Granite 3.x's
+  ``thinking``) set true and false; a switch is a kwarg whose two renders
+  differ (the tokenizer's think tokens are recorded as a hint only). It
+  prints one status line saying which, e.g. ``thinking=off (default); this
+  checkpoint's chat template has a thinking switch (enable_thinking), pass
+  thinking=on to use it``, and records the probe in
+  ``details.thinking_switch``. Requests then set that switch
+  (``chat_template_kwargs.<switch>=false``, or ``true`` with ``thinking=on``);
+  a template without one gets no kwarg, and ``thinking=on`` is refused
+  there (nothing to turn on). A template that cannot be read falls back to
+  ``enable_thinking``. With thinking on, a chat task that sets no
+  ``max_gen_toks`` or ``max_tokens`` (and none in ``gen_kwargs``) gets a
+  32768-token budget (chat_if's ``CARD_SAMPLING``): lm-eval's default of 256
+  ends a Granite thought before its ``</think>``, and the server's
+  reasoning parser then returns no content. ``thinking=on`` with a task
+  that stops on text (any stop but a special token such as ``</s>`` or
+  ``<|im_end|>``) is refused at startup: vLLM applies stop strings to the
+  whole generation, thought included (its detokenizer checks them before
+  the reasoning parser splits the text), so a thought that writes one
+  (gsm8k's ``Question:``) ends the response with no content. ``thinking=off``
+  is the harness's own protocol for its generation tasks.
 * ``max_failed_frac`` (default 0.05): see the response check below.
 * ``metric``: the primary metric to report, for every task (e.g.
   ``acc_norm``), or one exact results key ``<metric>,<filter>`` (e.g.
@@ -180,30 +186,56 @@ def text_stops(until: Any) -> list[str]:
     ]
 
 
-def thinking_stop_hint(
-    thinking_stops: dict[str, list[str]], responses: dict[str, dict[str, int]]
-) -> str:
-    """The cause the response check names when empty responses come from
-    chat tasks that stop on text with thinking on; "" when none do."""
-    hit = {
-        task: stops
-        for task, stops in thinking_stops.items()
-        if responses.get(task, {}).get("empty")
+# The chat-template kwargs that switch thinking, in the order they are
+# tried: Granite 4.x (and most templates) read enable_thinking, Granite 3.x
+# reads thinking.
+THINKING_SWITCHES = ("enable_thinking", "thinking")
+THINK_TOKENS = ("<think>", "</think>")
+PROBE_MESSAGES = [{"role": "user", "content": "What is 2 + 2?"}]
+
+
+def chat_template_thinking(model: str) -> dict[str, Any]:
+    """Whether ``model``'s chat template has a thinking switch: the template
+    rendered on a fixed message with each of THINKING_SWITCHES set True and
+    False; a switch is a kwarg whose two renders differ, and ``default`` says
+    which of them the template renders with no kwarg. The tokenizer's think
+    tokens are recorded as a hint only (a template may carry them with no
+    switch). Never raises: an unreadable template is recorded in ``error``.
+    Separate function so tests can fake it."""
+    out: dict[str, Any] = {
+        "switch": None,
+        "switches": {},
+        "think_tokens": [],
+        "error": None,
     }
-    if not hit:
-        return ""
-    empty = sum(responses[task]["empty"] for task in hit)
-    named = "; ".join(
-        f"{task} stops on {stops!r}" for task, stops in sorted(hit.items())
-    )
-    return (
-        f"{empty} of them are empty responses with thinking on from tasks that stop on "
-        f"text ({named}). vLLM matches stop strings against the whole generation, thought "
-        "included, so a thought that writes one ends the response before its answer. "
-        "Rerun with thinking=off (the harness's protocol for its generation tasks), or "
-        "replace the task's stop strings with gen_kwargs=until=<stop> (lm-eval cannot "
-        "clear them)"
-    )
+    try:
+        from transformers import AutoTokenizer
+
+        tok = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+
+        def render(**kwargs):
+            return tok.apply_chat_template(
+                PROBE_MESSAGES, tokenize=False, add_generation_prompt=True, **kwargs
+            )
+
+        default = render()
+        for kwarg in THINKING_SWITCHES:
+            on, off = render(**{kwarg: True}), render(**{kwarg: False})
+            if on != off:
+                out["switches"][kwarg] = {
+                    "default": (
+                        "on"
+                        if default == on
+                        else "off" if default == off else "neither"
+                    )
+                }
+        vocab = tok.get_vocab()
+        out["think_tokens"] = [t for t in THINK_TOKENS if t in vocab]
+    except Exception as e:  # noqa: BLE001 - recorded; the run falls back
+        out["error"] = f"{type(e).__name__}: {e}"[:300]
+        return out
+    out["switch"] = next(iter(out["switches"]), None)
+    return out
 
 
 def parse_tasks(spec: str) -> list[str]:
@@ -557,7 +589,7 @@ class LMEval(Benchmark):
             else {}
         )
         self.metric_override = config.options.get("metric", "")
-        self.thinking = config.options.get("thinking", "on")
+        self.thinking = config.options.get("thinking", "off")
         if self.thinking not in THINKING:
             raise SystemExit(
                 f"lm-eval: thinking must be one of {', '.join(THINKING)}; got {self.thinking!r}"
@@ -573,21 +605,107 @@ class LMEval(Benchmark):
             self.mode,
         )
         self.primary = self.primary_metrics(self.task_objects)
+        self.thinking_switch = self.check_thinking()
+
+    def thinking_kwargs(self) -> dict[str, bool]:
+        """The chat-template kwarg the requests set: the detected switch, on
+        or off as ``thinking`` says; none for a template without one; the
+        ``enable_thinking`` fallback when the template could not be read."""
+        probe = self.thinking_switch or {}
+        if probe.get("error"):
+            return {"enable_thinking": self.thinking == "on"}
+        if probe.get("switch"):
+            return {probe["switch"]: self.thinking == "on"}
+        return {}
 
     def chat_gen_kwargs(self) -> dict[str, Any] | None:
-        """The chat pass's gen_kwargs: ``gen_kwargs=`` plus, with
-        ``thinking=off``, ``chat_template_kwargs.enable_thinking=false``."""
+        """The chat pass's gen_kwargs: ``gen_kwargs=`` plus the thinking
+        switch's ``chat_template_kwargs`` (see thinking_kwargs)."""
         kw = dict(self.gen_kwargs)
-        if self.thinking == "off":
-            kw["chat_template_kwargs"] = {"enable_thinking": False}
+        if switch := self.thinking_kwargs():
+            kw["chat_template_kwargs"] = switch
         return kw or None
+
+    def check_thinking(self) -> dict[str, Any] | None:
+        """Before the server starts: probe the chat template (chat tasks
+        only), print the status line, and refuse thinking=on where it cannot
+        work -- a template with no switch, or a task that stops on text.
+        Returns the probe (None without a chat task)."""
+        chat = self.mode_groups.get("chat", [])
+        if not chat:
+            if self.thinking == "on":
+                raise SystemExit(
+                    "lm-eval: thinking=on applies to chat-mode tasks, and this selection has none"
+                )
+            log.info(
+                "lm-eval: thinking does not apply (no task in this selection runs in chat mode)"
+            )
+            return None
+        probe = chat_template_thinking(self.config.model)
+        given = "thinking" in self.config.options
+        head = f"thinking={self.thinking}{'' if given else ' (default)'}"
+        if probe["error"]:
+            log.warning(
+                "lm-eval: %s; could not read this checkpoint's chat template (%s), so requests "
+                "set chat_template_kwargs.enable_thinking=%s",
+                head,
+                probe["error"],
+                str(self.thinking == "on").lower(),
+            )
+        elif probe["switch"] is None:
+            hint = (
+                f" (its tokenizer has {' and '.join(probe['think_tokens'])}, but the template "
+                "renders the same either way)"
+                if probe["think_tokens"]
+                else ""
+            )
+            if self.thinking == "on":
+                raise SystemExit(
+                    f"lm-eval: thinking=on, but this checkpoint's chat template has no thinking "
+                    f"switch{hint}: there is nothing to turn on; drop thinking=on"
+                )
+            log.info(
+                "lm-eval: %s; this checkpoint's chat template has no thinking switch%s",
+                head,
+                hint,
+            )
+        elif self.thinking == "off":
+            log.info(
+                "lm-eval: %s; this checkpoint's chat template has a thinking switch (%s), "
+                "pass thinking=on to use it",
+                head,
+                probe["switch"],
+            )
+        else:
+            log.info(
+                "lm-eval: %s; requests set chat_template_kwargs.%s=true",
+                head,
+                probe["switch"],
+            )
+        if self.thinking == "on" and (
+            stops := self.thinking_stops(self.task_objects, chat)
+        ):
+            named = "; ".join(
+                f"{t} stops on {s!r}" for t, s in sorted(stops.items())[:5]
+            )
+            raise SystemExit(
+                f"lm-eval: thinking=on, but {named}"
+                f"{'; ...' if len(stops) > 5 else ''}: vLLM matches stop strings against the "
+                "whole generation, thought included, so a thought that writes one ends the "
+                "response with no answer. Use thinking=off (the harness's protocol for its "
+                "generation tasks), or replace the stops with gen_kwargs=until=<stop>"
+            )
+        return probe
 
     def apply_thinking_budget(
         self, task_objects: dict, chat_tasks: list[str]
     ) -> list[str]:
         """With thinking on, give every chat task that sets no max_gen_toks
-        (and none in gen_kwargs) the thinking budget; the tasks given it."""
-        if self.thinking != "on" or "max_gen_toks" in self.gen_kwargs:
+        or max_tokens (and none in gen_kwargs) the thinking budget; the tasks
+        given it."""
+        # lm-eval sends max_tokens over max_gen_toks when a task or gen_kwargs
+        # sets it, so either one is the run's own budget.
+        if self.thinking != "on" or {"max_gen_toks", "max_tokens"} & set(self.gen_kwargs):
             return []
         given = []
         for name in chat_tasks:
@@ -595,7 +713,7 @@ class LMEval(Benchmark):
             own = (
                 getattr(getattr(task, "config", None), "generation_kwargs", None) or {}
             )
-            if "max_gen_toks" not in own:
+            if not {"max_gen_toks", "max_tokens"} & set(own):
                 task.set_config(
                     key="generation_kwargs",
                     value={"max_gen_toks": THINKING_BUDGET},
@@ -699,17 +817,6 @@ class LMEval(Benchmark):
         budget_tasks = self.apply_thinking_budget(
             task_objects, mode_groups.get("chat", [])
         )
-        stop_tasks = self.thinking_stops(task_objects, mode_groups.get("chat", []))
-        if stop_tasks:
-            log.warning(
-                "lm-eval: thinking on, and %d chat task(s) stop on text (%s): vLLM matches "
-                "stop strings against the whole generation, thought included, so a thought "
-                "that writes one ends the response with no answer (an empty response); "
-                "thinking=off avoids it",
-                len(stop_tasks),
-                "; ".join(f"{t} on {s!r}" for t, s in sorted(stop_tasks.items())[:5])
-                + ("; ..." if len(stop_tasks) > 5 else ""),
-            )
         passes, split = plan_passes(
             self.task_list,
             task_objects,
@@ -765,19 +872,13 @@ class LMEval(Benchmark):
                 into = responses.setdefault(task, dict.fromkeys(counts, 0))
                 for key, n in counts.items():
                     into[key] += n
-        try:
-            policy = failure_policy(
-                self.id,
-                "responses",
-                sum(c["empty"] + c["errors"] for c in responses.values()),
-                sum(c["docs"] for c in responses.values()),
-                self.opt("max_failed_frac", 0.05),
-            )
-        except SystemExit as e:
-            hint = thinking_stop_hint(stop_tasks, responses)
-            if not hint:
-                raise
-            raise SystemExit(f"{e}. {hint}") from None
+        policy = failure_policy(
+            self.id,
+            "responses",
+            sum(c["empty"] + c["errors"] for c in responses.values()),
+            sum(c["docs"] for c in responses.values()),
+            self.opt("max_failed_frac", 0.05),
+        )
         values = [r["value"] for r in per_repeat if r["value"] is not None]
         return {
             "value": sum(values) / len(values) if values else None,
@@ -795,7 +896,10 @@ class LMEval(Benchmark):
             "gen_kwargs": self.gen_kwargs,
             "thinking": self.thinking,
             "thinking_budget": {"max_gen_toks": THINKING_BUDGET, "tasks": budget_tasks},
-            "thinking_stops": stop_tasks,
+            "thinking_switch": self.thinking_switch,
+            "thinking_kwargs": (
+                self.thinking_kwargs() if self.thinking_switch is not None else {}
+            ),
             "responses": responses,
             **policy,
             "per_task": per_repeat[0]["per_task"],

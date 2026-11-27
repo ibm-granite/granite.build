@@ -43,7 +43,7 @@ metric_list:
     ignore_punctuation: false
     regexes_to_ignore: [",", "\\\\$", "(?s).*#### ", "\\\\.$"]
 generation_kwargs:
-  until: ["Question:", "</s>", "<|im_end|>"]
+  until: {until}
   do_sample: false
   temperature: 0.0
 {extra}num_fewshot: 2
@@ -115,7 +115,11 @@ def stub():
         server.shutdown()
 
 
-def _bridge(tmp_path, monkeypatch, own_max_gen_toks=None, **options):
+QUESTION_STOP = '["Question:", "</s>", "<|im_end|>"]'  # gsm8k's own
+SPECIAL_STOPS = '["</s>", "<|im_end|>"]'
+
+
+def _bridge(tmp_path, monkeypatch, own_max_gen_toks=None, until=SPECIAL_STOPS, **options):
     data, tasks = tmp_path / "data", tmp_path / "tasks"
     data.mkdir()
     tasks.mkdir()
@@ -133,7 +137,9 @@ def _bridge(tmp_path, monkeypatch, own_max_gen_toks=None, **options):
                     + "\n"
                 )
     extra = f"  max_gen_toks: {own_max_gen_toks}\n" if own_max_gen_toks else ""
-    (tasks / "gsm8k_local.yaml").write_text(TASK_YAML.format(data=data, extra=extra))
+    (tasks / "gsm8k_local.yaml").write_text(
+        TASK_YAML.format(data=data, extra=extra, until=until)
+    )
 
     def load_tasks(names):
         from lm_eval.tasks import TaskManager
@@ -143,6 +149,17 @@ def _bridge(tmp_path, monkeypatch, own_max_gen_toks=None, **options):
 
     monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k_local"])
     monkeypatch.setattr(generic, "load_tasks", load_tasks)
+    # A Granite 4.x template: an enable_thinking switch (the stub reads it).
+    monkeypatch.setattr(
+        generic,
+        "chat_template_thinking",
+        lambda model: {
+            "switch": "enable_thinking",
+            "switches": {"enable_thinking": {"default": "on"}},
+            "think_tokens": [],
+            "error": None,
+        },
+    )
     config = RunConfig(
         model="m",
         output_dir=tmp_path / "out",
@@ -157,14 +174,18 @@ def _bridge(tmp_path, monkeypatch, own_max_gen_toks=None, **options):
 
 
 def test_thinking_on_gets_the_budget_and_answers(tmp_path, monkeypatch, stub):
-    outcome = _bridge(tmp_path, monkeypatch).run(stub, "granite")
+    outcome = _bridge(tmp_path, monkeypatch, thinking="on").run(stub, "granite")
+    assert all(
+        r.get("chat_template_kwargs") == {"enable_thinking": True} for r in _Stub.log
+    )
     assert {r["max_tokens"] for r in _Stub.log} == {generic.THINKING_BUDGET}
     assert outcome["value"] == pytest.approx(1.0)
     assert outcome["responses"]["gsm8k_local"] == {"docs": 3, "empty": 0, "errors": 0}
 
 
 def test_thinking_off_sends_enable_thinking_false(tmp_path, monkeypatch, stub):
-    outcome = _bridge(tmp_path, monkeypatch, thinking="off").run(stub, "granite")
+    # off is the default, and the task's own Question: stop is fine without a thought
+    outcome = _bridge(tmp_path, monkeypatch, until=QUESTION_STOP).run(stub, "granite")
     assert all(
         r.get("chat_template_kwargs") == {"enable_thinking": False} for r in _Stub.log
     )
@@ -174,8 +195,14 @@ def test_thinking_off_sends_enable_thinking_false(tmp_path, monkeypatch, stub):
 def test_a_cut_thought_fails_the_run(tmp_path, monkeypatch, stub):
     """The task's own small max_gen_toks with thinking on: every content is
     null, lm-eval scores "", and the run fails instead of reporting 0.0."""
-    bench = _bridge(tmp_path, monkeypatch, own_max_gen_toks=16)
+    bench = _bridge(tmp_path, monkeypatch, own_max_gen_toks=16, thinking="on")
     with pytest.raises(SystemExit, match="responses_failed 3/3"):
         bench.run(stub, "granite")
     rows = (tmp_path / "out" / "repeat-0" / "samples" / "gsm8k_local.jsonl").read_text()
     assert all(json.loads(r)["resps"] == [[""]] for r in rows.splitlines())
+
+
+def test_thinking_on_with_the_tasks_question_stop_is_refused(tmp_path, monkeypatch):
+    # The real harness's view of the task's until, before any server starts.
+    with pytest.raises(SystemExit, match=r"thinking=on, but gsm8k_local stops on \['Question:'\]"):
+        _bridge(tmp_path, monkeypatch, until=QUESTION_STOP, thinking="on")
