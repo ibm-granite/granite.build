@@ -24,7 +24,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "bfcl-v4"
-            image: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:d7be99a2"
+            image: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:e9a4ac4d"
             # The staged HF artifact path (its basename is not the
             # model name, so pin the name vLLM advertises).
             model_path: "{{ bindings.model.binding.path }}"
@@ -79,7 +79,7 @@ granite.build:
             poll_interval_seconds: 5
             log_retrieval_interval_seconds: 30
             benchmark: "bfcl-v4"
-            image: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:d7be99a2"
+            image: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:e9a4ac4d"
             # Must match the generate target's expression exactly: the score
             # phase checks the generation record's model against this run's
             # (results.py read_generation), and the binding path is what
