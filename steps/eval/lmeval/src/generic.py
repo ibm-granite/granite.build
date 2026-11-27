@@ -88,7 +88,10 @@ both modes (openllm: gsm8k generates, the rest are multiple choice) cannot
 run as one pass under ``mode=auto``: its single-mode subgroups and its
 tasks run in their own modes, overrides kept, but the harness computes no
 aggregate for the group itself (``details.split_groups`` names it; set
-``mode=chat`` or ``mode=base`` to run it whole).
+``mode=base`` to run it whole, its generation tasks then through the
+completions endpoint without the chat template). ``mode=chat`` runs
+generation tasks only: the chat endpoint returns no loglikelihoods, so a
+selection with a multiple-choice or loglikelihood task is refused at startup.
 
 ``--limit N`` is lm-eval's own: the first N docs per task. It is not the
 curated benchmarks' cross-language selection; smoke runs on multilingual
@@ -257,12 +260,26 @@ def resolve_modes(output_types: dict[str, str], mode: str) -> dict[str, list[str
         raise SystemExit(
             f"lm-eval: mode must be one of {', '.join(MODES)}; got {mode!r}"
         )
+    if mode == "chat":
+        # local-chat-completions generates only: it has no loglikelihood, so
+        # a multiple-choice task would fail after the server is up.
+        scored = sorted(
+            t for t, kind in output_types.items() if kind != "generate_until"
+        )
+        if scored:
+            raise SystemExit(
+                f"lm-eval: mode=chat runs generation tasks only (the chat endpoint returns "
+                f"no loglikelihoods), but {', '.join(scored[:5])}"
+                f"{' ...' if len(scored) > 5 else ''} score by loglikelihood; use mode=auto "
+                "(each task its own protocol) or mode=base"
+            )
     if mode != "auto":
         return {mode: list(output_types)}
     unknown = sorted({t for t in output_types.values() if t not in OUTPUT_TYPE_MODE})
     if unknown:
         raise SystemExit(
-            f"lm-eval: task output_type(s) {unknown} have no auto protocol; set mode=chat or mode=base"
+            f"lm-eval: task output_type(s) {unknown} have no auto protocol; set mode=base "
+            "(the completions endpoint serves every output type)"
         )
     groups: dict[str, list[str]] = {}
     for task, output_type in output_types.items():
@@ -545,6 +562,17 @@ class LMEval(Benchmark):
             raise SystemExit(
                 f"lm-eval: thinking must be one of {', '.join(THINKING)}; got {self.thinking!r}"
             )
+        # Built here, before the server starts (the CLI constructs the
+        # benchmark first): a selection the harness cannot run fails in
+        # seconds, not after vLLM is up. Seeded first, as simple_evaluate
+        # seeds before it builds tasks (see seed_like_simple_evaluate).
+        seed_like_simple_evaluate(config.seed)
+        self.task_objects, self.groups = load_tasks(self.task_list)
+        self.mode_groups = resolve_modes(
+            {name: task.OUTPUT_TYPE for name, task in self.task_objects.items()},
+            self.mode,
+        )
+        self.primary = self.primary_metrics(self.task_objects)
 
     def chat_gen_kwargs(self) -> dict[str, Any] | None:
         """The chat pass's gen_kwargs: ``gen_kwargs=`` plus, with
@@ -665,11 +693,9 @@ class LMEval(Benchmark):
         return out
 
     def run(self, base_url: str, served_model_name: str) -> dict[str, Any]:
-        seed_like_simple_evaluate(self.config.seed)
-        task_objects, groups = load_tasks(self.task_list)
-        output_types = {name: task.OUTPUT_TYPE for name, task in task_objects.items()}
-        primary = self.primary_metrics(task_objects)
-        mode_groups = resolve_modes(output_types, self.mode)
+        task_objects, groups = self.task_objects, self.groups
+        primary = self.primary
+        mode_groups = self.mode_groups
         budget_tasks = self.apply_thinking_budget(
             task_objects, mode_groups.get("chat", [])
         )
@@ -693,8 +719,8 @@ class LMEval(Benchmark):
         for name in split:
             log.warning(
                 "lm-eval: group %s spans chat and base tasks: its parts run in their own "
-                "modes (overrides kept), but no aggregate is computed for it; set mode=chat "
-                "or mode=base to run it whole",
+                "modes (overrides kept), but no aggregate is computed for it; set mode=base "
+                "to run it whole (generation then without the chat template)",
                 name,
             )
         for mode, tasks in mode_groups.items():

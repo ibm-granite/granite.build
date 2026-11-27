@@ -65,6 +65,83 @@ def _config(tmp_path: Path, **options):
     return RunConfig(model="m", output_dir=tmp_path, options=options)
 
 
+@pytest.fixture(autouse=True)
+def _fake_harness_load(monkeypatch):
+    """The bridge loads the selected tasks when it is constructed (before
+    the server starts). By default each name loads as a multiple-choice
+    task; a test that needs other tasks fakes load_tasks itself."""
+    monkeypatch.setattr(
+        generic,
+        "load_tasks",
+        lambda names: ({name: _task(name=name) for name in names}, {}),
+    )
+
+
+def test_tasks_are_loaded_and_checked_before_the_server_starts(tmp_path, monkeypatch):
+    # Construction is what the CLI does before it starts vLLM: the tasks are
+    # loaded and their protocol resolved there, so run() only serves.
+    monkeypatch.setattr(generic, "task_index", lambda: ["hellaswag"])
+    loaded = []
+    monkeypatch.setattr(
+        generic,
+        "load_tasks",
+        lambda names: loaded.append(names)
+        or ({"hellaswag": _task(name="hellaswag")}, {}),
+    )
+    bench = generic.LMEval(_config(tmp_path, tasks="hellaswag"))
+    assert loaded == [["hellaswag"]]
+    assert bench.mode_groups == {"base": ["hellaswag"]}
+
+
+@pytest.mark.parametrize(
+    "kind", ["multiple_choice", "loglikelihood", "loglikelihood_rolling"]
+)
+def test_mode_chat_on_a_loglikelihood_task_is_refused_at_startup(
+    tmp_path, monkeypatch, kind
+):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k", "hellaswag"])
+    monkeypatch.setattr(
+        generic,
+        "load_tasks",
+        lambda names: (
+            {"gsm8k": _gsm8k(), "hellaswag": _task(kind, name="hellaswag")},
+            {},
+        ),
+    )
+    with pytest.raises(SystemExit) as e:
+        generic.LMEval(_config(tmp_path, tasks="gsm8k,hellaswag", mode="chat"))
+    msg = str(e.value)
+    assert "mode=chat runs generation tasks only" in msg and "hellaswag" in msg
+    assert "gsm8k" not in msg.split("but", 1)[1]
+    assert "mode=auto" in msg and "mode=base" in msg
+
+
+def test_a_task_without_a_metric_is_refused_at_startup(tmp_path, monkeypatch):
+    monkeypatch.setattr(generic, "task_index", lambda: ["x"])
+    task = _task(name="x")
+    task.config.metric_list = []
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"x": task}, {}))
+    with pytest.raises(SystemExit, match="declares no metric_list"):
+        generic.LMEval(_config(tmp_path, tasks="x"))
+
+
+def test_mode_chat_on_generation_tasks_is_fine(tmp_path, monkeypatch):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"gsm8k": _gsm8k()}, {}))
+    bench = generic.LMEval(_config(tmp_path, tasks="gsm8k", mode="chat"))
+    assert bench.mode_groups == {"chat": ["gsm8k"]}
+
+
+def test_no_message_recommends_mode_chat_for_a_mixed_group():
+    # mode=chat cannot run a group with multiple-choice tasks; the docs and
+    # messages point at mode=base.
+    import inspect
+
+    src = inspect.getsource(generic)
+    assert "mode=chat or mode=base" not in src
+    assert "``mode=chat`` or ``mode=base``" not in src
+
+
 def test_parse_tasks():
     assert generic.parse_tasks("a, b,a ") == ["a", "b"]
     with pytest.raises(SystemExit, match="tasks= is required"):
@@ -97,10 +174,13 @@ def test_parse_gen_kwargs():
 def test_resolve_modes():
     types = {"a": "generate_until", "b": "multiple_choice", "c": "loglikelihood"}
     assert generic.resolve_modes(types, "auto") == {"base": ["b", "c"], "chat": ["a"]}
-    assert generic.resolve_modes(types, "chat") == {"chat": ["a", "b", "c"]}
+    assert generic.resolve_modes(types, "base") == {"base": ["a", "b", "c"]}
+    assert generic.resolve_modes({"a": "generate_until"}, "chat") == {"chat": ["a"]}
+    with pytest.raises(SystemExit, match="generation tasks only"):
+        generic.resolve_modes(types, "chat")
     with pytest.raises(SystemExit, match="mode must be one of"):
         generic.resolve_modes(types, "both")
-    with pytest.raises(SystemExit, match="no auto protocol"):
+    with pytest.raises(SystemExit, match="no auto protocol; set mode=base"):
         generic.resolve_modes({"a": "perplexity"}, "auto")
 
 
@@ -299,14 +379,14 @@ def test_init_parses_options(tmp_path, monkeypatch):
         _config(
             tmp_path,
             tasks="hellaswag,gsm8k",
-            mode="chat",
+            mode="base",
             num_fewshot="5",
             gen_kwargs="temperature=0.6",
             metric="acc_norm",
         )
     )
     assert bench.task_list == ["hellaswag", "gsm8k"]
-    assert bench.mode == "chat"
+    assert bench.mode == "base"
     assert bench.num_fewshot == 5
     assert bench.gen_kwargs == {"temperature": 0.6}
     assert bench.metric_override == "acc_norm"

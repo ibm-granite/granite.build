@@ -115,7 +115,7 @@ aggregate (where the group's yaml declares one) into `lm_eval_results.json`; onl
 tasks are averaged into the headline. Under `mode=auto` a group whose tasks span both
 modes (openllm: gsm8k generates) runs in parts — its single-mode subgroups and tasks,
 overrides kept — and gets no aggregate of its own (`details.split_groups` names it);
-`mode=chat` or `mode=base` runs it whole. `limit` is
+`mode=base` runs it whole (its generation tasks then go through the completions endpoint, without the chat template); `mode=chat` cannot, since the chat endpoint returns no loglikelihoods and a multiple-choice task is refused at startup. `limit` is
 lm-eval's own (the first N docs per task), and `repeats` runs the whole set k times
 and averages — no pass@k here, since per-example scores have no meaning for every
 metric family. `dataset`/`dataset_revision` do not apply (every task names its own
