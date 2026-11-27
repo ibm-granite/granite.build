@@ -2,6 +2,7 @@
 max_new_tokens default, and what results.json records. No network, no model."""
 
 import json
+import shlex
 
 import pytest
 
@@ -71,6 +72,42 @@ def test_the_checkpoints_own_limit_is_kept(ckpt):
     assert bfcl_serving.plan(ckpt({"max_length": 8192}), "", "") == ("context-left:checkpoint-max_length", [])
 
 
+# Every form vLLM 0.27.1's serve parser reads as the generation config (checked with its
+# FlexibleArgumentParser: underscores, unique prefixes, dotted keys, a --config file).
+OVERRIDES = [
+    '--override-generation-config={"temperature":0.5}',  # replaces the step's JSON override
+    '--override-generation-config {"max_new_tokens":3}',
+    "--override_generation_config={}",
+    "--override-generation-config.max_new_tokens=4",
+    "--override-generation-config.temperature 0.5",
+    "--override-gen={}",
+    "--generation-config=vllm",
+    "--generation_config vllm",
+    "--generation-conf=/models/other",
+    "--config serve.yaml",
+    "--config=serve.yaml",
+]
+
+
+@pytest.mark.parametrize("vllm_args", OVERRIDES)
+def test_a_generation_config_in_vllm_args_is_recorded_not_overridden(ckpt, vllm_args):
+    args = shlex.split(f"--max-num-seqs=4 {vllm_args} --enforce-eager")
+    assert bfcl_serving.plan(ckpt({}), "", "", args) == ("unknown:vllm_args-override", [])
+    assert bfcl_serving.describe("unknown:vllm_args-override")["source"].startswith("vllm_args")
+
+
+@pytest.mark.parametrize("vllm_args", ["", "--max-num-seqs=4 --enforce-eager", "--config-format=hf",
+                                       "--generation-config-x=1", "--max-model-len=8192"])
+def test_other_vllm_args_keep_the_budget(ckpt, vllm_args):
+    assert bfcl_serving.plan(ckpt({}), "", "", shlex.split(vllm_args)) == ("16384:step-default", [BUDGET])
+
+
+def test_a_vllm_args_override_does_not_change_a_cap_sent_with_every_request(ckpt):
+    over = ["--override-generation-config={}"]
+    assert bfcl_serving.plan(ckpt({}), "", "max_tokens=100", over)[0] == "100:max_tokens-option"
+    assert bfcl_serving.plan(ckpt({}), "http://h/v1", "", over)[0] == "none:base_url"
+
+
 def test_an_unreadable_generation_config_is_recorded_not_guessed(ckpt):
     record, args = bfcl_serving.plan(ckpt("{not json"), "", "")
     assert record == "unknown:generation_config-unreadable-JSONDecodeError" and args == []
@@ -124,6 +161,9 @@ def test_main_records_the_decision_and_prints_the_arguments(ckpt, tmp_path, caps
     bfcl_serving.main([str(out), ckpt({}), "", "handler=legacy-granite"])  # a rerun replaces it
     assert capsys.readouterr().out == ""
     assert json.loads(out.read_text()) == {"fc_budget": "none:legacy-granite"}
+    bfcl_serving.main([str(out), ckpt({}), "", "", "--max-num-seqs=4", "--generation-config", "vllm"])
+    assert capsys.readouterr().out == ""
+    assert json.loads(out.read_text()) == {"fc_budget": "unknown:vllm_args-override"}
 
 
 @pytest.mark.parametrize("record, cap", [

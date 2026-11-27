@@ -1,7 +1,8 @@
 """The bfcl step's FC output budget, decided before ``granite-evals run`` serves the model.
 
 Run by the step template in the generate and all phases (``python -m
-granite_evals.benchmarks.bfcl_serving BUDGET_FILE MODEL_PATH BASE_URL OPTIONS``). It writes
+granite_evals.benchmarks.bfcl_serving BUDGET_FILE MODEL_PATH BASE_URL OPTIONS [VLLM_ARG ...]``,
+the step's vllm_args as the words vLLM gets them). It writes
 its decision, ``{"fc_budget": "<cap>:<source>"}``, to BUDGET_FILE (the output dir's
 fc_budget.json, which results.json's max_tokens reports in either phase), and prints the
 extra ``vllm serve`` arguments, one per line (none, or the budget). Not an ``--option``:
@@ -19,6 +20,10 @@ It is applied only when nothing else sets the output length:
 - not with ``base_url`` (an endpoint the step does not start);
 - not with ``handler=legacy-granite``, which sends its own min(4096, ctx - prompt - 2);
 - not with an explicit ``max_tokens`` option, which is sent with every request;
+- not when the step's vllm_args set the generation config (recorded as unknown): vLLM
+  0.27.1's serve parser reads it from ``--override-generation-config`` (a later JSON one
+  replaces the budget; dotted keys too), ``--generation-config``, a ``--config`` file,
+  with underscores for dashes and any unique prefix;
 - not when the checkpoint's generation_config.json sets ``max_new_tokens`` (vLLM applies
   it; the override would replace it, in either direction) or ``max_length`` (vLLM ignores
   it, but the checkpoint asks for a total length the budget would not honour);
@@ -52,6 +57,23 @@ def last_option(options: str, key: str) -> str | None:
     return value
 
 
+# vllm serve options that set the generation config, by the name vLLM's parser resolves.
+GENERATION_CONFIG_OPTIONS = ("--override-generation-config", "--generation-config")
+
+
+def sets_generation_config(vllm_args: list[str]) -> bool:
+    """Whether these vllm serve arguments set the generation config: an option argparse resolves to one of
+    GENERATION_CONFIG_OPTIONS (allow_abbrev: any prefix; FlexibleArgumentParser: _ for -,
+    .key for a dotted key), or a --config file the step does not read."""
+    for word in vllm_args:
+        name = word.partition("=")[0].partition(".")[0].replace("_", "-")
+        if name == "--config":
+            return True
+        if len(name) > 2 and name.startswith("--") and any(o.startswith(name) for o in GENERATION_CONFIG_OPTIONS):
+            return True
+    return False
+
+
 def read_generation_config(model_path: str) -> dict:
     """The checkpoint's generation_config.json ({} when it has none). A local directory is
     read directly; anything else is a Hugging Face repo id, read through the hub cache (as
@@ -69,7 +91,7 @@ def read_generation_config(model_path: str) -> dict:
         return {}  # EntryNotFoundError: LocalEntryNotFoundError (Hub unreachable) is one too.
 
 
-def plan(model_path: str, base_url: str, options: str) -> tuple[str, list[str]]:
+def plan(model_path: str, base_url: str, options: str, vllm_args: list[str] = ()) -> tuple[str, list[str]]:
     """(the fc_budget record "<cap>:<source>", the vllm serve arguments)."""
     if base_url:
         return "none:base_url", []
@@ -77,6 +99,8 @@ def plan(model_path: str, base_url: str, options: str) -> tuple[str, list[str]]:
         return "none:legacy-granite", []
     if (explicit := last_option(options, "max_tokens")) is not None:
         return f"{explicit}:max_tokens-option", []
+    if sets_generation_config(vllm_args):
+        return "unknown:vllm_args-override", []
     try:
         config = read_generation_config(model_path)
     except Exception as e:  # noqa: BLE001  never guess: no budget, recorded as unknown
@@ -101,13 +125,15 @@ def describe(record: str | None) -> dict:
         "max_tokens-option": "the max_tokens option, sent with every request",
         "checkpoint-max_new_tokens": "the checkpoint's generation_config max_new_tokens (vLLM applies it)",
         "checkpoint-max_length": "none served: the checkpoint's generation_config sets max_length (vLLM ignores it)",
+        "vllm_args-override": "vllm_args set the generation config (--override-generation-config, "
+                              "--generation-config or --config); the step serves no budget and does not read it",
     }
     return {"cap": int(cap) if cap.isdigit() else cap, "source": notes.get(source, source)}
 
 
 def main(argv: list[str]) -> int:
-    budget_file, model_path, base_url, options = (argv + ["", "", ""])[:4]
-    record, args = plan(model_path, base_url, options)
+    budget_file, model_path, base_url, options = (argv + [""] * 4)[:4]
+    record, args = plan(model_path, base_url, options, argv[4:])
     Path(budget_file).write_text(json.dumps({"fc_budget": record}))
     for a in args:
         print(a)

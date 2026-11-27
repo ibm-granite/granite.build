@@ -192,22 +192,25 @@ environment_configs:
 
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+            USER_VLLM_ARGS=()
+            for a in {{ config.vllm_args }}; do USER_VLLM_ARGS+=("$a"); done
             VLLM_ARGS=()
             # FC's output budget (granite_evals.benchmarks.bfcl_serving, USAGE.md): the
             # served vLLM's default max_new_tokens (16384) unless base_url, legacy-granite,
-            # an explicit max_tokens or the checkpoint's own generation_config sets the
-            # output length. The helper records its decision in the output dir's
-            # fc_budget.json (results.json reports it, in either phase) and prints the vllm
-            # serve arguments, ahead of vllm_args. The score phase serves nothing.
+            # an explicit max_tokens, a generation config in vllm_args (the words vLLM
+            # gets) or the checkpoint's own generation_config sets the output length. The
+            # helper records its decision in the output dir's fc_budget.json (results.json
+            # reports it, in either phase) and prints the vllm serve arguments, ahead of
+            # vllm_args. The score phase serves nothing.
             if [ "{{ config.phase }}" != "score" ]; then
               BUDGET_OUT=$(python -m granite_evals.benchmarks.bfcl_serving "$OUTPUT_DIR/fc_budget.json" \
-                "{{ config.model_path }}" "{{ config.base_url }}" "{{ config.options }}") \
+                "{{ config.model_path }}" "{{ config.base_url }}" "{{ config.options }}" "${USER_VLLM_ARGS[@]}") \
                 || { echo "granite: bfcl_serving failed" >&2; exit 1; }
               while IFS= read -r a; do
                 if [ -n "$a" ]; then VLLM_ARGS+=(--vllm-arg="$a"); fi
               done <<< "$BUDGET_OUT"
             fi
-            for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
+            for a in "${USER_VLLM_ARGS[@]}"; do VLLM_ARGS+=(--vllm-arg="$a"); done
 
             granite-evals run "$BENCHMARK" \
               --model "{{ config.model_path }}" \

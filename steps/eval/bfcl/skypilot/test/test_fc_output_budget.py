@@ -31,7 +31,7 @@ def _run(tmp_path, phase="generate", vllm_args="", helper_out=BUDGET, helper_rc=
         "run"
     ]
     block = re.search(
-        r"^\s*OPTS=\(\)\n.*?\{\{ config\.vllm_args \}\}.*?\n", run, re.S | re.M
+        r"^\s*OPTS=\(\)\n.*?(?=^\s*granite-evals run )", run, re.S | re.M
     ).group(0)
     assert HELPER in block
     argv = tmp_path / "helper-argv"
@@ -71,12 +71,14 @@ def _lines(proc, tag):
 def test_the_budget_reaches_the_run(tmp_path, phase):
     proc = _run(tmp_path, phase, vllm_args="--max-num-seqs=4")
     assert proc.returncode == 0, proc.stderr
-    # In this order: the record's file in the output dir, then what decides the budget.
+    # In this order: the record's file in the output dir, then what decides the budget
+    # (vllm_args too: a generation config set there is recorded, not overridden).
     assert proc.helper_argv == [
         str(tmp_path / "out" / "fc_budget.json"),
         "/models/m",
         "",
         "handler=fc temperature=0.5",
+        "--max-num-seqs=4",
     ]
     # Ahead of the step's own vllm_args: a caller's --override-generation-config replaces it
     # (vLLM keeps the last one; USAGE.md).
@@ -91,6 +93,16 @@ def test_the_budget_reaches_the_run(tmp_path, phase):
         "--option",
         "temperature=0.5",
     ]
+
+
+def test_the_helper_sees_vllm_args_as_vllm_gets_them(tmp_path):
+    # Quoted JSON is one word to vLLM after bash's quote removal; so it is to the helper.
+    vllm_args = "--max-num-seqs=4 --override-generation-config '{\"temperature\": 0.5}'"
+    proc = _run(tmp_path, vllm_args=vllm_args, helper_out="")
+    assert proc.returncode == 0, proc.stderr
+    words = ["--max-num-seqs=4", "--override-generation-config", '{"temperature": 0.5}']
+    assert proc.helper_argv[4:] == words
+    assert _lines(proc, "VLLM") == [f"--vllm-arg={w}" for w in words]
 
 
 def test_no_budget_adds_nothing(tmp_path):

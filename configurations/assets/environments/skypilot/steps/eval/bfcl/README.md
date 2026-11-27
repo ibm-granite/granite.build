@@ -38,6 +38,9 @@ effective cap and its source under `max_tokens`:
 - not with `base_url` (an endpoint the step does not start: no budget applies);
 - not with `handler=legacy-granite`, which sends its own budget (below);
 - not with an explicit `max_tokens` option, which is sent with every request and wins;
+- not when `vllm_args` set the generation config: `--override-generation-config` in any form
+  vLLM's parser accepts (dotted keys, underscores, a unique prefix), `--generation-config`, or
+  a `--config` file (recorded as unknown: the step does not read what they set);
 - not when the checkpoint's `generation_config.json` sets `max_new_tokens` (vLLM applies it;
   the override would replace it, in either direction) or `max_length`, nor when that file
   cannot be read (recorded as unknown).
@@ -102,7 +105,7 @@ steps:
 | `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups of that version; default `all_scoring` for v4, `all` for v3), `temperature`, `top_p`, `max_tokens` (default: 16,384 or the context left after the prompt, whichever is smaller, as the served vLLM's default, unless the checkpoint's generation_config sets an output limit or `base_url` is set; with `handler=legacy-granite`, min(4096, context length − prompt tokens − 2); an explicit value is sent with every request and wins), `max_failed_frac` (default `0.05`: infrastructure-failed entries above this fraction, overall or in any one category (each may lose one entry), fail the run; below it they are left out of the score and the run is marked incomplete), `include_input_log`; v4 only: `search_mcp_url`; v3 only: `handler` (`fc`, the default, or `legacy-granite`). |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
-| `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. The run script expands them unquoted, so bash word-splits them and applies brace expansion (`{a,b}`) and quote removal: a JSON value with commas or quotes does not arrive intact; use vLLM's dotted form (`--override-generation-config.temperature=0.5`). They come after the step's FC budget, and any `--override-generation-config` replaces the budget rather than merging with it (vLLM 0.27.1 keeps the last; dotted keys merge only with each other): add `max_new_tokens` to your own override to keep it. |
+| `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. The run script expands them unquoted, so bash word-splits them and applies brace expansion (`{a,b}`) and quote removal: a JSON value with commas or quotes does not arrive intact; use vLLM's dotted form (`--override-generation-config.temperature=0.5`). When they set the generation config (`--override-generation-config`, dotted or not, `--generation-config`, or a `--config` file), the step serves no FC budget (it does not read what they set, and vLLM 0.27.1 keeps the last JSON override; dotted keys merge only with each other), and `results.json` records the cap as unknown: add `max_new_tokens` to your own override to keep one. |
 | `base_url` | `""` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
 | `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Unused: this benchmark runs no sandbox. |
