@@ -291,9 +291,11 @@ def build_teacher_inputs_from_texts_with_eos_control(
 def vocab_jaccard(student_vocab: dict, teacher_vocab: dict) -> float:
     """The Jaccard index of two vocabularies' token strings, |S & T| / |S | T|.
 
-    The same number CustomULDLoss._initialize_vocabulary_mapping reported from trl's
-    mapping, which pairs the teacher and student ids of every token string the two share
-    (trl's ULDLoss._initialize_vocabulary_mapping), so its size is |S & T|.
+    CustomULDLoss._initialize_vocabulary_mapping used to report it from trl's mapping, which
+    pairs the teacher and student ids of every token string the two share, keyed by teacher
+    id (trl's ULDLoss._initialize_vocabulary_mapping). That has |S & T| entries unless the
+    teacher's vocabulary gives two shared strings one id, which the mapping counts once and
+    this counts twice; the report now uses this.
     """
     matched = len(student_vocab.keys() & teacher_vocab.keys())
     union = len(student_vocab) + len(teacher_vocab) - matched

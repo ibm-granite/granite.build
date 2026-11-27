@@ -543,20 +543,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `CustomGOLDConfig` and `masking.py check-config` no longer refuse
     `uld_rebuild_student_input_with_teacher_template` without `last_message_only: true`:
     that mode rebuilds the student's labels from the teacher's last-turn texts.
-  - `masking.py check-config` now passes exactly the ULD configs that start as configured,
-    checked by a table against the step, the renderer, gold.py's `TrlParser` and
-    `CustomGOLDConfig`. The table covers {`use_uld_loss`, `loss_arm: uld`} × {no mode,
-    rebuild, reuse, per-turn regions} × `last_message_only` {unset, false, true, `"true"`,
-    `"false"`, 1, 0}.
-    - The ULD exemptions apply to `use_uld_loss` only. A named `loss_arm: uld` with one of
-      those modes is reported, because the step passes no `uld_*` key to its renderer, so
-      the mode is dropped.
+  - `masking.py check-config` takes the config's form: `--form trainer` (the default, a
+    gold config gold.py reads) or `--form step` (a logit-distill step's gold_config block).
+    For `last_message_only`, the two switches and the three ULD modes it passes exactly the
+    ULD configs that start as configured. A table covers {`use_uld_loss`, `loss_arm: uld`}
+    × {no mode, rebuild, reuse, per-turn regions} × `last_message_only` {unset, false,
+    true, `"true"`, `"false"`, 1, 0}, checked against the step, the renderer, gold.py's
+    `TrlParser` and `CustomGOLDConfig`. A second table covers every switch value in both
+    forms. It does not check lmbda or any other key.
+    - The ULD exemptions apply to `use_uld_loss` only. In a step block, `use_uld_loss`
+      and the ULD modes are reported, because the step's template passes none of them to
+      its renderer, so they are dropped.
     - In an exempt mode, `last_message_only: true` is no longer reported as the
       response_template scan bypass. `uld_per_turn_regions` with true is reported as
       `CustomGOLDConfig`'s refusal, where before it was reported as the bypass.
-    - `last_message_only` is read the way its parser reads it, so `"true"` and 1 now
-      satisfy the uld and sampled_opd rule (they were reported), and `"true"` is reported
-      as the scan bypass for every other arm (it was not).
+    - Each of those booleans is read with its form's parser (`TrlParser`, or the
+      renderer's `_bool`), so `"true"` and 1 now satisfy the uld and sampled_opd rule
+      (they were reported), `"true"` is reported as the scan bypass for every other arm
+      (it was not), and a value the parser refuses is reported for any of those keys.
+    - A `loss_arm` key in a trainer config is reported: `TrlParser` refuses it.
   - `uld_reuse_student_input` without `uld_use_hybrid_loss` no longer fails at trainer
     init with `AttributeError: ... 'jaccard'` (#785). Its tokenizer check now compares the
     two vocabularies and requires them to be equal, since the teacher reads the student's
@@ -569,7 +574,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     ramp is refused by the recipe before submission, for both forms, and the step's
     renderer refuses `use_sampled_opd_loss: true` with `lmbda` other than 1.0. Before, the
     switch form failed at trainer start in `CustomGOLDConfig` and the arm form at the
-    step's launch, both once the allocation was up.
+    step's launch, both once the allocation was up. Likewise the renderer now refuses the
+    switch without `last_message_only` or with `use_liger_fused_jsd`, and the recipe
+    refuses either form with `USE_LIGER_FUSED_JSD=true`, as `CustomGOLDConfig` does.
+  - `LOSS_ARM=sampled_opd` in the distill recipe failed at the step's launch whatever
+    `LMBDA` was: the recipe passed `use_sampled_opd_loss: false` beside the arm, which the
+    step's renderer refuses. It now passes true with either form. A new test renders the
+    recipe through the step's template and runs its renderer.
 - **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
   longer share a pull dir (#715).** `<cache>/<owner>/<repo>/<revision>` ignored all three, so a
   model and a same-named dataset overwrote each other's files, two paths of one bucket synced into
