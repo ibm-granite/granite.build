@@ -628,6 +628,17 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
             f"use_sampled_opd_loss requires lmbda 1.0 (fully on-policy), as "
             f"CustomGOLDConfig.__post_init__ does; got {args.lmbda}"
         )
+    # And its other two rules, for the same reason.
+    if args.use_sampled_opd_loss and not args.last_message_only:
+        raise ValueError(
+            "use_sampled_opd_loss requires last_message_only true, as "
+            "CustomGOLDConfig.__post_init__ does"
+        )
+    if args.use_sampled_opd_loss and args.use_liger_fused_jsd:
+        raise ValueError(
+            "use_sampled_opd_loss is incompatible with use_liger_fused_jsd, as "
+            "CustomGOLDConfig.__post_init__ says"
+        )
 
     # The one exception to _ONLINE_ONLY: keys an arm needs off-policy too. The trainer reads
     # last_message_only off-policy (the collator's labels), so dropping it there made the uld

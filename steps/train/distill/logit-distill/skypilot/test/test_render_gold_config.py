@@ -211,6 +211,28 @@ class TestOnPolicyBlockGating:
         config = _render(tmp_path, extra=[*on_policy, *sopd, "--lmbda", "1.0"])
         assert config["use_sampled_opd_loss"] is True and config["lmbda"] == 1.0
 
+    @pytest.mark.parametrize(
+        "extra, needle",
+        [
+            (["--last-message-only", "false"], "last_message_only"),
+            (
+                ["--last-message-only", "true", "--use-liger-fused-jsd", "true"],
+                "use_liger_fused_jsd",
+            ),
+        ],
+        ids=["last-message-only-false", "liger"],
+    )
+    def test_on_policy_refuses_the_sampled_opd_switch_as_custom_gold_config_does(
+        self, tmp_path, extra, needle
+    ):
+        """CustomGOLDConfig refuses use_sampled_opd_loss without last_message_only and
+        with use_liger_fused_jsd; LOSS_ARMS refused both for the arm, the switch alone
+        rendered them for the trainer to refuse at startup."""
+        on_policy = ["--vllm-num-servers", "1", "--lmbda", "1.0"]
+        sopd = ["--use-sampled-opd-loss", "true"]
+        result = _render(tmp_path, extra=[*on_policy, *sopd, *extra], expect_rc=2)
+        assert "use_sampled_opd_loss" in result.stderr and needle in result.stderr
+
     def test_off_policy_takes_the_sampled_opd_switch_off(self, tmp_path):
         """False is the default, and off-policy it is still not emitted."""
         config = _render(tmp_path, extra=["--use-sampled-opd-loss", "false"])
