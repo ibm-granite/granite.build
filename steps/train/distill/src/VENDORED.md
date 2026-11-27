@@ -206,16 +206,27 @@ not reported as the scan bypass, since `CustomGOLDConfig` accepts it; `uld_per_t
 with `true` is a problem, since `CustomGOLDConfig` refuses it. A named `loss_arm: uld` takes
 none: the logit-distill step passes no `uld_*` key to its renderer, which has no `uld_*`
 option, so such a mode is dropped and reported as a problem, and the renderer refuses the arm
-without `true` in every case. A value is read the way its parser reads it: a step's
-gold_config block (the kind with a `loss_arm` key) as `render_gold_config.py`'s `_bool`
-reads its rendered command line, any other config as gold.py's `TrlParser` reads a YAML
-config (a string through transformers' `string_to_bool`, any other value by its truth). So
-`"true"` and `1` satisfy the rule, and a value the parser refuses is a problem of its own.
+without `true` in every case.
+
+check-config takes the config's form explicitly (`check_config(..., form=)`, `masking.py
+check-config --form trainer|step`, default `trainer`):
+- A gold config gold.py reads (the renderer's output, or one written by hand) is read as
+  gold.py's `TrlParser` reads a YAML config: a string through transformers'
+  `string_to_bool`, any other value by its truth. A `loss_arm` key in one is a problem,
+  since `TrlParser` refuses a key that is not a `CustomGOLDConfig` field.
+- A step's gold_config block is read as `render_gold_config.py`'s `_bool` reads its
+  rendered command line (`loss_arm` defaults to the template's `""`).
+- Each of `last_message_only`, the two switches and the three ULD modes is read with that
+  rule, so `"true"` and `1` satisfy a rule, and a value the parser refuses is a problem.
+- In a step block, `use_uld_loss` and the ULD modes are dropped by the template; any value
+  the renderer would not read as false is reported.
+
 Every other arm keeps the old report.
 `steps/train/distill/logit-distill/skypilot/test/test_masking_check_config.py` pins both
-directions against the renderer's table, both readers against the real parsers, and every
-ULD form, mode and `last_message_only` value (booleans, `"true"`, `"false"`, 1, 0) against
-what the step, the renderer, `TrlParser` and `CustomGOLDConfig` do with it.
+directions against the renderer's table, both readers against the real parsers, every ULD
+form, mode and `last_message_only` value (booleans, `"true"`, `"false"`, 1, 0) against what
+the step, the renderer, `TrlParser` and `CustomGOLDConfig` do with it, and every switch
+value in both forms against its parser.
 
 ## A second copy elsewhere
 

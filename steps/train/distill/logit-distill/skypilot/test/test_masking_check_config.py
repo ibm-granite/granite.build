@@ -31,14 +31,19 @@ _REQUIRING = sorted(
 )
 
 
-def _lmo_problems(cfg):
-    return [p for p in masking.check_config(_DOC, cfg) if "last_message_only" in p]
+_STEP = masking.STEP_BLOCK
+_TRAINER = masking.TRAINER_CONFIG
+
+
+def _lmo_problems(cfg, form=_TRAINER):
+    problems = masking.check_config(_DOC, cfg, form=form)
+    return [p for p in problems if "last_message_only" in p]
 
 
 def _forms(arm):
-    """The arm as a step gold_config names it (loss_arm) and as the renderer emits it (its
-    switches; a rendered config has no loss_arm key)."""
-    return [{"loss_arm": arm}, dict(rgc.LOSS_ARMS[arm]["flags"])]
+    """The arm as a step's gold_config block names it (loss_arm, read by the step) and as
+    the renderer emits it (its switches, read by gold.py): (cfg, form) pairs."""
+    return [({"loss_arm": arm}, _STEP), (dict(rgc.LOSS_ARMS[arm]["flags"]), _TRAINER)]
 
 
 def test_the_requiring_arms_are_uld_and_sampled_opd():
@@ -50,11 +55,11 @@ def test_the_requiring_arms_are_uld_and_sampled_opd():
 @pytest.mark.parametrize("arm", _REQUIRING)
 @pytest.mark.parametrize("lmo", [None, False], ids=["unset", "false"])
 def test_a_requiring_arm_without_it_is_a_problem(arm, lmo):
-    for form in _forms(arm):
-        cfg = {"response_template": _TEMPLATE, **form}
+    for named, form in _forms(arm):
+        cfg = {"response_template": _TEMPLATE, **named}
         if lmo is not None:
             cfg["last_message_only"] = lmo
-        (problem,) = _lmo_problems(cfg)
+        (problem,) = _lmo_problems(cfg, form)
         assert f"loss_arm {arm} requires last_message_only: true" in problem
 
 
@@ -64,16 +69,16 @@ def test_what_the_parsers_read_as_true_satisfies_it(arm, lmo):
     """render_gold_config.py's _bool (a step's gold_config block) and gold.py's TrlParser
     (a gold config given to gold.py) both read these as true, so neither form is a
     problem."""
-    for form in _forms(arm):
-        cfg = {"response_template": _TEMPLATE, "last_message_only": lmo, **form}
-        assert _lmo_problems(cfg) == []
+    for named, form in _forms(arm):
+        cfg = {"response_template": _TEMPLATE, "last_message_only": lmo, **named}
+        assert _lmo_problems(cfg, form) == []
 
 
 @pytest.mark.parametrize("arm", _REQUIRING)
 def test_a_value_the_parser_refuses_is_a_problem(arm):
-    named, switch = _forms(arm)
+    (named, _), (switch, _) = _forms(arm)
     (problem,) = _lmo_problems(
-        {"response_template": _TEMPLATE, "last_message_only": "maybe", **named}
+        {"response_template": _TEMPLATE, "last_message_only": "maybe", **named}, _STEP
     )
     assert "render_gold_config.py does not read it as a boolean" in problem
     (problem,) = _lmo_problems(
@@ -86,14 +91,14 @@ def test_a_value_the_parser_refuses_is_a_problem(arm):
 def test_each_form_is_read_by_its_own_parser(arm):
     """The two parsers differ at the edges: TrlParser reads "t" as true and refuses "on";
     render_gold_config.py's _bool reads "on" as true and refuses "t". A step's
-    gold_config block (named arm) goes through the renderer, any other config through
+    gold_config block goes through the renderer, a gold config gold.py reads through
     TrlParser."""
-    named, switch = _forms(arm)
+    (named, _), (switch, _) = _forms(arm)
     ok = {"response_template": _TEMPLATE}
     assert _lmo_problems({**ok, **switch, "last_message_only": "t"}) == []
-    assert _lmo_problems({**ok, **named, "last_message_only": "on"}) == []
+    assert _lmo_problems({**ok, **named, "last_message_only": "on"}, _STEP) == []
     assert _lmo_problems({**ok, **switch, "last_message_only": "on"})
-    assert _lmo_problems({**ok, **named, "last_message_only": "t"})
+    assert _lmo_problems({**ok, **named, "last_message_only": "t"}, _STEP)
 
 
 @pytest.mark.parametrize("arm", _REQUIRING)
@@ -106,6 +111,84 @@ def test_a_switch_given_as_a_string_is_the_switch(arm):
     cfg = {"response_template": _TEMPLATE, switch: "false", "last_message_only": True}
     (problem,) = _lmo_problems(cfg)
     assert "bypasses the response_template scan" in problem
+
+
+def test_a_step_block_is_one_whatever_its_loss_arm():
+    """Not identified by its keys: a step block without loss_arm (the template's default
+    is "") is read by the renderer's rules, so its "t" is refused and its "on" is true.
+    """
+    sopd = {"response_template": _TEMPLATE, "use_sampled_opd_loss": True}
+    assert _lmo_problems({**sopd, "last_message_only": "t"}, _STEP)
+    assert _lmo_problems({**sopd, "last_message_only": "on"}, _STEP) == []
+    assert (
+        _lmo_problems({**sopd, "loss_arm": "", "last_message_only": "on"}, _STEP) == []
+    )
+
+
+def test_loss_arm_is_not_a_trainer_key():
+    """gold.py's TrlParser refuses a key that is not a CustomGOLDConfig field, and
+    loss_arm is the step's."""
+    cfg = {"response_template": _TEMPLATE, "loss_arm": "uld", "last_message_only": True}
+    problems = masking.check_config(_DOC, cfg)
+    key = "loss_arm is a key of a logit-distill step's gold_config block"
+    assert any(key in p for p in problems)
+    assert masking.check_config(_DOC, cfg, form=_STEP) == []
+
+
+def test_use_uld_loss_in_a_step_block_is_dropped():
+    """The step's template passes no use_uld_loss to its renderer: the arm is named."""
+    cfg = {
+        "response_template": _TEMPLATE,
+        "use_uld_loss": True,
+        "last_message_only": True,
+    }
+    problems = masking.check_config(_DOC, cfg, form=_STEP)
+    assert any("passes no use_uld_loss to render_gold_config.py" in p for p in problems)
+    assert masking.check_config(_DOC, cfg) == []
+
+
+# Every switch value, in both forms, against the parser that reads it. A step block passes
+# use_sampled_opd_loss to the renderer and drops use_uld_loss; a gold config gold.py reads
+# goes through TrlParser. last_message_only is true, which both arms need, and lmbda 1.0,
+# which CustomGOLDConfig needs for the sampled-OPD loss.
+_SWITCH_VALUES = [True, False, "true", "1", 1, "t", "on", "yes", "off", "maybe"]
+_SWITCH_MATRIX = [
+    (form, switch, value)
+    for form in (_STEP, _TRAINER)
+    for switch in masking._SWITCHES
+    for value in _SWITCH_VALUES
+]
+
+
+@pytest.mark.parametrize("form, switch, value", _SWITCH_MATRIX, ids=repr)
+def test_check_config_reads_each_switch_as_its_parser_does(
+    tmp_path, form, switch, value
+):
+    if form == _STEP and switch == "use_uld_loss":
+        read = "dropped"
+    elif form == _STEP:
+        try:
+            read = rgc._bool(str(value))
+        except Exception:
+            read = None
+    else:
+        pytest.importorskip("trl")
+        fields = {switch: value, "last_message_only": True, "lmbda": 1.0}
+        parsed = _trl_parser_reads(tmp_path, fields)
+        read = None if parsed is None else bool(parsed[switch])
+    cfg = {"response_template": _TEMPLATE, switch: value, "last_message_only": True}
+    problems = masking.check_config(_DOC, cfg, form=form)
+    about_it = [p for p in problems if p.startswith(switch)]
+    if read is None:
+        (problem,) = about_it
+        assert "does not read it as a boolean" in problem
+    elif read == "dropped":
+        assert len(about_it) == (0 if masking._renderer_reads(value) is False else 1)
+    elif read is True:
+        assert problems == []
+    else:
+        (problem,) = problems
+        assert "bypasses the response_template scan" in problem
 
 
 _READER_VALUES = [True, False, "true", "True", "TRUE", "false", "False", "t", "y"]
@@ -156,8 +239,8 @@ def _trl_parser_reads(tmp_path, fields):
 def test_the_message_names_who_refuses_it(arm):
     """Named as loss_arm, the renderer refuses it; inferred from the switch alone (a config
     that never went through the renderer), only CustomGOLDConfig does."""
-    named, switch = _forms(arm)
-    (problem,) = _lmo_problems({"response_template": _TEMPLATE, **named})
+    (named, _), (switch, _) = _forms(arm)
+    (problem,) = _lmo_problems({"response_template": _TEMPLATE, **named}, _STEP)
     assert "render_gold_config.py refuses it at render and CustomGOLDConfig" in problem
     (problem,) = _lmo_problems({"response_template": _TEMPLATE, **switch})
     assert "render_gold_config.py" not in problem
@@ -177,7 +260,7 @@ def test_uld_modes_that_render_the_teacher_otherwise_are_exempt(mode):
     reusing the student's input needs no last-turn render, and a student rebuilt from the
     teacher's texts is supervised on the last turn alone whatever the collator labelled.
     For the switch form only, which is what reaches CustomGOLDConfig."""
-    _, switch = _forms("uld")
+    _, (switch, _) = _forms("uld")
     cfg = {"response_template": _TEMPLATE, mode: True, **switch}
     assert masking.check_config(_DOC, cfg) == []
     assert masking.check_config(_DOC, {**cfg, "last_message_only": False}) == []
@@ -190,17 +273,32 @@ def test_a_named_uld_arm_with_a_mode_is_a_problem(mode, lmo):
     mode is dropped and the run would start without it (test_the_step_drops_uld_keys).
     That is a problem whatever last_message_only is, and without true the renderer's own
     refusal is reported as well."""
-    named, _ = _forms("uld")
+    (named, _), _ = _forms("uld")
     cfg = {"response_template": _TEMPLATE, mode: True, **named}
     if lmo is not None:
         cfg["last_message_only"] = lmo
-    problems = masking.check_config(_DOC, cfg)
+    problems = masking.check_config(_DOC, cfg, form=_STEP)
     dropped = [p for p in problems if f"would start without {mode}" in p]
     assert len(dropped) == 1
     assert "passes no uld_* key to render_gold_config.py" in dropped[0]
-    lmo_problems = _lmo_problems(cfg)
+    lmo_problems = _lmo_problems(cfg, _STEP)
     assert len(lmo_problems) == (0 if lmo is True else 1)
     assert "CustomGOLDConfig refuses it at startup." not in " ".join(dropped)
+
+
+@pytest.mark.parametrize("mode", _ULD_EXEMPT_MODES)
+@pytest.mark.parametrize(
+    "value, dropped",
+    [("garbage", True), ("on", True), (1, True), ("off", False), (0, False)],
+    ids=repr,
+)
+def test_a_named_arms_mode_is_reported_for_any_value_but_false(mode, value, dropped):
+    """Any value the renderer would not read as false is a mode the step drops, an
+    unreadable one too: nothing reads it, and the run starts without it."""
+    (named, _), _ = _forms("uld")
+    cfg = {"response_template": _TEMPLATE, mode: value, "last_message_only": True}
+    problems = masking.check_config(_DOC, {**cfg, **named}, form=_STEP)
+    assert any(f"would start without {mode}" in p for p in problems) is dropped
 
 
 def test_the_step_drops_uld_keys():
@@ -281,7 +379,8 @@ def _uld_cfg(form, mode, lmo):
 
 @pytest.mark.parametrize("form, mode, lmo", _ULD_MATRIX)
 def test_check_config_passes_exactly_the_uld_configs_that_start(form, mode, lmo):
-    problems = masking.check_config(_DOC, _uld_cfg(form, mode, lmo))
+    read_by = _STEP if form == "named" else _TRAINER
+    problems = masking.check_config(_DOC, _uld_cfg(form, mode, lmo), form=read_by)
     if lmo in _STARTS_WITH[(form, mode)]:
         assert problems == []
     else:
@@ -337,9 +436,9 @@ def test_the_table_is_what_the_renderer_and_custom_gold_config_decide(
 @pytest.mark.parametrize("arm", _REQUIRING)
 def test_a_requiring_arm_with_it_is_sound(arm):
     """The direction that changed: true is no longer reported for these arms."""
-    for form in _forms(arm):
-        cfg = {"response_template": _TEMPLATE, "last_message_only": True, **form}
-        assert masking.check_config(_DOC, cfg) == []
+    for named, form in _forms(arm):
+        cfg = {"response_template": _TEMPLATE, "last_message_only": True, **named}
+        assert masking.check_config(_DOC, cfg, form=form) == []
 
 
 @pytest.mark.parametrize(
@@ -348,12 +447,13 @@ def test_a_requiring_arm_with_it_is_sound(arm):
 def test_every_other_arm_keeps_todays_rule(arm):
     """Unchanged for the scanning arms: true bypasses the scan masking.json describes, and
     false or unset is sound."""
-    forms = _forms(arm) if arm else [{}]
-    for form in forms:
-        base = {"response_template": _TEMPLATE, **form}
-        assert masking.check_config(_DOC, base) == []
-        assert masking.check_config(_DOC, {**base, "last_message_only": False}) == []
-        (problem,) = _lmo_problems({**base, "last_message_only": True})
+    forms = _forms(arm) if arm else [({}, _TRAINER), ({"loss_arm": ""}, _STEP)]
+    for named, form in forms:
+        base = {"response_template": _TEMPLATE, **named}
+        check = lambda cfg: masking.check_config(_DOC, cfg, form=form)  # noqa: E731
+        assert check(base) == []
+        assert check({**base, "last_message_only": False}) == []
+        (problem,) = _lmo_problems({**base, "last_message_only": True}, form)
         assert "bypasses the response_template scan" in problem
 
 

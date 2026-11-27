@@ -451,14 +451,37 @@ def derive(tokenizer_dir: Path, *, config_dir: Path | None = None) -> dict:
     }
 
 
-def check_config(doc: dict, cfg: dict) -> list[str]:
+# The two kinds of gold config check-config audits, named by what reads them.
+TRAINER_CONFIG = (
+    "trainer"  # read by gold.py's TrlParser: the renderer's output, or by hand
+)
+STEP_BLOCK = (
+    "step"  # a logit-distill step's gold_config block, which the step's template
+)
+# renders onto render_gold_config.py's command line
+FORMS = (TRAINER_CONFIG, STEP_BLOCK)
+
+# The booleans check_config reads, and the ones of them the step's template passes on to
+# render_gold_config.py. In a step block the others are dropped.
+_SWITCHES = ("use_uld_loss", "use_sampled_opd_loss")
+_STEP_PASSES = ("last_message_only", "use_sampled_opd_loss")
+
+
+def check_config(doc: dict, cfg: dict, form: str = TRAINER_CONFIG) -> list[str]:
     """Problems with a gold config measured against a derived contract. Empty means sound.
 
     This is the preflight a launcher runs. It compares TEXT, because text is what the config
     carries and what the collator encodes -- comparing ids would pass a config whose text differs
     in a way this tokenizer happens to encode identically, and that config would be wrong for the
     next tokenizer.
+
+    `form` says what reads `cfg`, and so which parser's rules its booleans follow:
+    TRAINER_CONFIG (gold.py's TrlParser) or STEP_BLOCK (render_gold_config.py's _bool, after
+    the step's template has rendered the block onto its command line). A value that parser
+    refuses is a problem, and so, in a step block, is a key the template drops.
     """
+    if form not in FORMS:
+        raise ValueError(f"form must be one of {FORMS}, got {form!r}")
     problems: list[str] = []
     want = doc["response_template"]
     if "response_template" not in cfg:
@@ -472,35 +495,40 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
             f"on this student implies {want!r}. The config was not derived from the template it "
             "will train against."
         )
-    arm, named, required = _arm_requiring_last_message_only(cfg)
-    # A step's gold_config block (the only kind with a `loss_arm` key) reaches the trainer
-    # through the step's template and render_gold_config.py, whose _bool reads each boolean;
-    # a rendered or hand-written gold config reaches it through gold.py's TrlParser. Both
-    # read "true", "True" and 1 as true, so the boolean true is not the only value that
-    # satisfies a rule; a value the reader refuses is a problem of its own.
-    via_renderer = "loss_arm" in cfg
-    read = _renderer_reads if via_renderer else _trainer_reads
-    lmo_value = cfg.get("last_message_only")
-    lmo = read(lmo_value)
-    if named and arm == "uld":
-        # The step passes no uld_* key to its renderer, which has no uld_* option, so a
-        # mode set beside a named arm is dropped and the run starts without it.
-        for mode in _ULD_MODES:
-            if cfg.get(mode) is not None and _trainer_reads(cfg[mode]) is not False:
-                problems.append(
-                    f"loss_arm uld with {mode}: the logit-distill step passes no uld_* key "
-                    "to render_gold_config.py, which has no uld_* option, so the run would "
-                    f"start without {mode}. Set it in a gold config given to gold.py, with "
-                    "use_uld_loss instead of loss_arm."
-                )
-    if lmo is None:
-        refuser = (
-            "render_gold_config.py does not read it as a boolean and refuses it at render"
-            if via_renderer
-            else "gold.py's TrlParser does not read it as a boolean and refuses it at "
-            "startup"
+    step = form == STEP_BLOCK
+    # Both parsers read "true", "True" and 1 as true, so the boolean true is not the only
+    # value that satisfies a rule. They differ at the edges ("t" and "on").
+    read = _renderer_reads if step else _trainer_reads
+    refuser = (
+        "render_gold_config.py does not read it as a boolean and refuses it at render"
+        if step
+        else "gold.py's TrlParser does not read it as a boolean and refuses it at startup"
+    )
+    values = {}
+    for key in ("last_message_only", *_SWITCHES, *_ULD_MODES):
+        if key not in cfg:
+            values[key] = False
+        elif step and key not in _STEP_PASSES:
+            # The template passes no such key to render_gold_config.py, which has no
+            # option for it, so the run starts without it.
+            values[key] = False
+            if _renderer_reads(cfg[key]) is not False:
+                problems.append(_dropped_by_the_step(key))
+        else:
+            values[key] = read(cfg[key])
+            if values[key] is None:
+                problems.append(f"{key} is {cfg[key]!r}: {refuser}.")
+    if not step and "loss_arm" in cfg:
+        problems.append(
+            "loss_arm is a key of a logit-distill step's gold_config block, not of a gold "
+            "config gold.py reads: TrlParser refuses a key that is not a CustomGOLDConfig "
+            "field. Check a step block with --form step."
         )
-        problems.append(f"last_message_only is {lmo_value!r}: {refuser}.")
+    arm, named, required = _arm_requiring_last_message_only(cfg, values, step)
+    lmo_value = cfg.get("last_message_only")
+    lmo = values["last_message_only"]
+    if lmo is None:
+        pass  # reported above
     elif arm is not None:
         # The positional split IS this arm's masking policy, so true is the contract and
         # false or unset is the problem: the rule render_gold_config.py and
@@ -516,7 +544,7 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
             refused_by = (
                 "render_gold_config.py refuses it at render and CustomGOLDConfig at "
                 "startup"
-                if named
+                if step
                 else "CustomGOLDConfig refuses it at startup"
             )
             problems.append(
@@ -524,8 +552,8 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
                 "Without it the collator labels every assistant turn while the arm "
                 f"supervises only the last; {refused_by}."
             )
-        per_turn = _trainer_reads(cfg.get("uld_per_turn_regions")) is True
-        if not named and arm == "uld" and lmo is True and per_turn:
+        per_turn = values["uld_per_turn_regions"] is True
+        if not step and arm == "uld" and lmo is True and per_turn:
             problems.append(
                 "uld_per_turn_regions is incompatible with last_message_only: true: the "
                 "per-turn teacher has one region per assistant turn, and the collator would "
@@ -540,29 +568,53 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
     return problems
 
 
-def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool, bool]:
+def _arm_requiring_last_message_only(
+    cfg: dict, values: dict, step: bool
+) -> tuple[str | None, bool, bool]:
     """The loss arm in `cfg` whose render_gold_config.py LOSS_ARMS entry requires
     last_message_only: true, whether `cfg` names it as `loss_arm`, and whether the
     requirement holds for this config; (None, False, False) if there is no such arm.
+    `values` are check_config's readings of the booleans, as `cfg`'s parser reads them.
 
-    Read either from `loss_arm` (a step's gold_config block) or from the switch the arm
-    renders (a rendered gold config has no `loss_arm` key): `use_uld_loss` for uld,
+    In a step block, from `loss_arm` (the template's default is "") or from
+    `use_sampled_opd_loss`, the one switch the template passes on. In a gold config
+    gold.py reads, from the switch the arm renders: `use_uld_loss` for uld,
     `use_sampled_opd_loss` for sampled_opd. Kept in step with those two `requires` entries
     by test_masking_check_config.py, which reads the renderer's table.
 
-    The switch form of ULD (`use_uld_loss`, what reaches CustomGOLDConfig) is exempt in the
-    modes `_uld_exempt` names, the same exemptions CustomGOLDConfig makes. A named
-    `loss_arm: uld` is not: the step drops those modes (check_config reports them), and
-    the renderer refuses the arm without last_message_only: true in every case.
+    The switch form of ULD (`use_uld_loss`, what reaches CustomGOLDConfig) is exempt in
+    `_ULD_MODES`, the same exemptions CustomGOLDConfig makes. A named `loss_arm: uld` is
+    not: the step drops those modes (check_config reports them), and the renderer refuses
+    the arm without last_message_only: true in every case.
     """
-    arm = cfg.get("loss_arm")
-    if arm in ("sampled_opd", "uld"):
-        return arm, True, True
-    if _trainer_reads(cfg.get("use_uld_loss")) is True:
-        return "uld", False, not _uld_exempt(cfg)
-    if _trainer_reads(cfg.get("use_sampled_opd_loss")) is True:
+    if step:
+        arm = cfg.get("loss_arm", "")
+        if arm in ("sampled_opd", "uld"):
+            return arm, True, True
+        if values["use_sampled_opd_loss"] is True:
+            return "sampled_opd", False, True
+        return None, False, False
+    if values["use_uld_loss"] is True:
+        exempt = any(values[mode] is True for mode in _ULD_MODES)
+        return "uld", False, not exempt
+    if values["use_sampled_opd_loss"] is True:
         return "sampled_opd", False, True
     return None, False, False
+
+
+def _dropped_by_the_step(key: str) -> str:
+    if key == "use_uld_loss":
+        return (
+            "use_uld_loss in a step's gold_config: the logit-distill step passes no "
+            "use_uld_loss to render_gold_config.py, which has no option for it, so the "
+            "run would start without ULD. Name the arm instead: loss_arm: uld."
+        )
+    return (
+        f"{key} in a step's gold_config: the logit-distill step passes no uld_* key to "
+        "render_gold_config.py, which has no uld_* option, so the run would start "
+        f"without {key}. Set it in a gold config given to gold.py, with use_uld_loss "
+        "instead of loss_arm."
+    )
 
 
 # The ULD modes that do not pair the collator's labels with the last-turn teacher: per-turn
@@ -574,11 +626,6 @@ _ULD_MODES = (
     "uld_reuse_student_input",
     "uld_rebuild_student_input_with_teacher_template",
 )
-
-
-def _uld_exempt(cfg: dict) -> bool:
-    """Whether `cfg`, a gold config given to gold.py, sets one of `_ULD_MODES`."""
-    return any(_trainer_reads(cfg.get(mode)) is True for mode in _ULD_MODES)
 
 
 def _trainer_reads(value):
@@ -760,6 +807,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--gold-config", type=Path, default=None, help="check-config: the yaml to audit"
     )
+    ap.add_argument(
+        "--form",
+        choices=FORMS,
+        default=TRAINER_CONFIG,
+        help="check-config: what reads the yaml: gold.py (trainer, the default: a "
+        "rendered or hand-written gold config) or the logit-distill step (step: a step's "
+        "gold_config block)",
+    )
     args = ap.parse_args(argv)
 
     if args.action == "self-test":
@@ -818,7 +873,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(cfg, dict):
         print(f"ERROR: {args.gold_config} is not a mapping", file=sys.stderr)
         return 1
-    problems = check_config(doc, cfg)
+    problems = check_config(doc, cfg, form=args.form)
     if problems:
         for p in problems:
             print(f"  FAIL {Path(args.gold_config).name}: {p}", file=sys.stderr)
