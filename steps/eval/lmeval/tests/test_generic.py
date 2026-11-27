@@ -1007,6 +1007,29 @@ def test_the_thinking_budget_against_the_served_context(tmp_path, monkeypatch, c
     assert ("leaves" in caplog.text) == (outcome == "warned")
 
 
+@pytest.mark.parametrize(
+    ("argv", "value"),
+    [
+        (["granite-evals", "run", "lm-eval", "--max-model-len", "16384"], 16384),
+        (["granite-evals", "run", "--max-model-len=40000"], 40000),
+        (["granite-evals", "run", "lm-eval"], None),
+        (["granite-evals", "--max-model-len", "x"], None),
+    ],
+)
+def test_cli_max_model_len(argv, value):
+    assert generic.cli_max_model_len(argv) == value
+
+
+def test_a_too_small_context_is_refused_before_the_server_starts(tmp_path, monkeypatch):
+    monkeypatch.setattr(generic, "task_index", lambda: ["gsm8k"])
+    monkeypatch.setattr(generic, "load_tasks", lambda names: ({"gsm8k": _gsm8k()}, {}))
+    monkeypatch.setattr(generic, "cli_max_model_len", lambda: 8192)
+    with pytest.raises(SystemExit, match="max_model_len is 8192"):
+        generic.LMEval(_config(tmp_path, tasks="gsm8k", thinking="on"))
+    generic.LMEval(_config(tmp_path, tasks="gsm8k"))  # thinking off: no budget, no check
+    generic.LMEval(_config(tmp_path, tasks="gsm8k", thinking="on", gen_kwargs="max_gen_toks=1024"))
+
+
 def test_no_context_check_without_the_budget(tmp_path, monkeypatch):
     asked = []
     monkeypatch.setattr(

@@ -759,6 +759,28 @@ def _base_lm_class():
     return BridgeCompletions
 
 
+def cli_max_model_len(argv: list[str] | None = None) -> int | None:
+    """``--max-model-len`` of the granite-evals CLI that runs this bridge
+    (the step passes its ``max_model_len`` so), or None when it is not
+    given. The CLI builds the benchmark before it starts vLLM, so this is
+    the context the server will be asked for."""
+    import sys
+
+    argv = sys.argv if argv is None else argv
+    for i, arg in enumerate(argv):
+        value = None
+        if arg == "--max-model-len" and i + 1 < len(argv):
+            value = argv[i + 1]
+        elif arg.startswith("--max-model-len="):
+            value = arg.split("=", 1)[1]
+        if value is not None:
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
 def served_max_model_len(base_url: str, served: str) -> int | None:
     """The served model's context length as vLLM reports it (``/models``),
     or None when the endpoint does not say. Tests fake this."""
@@ -835,6 +857,10 @@ class LMEval(Benchmark):
         )
         self.primary = self.primary_metrics(self.task_objects)
         self.thinking_switch = self.check_thinking()
+        if self.thinking == "on" and self.budget_candidates():
+            # Before the server starts, the context the CLI was asked for;
+            # run() checks the served one too (vLLM's own default).
+            self.check_context(cli_max_model_len())
 
     def thinking_kwargs(self) -> dict[str, bool]:
         """The chat-template kwarg the requests set: the detected switch, on
@@ -956,6 +982,21 @@ class LMEval(Benchmark):
                 ", ".join(given),
             )
         return given
+
+    def budget_candidates(self) -> list[str]:
+        """The chat tasks apply_thinking_budget would give the budget to,
+        without giving it."""
+        if {"max_gen_toks", "max_tokens"} & set(self.gen_kwargs):
+            return []
+        return [
+            name
+            for name in self.mode_groups.get("chat", [])
+            if not {"max_gen_toks", "max_tokens"}
+            & set(
+                getattr(getattr(self.task_objects[name], "config", None), "generation_kwargs", None)
+                or {}
+            )
+        ]
 
     def check_context(self, max_model_len: int | None) -> None:
         """With the thinking budget applied: refuse a served context that
