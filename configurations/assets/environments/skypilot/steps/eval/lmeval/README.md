@@ -143,9 +143,10 @@ dataset is Hub-gated, so the recipe runs `hf_offline` against a cache warmed by
 The bridge builds the tasks before `simple_evaluate` does, so it seeds them first, as
 `simple_evaluate` would (`random` with the run's `seed`, numpy and torch with 1234): a
 task whose `process_docs` shuffles (gpqa's answer order) gets the same order on every
-run. `datasets` caches the mapped dataset under `hf_home`, keyed by the map function and
-not the seed, so a cache an older, unseeded run wrote keeps its order: use a fresh
-`hf_home` or delete that dataset's `cache-*.arrow` files.
+run. It builds them with the `datasets` map cache off and computes each task's eval
+docs once, there: that cache is keyed by the map function, not the seed, so otherwise
+whichever run first wrote it under `hf_home` would fix the order for every later run
+there, whatever its seed. The downloaded and prepared data are still reused.
 
 Resume is the curated benchmarks' care: the harness response cache keeps every
 finished request, so a restarted run only sends the missing ones. The bridge keeps it

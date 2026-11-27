@@ -206,3 +206,83 @@ def test_thinking_on_with_the_tasks_question_stop_is_refused(tmp_path, monkeypat
     # The real harness's view of the task's until, before any server starts.
     with pytest.raises(SystemExit, match=r"thinking=on, but gsm8k_local stops on \['Question:'\]"):
         _bridge(tmp_path, monkeypatch, until=QUESTION_STOP, thinking="on")
+
+
+SHUFFLE_YAML = """task: shuffle_local
+dataset_path: json
+dataset_kwargs:
+  data_files:
+    test: {data}
+output_type: multiple_choice
+test_split: test
+process_docs: !function utils.process_docs
+doc_to_text: "{{{{question}}}}"
+doc_to_choice: "{{{{choices}}}}"
+doc_to_target: label
+metric_list:
+  - metric: acc
+"""
+
+# gpqa's own shape: the choices shuffled with random inside a datasets map.
+SHUFFLE_UTILS = """import random
+
+
+def process_docs(dataset):
+    def _shuffle(doc):
+        choices = [doc["right"], doc["w1"], doc["w2"], doc["w3"]]
+        random.shuffle(choices)
+        return {"choices": choices, "label": choices.index(doc["right"])}
+
+    return dataset.map(_shuffle)
+"""
+
+
+def _shuffle_task(tmp_path):
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    data = tmp_path / "q.jsonl"
+    with open(data, "w") as f:
+        for i in range(8):
+            row = {"question": f"q{i}", "right": f"r{i}", "w1": f"a{i}", "w2": f"b{i}", "w3": f"c{i}"}
+            f.write(json.dumps(row) + "\n")
+    (tasks / "shuffle_local.yaml").write_text(SHUFFLE_YAML.format(data=data))
+    (tasks / "utils.py").write_text(SHUFFLE_UTILS)
+    return tasks
+
+
+def _orders(tmp_path, monkeypatch, runs):
+    """For each HF cache: a warm-up build (seed 99) that prepares the data
+    and, with caching on, writes the map cache; then one build per seed in
+    ``runs[cache]``. Returns {(cache, seed): the docs' choice orders}."""
+    datasets = pytest.importorskip("datasets")
+    tasks = _shuffle_task(tmp_path)
+    out = {}
+    for cache, seeds in runs.items():
+        monkeypatch.setattr(datasets.config, "HF_DATASETS_CACHE", str(tmp_path / cache))
+        for seed in (99, *seeds):
+            generic.seed_like_simple_evaluate(seed)
+            objs, _ = generic.load_tasks(["shuffle_local"], include_path=str(tasks))
+            task = objs["shuffle_local"]
+            out[(cache, seed)] = [doc["choices"] for doc in task.test_docs()]
+            # the same order every time the harness reads the docs in this run
+            assert [doc["choices"] for doc in task.eval_docs] == out[(cache, seed)]
+    return out
+
+
+def test_a_shuffled_order_follows_the_seed_not_the_datasets_cache(tmp_path, monkeypatch):
+    """Runs on one HF_HOME in either order: each gets its own seed's order,
+    not the one an earlier run left in the datasets map cache (gpqa's choice
+    order, 2026-11-27 review)."""
+    datasets = pytest.importorskip("datasets")
+    o = _orders(tmp_path, monkeypatch, {"a": (1, 0), "b": (0, 1)})
+    assert o[("a", 0)] != o[("a", 1)]  # the seeds give different orders
+    assert o[("a", 0)] == o[("b", 0)] and o[("a", 1)] == o[("b", 1)]
+    assert datasets.is_caching_enabled()  # restored after each build
+
+
+def test_without_fresh_maps_the_first_run_fixes_the_order(tmp_path, monkeypatch):
+    # The harness alone: the warm-up run's map cache decides every later order.
+    monkeypatch.setattr(generic, "fresh_dataset_maps", __import__("contextlib").nullcontext)
+    monkeypatch.setattr(generic, "freeze_eval_docs", lambda task: None)
+    o = _orders(tmp_path, monkeypatch, {"a": (1, 0)})
+    assert o[("a", 99)] == o[("a", 1)] == o[("a", 0)]

@@ -108,13 +108,10 @@ benchmarks, whose metrics are 0/1, keep theirs).
 
 Reproducible docs: the bridge builds the tasks itself, so it seeds
 ``random`` (the run's seed), numpy and torch (1234) first, as lm-eval's
-simple_evaluate does before it builds them; a task whose ``process_docs``
-shuffles (gpqa's choice order) then gets the same order on every run.
-``datasets`` caches that mapped dataset under ``hf_home`` and reuses it,
-keyed by the map function, not the seed: a cache written by an older,
-unseeded bridge run keeps that run's order. Use a fresh ``hf_home``, or
-delete the dataset's ``cache-*.arrow`` files under ``$HF_HOME/datasets``,
-to get the seeded order.
+simple_evaluate does before it builds them, and builds them with the
+``datasets`` map cache off: a task whose ``process_docs`` shuffles in a map
+(gpqa's choice order) then gets its seed's order on every run, whichever
+run first wrote that dataset's cache under ``hf_home``.
 
 Resume: the harness response cache (``repeat-<k>/lm_cache/<key>``, the key a
 hash of the model, its served name and the repeat's LM seed, so another
@@ -139,6 +136,7 @@ stop strings, thinking mode -- are the tasks' own here unless
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import hashlib
 import json
@@ -529,14 +527,56 @@ def seed_like_simple_evaluate(seed: int) -> None:
     set_torch_seed(other)
 
 
-def load_tasks(tasks: list[str]) -> tuple[dict, dict]:
+@contextlib.contextmanager
+def fresh_dataset_maps():
+    """No ``datasets`` map cache while tasks are built (and their eval docs
+    frozen, see freeze_eval_docs). ``datasets`` caches a
+    map's output under HF_HOME keyed by its fingerprint, which hashes the
+    function, not the ``random`` state it draws from: gpqa's ``process_docs``
+    shuffles each question's choices in a map, so whichever run first wrote
+    that cache fixed the order for every later run on the same HF_HOME,
+    whatever its seed. With caching off the map is recomputed from the
+    seeded state; the downloaded and prepared data are still reused."""
+    try:
+        import datasets
+    except ImportError:
+        yield
+        return
+    was = datasets.is_caching_enabled()
+    datasets.disable_caching()
+    try:
+        yield
+    finally:
+        if was:
+            datasets.enable_caching()
+
+
+def load_tasks(tasks: list[str], include_path: str | None = None) -> tuple[dict, dict]:
     """The harness's view of ``tasks``: (leaf task objects, group objects).
     Constructs tasks, which fetches their datasets -- the run needs them
-    anyway. Separate function so tests can fake it."""
+    anyway -- with no map cache, and freezes each task's eval docs (see
+    fresh_dataset_maps and freeze_eval_docs). ``include_path``
+    adds a directory of task yamls (tests). Tests can fake this."""
     from lm_eval.tasks import TaskManager
 
-    loaded = TaskManager().load(tasks)
+    with fresh_dataset_maps():
+        loaded = TaskManager(include_path=include_path).load(tasks)
+        for task in loaded["tasks"].values():
+            freeze_eval_docs(task)
     return dict(loaded["tasks"]), dict(loaded["groups"])
+
+
+def freeze_eval_docs(task: Any) -> None:
+    """Compute a task's eval docs once, now (seeded, no map cache), and have
+    every later call return those: the harness re-runs ``process_docs`` each
+    time it reads them (building requests, then scoring), and a shuffling
+    ``process_docs`` would draw a new order each time with the cache off, or
+    the cached order of whichever run wrote it with the cache on."""
+    for name, has in (("test_docs", "has_test_docs"), ("validation_docs", "has_validation_docs")):
+        if getattr(task, has, lambda: False)():
+            docs = getattr(task, name)()
+            setattr(task, name, lambda docs=docs: docs)
+            return
 
 
 def cache_key(model: str, served: str, seed: int) -> str:

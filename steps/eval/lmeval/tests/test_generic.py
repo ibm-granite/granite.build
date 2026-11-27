@@ -1040,6 +1040,32 @@ def test_tasks_are_built_after_seeding(tmp_path, monkeypatch, seed):
     assert drawn == [random.Random(seed).random()]
 
 
+@pytest.mark.parametrize("split", ["test", "validation"])
+def test_freeze_eval_docs_computes_them_once(split):
+    calls = []
+
+    class Task:
+        def has_test_docs(self):
+            return split == "test"
+
+        def has_validation_docs(self):
+            return True
+
+        def test_docs(self):
+            calls.append("test")
+            return [random.random()]
+
+        def validation_docs(self):
+            calls.append("validation")
+            return [random.random()]
+
+    task = Task()
+    generic.freeze_eval_docs(task)
+    first = getattr(task, f"{split}_docs")()
+    assert getattr(task, f"{split}_docs")() is first
+    assert calls == [split]
+
+
 def test_seed_like_simple_evaluate_seeds_numpy_too():
     numpy = pytest.importorskip("numpy")
     generic.seed_like_simple_evaluate(3)
