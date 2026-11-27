@@ -631,6 +631,93 @@ def test_few_empty_responses_are_recorded(tmp_path, monkeypatch):
         )
 
 
+def test_text_stops():
+    assert generic.text_stops(["Question:", "</s>", "<|im_end|>"]) == ["Question:"]
+    assert generic.text_stops("Q:") == ["Q:"]
+    assert generic.text_stops(["<s>", "<|eot_id|>", ""]) == []
+    assert generic.text_stops(None) == []
+    # only a whole special token is one: text around it is still text
+    assert generic.text_stops(["x</s>", "<|a|>b"]) == ["x</s>", "<|a|>b"]
+
+
+GSM8K_UNTIL = {"until": ["Question:", "</s>", "<|im_end|>"]}
+
+
+def test_thinking_stops_warn_and_are_recorded(tmp_path, monkeypatch, caplog):
+    """The 2026-11-27 smoke's shape: gsm8k stops on Question:, thinking on."""
+    gsm8k = _gsm8k(generation_kwargs=dict(GSM8K_UNTIL))
+    with caplog.at_level("WARNING", logger=generic.log.name):
+        outcome, calls = _mixed_run(tmp_path, monkeypatch, [gsm8k])
+    assert outcome["thinking_stops"] == {"gsm8k": ["Question:"]}
+    assert "stop on text (gsm8k on ['Question:'])" in caplog.text
+    # the requests are unchanged: the task keeps its stop strings
+    assert gsm8k.config.generation_kwargs["until"] == GSM8K_UNTIL["until"]
+    assert {c["model"].mode: c for c in calls}["chat"]["gen_kwargs"] is None
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        ({"thinking": "off"}, {}),
+        ({"gen_kwargs": "until=</s>"}, {}),
+        ({"gen_kwargs": "until=Q:"}, {"gsm8k": ["Q:"]}),
+    ],
+)
+def test_thinking_stops_follow_thinking_and_gen_kwargs(
+    tmp_path, monkeypatch, caplog, options, expected
+):
+    gsm8k = _gsm8k(generation_kwargs=dict(GSM8K_UNTIL))
+    with caplog.at_level("WARNING", logger=generic.log.name):
+        outcome, _ = _mixed_run(tmp_path, monkeypatch, [gsm8k], **options)
+    assert outcome["thinking_stops"] == expected
+    assert ("stop on text" in caplog.text) == bool(expected)
+
+
+def test_empty_responses_name_the_stop_string_cause(tmp_path, monkeypatch):
+    empty = {"gsm8k": [{"resps": [[""]]}, {"resps": [[""]]}]}
+    gsm8k = _gsm8k(generation_kwargs=dict(GSM8K_UNTIL))
+    with pytest.raises(SystemExit) as e:
+        _mixed_run(tmp_path, monkeypatch, [gsm8k], samples=empty)
+    msg = str(e.value)
+    assert msg.startswith("lm-eval: responses_failed 2/2 is above the allowed fraction")
+    assert "2 of them are empty responses with thinking on" in msg
+    assert "gsm8k stops on ['Question:']" in msg
+    assert "thinking=off" in msg and "gen_kwargs=until=" in msg
+
+
+@pytest.mark.parametrize(
+    "task_kwargs, samples, options",
+    [
+        # no text stop: the plain message
+        ({}, [{"resps": [[""]]}] * 2, {}),
+        # failed requests, not empty responses: not the stop-string cause
+        (
+            {"generation_kwargs": dict(GSM8K_UNTIL)},
+            [{"resps": [[chat_if.ERROR_MARKER]]}] * 2,
+            {},
+        ),
+        # thinking off: not the cause either
+        (
+            {"generation_kwargs": dict(GSM8K_UNTIL)},
+            [{"resps": [[""]]}] * 2,
+            {"thinking": "off"},
+        ),
+    ],
+)
+def test_other_failures_keep_the_plain_message(
+    tmp_path, monkeypatch, task_kwargs, samples, options
+):
+    with pytest.raises(SystemExit) as e:
+        _mixed_run(
+            tmp_path,
+            monkeypatch,
+            [_gsm8k(**task_kwargs)],
+            samples={"gsm8k": samples},
+            **options,
+        )
+    assert str(e.value).endswith("rerun to retry the failed ones")
+
+
 @pytest.mark.parametrize("seed", [0, 7])
 def test_tasks_are_built_after_seeding(tmp_path, monkeypatch, seed):
     """gpqa's process_docs shuffles each question's choices with random at

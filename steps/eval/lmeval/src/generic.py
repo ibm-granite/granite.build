@@ -45,7 +45,12 @@ Options (all through ``--option`` / the step's ``options`` config):
   included (its detokenizer checks them before the reasoning parser
   splits the text), so a stop the thought happens to contain (gsm8k's
   ``Question:``) also ends it with no content. ``thinking=off`` is the
-  harness's own protocol for the lm-eval generation tasks.
+  harness's own protocol for the lm-eval generation tasks. With thinking
+  on, the run warns at startup naming every chat task that stops on text
+  (a stop other than a special token such as ``</s>`` or ``<|im_end|>``),
+  records them in ``details.thinking_stops``, and a response check that
+  fails on empty responses from such a task names this cause and the
+  remedies. The requests themselves are unchanged.
 * ``max_failed_frac`` (default 0.05): see the response check below.
 * ``metric``: the primary metric to report, for every task (e.g.
   ``acc_norm``), or one exact results key ``<metric>,<filter>`` (e.g.
@@ -126,6 +131,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import re
 import time
 import urllib.parse
 from pathlib import Path
@@ -152,6 +158,49 @@ THINKING = ("on", "off")
 # chat_if.CARD_SAMPLING["max_tokens"]: Granite 4.2's thinking budget (a test
 # keeps the two equal).
 THINKING_BUDGET = 32768
+# Stop strings that are special tokens (</s>, <|im_end|>, <|eot_id|>): a
+# thought is text and does not write them. Any other stop can occur in a
+# thought, and vLLM matches stops against the thought too.
+SPECIAL_TOKEN_STOP = re.compile(r"</?s>|<\|[^<>|]*\|>")
+
+
+def text_stops(until: Any) -> list[str]:
+    """The stop strings in a task's ``until`` that are text, not a special
+    token (``until`` is a string, a list of them, or unset)."""
+    if not until:
+        return []
+    stops = [until] if isinstance(until, str) else list(until)
+    return [
+        s
+        for s in stops
+        if isinstance(s, str) and s and not SPECIAL_TOKEN_STOP.fullmatch(s)
+    ]
+
+
+def thinking_stop_hint(
+    thinking_stops: dict[str, list[str]], responses: dict[str, dict[str, int]]
+) -> str:
+    """The cause the response check names when empty responses come from
+    chat tasks that stop on text with thinking on; "" when none do."""
+    hit = {
+        task: stops
+        for task, stops in thinking_stops.items()
+        if responses.get(task, {}).get("empty")
+    }
+    if not hit:
+        return ""
+    empty = sum(responses[task]["empty"] for task in hit)
+    named = "; ".join(
+        f"{task} stops on {stops!r}" for task, stops in sorted(hit.items())
+    )
+    return (
+        f"{empty} of them are empty responses with thinking on from tasks that stop on "
+        f"text ({named}). vLLM matches stop strings against the whole generation, thought "
+        "included, so a thought that writes one ends the response before its answer. "
+        "Rerun with thinking=off (the harness's protocol for its generation tasks), or "
+        "replace the task's stop strings with gen_kwargs=until=<stop> (lm-eval cannot "
+        "clear them)"
+    )
 
 
 def parse_tasks(spec: str) -> list[str]:
@@ -533,6 +582,33 @@ class LMEval(Benchmark):
             )
         return given
 
+    def thinking_stops(
+        self, task_objects: dict, chat_tasks: list[str]
+    ) -> dict[str, list[str]]:
+        """With thinking on, each chat task's text stop strings (``until``
+        from gen_kwargs, else the task's own); tasks without any are left
+        out. Empty with thinking off."""
+        if self.thinking != "on":
+            return {}
+        out = {}
+        for name in chat_tasks:
+            if "until" in self.gen_kwargs:
+                until = self.gen_kwargs["until"]
+            else:
+                own = (
+                    getattr(
+                        getattr(task_objects[name], "config", None),
+                        "generation_kwargs",
+                        None,
+                    )
+                    or {}
+                )
+                until = own.get("until")
+            stops = text_stops(until)
+            if stops:
+                out[name] = stops
+        return out
+
     def opt(self, key: str, default: Any) -> Any:
         value = self.config.options.get(key)
         return default if value is None else type(default)(value)
@@ -597,6 +673,17 @@ class LMEval(Benchmark):
         budget_tasks = self.apply_thinking_budget(
             task_objects, mode_groups.get("chat", [])
         )
+        stop_tasks = self.thinking_stops(task_objects, mode_groups.get("chat", []))
+        if stop_tasks:
+            log.warning(
+                "lm-eval: thinking on, and %d chat task(s) stop on text (%s): vLLM matches "
+                "stop strings against the whole generation, thought included, so a thought "
+                "that writes one ends the response with no answer (an empty response); "
+                "thinking=off avoids it",
+                len(stop_tasks),
+                "; ".join(f"{t} on {s!r}" for t, s in sorted(stop_tasks.items())[:5])
+                + ("; ..." if len(stop_tasks) > 5 else ""),
+            )
         passes, split = plan_passes(
             self.task_list,
             task_objects,
@@ -652,13 +739,19 @@ class LMEval(Benchmark):
                 into = responses.setdefault(task, dict.fromkeys(counts, 0))
                 for key, n in counts.items():
                     into[key] += n
-        policy = failure_policy(
-            self.id,
-            "responses",
-            sum(c["empty"] + c["errors"] for c in responses.values()),
-            sum(c["docs"] for c in responses.values()),
-            self.opt("max_failed_frac", 0.05),
-        )
+        try:
+            policy = failure_policy(
+                self.id,
+                "responses",
+                sum(c["empty"] + c["errors"] for c in responses.values()),
+                sum(c["docs"] for c in responses.values()),
+                self.opt("max_failed_frac", 0.05),
+            )
+        except SystemExit as e:
+            hint = thinking_stop_hint(stop_tasks, responses)
+            if not hint:
+                raise
+            raise SystemExit(f"{e}. {hint}") from None
         values = [r["value"] for r in per_repeat if r["value"] is not None]
         return {
             "value": sum(values) / len(values) if values else None,
@@ -676,6 +769,7 @@ class LMEval(Benchmark):
             "gen_kwargs": self.gen_kwargs,
             "thinking": self.thinking,
             "thinking_budget": {"max_gen_toks": THINKING_BUDGET, "tasks": budget_tasks},
+            "thinking_stops": stop_tasks,
             "responses": responses,
             **policy,
             "per_task": per_repeat[0]["per_task"],

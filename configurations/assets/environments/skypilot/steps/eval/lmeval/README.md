@@ -81,7 +81,12 @@ as `exact_match,strict-match`; default: each task's own, its config's first
 before `</think>`, the server's reasoning parser returns no content, and the answer
 scores as `""`. vLLM applies the task's stop strings to the whole generation, thought
 included, so a stop string the thought contains (gsm8k's `Question:`) also ends it with
-no content. Per task the run counts docs with an empty chat response and docs whose
+no content. With thinking on, the run warns at startup naming each chat task that stops
+on text (any stop but a special token such as `</s>` or `<|im_end|>`) and records them in
+`details.thinking_stops`, and a failed response check that has such a task's empty
+responses names this cause and the remedies: `thinking=off`, or
+`gen_kwargs=until=<stop>` to replace the task's stop strings. The requests are not
+changed. Per task the run counts docs with an empty chat response and docs whose
 request failed (`details.responses`); they stay in lm-eval's score as wrong answers,
 and the run fails when they exceed `max_failed_frac` of all docs.
 
