@@ -68,11 +68,16 @@ options: "tasks=hellaswag,arc_easy mode=auto metric=acc_norm"
 Options: `tasks` (required, comma-separated task/group ids; unknown names fail fast
 before vLLM starts, with near-miss suggestions), `mode` (`auto` — the default —
 `chat` or `base`), `num_fewshot`, `gen_kwargs` (comma-separated `key=value` overrides
-of the tasks' generation kwargs, values percent-decoded like `stop=`), and `metric`
+of the tasks' generation kwargs, values percent-decoded like `stop=`, `do_sample` as
+`true`/`false`; `model`, `messages`, `prompt` and `stop` are refused, since the request
+sets them itself: stop strings are `until=`), and `metric`
 (the primary metric for every task, or one exact results key `<metric>,<filter>` such
 as `exact_match,strict-match`; default: each task's own, its config's first
 `metric_list` entry), `thinking` (`off`, the default, or `on`) and `max_failed_frac`
-(default 0.05).
+(default 0.05, in [0, 1]). A bad number (`num_fewshot` not a whole number of 0 or more,
+`max_failed_frac` outside [0, 1]) fails at startup. With the thinking budget applied, a
+served `max_model_len` that cannot hold it is refused before any request, and one that
+leaves under 8192 tokens for the prompt is warned about.
 
 `thinking` applies to chat-mode tasks. Before vLLM starts, the bridge renders the
 checkpoint's chat template on a fixed message with each known switch

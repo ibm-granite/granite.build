@@ -32,8 +32,10 @@ Options (all through ``--option`` / the step's ``options`` config):
 * ``gen_kwargs``: comma-separated ``key=value`` overrides of the tasks'
   generation kwargs, e.g. ``gen_kwargs=temperature=0.6,max_gen_toks=2048``.
   Values are int/float when they parse, else percent-decoded strings
-  (``%2C`` a comma, ``%20`` a space -- the ``stop=`` convention); applies
-  to chat-mode generation only.
+  (``%2C`` a comma, ``%20`` a space -- the ``stop=`` convention),
+  ``do_sample`` as ``true``/``false``; applies to chat-mode generation only.
+  ``model``, ``messages``, ``prompt`` and ``stop`` are refused: the request
+  sets them itself (a task's stop strings are ``until=``).
 * ``thinking``: ``off`` (default) or ``on``, chat mode only. Before the
   server starts, the bridge renders the checkpoint's chat template on a
   fixed message with each known switch (``enable_thinking``, Granite 3.x's
@@ -57,7 +59,8 @@ Options (all through ``--option`` / the step's ``options`` config):
   the reasoning parser splits the text), so a thought that writes one
   (gsm8k's ``Question:``) ends the response with no content. ``thinking=off``
   is the harness's own protocol for its generation tasks.
-* ``max_failed_frac`` (default 0.05): see the response check below.
+* ``max_failed_frac`` (default 0.05, in [0, 1]; ``num_fewshot`` and it are
+  checked at startup): see the response check below.
 * ``metric``: the primary metric to report, for every task (e.g.
   ``acc_norm``), or one exact results key ``<metric>,<filter>`` (e.g.
   ``exact_match,strict-match``) to pick a filter. Unset uses each task's own
@@ -168,6 +171,9 @@ THINKING = ("on", "off")
 # chat_if.CARD_SAMPLING["max_tokens"]: Granite 4.2's thinking budget (a test
 # keeps the two equal).
 THINKING_BUDGET = 32768
+# Below this many tokens of context beside the budget, a few-shot prompt may
+# not fit: the run warns.
+PROMPT_ROOM = 8192
 # Stop strings that are special tokens (</s>, <|im_end|>, <|eot_id|>): a
 # thought is text and does not write them. Any other stop can occur in a
 # thought, and vLLM matches stops against the thought too.
@@ -263,10 +269,18 @@ def validate_tasks(tasks: list[str], known: list[str]) -> None:
         )
 
 
+# Payload fields lm-eval's API models set themselves; gen_kwargs is spread
+# over them, so these would silently replace the served model, the prompt or
+# the task's stop strings (set until= for stops).
+RESERVED_GEN_KWARGS = ("model", "messages", "prompt", "stop")
+BOOL_WORDS = {"true": True, "false": False}
+
+
 def parse_gen_kwargs(spec: str) -> dict[str, Any]:
-    """``--option gen_kwargs=k=v,k2=v2``: int/float when they parse, else a
-    percent-decoded string (no spaces or commas unencoded -- the options
-    value is one word)."""
+    """``--option gen_kwargs=k=v,k2=v2``: int/float when they parse,
+    ``do_sample`` as a bool (true/false), else a percent-decoded string (no
+    spaces or commas unencoded -- the options value is one word). Keys the
+    request payload owns (RESERVED_GEN_KWARGS) are refused."""
     out: dict[str, Any] = {}
     for pair in spec.split(","):
         key, sep, value = pair.partition("=")
@@ -274,7 +288,17 @@ def parse_gen_kwargs(spec: str) -> dict[str, Any]:
             raise SystemExit(
                 f"lm-eval: gen_kwargs expects key=value pairs, got {pair!r}"
             )
+        if key in RESERVED_GEN_KWARGS:
+            raise SystemExit(
+                f"lm-eval: gen_kwargs cannot set {key!r}: the request sets it itself"
+                + (" (set the task's stop strings with until=)" if key == "stop" else "")
+            )
         value = urllib.parse.unquote(value)
+        if key == "do_sample":
+            if value.lower() not in BOOL_WORDS:
+                raise SystemExit(f"lm-eval: gen_kwargs do_sample must be true or false, got {value!r}")
+            out[key] = BOOL_WORDS[value.lower()]
+            continue
         for cast in (int, float):
             try:
                 value = cast(value)
@@ -283,6 +307,31 @@ def parse_gen_kwargs(spec: str) -> dict[str, Any]:
                 pass
         out[key] = value
     return out
+
+
+MAX_FAILED_FRAC = 0.05
+
+
+def parse_count(key: str, value: Any) -> int:
+    """A non-negative integer option, or a SystemExit naming it."""
+    try:
+        n = int(str(value))
+    except ValueError:
+        raise SystemExit(f"lm-eval: {key} must be a whole number, got {value!r}") from None
+    if n < 0:
+        raise SystemExit(f"lm-eval: {key} must be 0 or more, got {n}")
+    return n
+
+
+def parse_fraction(key: str, value: Any) -> float:
+    """A fraction option in [0, 1], or a SystemExit naming it."""
+    try:
+        frac = float(str(value))
+    except ValueError:
+        raise SystemExit(f"lm-eval: {key} must be a number in [0, 1], got {value!r}") from None
+    if not 0 <= frac <= 1:
+        raise SystemExit(f"lm-eval: {key} must be in [0, 1], got {frac}")
+    return frac
 
 
 def resolve_modes(output_types: dict[str, str], mode: str) -> dict[str, list[str]]:
@@ -457,10 +506,13 @@ def is_empty_response(text: Any) -> bool:
     return not text.strip() or (bool(placeholder) and text == placeholder)
 
 
-def response_counts(samples: dict, chat_tasks: set[str]) -> dict[str, dict[str, int]]:
-    """Per task: docs, docs with an empty chat response, docs with a failed
-    request (chat_if's ERROR_MARKER, include's ERROR_LL), from lm-eval's
-    logged samples. lm-eval logs one row per doc per filter (gsm8k: two), all
+def response_counts(
+    samples: dict, generation_tasks: set[str]
+) -> dict[str, dict[str, int]]:
+    """Per task: docs, docs with an empty response, docs with a failed
+    request, from lm-eval's logged samples. A generation task (chat mode, or
+    base mode through the completions endpoint) fails with ERROR_MARKER and
+    can be empty; a loglikelihood task fails with include's ERROR_LL. lm-eval logs one row per doc per filter (gsm8k: two), all
     with the same raw ``resps``: each doc counts once, by its ``doc_id``."""
     from granite_evals.benchmarks.chat_if import ERROR_MARKER
     from granite_evals.benchmarks.include import ERROR_LL
@@ -476,7 +528,7 @@ def response_counts(samples: dict, chat_tasks: set[str]) -> dict[str, dict[str, 
             seen.add(doc)
             docs += 1
             resps = [r for choice in row.get("resps") or [] for r in choice]
-            if task in chat_tasks:
+            if task in generation_tasks:
                 if any(r == ERROR_MARKER for r in resps):
                     errors += 1
                 elif resps and all(is_empty_response(r) for r in resps):
@@ -600,6 +652,41 @@ def drop_failed_requests(cache_dir: Path) -> int:
     )
 
 
+def _base_lm_class():
+    """include's robust local-completions adapter, with one change for the
+    bridge's base-mode generation tasks: a failed generation is answered with
+    chat_if's ERROR_MARKER (a string the task's filters read as a wrong
+    answer, and the response check counts as failed), not include's
+    loglikelihood tuple ERROR_LL, which a generation task's regex filters
+    would be handed."""
+    from granite_evals.benchmarks.chat_if import ERROR_MARKER
+    from granite_evals.benchmarks.include import ERROR_LL, _lm_class
+
+    class BridgeCompletions(_lm_class()):
+        async def amodel_call(self, session, sem, messages, *, generate=True, **kwargs):
+            out = await super().amodel_call(session, sem, messages, generate=generate, **kwargs)
+            if generate and isinstance(out, list) and out and all(o == ERROR_LL for o in out):
+                return [ERROR_MARKER] * len(out)
+            return out
+
+    return BridgeCompletions
+
+
+def served_max_model_len(base_url: str, served: str) -> int | None:
+    """The served model's context length as vLLM reports it (``/models``),
+    or None when the endpoint does not say. Tests fake this."""
+    import httpx
+
+    try:
+        models = httpx.get(f"{base_url.rstrip('/')}/models", timeout=30).json()["data"]
+    except Exception:  # noqa: BLE001 - an endpoint without it: no check
+        return None
+    for entry in models:
+        if entry.get("id") == served and isinstance(entry.get("max_model_len"), int):
+            return entry["max_model_len"]
+    return None
+
+
 def run_simple_evaluate(**kwargs):
     """lm-eval's ``simple_evaluate``, imported lazily (tests fake this)."""
     from lm_eval import simple_evaluate
@@ -631,9 +718,12 @@ class LMEval(Benchmark):
         validate_tasks(self.task_list, task_index())
         self.mode = config.options.get("mode", "auto")
         self.num_fewshot = (
-            int(config.options["num_fewshot"])
+            parse_count("num_fewshot", config.options["num_fewshot"])
             if "num_fewshot" in config.options
             else None
+        )
+        self.max_failed_frac = parse_fraction(
+            "max_failed_frac", config.options.get("max_failed_frac", MAX_FAILED_FRAC)
         )
         self.gen_kwargs = (
             parse_gen_kwargs(config.options["gen_kwargs"])
@@ -780,6 +870,28 @@ class LMEval(Benchmark):
             )
         return given
 
+    def check_context(self, max_model_len: int | None) -> None:
+        """With the thinking budget applied: refuse a served context that
+        cannot hold it (every request would be rejected), and warn when
+        little room is left for the prompt."""
+        if max_model_len is None:
+            return
+        room = max_model_len - THINKING_BUDGET
+        if room <= 0:
+            raise SystemExit(
+                f"lm-eval: thinking=on gives chat tasks a {THINKING_BUDGET}-token budget, but the "
+                f"server's max_model_len is {max_model_len}: every request would be rejected; raise "
+                "max_model_len, set gen_kwargs=max_gen_toks=<n>, or use thinking=off"
+            )
+        if room < PROMPT_ROOM:
+            log.warning(
+                "lm-eval: max_model_len %d leaves %d tokens for the prompt beside the %d-token "
+                "thinking budget; a longer prompt (few-shot turns) is rejected and counts as failed",
+                max_model_len,
+                room,
+                THINKING_BUDGET,
+            )
+
     def thinking_stops(
         self, task_objects: dict, chat_tasks: list[str]
     ) -> dict[str, list[str]]:
@@ -830,9 +942,7 @@ class LMEval(Benchmark):
                 seed=seed,
                 benchmark_id=self.id,
             )
-        from granite_evals.benchmarks.include import _lm_class
-
-        return _lm_class()(
+        return _base_lm_class()(
             base_url=f"{base_url.rstrip('/')}/completions",
             model=served,
             tokenizer=self.config.model,
@@ -869,6 +979,8 @@ class LMEval(Benchmark):
         budget_tasks = self.apply_thinking_budget(
             task_objects, mode_groups.get("chat", [])
         )
+        if budget_tasks:
+            self.check_context(served_max_model_len(base_url, served_model_name))
         passes, split = plan_passes(
             self.task_list,
             task_objects,
@@ -907,7 +1019,6 @@ class LMEval(Benchmark):
                         primary,
                         base_url,
                         served_model_name,
-                        set(mode_groups.get("chat", [])),
                     ),
                 }
             )
@@ -929,7 +1040,7 @@ class LMEval(Benchmark):
             "responses",
             sum(c["empty"] + c["errors"] for c in responses.values()),
             sum(c["docs"] for c in responses.values()),
-            self.opt("max_failed_frac", 0.05),
+            self.max_failed_frac,
         )
         values = [r["value"] for r in per_repeat if r["value"] is not None]
         return {
@@ -966,7 +1077,6 @@ class LMEval(Benchmark):
         primary: dict,
         base_url: str,
         served: str,
-        chat_tasks: set[str] = frozenset(),
     ) -> dict[str, Any]:
         repeat_dir = self.config.output_dir / f"repeat-{k}"
         lm_seed = self.config.seed + 1234 + k
@@ -1013,7 +1123,10 @@ class LMEval(Benchmark):
             primary,
             {name: task_filters(task) for name, task in task_objects.items()},
         )
-        summary["responses"] = response_counts(merged.get("samples") or {}, chat_tasks)
+        summary["responses"] = response_counts(
+            merged.get("samples") or {},
+            {n for n, t in task_objects.items() if t.OUTPUT_TYPE == "generate_until"},
+        )
         summary["duration_s"] = round(time.time() - started, 1)
         return summary
 

@@ -191,6 +191,52 @@ def test_parse_gen_kwargs():
         generic.parse_gen_kwargs("temperature")
 
 
+@pytest.mark.parametrize(
+    ("word", "value"), [("true", True), ("True", True), ("false", False), ("FALSE", False)]
+)
+def test_do_sample_is_a_bool(word, value):
+    assert generic.parse_gen_kwargs(f"do_sample={word}") == {"do_sample": value}
+
+
+def test_do_sample_rejects_other_words():
+    with pytest.raises(SystemExit, match="do_sample must be true or false"):
+        generic.parse_gen_kwargs("do_sample=1")
+
+
+@pytest.mark.parametrize("key", ["model", "messages", "prompt", "stop"])
+def test_gen_kwargs_cannot_replace_payload_fields(key):
+    # lm-eval spreads gen_kwargs over the payload it builds: these would
+    # replace the served model, the prompt or the task's stops.
+    with pytest.raises(SystemExit, match=f"cannot set {key!r}"):
+        generic.parse_gen_kwargs(f"{key}=x")
+
+
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"num_fewshot": "five"}, "num_fewshot must be a whole number"),
+        ({"num_fewshot": "-1"}, "num_fewshot must be 0 or more"),
+        ({"num_fewshot": "2.5"}, "num_fewshot must be a whole number"),
+        ({"max_failed_frac": "lots"}, r"max_failed_frac must be a number in \[0, 1\]"),
+        ({"max_failed_frac": "1.5"}, r"max_failed_frac must be in \[0, 1\]"),
+        ({"max_failed_frac": "-0.1"}, r"max_failed_frac must be in \[0, 1\]"),
+    ],
+)
+def test_bad_numbers_are_refused_at_startup(tmp_path, monkeypatch, options, match):
+    monkeypatch.setattr(generic, "task_index", lambda: ["hellaswag"])
+    with pytest.raises(SystemExit, match=match):
+        generic.LMEval(_config(tmp_path, tasks="hellaswag", **options))
+
+
+@pytest.mark.parametrize(("value", "frac"), [(None, 0.05), ("0", 0.0), ("1", 1.0), ("0.2", 0.2)])
+def test_max_failed_frac_bounds_and_default(tmp_path, monkeypatch, value, frac):
+    monkeypatch.setattr(generic, "task_index", lambda: ["hellaswag"])
+    options = {} if value is None else {"max_failed_frac": value}
+    bench = generic.LMEval(_config(tmp_path, tasks="hellaswag", **options))
+    assert bench.max_failed_frac == frac
+    assert generic.MAX_FAILED_FRAC == 0.05
+
+
 def test_resolve_modes():
     types = {"a": "generate_until", "b": "multiple_choice", "c": "loglikelihood"}
     assert generic.resolve_modes(types, "auto") == {"base": ["b", "c"], "chat": ["a"]}
@@ -913,6 +959,61 @@ def test_response_counts():
         "c": {"docs": 4, "empty": 2, "errors": 1},
         "b": {"docs": 3, "empty": 0, "errors": 2},
     }
+
+
+def test_base_mode_generations_are_checked_too(tmp_path, monkeypatch):
+    """mode=base runs gsm8k through the completions endpoint: its empty and
+    failed generations count like chat mode's."""
+    rows = [
+        {"doc_id": 0, "resps": [["#### 4"]]},
+        {"doc_id": 1, "resps": [[""]]},
+        {"doc_id": 2, "resps": [[chat_if.ERROR_MARKER]]},
+    ]
+    with pytest.raises(SystemExit, match="responses_failed 2/"):
+        _mixed_run(tmp_path, monkeypatch, [_gsm8k()], samples={"gsm8k": rows}, mode="base")
+
+
+def test_base_mode_generation_failures_are_the_text_marker(monkeypatch):
+    """include's adapter answers a failed request with its loglikelihood
+    tuple; a generation task's regex filters would be handed that. The
+    bridge's base adapter answers a failed generation with ERROR_MARKER and
+    leaves loglikelihood failures alone."""
+    import asyncio
+
+    class FakeInclude:
+        async def amodel_call(self, session, sem, messages, *, generate=True, **kwargs):
+            return [include.ERROR_LL] * len(messages)
+
+    monkeypatch.setattr(include, "_lm_class", lambda: FakeInclude)
+    lm = generic._base_lm_class()()
+    gen = asyncio.run(lm.amodel_call(None, None, ["a", "b"], generate=True))
+    ll = asyncio.run(lm.amodel_call(None, None, ["a"], generate=False))
+    assert gen == [chat_if.ERROR_MARKER] * 2
+    assert ll == [include.ERROR_LL]
+
+
+@pytest.mark.parametrize(
+    ("max_model_len", "outcome"),
+    [(None, "ok"), (65536, "ok"), (32768, "refused"), (16384, "refused"), (36000, "warned")],
+)
+def test_the_thinking_budget_against_the_served_context(tmp_path, monkeypatch, caplog, max_model_len, outcome):
+    monkeypatch.setattr(generic, "served_max_model_len", lambda base_url, served: max_model_len)
+    with caplog.at_level("WARNING", logger=generic.log.name):
+        if outcome == "refused":
+            with pytest.raises(SystemExit, match=f"max_model_len is {max_model_len}"):
+                _mixed_run(tmp_path, monkeypatch, [_gsm8k()], thinking="on")
+            return
+        _mixed_run(tmp_path, monkeypatch, [_gsm8k()], thinking="on")
+    assert ("leaves" in caplog.text) == (outcome == "warned")
+
+
+def test_no_context_check_without_the_budget(tmp_path, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        generic, "served_max_model_len", lambda base_url, served: asked.append(1) or 100
+    )
+    _mixed_run(tmp_path, monkeypatch, [_gsm8k()])  # thinking off: no budget
+    assert asked == []
 
 
 def test_response_counts_count_each_doc_once():
