@@ -77,10 +77,15 @@ it does have: a missing metric is never reported as a null score.
 Response check: per task the run counts docs whose chat response is
 empty (no content: a thought cut off, or stopped inside the thought) and
 docs whose request failed (the adapters' error markers: chat_if's
-``ERROR_MARKER``, include's ``ERROR_LL``). They stay in lm-eval's score as
-wrong answers; ``details.responses`` records the counts per task, and the
-run fails (``failure_policy``) when they exceed ``max_failed_frac`` of all
-docs over all repeats. Failed requests are dropped from the response cache
+``ERROR_MARKER``, include's ``ERROR_LL``). They are left out of the score,
+as registry.failure_policy has it (a failed item is never scored as a model
+loss): a mean metric is recomputed from the per-doc sample rows over the
+docs left (``details.per_task``: ``value``, ``n``, ``left_out``, and the
+harness's own number as ``harness_value``); a metric that does not average
+over docs cannot drop any, so such a task with a failed doc fails the run.
+``details.responses`` records the counts per task, and the run fails
+(``failure_policy``) when they exceed ``max_failed_frac`` of all docs over
+all repeats. Failed requests are dropped from the response cache
 in both modes, so a rerun retries them.
 
 Semantics: the headline ``value`` is the macro mean over the resolved
@@ -506,40 +511,122 @@ def is_empty_response(text: Any) -> bool:
     return not text.strip() or (bool(placeholder) and text == placeholder)
 
 
-def response_counts(
-    samples: dict, generation_tasks: set[str]
-) -> dict[str, dict[str, int]]:
-    """Per task: docs, docs with an empty response, docs with a failed
-    request, from lm-eval's logged samples. A generation task (chat mode, or
+def failed_docs(samples: dict, generation_tasks: set[str]) -> dict[str, dict[str, set]]:
+    """Per task, the doc_ids with an empty response and those whose request
+    failed, from lm-eval's logged samples. A generation task (chat mode, or
     base mode through the completions endpoint) fails with ERROR_MARKER and
-    can be empty; a loglikelihood task fails with include's ERROR_LL. lm-eval logs one row per doc per filter (gsm8k: two), all
-    with the same raw ``resps``: each doc counts once, by its ``doc_id``."""
+    can be empty; a loglikelihood task fails with include's ERROR_LL. lm-eval
+    logs one row per doc per filter (gsm8k: two), all with the same raw
+    ``resps``: each doc counts once, by its ``doc_id``. ``docs`` is every
+    doc_id seen."""
     from granite_evals.benchmarks.chat_if import ERROR_MARKER
     from granite_evals.benchmarks.include import ERROR_LL
 
-    out: dict[str, dict[str, int]] = {}
+    out: dict[str, dict[str, set]] = {}
     for task, rows in (samples or {}).items():
-        docs = empty = errors = 0
         seen: set = set()
+        empty: set = set()
+        errors: set = set()
         for index, row in enumerate(rows):
             doc = row.get("doc_id", ("row", index))
             if doc in seen:
                 continue
             seen.add(doc)
-            docs += 1
             resps = [r for choice in row.get("resps") or [] for r in choice]
             if task in generation_tasks:
                 if any(r == ERROR_MARKER for r in resps):
-                    errors += 1
+                    errors.add(doc)
                 elif resps and all(is_empty_response(r) for r in resps):
-                    empty += 1
+                    empty.add(doc)
             elif any(
                 isinstance(r, (list, tuple)) and list(r) == list(ERROR_LL)
                 for r in resps
             ):
-                errors += 1
-        out[task] = {"docs": docs, "empty": empty, "errors": errors}
+                errors.add(doc)
+        out[task] = {"docs": seen, "empty": empty, "errors": errors}
     return out
+
+
+def response_counts(
+    samples: dict, generation_tasks: set[str]
+) -> dict[str, dict[str, int]]:
+    """Per task: docs, docs with an empty response, docs with a failed
+    request (see failed_docs)."""
+    return {
+        task: {key: len(ids) for key, ids in found.items()}
+        for task, found in failed_docs(samples, generation_tasks).items()
+    }
+
+
+def is_mean_metric(task: Any, metric: str) -> bool:
+    """Whether ``metric``'s aggregation over docs is the mean, so the score
+    over the docs left in is the mean of their per-doc values: the task's
+    ``aggregation()`` (the harness's resolved functions), else its
+    ``metric_list`` entry's ``aggregation``."""
+    try:
+        fn = task.aggregation().get(metric)
+    except Exception:  # noqa: BLE001 - a task without the method: its yaml
+        fn = None
+    if fn is not None:
+        return getattr(fn, "__name__", "") == "mean"
+    for entry in getattr(getattr(task, "config", None), "metric_list", None) or []:
+        if entry.get("metric") == metric:
+            return entry.get("aggregation") == "mean"
+    return False
+
+
+def score_without(
+    rows: list[dict], key: str, left_out: set
+) -> tuple[float | None, int]:
+    """The mean of ``key``'s per-doc values (``<metric>,<filter>``: the
+    sample rows of that filter, ``none`` for a bare metric) over the docs
+    not in ``left_out``, and how many there are."""
+    metric, _, filt = key.partition(",")
+    filt = filt or "none"
+    values = [
+        float(row[metric])
+        for row in rows
+        if row.get("filter", "none") == filt
+        and row.get("doc_id") not in left_out
+        and isinstance(row.get(metric), (int, float, bool))
+    ]
+    return (sum(values) / len(values) if values else None), len(values)
+
+
+def leave_out_failed(
+    summary: dict[str, Any],
+    samples: dict,
+    task_objects: dict,
+    found: dict[str, dict[str, set]],
+) -> None:
+    """Rescore, in place, each task with failed or empty responses over the
+    docs left (registry.failure_policy: a failed item is never scored as a
+    model loss). A mean metric is recomputed from the per-doc sample rows;
+    any other aggregation cannot drop docs, so the run fails, naming it.
+    The harness's own number stays in ``harness_value``."""
+    values, n = [], 0
+    for task, entry in summary["per_task"].items():
+        out = found.get(task, {})
+        left = (out.get("empty") or set()) | (out.get("errors") or set())
+        entry["left_out"] = len(left)
+        if left:
+            metric = entry["key"].partition(",")[0]
+            if not is_mean_metric(task_objects[task], metric):
+                # Raised by run() once the failure threshold has had its say.
+                summary.setdefault("unscorable", []).append(
+                    f"{task}: {len(left)} docs failed or came back empty, and {metric!r} does "
+                    "not average over docs, so they cannot be left out of its score"
+                )
+                entry["harness_value"], entry["value"] = entry["value"], None
+                continue
+            entry["harness_value"] = entry["value"]
+            entry["value"], entry["n"] = score_without(samples.get(task) or [], entry["key"], left)
+        if entry["value"] is not None:
+            values.append(entry["value"])
+        if isinstance(entry["n"], int):
+            n += entry["n"]
+    summary["value"] = sum(values) / len(values) if values else None
+    summary["n"] = n
 
 
 def task_index() -> list[str]:
@@ -1042,6 +1129,10 @@ class LMEval(Benchmark):
             sum(c["docs"] for c in responses.values()),
             self.max_failed_frac,
         )
+        if unscorable := [m for r in per_repeat for m in r.get("unscorable", [])]:
+            raise SystemExit(
+                "lm-eval: " + "; ".join(dict.fromkeys(unscorable)) + "; rerun to retry the failed requests"
+            )
         values = [r["value"] for r in per_repeat if r["value"] is not None]
         return {
             "value": sum(values) / len(values) if values else None,
@@ -1123,10 +1214,15 @@ class LMEval(Benchmark):
             primary,
             {name: task_filters(task) for name, task in task_objects.items()},
         )
-        summary["responses"] = response_counts(
+        found = failed_docs(
             merged.get("samples") or {},
             {n for n, t in task_objects.items() if t.OUTPUT_TYPE == "generate_until"},
         )
+        summary["responses"] = {
+            task: {key: len(ids) for key, ids in counts.items()}
+            for task, counts in found.items()
+        }
+        leave_out_failed(summary, merged.get("samples") or {}, task_objects, found)
         summary["duration_s"] = round(time.time() - started, 1)
         return summary
 

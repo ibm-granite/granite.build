@@ -94,9 +94,14 @@ reasoning parser returns no content. `thinking=on` with a task that stops on tex
 stop but a special token such as `</s>` or `<|im_end|>`) is refused at startup, naming
 the stops: vLLM applies stop strings to the whole generation, thought included, so a
 thought that writes one (gsm8k's `Question:`) ends the response with no answer.
-`thinking=off` is the lm-eval generation tasks' own protocol. Per task the run counts docs with an empty chat response and docs whose
-request failed (`details.responses`); they stay in lm-eval's score as wrong answers,
-and the run fails when they exceed `max_failed_frac` of all docs.
+`thinking=off` is the lm-eval generation tasks' own protocol. Per task the run counts docs with an empty response and docs whose request failed
+(`details.responses`), in chat and base mode alike. They are left out of the score, as
+the shared failure policy has it (a failed item is never scored as a model loss): a
+mean metric is recomputed from the per-doc sample rows over the docs left
+(`details.per_task` keeps `value`, `n`, `left_out` and the harness's own
+`harness_value`); a metric that does not average over docs cannot drop any, so a task
+of that kind with a failed doc fails the run. The run fails when they exceed
+`max_failed_frac` of all docs.
 
 A task's metric is read as `<metric>,none`, then bare `<metric>`, then
 `<metric>,<filter>` for each of the task's `filter_list` names in yaml order (gsm8k's

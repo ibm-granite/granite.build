@@ -34,7 +34,7 @@ def _task(
         task_name=name,
         OUTPUT_TYPE=output_type,
         config=SimpleNamespace(
-            metric_list=[{"metric": m} for m in (metrics or [metric])],
+            metric_list=[{"metric": m, "aggregation": "mean"} for m in (metrics or [metric])],
             filter_list=(
                 [{"name": f, "filter": []} for f in filters] if filters else None
             ),
@@ -1052,6 +1052,59 @@ def test_few_empty_responses_are_recorded(tmp_path, monkeypatch):
             samples={"gsm8k": rows},
             max_failed_frac="0",
         )
+
+
+def _gsm8k_rows(answers):
+    """Sample rows as lm-eval logs them: one per doc per filter, each with the
+    raw resps and that filter's per-doc exact_match."""
+    rows = []
+    for doc_id, (resp, em) in enumerate(answers):
+        for filt in ("strict-match", "flexible-extract"):
+            rows.append({"doc_id": doc_id, "filter": filt, "resps": [[resp]], "exact_match": em})
+    return rows
+
+
+def test_failed_and_empty_docs_are_left_out_of_the_score(tmp_path, monkeypatch):
+    """registry.failure_policy: a failed item is never scored as a model loss.
+    Two right answers, one empty, one failed request: the score is 2/2 over
+    the docs left, not lm-eval's mean over all four."""
+    rows = _gsm8k_rows([("#### 4", 1.0), ("#### 5", 1.0), ("", 0.0), (chat_if.ERROR_MARKER, 0.0)])
+    outcome, _ = _mixed_run(
+        tmp_path, monkeypatch, [_gsm8k()], samples={"gsm8k": rows}, max_failed_frac="1"
+    )
+    entry = outcome["per_task"]["gsm8k"]
+    assert entry["value"] == 1.0 and entry["n"] == 2 and entry["left_out"] == 2
+    assert entry["harness_value"] == 0.5  # what the harness scored
+    assert outcome["per_task"]["hellaswag"]["value"] == 0.5  # nothing left out
+    assert outcome["value"] == pytest.approx((0.5 + 1.0) / 2)
+    assert outcome["n"] == 2 + 2
+    assert outcome["responses_failed"] == 2 and outcome["incomplete"] is True
+
+
+def test_a_metric_that_does_not_average_cannot_leave_docs_out(tmp_path, monkeypatch):
+    gsm8k = _gsm8k()
+    gsm8k.config.metric_list = [{"metric": "exact_match", "aggregation": "corpus_bleu"}]
+    rows = _gsm8k_rows([("#### 4", 1.0), ("", 0.0)])
+    with pytest.raises(SystemExit, match="does not average over docs"):
+        _mixed_run(tmp_path, monkeypatch, [gsm8k], samples={"gsm8k": rows}, max_failed_frac="1")
+    # nothing failed: the harness's number stands
+    ok = _gsm8k_rows([("#### 4", 1.0), ("#### 5", 1.0)])
+    outcome, _ = _mixed_run(tmp_path / "ok", monkeypatch, [gsm8k], samples={"gsm8k": ok})
+    assert outcome["per_task"]["gsm8k"]["value"] == 0.5
+
+
+def test_is_mean_metric_reads_the_harness_aggregation():
+    def mean(xs):
+        return sum(xs) / len(xs)
+
+    def bleu(xs):
+        return 0
+
+    task = SimpleNamespace(aggregation=lambda: {"acc": mean, "bleu": bleu}, config=SimpleNamespace(metric_list=[]))
+    assert generic.is_mean_metric(task, "acc") and not generic.is_mean_metric(task, "bleu")
+    yaml_only = _task(metric="acc")
+    assert generic.is_mean_metric(yaml_only, "acc")
+    assert not generic.is_mean_metric(yaml_only, "f1")
 
 
 def test_text_stops():

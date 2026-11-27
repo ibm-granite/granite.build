@@ -286,3 +286,9 @@ def test_without_fresh_maps_the_first_run_fixes_the_order(tmp_path, monkeypatch)
     monkeypatch.setattr(generic, "freeze_eval_docs", lambda task: None)
     o = _orders(tmp_path, monkeypatch, {"a": (1, 0)})
     assert o[("a", 99)] == o[("a", 1)] == o[("a", 0)]
+
+
+def test_the_real_tasks_mean_metric_is_recognised(tmp_path, monkeypatch):
+    # The leave-out rescoring needs the harness's resolved aggregation.
+    bench = _bridge(tmp_path, monkeypatch)
+    assert generic.is_mean_metric(bench.task_objects["gsm8k_local"], "exact_match")
