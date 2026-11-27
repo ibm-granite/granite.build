@@ -111,6 +111,11 @@ $${ LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld }
 <%- if SOPD and not ONLINE %>
 $${ LMBDA_MODE_must_be_ramp_or_on_policy_for_the_sampled_OPD_loss }
 <%- endif %>
+# And fully on-policy: CustomGOLDConfig requires lmbda 1.0 for it, so an LMBDA override
+# other than 1 would fail at trainer start (the arm, at the step's launch).
+<%- if SOPD and ONLINE and L != 1.0 %>
+$${ LMBDA_must_be_1_for_the_sampled_OPD_loss }
+<%- endif %>
 <%- if SOPD and not LMO %>
 $${ LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss }
 <%- endif %>

@@ -180,7 +180,7 @@ VLLM_HEALTH_TIMEOUT_SECONDS: 1800
 VLLM_MAX_LIFETIME_SECONDS: 43200
 TOP_P: 0.95
 # The sampled-OPD (REINFORCE-style) loss is a different objective; off. It needs
-# LMBDA_MODE ramp or on-policy, and the render fails off-policy.
+# LMBDA_MODE ramp or on-policy, with LMBDA unset or 1; the render fails otherwise.
 USE_SAMPLED_OPD_LOSS: false
 # Supervise the final assistant turn only. Required true by LOSS_ARM uld (in every
 # mode) and by the sampled-OPD loss (LOSS_ARM sampled_opd or USE_SAMPLED_OPD_LOSS); the

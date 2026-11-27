@@ -350,6 +350,25 @@ def test_sampled_opd_off_policy_fails_to_render(tmp_path, sopd):
     )
 
 
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+@pytest.mark.parametrize("mode", ["ramp", "on-policy"])
+def test_sampled_opd_with_lmbda_other_than_1_fails_to_render(tmp_path, sopd, mode):
+    """CustomGOLDConfig requires lmbda 1.0 for the sampled-OPD loss. The switch form
+    passed the recipe and the step's renderer and failed at trainer start, the arm form
+    at the step's renderer, both once the allocation was up."""
+    params = dict(LMBDA_MODE=mode, LMBDA="0.5", LAST_MESSAGE_ONLY="true", **sopd)
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "LMBDA_must_be_1_for_the_sampled_OPD_loss" in str(err.value)
+    # An explicit 1 is the loss's own value, and renders.
+    gold = _gold(_render(tmp_path, **dict(params, LMBDA="1")))
+    assert gold["lmbda"] == 1.0
+
+
 @pytest.mark.parametrize("mode", ["ramp", "on-policy"])
 def test_generation_floor_defaults_to_16_online(tmp_path, mode):
     assert _gold(_render(tmp_path, LMBDA_MODE=mode))["min_completion_length"] == 16
