@@ -152,7 +152,8 @@ BETA: 0.5
 # Leave false: granite's logits_scaling overflows the fused bf16 kernel (NaN loss).
 USE_LIGER_FUSED_JSD: false
 # The objective as a validated preset; empty keeps jsd at BETA. distillm2_like
-# needs 0 < lambda < 1 over the run, which a 0 -> 1 ramp satisfies.
+# needs 0 < lambda < 1 over the run, which a 0 -> 1 ramp satisfies. uld needs
+# LAST_MESSAGE_ONLY true, and the render fails without it.
 LOSS_ARM: ""
 # The assistant turn header of the pair's chat markup, which locates the completion
 # span. A marker that matches nothing trains on NOTHING while still logging a loss.
@@ -180,6 +181,9 @@ VLLM_MAX_LIFETIME_SECONDS: 43200
 TOP_P: 0.95
 # The sampled-OPD (REINFORCE-style) loss is a different objective; off.
 USE_SAMPLED_OPD_LOSS: false
+# Supervise the final assistant turn only. Required true by LOSS_ARM uld (in every
+# mode) and by the sampled-OPD loss (LOSS_ARM sampled_opd or USE_SAMPLED_OPD_LOSS); the
+# render fails without it. Otherwise read on-policy only.
 LAST_MESSAGE_ONLY: false
 CLIP_ALPHA: 0.1
 OPD_IMPORTANCE_SAMPLING: false
@@ -247,6 +251,34 @@ RESUME_FROM_CHECKPOINT_DIR: ""
 # true: seeded rungs are announced again and their exports re-run, which a ladder
 # still naming them needs. false: CKPT_LADDER must name only the rungs to come.
 RESUME_EMIT_SEEDED: true
+
+# ─── Experiment tracking ──────────────────────────────────────────────
+# One tool per run, for both training targets (train, and train-sft with
+# INCLUDE_SFT): none (the default), wandb, or clearml. wandb needs
+# TRACKING_WANDB_ENTITY and TRACKING_WANDB_PROJECT; clearml needs
+# TRACKING_CLEARML_PROJECT. The render fails on an unknown tool, a chosen tool
+# without its project, or another tool's parameter set. The runs are named
+# <RUN_NAME>-distill and <RUN_NAME>-sft. Each tool talks to its public server
+# (W&B https://api.wandb.ai, ClearML https://api.clear.ml) unless the job's
+# environment or the tool's own config file names another, and the credentials
+# are looked up on the cluster node, the way the tool does: WANDB_API_KEY or a
+# ~/.netrc entry for W&B; CLEARML_API_ACCESS_KEY/SECRET_KEY, CLEARML_AUTH_TOKEN
+# or clearml.conf for ClearML. TRACKING_SECRETS passes them from space secrets.
+# None found means the run trains untracked, said in its log.
+TRACKING_TOOL: "none"
+TRACKING_WANDB_ENTITY: ""
+TRACKING_WANDB_PROJECT: ""
+TRACKING_CLEARML_PROJECT: ""
+# The credentials, from space secrets: a comma-separated list of variable names, each passed
+# to both training targets from the space secret of the same name, as the granite-switch
+# recipes pass theirs. Only the chosen tool's: WANDB_API_KEY and WANDB_BASE_URL for wandb;
+# CLEARML_API_HOST, CLEARML_WEB_HOST, CLEARML_FILES_HOST, CLEARML_API_ACCESS_KEY and
+# CLEARML_API_SECRET_KEY for clearml. Empty (the default) declares none, and the tool then
+# finds its credentials, if any, in the container's $HOME. A declared secret the space does
+# not hold fails the target. For example:
+#   --param TRACKING_SECRETS=WANDB_API_KEY
+#   --param TRACKING_SECRETS=CLEARML_API_HOST,CLEARML_API_ACCESS_KEY,CLEARML_API_SECRET_KEY
+TRACKING_SECRETS: ""
 
 # ─── Monitoring ───────────────────────────────────────────────────────
 POLL_INTERVAL_SECONDS: 30

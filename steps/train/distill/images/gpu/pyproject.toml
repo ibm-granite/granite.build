@@ -1,7 +1,7 @@
 [project]
 name = "distill-gold-train-step"
 version = "0.1.0"
-description = "Runtime environment for the distill-gold-train step -- GOLD knowledge distillation (TRL + DeepSpeed ZeRO-3 + vLLM) from a Granite 4.2 teacher into a retagged Granite 4.1 student."
+description = "Runtime environment for the logit-distill step -- GOLD knowledge distillation (TRL + DeepSpeed ZeRO-3 + vLLM) from a Granite 4.2 teacher into a retagged Granite 4.1 student."
 # 3.12 EXACTLY, expressed as a range of one minor version, and that is deliberate.
 # ">=3.11" was aspirational: the only interpreter this code has ever run under is the
 # CPython 3.12 in the environment this step was validated against, and with an open upper
@@ -94,7 +94,7 @@ dependencies = [
     # accelerate is the DeepSpeed integration layer here, not a
     # convenience: configs/distillation/deepspeed/accelerate_deepspeed_zero3.yaml is an
     # ACCELERATE config, the launcher invokes `accelerate launch`, and ZeRO-3 checkpoint
-    # saving (zero3_save_16bit_model) is what makes distill-hf-export a selector rather
+    # saving (zero3_save_16bit_model) is what makes hf-export a selector rather
     # than a converter. The accelerate/deepspeed/torch triple is the one this step has
     # actually trained and resumed under, confirmed by direct measurement -- 1.12.0 with
     # torch 2.8.0.
@@ -185,7 +185,7 @@ dependencies = [
     # raising it belongs with the first training run of the arm.
     "liger-kernel==0.6.4",
     # Declared because gold.py imports `datasets.{Dataset, DatasetDict, load_dataset,
-    # load_from_disk}` directly and corpus-prep's output is consumed through them, so
+    # load_from_disk}` directly and data-prep's output is consumed through them, so
     # datasets is a direct dependency of this step whether or not it is listed; listing it
     # is what makes the version a decision instead of a side effect (an unconstrained
     # resolve once picked 5.0.1, a MAJOR version ahead of anything this code had run under).
@@ -209,7 +209,9 @@ dependencies = [
     # pin-verification tool, which checks only the exact pins for this step -- a range here
     # would be declared but unchecked.
     "clearml==2.1.12",
-    "wandb==0.28.2",
+    # 0.31.2, not 0.28.2 (#752): its wandb-core (Go 1.27.4, x/net 0.63.0, x/crypto 0.59.0)
+    # clears the Go advisories 0.28.2 and 0.31.0 carried in scan-ignore.
+    "wandb==0.31.2",
     # weave is NOT listed any more (#676; was weave==0.53.12). This code never used it:
     # trl 0.26.2's callbacks.py imported it behind a tuple-returning guard that was truthy
     # with weave absent, so it had to be installed for `from trl import ...` to work.
@@ -220,7 +222,7 @@ dependencies = [
     # generator, and tqdm 4.70's _min_map_len then calls min() on an empty sequence, so
     # `install_kernel("kernels-community/mamba-ssm")` raises "min() iterable argument is
     # empty" on a cold cache. causal-conv1d and flash-attn2 download fine, which is why
-    # only the sft and logit-precompute steps (the GOLD_PREFETCH_KERNELS=1 launchers)
+    # only the student-sft and teacher-logits steps (the GOLD_PREFETCH_KERNELS=1 launchers)
     # failed. Measured in the a20c8f39 image: 4.70.0 fails, 4.67.1 downloads the kernel.
     # Not re-measured under huggingface_hub 2.4.0 (#676), so the pin stays.
     "tqdm==4.67.1",
@@ -248,12 +250,13 @@ constraint-dependencies = [
     # vllm 0.11.0 capped setuptools<80; vllm now allows <81, so setuptools can take the
     # release that vendors fixed jaraco.context and wheel copies.
     "setuptools>=80.10.2",
-    # A CEILING, not a fix: filelock 4.x changes UnixFileLock's behaviour on shared lock
-    # directories (4.2.12 refuses, with PermissionError, a lock file another account owns
-    # under a sticky parent), and these steps share one HF cache across accounts on
-    # group-shared filesystems. vllm 0.33.0 accepts filelock>=3.20.3 and torch 2.14.0 any,
-    # so without this the resolver is free to take 4.x. Moving to 4.x is its own,
-    # cluster-tested change (#752; see scan-ignore). vllm 0.34.0 requires >=4.2.4, so
-    # the next vllm raise brings that test with it.
-    "filelock<4",
+    # 4.2.1 is the floor: it fixes the 13 advisories OSV lists for 3.32.7 (one HIGH,
+    # GHSA-v4x8-3wr5-3wq8, plus three in the UnixFileLock and SoftFileLock classes
+    # huggingface_hub's cache locks use). The CEILING below 4.2.12 is deliberate: 4.2.12
+    # made UnixFileLock refuse, with PermissionError, a lock file another account owns under
+    # a sticky parent, and these steps share one HF cache across accounts on group-shared
+    # filesystems. Lifting it needs a two-account shared-cache test on the cluster (#788).
+    # vllm 0.33.0 accepts filelock>=3.20.3 and torch 2.14.0 any, so without this the
+    # resolver takes 4.3.1; vllm 0.34.0 requires >=4.2.4, which this range meets.
+    "filelock>=4.2.1,<4.2.12",
 ]

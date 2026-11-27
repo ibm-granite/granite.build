@@ -215,7 +215,7 @@ mkdir -p "$OUT_DIR"
 if [[ -f "${STUDENT_MODEL}/retag_manifest.json" ]]; then
   echo
   echo "--- [skip] ${STUDENT_MODEL} already carries retag_manifest.json"
-  echo "  This student is already a distill-tokenizer-align output, not a raw base model."
+  echo "  This student is already a tokenizer-align output, not a raw base model."
   echo "  Skipping [3/4] retag -- re-retagging an already-retagged student is not"
   echo "  idempotent and can produce a masking contract that disagrees with itself."
   echo "  Reusing ${STUDENT_MODEL} as this run's retagged_student unchanged."
@@ -290,7 +290,7 @@ echo "--- [1/4] teacher overlay -> ${TEACHER_OVERLAY}"
 # The student overlay is NOT consumed by the retag. It exists because the plan's coupling
 # note is real and now measured: the teacher's tokenizer.json carries a
 # plain ByteLevel pre_tokenizer while the student's carries Sequence[Split(regex),ByteLevel],
-# so the SAME TEXT segments differently, and corpus-prep needs a trustworthy student
+# so the SAME TEXT segments differently, and data-prep needs a trustworthy student
 # tokenizer to compare against when it asserts one-tokenizer-per-run.
 #
 # --no-require-chatml, and it MUST be that way round. This overlay is built from the

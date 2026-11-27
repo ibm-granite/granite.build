@@ -15,7 +15,7 @@ Divergences, both about path resolution rather than behaviour:
 Keep this a near-verbatim copy so re-syncing upstream stays a three-way merge.
 """
 
-"""Unit tests for distill-corpus-prep.
+"""Unit tests for data-prep.
 
 SCOPE, and what is deliberately NOT here. Everything below runs without transformers: the
 tokenizer is a stub whose apply_chat_template returns ids and an assistant mask chosen by

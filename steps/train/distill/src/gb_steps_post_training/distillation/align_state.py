@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""What "already aligned" means for distill-tokenizer-align, and nothing else.
+"""What "already aligned" means for tokenizer-align, and nothing else.
 
 step_state.py holds the mechanism -- the comparison, the atomic marker, the RUN/SKIP/REFUSE
 vocabulary -- and deliberately holds no opinion about any step's inputs. This module is
-distill-tokenizer-align's opinion: which facts about the student, the teacher and the chat
+tokenizer-align's opinion: which facts about the student, the teacher and the chat
 template determine the bytes the step writes, and which of its outputs are worth naming.
 
 WHY IT IS A MODULE AND NOT A JSON BLOB IN run-align.sh. The expectation has to be computed
@@ -15,7 +15,7 @@ form of that bug that looks correct in review. One function, called twice, canno
 
 WHAT IS COMPARED, and the reasoning for each:
 
-  student / teacher -- identified by CONTENT, not by path. This follows distill-corpus-prep,
+  student / teacher -- identified by CONTENT, not by path. This follows data-prep,
       whose expectation() says it and says why: "a path can be repointed at a retagged
       directory with the same name, and it is the vocabulary that decides". Here it matters
       twice over, because a hub-cached model's path ends in a 40-char commit SHA that changes

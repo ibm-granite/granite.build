@@ -18,7 +18,7 @@
 #
 # ONE image, not one per step: checked directly against the real uv.lock
 # files in github.com/laminair/gb-steps-distillation at a5d59bc4 --
-# distill-gold-train and distill-logit-precompute (the only two steps with
+# logit-distill and teacher-logits (the only two steps with
 # resolved locks) pin IDENTICAL torch 2.8.0 / transformers 5.8.0 /
 # accelerate 1.12.0 / tokenizers 0.22.2, and every other GPU step's declared
 # range (e.g. transformers>=5.8.0,<6) is satisfied by that same set. The 11

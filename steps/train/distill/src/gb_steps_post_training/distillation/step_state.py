@@ -8,12 +8,12 @@ A recipe of seven steps on a preemptable queue is restarted, not resumed, and th
 the whole recipe from the top. Each step therefore has to answer the same question about its own
 output directory, and today each one answers it differently:
 
-  distill-corpus-prep   refuses if train.jsonl exists (prep-corpus.sh:108). Safe, but a restart
+  data-prep             refuses if train.jsonl exists (prep-corpus.sh:108). Safe, but a restart
                         after a preemption in step 3 cannot get past step 1 without a human
                         deleting a directory -- and the refusal is identical whether the existing
                         corpus was built with the SAME policies (in which case there is nothing to
                         do) or with different ones (in which case continuing would be wrong).
-  distill-gold-train    resumes from a checkpoint glob (see checkpoints.py).
+  logit-distill         resumes from a checkpoint glob (see checkpoints.py).
   the rest              overwrite, or fail in whatever way the tool underneath fails.
 
 Three behaviours for one question is two too many, and the interesting distinction -- SAME inputs
@@ -104,7 +104,7 @@ def _describe(root: Path, rel: str) -> dict:
     """Describe one declared output. `rel` is the name the STEP declared, relative to out_dir.
 
     Recording `rel` and not `path.name` matters as soon as a step's outputs are nested, which
-    distill-tokenizer-align's are: it writes teacher_overlay/tokenizer.json,
+    tokenizer-align's are: it writes teacher_overlay/tokenizer.json,
     student_overlay/tokenizer.json and retagged_student/tokenizer.json, three different files whose
     basenames are identical. Keyed on the basename they would collide in the marker, and the check
     would then stat out_dir/tokenizer.json -- a path that does not exist -- and REFUSE a directory
@@ -505,7 +505,7 @@ def self_test() -> int:
             decide(d, "prep", exp).kind == SKIP,
         )
 
-    # Nested outputs. distill-tokenizer-align writes three files called tokenizer.json in three
+    # Nested outputs. tokenizer-align writes three files called tokenizer.json in three
     # subdirectories, so a marker keyed on the basename would collide and then look for a file at
     # the top level that was never there.
     with tempfile.TemporaryDirectory() as td:

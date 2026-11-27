@@ -1,4 +1,4 @@
-# corpus-pin-check step for the SkyPilot environment (LSF / BlueVela).
+# data-validate step for the SkyPilot environment (LSF / BlueVela).
 #
 # Refuses a pinned corpus whose manifest does not describe this build: a different
 # tokenizer, different prep policies, or a missing split. CPU-only and stdlib-only,

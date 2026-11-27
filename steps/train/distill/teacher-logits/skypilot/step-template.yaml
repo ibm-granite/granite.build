@@ -14,7 +14,7 @@ version: 1.0.0
 # there is nothing to precompute. The step's name invites exactly that misreading.
 #
 # WIRED INTO NO RECIPE, and that is deliberate rather than an omission. Its only consumer is
-# distill-sft's `precomputed_logits_dir`, and setting that key turns that step from
+# student-sft's `precomputed_logits_dir`, and setting that key turns that step from
 # the SFT CONTROL into a forward-KL distillation ARM. A recipe wiring both is no longer
 # running a control, so it must say so in its own README. Upstream ships it unwired for the
 # same reason.
@@ -27,7 +27,7 @@ version: 1.0.0
 # weeks later, with no error anywhere. Everything unusual below follows from that sentence.
 #
 # DATA_GENERATION, not DATA_PROCESSING: this samples from a model. That distinction is the
-# one distill-corpus-prep's header draws from the other side.
+# one data-prep's header draws from the other side.
 type: data_generation
 config:
   # ─── Allocation ───────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ config:
     hf_home: ""
     # ASSERTED against the GPUs actually visible in the container, not trusted.
     gpus_per_node: 8
-    # 1, and unlike distill-gold's 2 this is not a topology waiting to be filled in.
+    # 1, and unlike logit-distill's 2 this is not a topology waiting to be filled in.
     # run-precompute.sh REFUSES nodes > 1, and here that refusal protects something
     # subtler than a rendezvous: sharding is `i % num_nodes == node_id`, so a single node
     # started under a num_nodes it does not have silently precomputes ONE RESIDUE CLASS of
@@ -79,7 +79,7 @@ config:
     # begins — and it CANNOT cross gbserver's config fill as a real character: Jinja strips
     # exactly one trailing newline from each value, so '<|im_start|>assistant\n' would arrive
     # as '<|im_start|>assistant' and key the index to a span one token off. Measured on
-    # distill-gold (build d8470f14) and carried the same way here: single-quoted YAML holding
+    # logit-distill (build d8470f14) and carried the same way here: single-quoted YAML holding
     # a literal backslash-n, decoded once by the launcher inside the container.
     response_template: '<|im_start|>assistant\n'
 
@@ -99,7 +99,7 @@ config:
 inputs:
   allow_unknown: true
   required:
-    # distill-corpus-prep's `corpus`. The SAME corpus the arm will train on: the index is
+    # data-prep's `corpus`. The SAME corpus the arm will train on: the index is
     # keyed to it, so a precompute against a different corpus is a silent mismatch.
     corpus:
       type: dataset
@@ -110,7 +110,7 @@ inputs:
       accept: [uri, binding]
     # Kept SEPARATE from teacher on purpose, as in the trainer: the tokenizer that
     # defines the token ids in the index need not be the model directory's own. Normally
-    # distill-tokenizer-align's `teacher_overlay`.
+    # tokenizer-align's `teacher_overlay`.
     teacher_tokenizer:
       type: model
       accept: [uri, binding]
@@ -138,7 +138,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5"
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:d7b639cd"
           resources: {}
           envs:
             # The SLURM executor runs the task under `env -u PYTHONPATH` and without
@@ -147,7 +147,7 @@ environment_configs:
             VIRTUAL_ENV: /stage/.venv
             # NO HF_HUB_OFFLINE: this step loads the TEACHER, and granite loading resolves
             # kernels-community/causal-conv1d through the Hub API, which offline mode turns
-            # into OfflineModeIsEnabled after the load has begun (measured on distill-eval,
+            # into OfflineModeIsEnabled after the load has begun (measured on teacher-divergence,
             # build 15267e81).
             # The image caches no hub kernels (HF_HOME=/opt/hf-cache, which the image
             # does not create), and the pinned mamba-ssm / causal-conv1d and
@@ -217,7 +217,7 @@ environment_configs:
             # The image's Dockerfile puts the venv on PATH, but run-precompute.sh calls both
             # `"$PYBIN" -m ...` and a BARE `accelerate` (ACCELERATE="${ACCELERATE:-accelerate}").
             # Without this the run reaches the launch and dies rc=127 — measured on
-            # distill-sft, build 75fa47d2. The dispatcher runs this with
+            # student-sft, build 75fa47d2. The dispatcher runs this with
             # `bash <file>` (non-login), so the export sticks.
             export ACCELERATE="$(dirname "$PYBIN")/accelerate"
 
@@ -226,7 +226,7 @@ environment_configs:
             # no vendor/ tree — but it computes CHECKOUT_ROOT UNCONDITIONALLY as three levels
             # above STEP_HOME, which assumes the step directory sits inside the checkout. So
             # exporting CHECKOUT_ROOT is silently discarded; these two are the guarded knobs.
-            # Learned the expensive way on distill-sft (builds 739898ab, 07b9e09a).
+            # Learned the expensive way on student-sft (builds 739898ab, 07b9e09a).
             export PRECOMPUTE_SRC="$CODE_DIR/src/gb_steps_post_training/distillation"
             export LIB_DIR="$DISTILL_HOME/shell"
 
@@ -255,7 +255,7 @@ environment_configs:
             # NO ARTIFACT MARKER HERE, deliberately: run-precompute.sh prints it from its own
             # publish path, including on the already-done SKIP branch. Upstream's template
             # echoed it a SECOND time after the script returned, which would register two
-            # NEWARTIFACT events for one id — the same duplication the distill-eval port
+            # NEWARTIFACT events for one id — the same duplication the teacher-divergence port
             # dropped.
             PYBIN="$PYBIN" bash "$DISTILL_HOME/steps/teacher-logits/run-precompute.sh" \
               --corpus-path "{{ bindings.corpus.binding.path }}" \

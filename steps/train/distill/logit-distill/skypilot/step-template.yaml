@@ -243,7 +243,7 @@ config:
     # detect. See LOSS_ARMS in src/render_gold_config.py, which lists each arm and why.
     loss_arm: ""
     # Verify the student's tokenizer is the one the corpus was built with. Off by default;
-    # ON is worth it for any build that chains distill-corpus-prep into this step, because
+    # ON is worth it for any build that chains data-prep into this step, because
     # a mismatch does not error -- it trains on mis-segmented text at full speed with a
     # falling loss.
     check_corpus_tokenizer: false
@@ -316,6 +316,8 @@ config:
     vllm_sync_frequency: 1
     top_p: 0.95
     use_sampled_opd_loss: false
+    # Supervise only the final assistant turn. Emitted on-policy, and off-policy for
+    # loss_arm uld alone, which requires it true (ULD's teacher is the last turn only).
     last_message_only: false
     clip_alpha: 0.1
     opd_importance_sampling: false
@@ -341,6 +343,24 @@ config:
     # request.
     min_completion_length: 0
 
+  # ─── Experiment tracking ──────────────────────────────────────────────────────
+  # One tool per run: `tool` is wandb, clearml, or none (empty, the default: off). Only
+  # the chosen tool's keys may be set; any other combination aborts the run before the
+  # trainer is built, and so does a partial config (W&B needs entity and project,
+  # ClearML a project). The run names are derived from the build when left empty.
+  # Each tool talks to its public server unless the job's environment or the tool's
+  # own config file names another: W&B to https://api.wandb.ai, ClearML to
+  # https://api.clear.ml (app.clear.ml, files.clear.ml). The credentials are looked
+  # up the way the tool does, for that server; none found means off, said loudly.
+  # tracking.py (steps/train/distill/src) holds the rules; USAGE.md documents them.
+  tracking:
+    tool: ""
+    clearml_project: ""
+    clearml_run_name: ""
+    wandb_entity: ""
+    wandb_project: ""
+    wandb_run_name: ""
+
 # I/O schema, validated against the build.yaml target at build time: a target that
 # does not bind a required input fails validation before anything is queued. The
 # run script reads path inputs as {{ bindings.<name>.binding.path }} and the
@@ -357,7 +377,7 @@ inputs:
     teacher:
       type: model
       accept: [uri, binding]
-    # distill-corpus-prep's `corpus`. Must be think-filtered ("nothink"): an
+    # data-prep's `corpus`. Must be think-filtered ("nothink"): an
     # assistant completion containing an inline <think>...</think> breaks gold's
     # completion extraction.
     corpus:
@@ -365,7 +385,7 @@ inputs:
       accept: [uri, binding]
   optional:
     # An EXTERNAL vLLM server, reached by URL, instead of carving nodes out of
-    # this allocation: bind distill-vllm-server's mem:// `vllm_url`. When
+    # this allocation: bind student-rollout-generator's mem:// `vllm_url`. When
     # bound, EVERY node here trains and the role split below does not happen; the
     # trainer is given the address on gold.py's command line. Unbound keeps the
     # in-allocation split that gold_config.vllm_num_servers alone selects.
@@ -400,7 +420,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5"
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:d7b639cd"
           # Node count and accelerators come from the build.yaml
           # (compute_config.num_nodes and launcher_config.resources) so one step
           # serves the smoke and reference runs.
@@ -424,7 +444,21 @@ environment_configs:
           # before the enroot config is written, and the generated environ()
           # forwards the outer environment. Confirm on a real run with
           # `grep NCCL_ job.log`; if that file does not set them, add both here.
+          # The run block opens with the tracking rules tracking.py applies in the trainer,
+          # checked when gbserver renders this block (strict, before anything is launched):
+          # #752 made the tool explicit, so a tracking block from before it (keys, no
+          # tool) is refused here, not at trainer start.
           run: |
+            {% set _trk = config.tracking | default({}) -%}
+            {% set _tool = _trk.tool | default("") | string | trim | lower -%}
+            {% set _cl = (_trk.clearml_project | default("") | string | trim) ~ (_trk.clearml_run_name | default("") | string | trim) -%}
+            {% set _wb = (_trk.wandb_entity | default("") | string | trim) ~ (_trk.wandb_project | default("") | string | trim) ~ (_trk.wandb_run_name | default("") | string | trim) -%}
+            {% if _tool not in ("", "none", "wandb", "clearml") %}{{ raise_error("logit-distill: tracking.tool must be wandb, clearml or none, not '" ~ _trk.tool ~ "'.") }}{% endif -%}
+            {% if _tool in ("", "none") and (_cl or _wb) %}{{ raise_error("logit-distill: tracking keys are set but tracking.tool is not. Since #752 the tool is chosen explicitly: add tracking.tool: clearml or wandb, or remove the keys.") }}{% endif -%}
+            {% if _tool == "wandb" and _cl %}{{ raise_error("logit-distill: tracking.tool is wandb, but clearml keys are set too. One tool per run: remove them, or choose clearml.") }}{% endif -%}
+            {% if _tool == "clearml" and _wb %}{{ raise_error("logit-distill: tracking.tool is clearml, but wandb keys are set too. One tool per run: remove them, or choose wandb.") }}{% endif -%}
+            {% if _tool == "wandb" and not ((_trk.wandb_entity | default("") | string | trim) and (_trk.wandb_project | default("") | string | trim)) %}{{ raise_error("logit-distill: tracking.tool wandb needs tracking.wandb_entity and tracking.wandb_project.") }}{% endif -%}
+            {% if _tool == "clearml" and not (_trk.clearml_project | default("") | string | trim) %}{{ raise_error("logit-distill: tracking.tool clearml needs tracking.clearml_project.") }}{% endif -%}
             {% set train_dir = config.train_dir | default("") | string | trim -%}
             {% set resume_src = config.resume_from_checkpoint_dir | default("") | string | trim -%}
             {% set rollout_stop = config.rollout_stop_file | default("") | string | trim -%}
@@ -920,10 +954,27 @@ environment_configs:
               done
             }
 
+            # cleanup_watcher's kill reaches this subshell, not its children, so a sleep left
+            # running could outlive the script and hold its stdout and stderr open for up to
+            # CKPT_WATCH_INTERVAL after it exits. Two things prevent that:
+            #   - the sleep runs in the background under a TERM trap that kills every job of
+            #     this subshell (`jobs -p`), not a remembered PID, so a TERM that lands between
+            #     `&` and `$!` still finds it; `wait` returns at once on a trapped signal;
+            #   - the sleep inherits no stdout or stderr, so even one that survived would hold
+            #     nothing. Nothing is lost: sleep prints only an error for an invalid
+            #     interval, and the status check below reports that instead.
             watch_checkpoints() {
+              trap 'kill $(jobs -p) 2>/dev/null || true; exit 0' TERM
               while true; do
                 emit_new_checkpoints
-                sleep "$CKPT_WATCH_INTERVAL"
+                sleep "$CKPT_WATCH_INTERVAL" </dev/null >/dev/null 2>&1 &
+                _watch_sleep=$!
+                _watch_rc=0
+                wait "$_watch_sleep" || _watch_rc=$?
+                if [ "$_watch_rc" -ne 0 ] && [ "$_watch_rc" -le 128 ]; then
+                  echo "logit-distill: checkpoint watcher: 'sleep $CKPT_WATCH_INTERVAL' failed (status $_watch_rc); no more mid-run checkpoint artifacts, the final sweep still emits them" >&2
+                  return 0
+                fi
               done
             }
 
@@ -1029,7 +1080,13 @@ environment_configs:
               --last-message-only {{ config.gold_config.last_message_only }} \
               --clip-alpha {{ config.gold_config.clip_alpha }} \
               --opd-importance-sampling {{ config.gold_config.opd_importance_sampling }} \
-              --vllm-server-url "{{ vllm_server_url }}"
+              --vllm-server-url "{{ vllm_server_url }}"{% set _trk = config.tracking | default({}) %}{% if _trk.values() | map('string') | map('trim') | select | list %} \
+              --tracking-tool "{{ _trk.tool | default('') }}" \
+              --clearml-project "{{ _trk.clearml_project | default('') }}" \
+              --clearml-run-name "{{ _trk.clearml_run_name | default('') }}" \
+              --wandb-entity "{{ _trk.wandb_entity | default('') }}" \
+              --wandb-project "{{ _trk.wandb_project | default('') }}" \
+              --wandb-run-name "{{ _trk.wandb_run_name | default('') }}"{% endif %}
 
             if [ "$NODE_RANK" = "0" ]; then
               echo "--- rendered gold config ($CFG) ---"

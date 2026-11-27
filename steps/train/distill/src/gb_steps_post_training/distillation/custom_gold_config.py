@@ -387,6 +387,30 @@ class CustomGOLDConfig(GOLDConfig):
             "hybrid weights, and RAISES on anything else rather than falling back."
         },
     )
+    uld_max_unaligned_fraction: float = field(
+        default=0.5,
+        metadata={
+            "help": "Raise when more than this fraction of the ULD rows (regions, on the "
+            "per-turn path) in a window of uld_unaligned_window_steps optimizer steps "
+            "yielded no alignment groups. Such a row is skipped with zero loss, which is "
+            "right for the rare row and silent training on nothing when the two renders "
+            "disagree systematically. Counted over every rank. Independently of this, a "
+            "step in which EVERY row is unaligned always raises. The default 0.5 is "
+            "deliberately loose, so it does not stop a healthy run: the trainer's notes "
+            "record 371 of 373 real regions aligning (_THINK_SCAFFOLD_RE), and on a small window "
+            "(2 rows a step, logging every step) a single bad row is 0.5 and passes. "
+            "Tighten it (e.g. 0.05) for a large global batch, where the rate is stable. "
+            "1.0 turns the window check off."
+        },
+    )
+    uld_unaligned_window_steps: int = field(
+        default=0,
+        metadata={
+            "help": "Optimizer steps per uld_max_unaligned_fraction window. 0 (default) "
+            "uses the logging window's length (logging_steps). The final, partial window "
+            "is judged at train end."
+        },
+    )
     uld_renormalize_probs: bool = field(
         default=False,
         metadata={
@@ -445,6 +469,26 @@ class CustomGOLDConfig(GOLDConfig):
             raise ValueError(
                 "use_old_uld_loss needs trl 1.x's byte-offset ULD inputs, which this trainer "
                 "does not produce; use CustomULDLoss (use_old_uld_loss: false)."
+            )
+        # The single-region ULD teacher is rendered as msgs[:-1] against msgs: its completion
+        # is the LAST assistant turn. With last_message_only=false the collator labels every
+        # assistant turn, the base path's one region per row starts at the first, and no
+        # multi-turn row aligns (render_gold_config.py's uld arm requires it for the same
+        # reason; this catches a config that bypasses the renderer). The two exceptions
+        # render the teacher another way: per-turn regions (one teacher region per assistant
+        # turn, and they require false), and reusing the student's own input as the teacher's.
+        if (
+            self.use_uld_loss
+            and not self.last_message_only
+            and not self.uld_per_turn_regions
+            and not self.uld_reuse_student_input
+        ):
+            raise ValueError(
+                "use_uld_loss requires last_message_only=true: the ULD teacher is rendered as "
+                "the last assistant turn only, so with false the student's span starts at the "
+                "first assistant turn and no multi-turn row aligns (the loss is zero). Set "
+                "last_message_only: true, or uld_per_turn_regions: true (with "
+                "uld_use_hybrid_loss: true) to supervise every turn."
             )
 
         # Validate alpha is non-negative
@@ -563,7 +607,8 @@ class CustomGOLDConfig(GOLDConfig):
                 raise ValueError(
                     "uld_per_turn_regions requires uld_use_hybrid_loss=true. Only the hybrid "
                     "path's loss (custom_gold_trainer._compute_distillation_loss) iterates "
-                    "regions; the base path delegates to trl's, which derives ONE region per "
+                    "regions; the base path (CustomULDLoss._compute_base_distillation_loss, "
+                    "trl 0.26.2's non-hybrid loss vendored here) derives ONE region per "
                     "row from _get_start_and_size_answers (first supervised index + total "
                     "supervised count) and would slice a single span straddling the user and "
                     "tool turns in between."
@@ -594,6 +639,17 @@ class CustomGOLDConfig(GOLDConfig):
         # Validate uld_matched_top_k requires uld_ignore_multi_loss
         if self.uld_matched_top_k > 0 and not self.uld_ignore_multi_loss:
             raise ValueError("uld_matched_top_k requires uld_ignore_multi_loss=true.")
+
+        if not 0.0 <= self.uld_max_unaligned_fraction <= 1.0:
+            raise ValueError(
+                "uld_max_unaligned_fraction must be in [0, 1] (1.0 turns the window check "
+                f"off); got {self.uld_max_unaligned_fraction}."
+            )
+        if self.uld_unaligned_window_steps < 0:
+            raise ValueError(
+                "uld_unaligned_window_steps must be >= 0 (0 uses logging_steps); got "
+                f"{self.uld_unaligned_window_steps}."
+            )
 
         # Validate uld_region_chunk_groups. The trainer's own gate raises at step 0 too, but the
         # combinations are decidable HERE, before ~10 minutes of teacher weight loading, and a

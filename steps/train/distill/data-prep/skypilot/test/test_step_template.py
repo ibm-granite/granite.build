@@ -3,7 +3,7 @@
 """Contract tests for step-template.yaml.
 
 Scope note: the source-delivery half of this template is spliced VERBATIM from
-distill-tokenizer-align, and
+tokenizer-align, and
 ``steps/train/distill/tokenizer-align/skypilot/test/test_source_contract.py`` asserts that
 every ported step's copy is byte-identical to it. That step's own suite asserts the
 region is *correct*. So this file does not re-assert those twelve properties — it would

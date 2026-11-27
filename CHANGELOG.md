@@ -112,6 +112,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: student-sft's `tracking` block needs `tool` (#752).** A block that sets `clearml_project` or the
+  `wandb_*` keys without `tracking.tool` turned that tool on before; it is now refused when gbserver renders the step,
+  before anything is launched. Add `tool: clearml` or `tool: wandb`.
+- **distill: experiment tracking is one chosen tool per run (#752).** logit-distill and student-sft take a
+  `tracking` block whose `tool` is `wandb`, `clearml` or `none` (the default; logit-distill had no tracking
+  keys before), and the distill recipe takes `TRACKING_TOOL`. A config that sets a tool's keys without
+  choosing it, or both tools' keys, is refused; before, each tool was switched on by its own keys. W&B now
+  talks to `https://api.wandb.ai` unless `WANDB_BASE_URL` or wandb's settings file names another server
+  (wandb 0.31's own default is `https://api.forge.coreweave.com`); ClearML is left to resolve its own server,
+  which is `https://api.clear.ml` unless its environment or `clearml.conf` names another. The credential check,
+  when the trainer starts, looks up W&B's netrc entry the way wandb 0.31.2 does (the entry's own password,
+  `default` entries, quoted names, the server's host, `WANDB_IDENTITY_TOKEN_FILE`) and validates the server with
+  wandb's own validator; ClearML's is decided by clearml's own config loader. The chosen tool is the only remote
+  tracker in `report_to`. The recipe can pass the credentials from space secrets (`TRACKING_SECRETS`).
+- **distill images: wandb 0.31.2, filelock 4.2.11 (#752).** The GPU image moves from wandb 0.28.2 and
+  filelock 3.32.7, and its `scan-ignore` lists no advisory any more. filelock is held below 4.2.12 until a
+  two-account shared-cache test (#788). The CPU image no longer installs wandb or clearml, which nothing in
+  it imports.
+
 - **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
   site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
   moved to `recipes/granite-switch/skypilot/slurm-bluevela/answerability-lora` in #639 (the
@@ -477,6 +496,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **logit-distill: `loss_arm: uld` trains on what it aligns, or fails loudly (#754, #760).**
+  It had never run end to end, and at the step's defaults it could not align a single
+  multi-turn row (or, on a ChatML template, any row).
+  - **New render refusal:** `loss_arm: uld` requires `last_message_only: true`. The ULD
+    teacher is the last assistant turn alone, so with `false` the student's span starts at
+    the first turn, and the loss is exactly zero. The step's renderer refuses `false` or
+    unset, and, for this arm alone, now emits `last_message_only` off-policy (before, it
+    was dropped whenever `vllm_num_servers` was 0). `CustomGOLDConfig` refuses it at
+    startup for a config that bypasses the renderer. The distill recipe refuses
+    `LOSS_ARM=uld` without `--param LAST_MESSAGE_ONLY=true` before submission, and the
+    sampled-OPD loss without it likewise. Every other arm renders byte-identically.
+  - **Changed numerics:** the non-hybrid ULD loss (trl 0.26.2's, vendored) read each
+    completion token's distribution at the token itself, one position late. It now reads
+    the logits one position earlier (start-1), as the hybrid ULD path and the JSD path do,
+    so ULD losses differ from earlier runs. A row whose alignment yields no groups now
+    contributes no loss; before, it raised a shape `RuntimeError` or scored unaligned
+    positions against each other.
+  - **New runtime `RuntimeError` and metrics:** the trainer now sums ULD rows over all ranks
+    at every optimizer step. It raises when every row of a step is unaligned, or when more
+    than half the rows of a logging window are (`uld_max_unaligned_fraction`, default 0.5;
+    the final partial window is judged at train end). The log line carries the new
+    `train/alignment_rows`, `train/alignment_unaligned_rows` and
+    `train/alignment_unaligned_rate`, all summed over ranks.
+  - A completion starting at position 0 now raises `ValueError` on both ULD paths.
+    `masking.py check-config` now requires `last_message_only: true` for `uld` and
+    `sampled_opd` instead of reporting it.
+  - Separately, the checkpoint watcher's `sleep` no longer holds rank 0's output open for
+    up to 60 s after the script exits.
 - **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
   longer share a pull dir (#715).** `<cache>/<owner>/<repo>/<revision>` ignored all three, so a
   model and a same-named dataset overwrote each other's files, two paths of one bucket synced into

@@ -9,6 +9,8 @@
 #     --param-file <site.yaml> [--param-file recipes/distill/distill/smoke.yaml] \
 #     --param RUN_NAME=<name> --param LMBDA_MODE=off-policy|ramp|on-policy
 #
+# LOSS_ARM=uld also needs --param LAST_MESSAGE_ONLY=true; the render fails without it.
+#
 # Layers: this directory's parameters.yaml (the experiment), then the site file,
 # then smoke.yaml (a plumbing-scale run), then each --param. Later layers win.
 #
@@ -89,6 +91,54 @@ $${ LMBDA_RAMP_START_STEP_and_LMBDA_RAMP_STEPS_must_be_0_unless_LMBDA_MODE_is_ra
 $${ MIN_COMPLETION_LENGTH_must_be_empty_or_0_when_LMBDA_MODE_is_off_policy }
 <%- endif %>
 <%- set FLOOR = (FLOOR or "16") | int %>
+# LOSS_ARM uld needs LAST_MESSAGE_ONLY true. ULD's teacher is the last assistant turn
+# alone; with false the student's span starts at the first one, so no multi-turn row
+# aligns and the run trains at zero gradient (the step's renderer refuses it too, but
+# only once the allocation is up). Refused here rather than set for you, because it
+# changes which turns are supervised: the final assistant turn only.
+<%- set ULD = LOSS_ARM | string | trim | lower == "uld" %>
+<%- set LMO = (LAST_MESSAGE_ONLY | string | trim | lower) in YES %>
+<%- if ULD and not LMO %>
+$${ LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld }
+<%- endif %>
+# The sampled-OPD loss has the same requirement (the step's renderer and the trainer's
+# config both refuse it without), whether it is named as LOSS_ARM sampled_opd or switched
+# on by USE_SAMPLED_OPD_LOSS.
+<%- set SOPD = LOSS_ARM | string | trim | lower == "sampled_opd" or (USE_SAMPLED_OPD_LOSS | string | trim | lower) in YES %>
+<%- if SOPD and not LMO %>
+$${ LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss }
+<%- endif %>
+# ── Experiment tracking, checked once ──────────────────────────────────────
+# One tool per run, or none. The steps (tracking.py) refuse the same combinations,
+# but only once the allocation is up; refused here before submission.
+<%- set TRACK = TRACKING_TOOL | string | trim | lower %>
+<%- set TRACK = "none" if TRACK == "" else TRACK %>
+<%- set T_WB = (TRACKING_WANDB_ENTITY | string | trim, TRACKING_WANDB_PROJECT | string | trim) %>
+<%- set T_CL = TRACKING_CLEARML_PROJECT | string | trim %>
+<%- if TRACK not in ("none", "wandb", "clearml") %>
+$${ TRACKING_TOOL_must_be_none_wandb_or_clearml }
+<%- endif %>
+<%- if TRACK == "wandb" and not (T_WB[0] and T_WB[1]) %>
+$${ TRACKING_TOOL_wandb_needs_TRACKING_WANDB_ENTITY_and_TRACKING_WANDB_PROJECT }
+<%- endif %>
+<%- if TRACK == "clearml" and not T_CL %>
+$${ TRACKING_TOOL_clearml_needs_TRACKING_CLEARML_PROJECT }
+<%- endif %>
+<%- if TRACK != "wandb" and (T_WB[0] or T_WB[1]) %>
+$${ TRACKING_WANDB_parameters_must_be_empty_unless_TRACKING_TOOL_is_wandb }
+<%- endif %>
+<%- if TRACK != "clearml" and T_CL %>
+$${ TRACKING_CLEARML_PROJECT_must_be_empty_unless_TRACKING_TOOL_is_clearml }
+<%- endif %>
+# Credentials (and a server) from space secrets of the same names, for the chosen tool only. A
+# declared secret the space does not hold fails the target, so none is declared by default.
+<%- set T_SECRET_OK = {"none": (), "wandb": ("WANDB_API_KEY", "WANDB_BASE_URL"), "clearml": ("CLEARML_API_HOST", "CLEARML_WEB_HOST", "CLEARML_FILES_HOST", "CLEARML_API_ACCESS_KEY", "CLEARML_API_SECRET_KEY")} %>
+<%- set T_SECRETS = (TRACKING_SECRETS | string).split(",") | map("trim") | select | list %>
+<%- for _n in T_SECRETS %>
+<%- if _n not in T_SECRET_OK.get(TRACK, ()) %>
+$${ TRACKING_SECRETS_must_name_only_the_chosen_tools_variables }
+<%- endif %>
+<%- endfor %>
 # ── CKPT_LADDER, checked once ──────────────────────────────────────────────
 # Every rung binds a checkpoint the trainer emits MID-RUN. A rung it never
 # writes is not a late error but a target that never dispatches, so the ladder
@@ -468,6 +518,27 @@ $${ corpus_inputs() }
               # batch than the config says. More than one node is refused.
               gpus_per_node: $${SFT_NUM_GPUS}
               nodes: 1
+<%- if T_SECRETS %>
+            # Tracking credentials, from space secrets of the same names.
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+<%- for _n in T_SECRETS %>
+                  - { env_name: $${_n}, secret_name: $${_n} }
+<%- endfor %>
+<%- endif %>
+<%- if TRACK != "none" %>
+            tracking:
+              tool: "$${TRACK}"
+<%- if TRACK == "wandb" %>
+              wandb_entity: "$${TRACKING_WANDB_ENTITY}"
+              wandb_project: "$${TRACKING_WANDB_PROJECT}"
+              wandb_run_name: "$${RUN_NAME}-sft"
+<%- else %>
+              clearml_project: "$${TRACKING_CLEARML_PROJECT}"
+              clearml_run_name: "$${RUN_NAME}-sft"
+<%- endif %>
+<%- endif %>
             sft_config:
               output_dir: "$${RUN_DIR}/train-sft"
               response_template: "$${RESPONSE_TEMPLATE}"
@@ -612,6 +683,27 @@ $${ corpus_inputs() }
             # The rollout server's stop_file, the same path; see STOP_FILE above.
             rollout_stop_file: "$${STOP_FILE}"
 <%- endif %>
+<%- if T_SECRETS %>
+            # Tracking credentials, from space secrets of the same names.
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+<%- for _n in T_SECRETS %>
+                  - { env_name: $${_n}, secret_name: $${_n} }
+<%- endfor %>
+<%- endif %>
+<%- if TRACK != "none" %>
+            tracking:
+              tool: "$${TRACK}"
+<%- if TRACK == "wandb" %>
+              wandb_entity: "$${TRACKING_WANDB_ENTITY}"
+              wandb_project: "$${TRACKING_WANDB_PROJECT}"
+              wandb_run_name: "$${RUN_NAME}-distill"
+<%- else %>
+              clearml_project: "$${TRACKING_CLEARML_PROJECT}"
+              clearml_run_name: "$${RUN_NAME}-distill"
+<%- endif %>
+<%- endif %>
             compute_config:
               num_nodes: $${GOLD_NUM_NODES}
               num_gpus_per_node: $${GOLD_NUM_GPUS}
@@ -653,6 +745,11 @@ $${ corpus_inputs() }
               beta: $${BETA}
               use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
               loss_arm: "$${LOSS_ARM}"
+<%- if ULD and not ONLINE %>
+              # The step emits this off-policy for the uld arm alone, and the on-policy
+              # block below, which carries it otherwise, is not rendered here.
+              last_message_only: $${LAST_MESSAGE_ONLY}
+<%- endif %>
               # Stated in every target: the step's default is ChatML's marker, and a
               # marker that matches nothing trains on NOTHING while still producing a
               # loss curve and checkpoints.

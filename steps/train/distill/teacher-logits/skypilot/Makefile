@@ -1,4 +1,4 @@
-# distill-logit-precompute step for the SkyPilot environment (LSF / BlueVela).
+# teacher-logits step for the SkyPilot environment (LSF / BlueVela).
 #
 # Runs the teacher ONCE over the corpus and keeps the top-K logits per assistant
 # token, so a later training run can do forward KL against a file instead of holding

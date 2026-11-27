@@ -17,10 +17,10 @@ Divergences from upstream:
     documented one that quietly goes away, fails here instead of going unnoticed.
 """
 
-"""Tests for distill-sft's config validation and rendering.
+"""Tests for student-sft's config validation and rendering.
 
 Two kinds of test live here, and the second kind is the reason this file is not just a copy
-of distill-gold-train's suite with the names changed.
+of logit-distill's suite with the names changed.
 
 THE FIRST KIND covers the refusals only this step has -- the attention backend, the Liger
 SWA patch that is not in this collection, and the four ways to set `precomputed_logits_dir`
@@ -381,6 +381,7 @@ def test_student_and_corpus_land_on_the_keys_the_trainer_reads():
 def test_tracking_keys_are_omitted_when_empty():
     cfg = render(parse())
     for key in (
+        "tracking_tool",
         "clearml_project",
         "clearml_run_name",
         "wandb_entity",
@@ -391,7 +392,17 @@ def test_tracking_keys_are_omitted_when_empty():
 
 
 def test_tracking_keys_are_emitted_stripped_when_set():
-    cfg = render(parse("--clearml-project", " distill ", "--wandb-project", "kd"))
+    cfg = render(
+        parse(
+            "--tracking-tool",
+            " clearml ",
+            "--clearml-project",
+            " distill ",
+            "--wandb-project",
+            "kd",
+        )
+    )
+    assert cfg["tracking_tool"] == "clearml"
     assert cfg["clearml_project"] == "distill"
     assert cfg["wandb_project"] == "kd"
     assert "wandb_entity" not in cfg
@@ -411,6 +422,24 @@ def test_no_run_name_is_defaulted_here():
 def test_extra_yaml_can_add_a_key():
     cfg = render(parse("--extra-config-yaml", "bf16: true"))
     assert cfg["bf16"] is True
+
+
+@pytest.mark.parametrize("value", ["tensorboard", "[tensorboard]"])
+def test_extra_yaml_may_turn_on_tensorboard(value):
+    """TensorBoard writes local files only, and extra_config_yaml is the one way to ask for it
+    in this step; tracking.py keeps it in report_to beside the chosen tool."""
+    cfg = render(parse("--extra-config-yaml", f"report_to: {value}"))
+    assert cfg["report_to"] in ("tensorboard", ["tensorboard"])
+
+
+@pytest.mark.parametrize(
+    "value", ["all", "wandb", "[clearml, tensorboard]", "none", "[]", "{a: 1}"]
+)
+def test_extra_yaml_cannot_set_report_to(value):
+    """The tracking block chooses the tool; `report_to: all` here would turn on every
+    installed integration, whatever tracking.tool says."""
+    with pytest.raises(ConfigError, match="tracking.tool"):
+        render(parse("--extra-config-yaml", f"report_to: {value}"))
 
 
 def test_extra_yaml_cannot_override_a_contract_key():
@@ -531,7 +560,7 @@ def test_a_logits_dir_that_exists_is_accepted(tmp_path):
 
 
 def test_mismatched_tokenizer_identity_is_refused(tmp_path):
-    """Shared with distill-gold-train, and it has to be: a control trained on a corpus
+    """Shared with logit-distill, and it has to be: a control trained on a corpus
     segmented by a different tokenizer is not a control."""
     s = _student(tmp_path, markers=True)
     (s / "tokenizer_identity.json").write_text(
@@ -636,7 +665,7 @@ def test_the_backend_table_has_a_catch_all():
 
 # ----------------------------------------------------------------- resume modes
 #
-# The rules are render_common's and distill-gold-train's suite covers their behaviour. What
+# The rules are render_common's and logit-distill's suite covers their behaviour. What
 # is tested here is that THIS step reaches them, and reaches them named as itself: the
 # message has to say sft.py, because an operator reading "gold.py resumes on presence" about
 # a control run will go looking in the wrong file.
@@ -931,9 +960,10 @@ def test_the_keys_both_steps_take_include_the_batch_shape():
 
 
 def test_this_steps_tracking_keys_default_to_off():
-    """logit-distill renders no tracking keys, so there is no surface to compare. This step's
-    five default to empty, so a run tracks nothing unless the recipe says where."""
+    """Both steps pass the same six tracking keys (tracking.py's ALL_CONFIG_FIELDS), all
+    empty by default, so a run tracks nothing unless the recipe says where."""
     keys = {
+        "tracking_tool",
         "clearml_project",
         "clearml_run_name",
         "wandb_entity",

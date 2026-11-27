@@ -1,4 +1,4 @@
-# vllm-server step for the SkyPilot environment (LSF / BlueVela).
+# student-rollout-generator step for the SkyPilot environment (LSF / BlueVela).
 #
 # Serves a model under vLLM as a long-lived SERVICE target, publishing its URL as
 # a mem:// binding so a training target can reach it. Runs in the shared distillation

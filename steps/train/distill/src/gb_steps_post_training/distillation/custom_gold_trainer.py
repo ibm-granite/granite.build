@@ -663,11 +663,21 @@ def _is_weight_stats(weights: torch.Tensor) -> dict:
 
 
 class CustomULDLoss(ULDLoss):
-    """ULDLoss that fixes the EOS bug for empty completions.
+    """trl's ULDLoss with this trainer's fixes. Each is described where it is made:
 
-    When the teacher generates only an EOS token, the parent ULDLoss produces zero loss because
-    skip_student_eos=True decrements answer_size from 1 to 0. This subclass forces EOS inclusion
-    and ensures EOS tokens are properly aligned between student and teacher vocabularies.
+    - EOS for empty completions. When the teacher generates only an EOS token, the parent
+      ULDLoss produces zero loss because skip_student_eos=True decrements answer_size from 1
+      to 0. This subclass forces EOS inclusion and ensures EOS tokens are properly aligned
+      between student and teacher vocabularies.
+    - The base (non-hybrid) path, `_compute_base_distillation_loss`: trl 0.26.2's, owned
+      here, reading the logits before each token rather than at it, and skipping a row whose
+      alignment yields no groups instead of scoring it unmerged.
+    - Every row (region, on the hybrid path) that reaches alignment is counted in
+      `_alignment_rows`, and every one that yields no groups in `_alignment_unaligned`. The
+      trainer's ULDAlignmentGuard drains both at each optimizer step, reduces them across
+      ranks, and raises when a whole step, or too much of a window, trained on nothing.
+    - A completion that starts at position 0 has no logit predicting its first token; both
+      paths raise on it (`_require_predictable_start`).
     """
 
     def __init__(
@@ -777,6 +787,12 @@ class CustomULDLoss(ULDLoss):
 
         self._alignment_total = 0
         self._alignment_truncated = 0
+        # Rows (regions, on the hybrid path) that reached alignment, and those of them whose
+        # alignment produced no groups at all and so contributed no loss. RANK-LOCAL and
+        # drained at every optimizer step by ULDAlignmentGuard, which reduces them across
+        # ranks before it checks or logs them (`train/alignment_unaligned_rate`).
+        self._alignment_rows = 0
+        self._alignment_unaligned = 0
 
         self._opd_batch_norm_stats_accum = {"mean": 0.0, "std": 0.0}
         self._opd_batch_norm_stats_count = 0
@@ -1782,28 +1798,57 @@ class CustomULDLoss(ULDLoss):
         student_input_ids,
         teacher_input_ids,
     ):
-        """The non-hybrid ULD loss: trl 0.26.2's ULDLoss._compute_distillation_loss, vendored
-        unchanged (#676 decision D-7: bit-identical numerics).
+        """The non-hybrid ULD loss: trl 0.26.2's ULDLoss._compute_distillation_loss
+        (trl v0.26.2 trl/experimental/gold/gold_trainer.py:325-423), owned here, with two
+        fixes to it. The rest is TRL 0.26.2's arithmetic unchanged, less one dead branch:
+        TRL's loop also tested `use_hybrid_loss and _vocab_mapping` per row and called the
+        hybrid loss, which _compute_distillation_loss's dispatch makes unreachable here (it
+        routes exactly that case to the hybrid path), so it is gone. trl 1.x replaced the
+        path with a byte-offset alignment that raises on token-ID inputs without offsets,
+        which is all this trainer passes (#676), so it calls this class's
+        _build_alignment_groups_from_ids and the vendored 0.26.2 merge below.
 
-        Copied from trl v0.26.2 trl/experimental/gold/gold_trainer.py:325-423. trl 1.x replaced
-        it with a byte-offset alignment that raises on token-ID inputs without offsets, which
-        is all this trainer passes. It calls this class's _build_alignment_groups_from_ids
-        and the vendored merge below, as it called them under 0.26.2.
+        1. OFF BY ONE (upstream). TRL reads `logits[start : start + size]`, the logits AT the
+           completion positions. Nothing shifts them first: compute_loss passes the models'
+           logits and the labels in input coordinates (as TRL's own compute_loss does,
+           gold_trainer.py:1504-1511 in 0.26.2), and there logits[t] predicts ids[t + 1]. So
+           TRL scored each completion token with the distribution for the token after it,
+           and the EOS with the distribution after the end. The JSD path aligns
+           logits[:, :-1] with labels[:, 1:] (compute_loss), the teacher crop keeps
+           `teacher_prompt_length - 1` for exactly this reason, and the hybrid path below
+           reads start-1. So does this. (trl 1.18.2's opt-in
+           `uld_token_merge_strategy="bayesian"` makes the same shift; its default,
+           "observed", still reads the unshifted positions.)
+        2. NO ALIGNMENT, NO LOSS. When _build_alignment_groups_from_ids returns no groups,
+           _merge_probabilities_with_alignment_groups returns the probabilities UNMERGED
+           (trl 0.26.2's gold_trainer.py:532-533, kept in the vendored merge). The L1 below
+           then compares positions that were never paired: when the two completions have
+           different lengths it raises a shape RuntimeError, unless one side has a single
+           position, which F.l1_loss broadcasts against every position of the other with
+           only a UserWarning; when they have the same length it is a distance between
+           unaligned positions. Such a row is skipped as the
+           hybrid path skips it (zero loss, graph kept) and counted in
+           `_alignment_unaligned`, rather than killing a long run over one row. SKIPPING IS
+           NOT ALLOWED TO BECOME THE WHOLE RUN: a rate near 1 is the signature of a
+           systematic text mismatch between the two renders (a think scaffold in one span
+           and not the other, or a student span that runs across later turns), and then
+           every row trains at exactly zero gradient while the run looks healthy. The
+           trainer's ULDAlignmentGuard reduces the counts across ranks at every optimizer
+           step and raises when every row of a step is unaligned, or when more than
+           `uld_max_unaligned_fraction` of a window's rows are.
         """
-        # Get answer regions (same as original)
         student_answer_index, student_answer_size = self._get_start_and_size_answers(
             student_labels
         )
         teacher_answer_index, teacher_answer_size = self._get_start_and_size_answers(
             teacher_labels
         )
-
+        # Always False on this class (__init__); kept so the code reads as TRL's.
         if self.skip_student_eos:
             student_answer_size = [size - 1 for size in student_answer_size]
         if self.skip_teacher_eos:
             teacher_answer_size = [size - 1 for size in teacher_answer_size]
 
-        # Handle edge case where all answer sizes are 0
         if (
             not student_answer_size
             or not teacher_answer_size
@@ -1815,38 +1860,29 @@ class CustomULDLoss(ULDLoss):
                 * 1e-8
             )
 
-        batch_size = student_logits.size(0)
         distillation_losses = []
-
-        for i in range(batch_size):
-            # Get answer regions for this batch item
+        for i in range(student_logits.size(0)):
             student_start = student_answer_index[i]
             student_size = student_answer_size[i]
             teacher_start = teacher_answer_index[i]
             teacher_size = teacher_answer_size[i]
 
             if student_size <= 0 or teacher_size <= 0:
-                loss_i = student_logits[i].sum() * 0.0
-                distillation_losses.append(loss_i)
+                distillation_losses.append(student_logits[i].sum() * 0.0)
                 continue
+            self._require_predictable_start(i, student_start, teacher_start)
 
-            # Extract answer logits
-            student_answer_logits = student_logits[
-                i, student_start : student_start + student_size
-            ]
-            teacher_answer_logits = teacher_logits[
-                i, teacher_start : teacher_start + teacher_size
-            ]
-
-            # Convert to probabilities
+            # Fix 1: logits at start-1 .. start+size-2, so probs[k] predicts token_ids[k].
             student_probs = F.softmax(
-                student_answer_logits / self.student_temperature, dim=-1
+                student_logits[i, student_start - 1 : student_start + student_size - 1]
+                / self.student_temperature,
+                dim=-1,
             )
             teacher_probs = F.softmax(
-                teacher_answer_logits / self.teacher_temperature, dim=-1
+                teacher_logits[i, teacher_start - 1 : teacher_start + teacher_size - 1]
+                / self.teacher_temperature,
+                dim=-1,
             )
-
-            # Get token IDs for mapping (always use actual input_ids)
             student_token_ids = student_input_ids[
                 i, student_start : student_start + student_size
             ].tolist()
@@ -1855,61 +1891,54 @@ class CustomULDLoss(ULDLoss):
             ].tolist()
 
             if self.use_extended_uld:
-                # Build alignment groups directly from token ids using greedy text matching
-                student_alignment_groups, teacher_alignment_groups = (
-                    self._build_alignment_groups_from_ids(
-                        student_token_ids, teacher_token_ids
-                    )
+                s_groups, t_groups = self._build_alignment_groups_from_ids(
+                    student_token_ids, teacher_token_ids
                 )
-
-                # Merge student probabilities using student alignment groups
+                self._alignment_rows += 1
+                if not s_groups:
+                    # Fix 2. Counted, and refused in bulk by ULDAlignmentGuard.
+                    self._alignment_unaligned += 1
+                    distillation_losses.append(student_logits[i].sum() * 0.0)
+                    continue
                 student_aligned = self._merge_probabilities_with_alignment_groups(
-                    student_probs, student_alignment_groups
+                    student_probs, s_groups
                 )
-
-                # Merge teacher probabilities using teacher alignment groups
                 teacher_aligned = self._merge_probabilities_with_alignment_groups(
-                    teacher_probs, teacher_alignment_groups
+                    teacher_probs, t_groups
                 )
             else:
                 min_length = min(len(student_token_ids), len(teacher_token_ids))
                 student_aligned = student_probs[:min_length, :]
                 teacher_aligned = teacher_probs[:min_length, :]
 
-            # Apply ULD loss computation
-            if self.use_hybrid_loss and self._vocab_mapping is not None:
-                # Use hybrid approach: direct comparison for matched tokens, sorting for unmatched
-                aligned_loss = self._compute_hybrid_uld_loss(
-                    student_aligned, teacher_aligned
-                )
-            else:
-                # Original approach: sort all probabilities
-                student_sorted = student_aligned.sort(dim=-1, descending=True).values
-                teacher_sorted = teacher_aligned.sort(dim=-1, descending=True).values
+            student_sorted = student_aligned.sort(dim=-1, descending=True).values
+            teacher_sorted = teacher_aligned.sort(dim=-1, descending=True).values
+            width = max(student_sorted.size(-1), teacher_sorted.size(-1))
+            student_sorted = F.pad(student_sorted, (0, width - student_sorted.size(-1)))
+            teacher_sorted = F.pad(teacher_sorted, (0, width - teacher_sorted.size(-1)))
+            aligned_loss = F.l1_loss(student_sorted, teacher_sorted, reduction="sum")
+            distillation_losses.append(aligned_loss / student_aligned.size(0))
 
-                # Pad vocabularies to same size
-                student_vocab_size = student_sorted.size(-1)
-                teacher_vocab_size = teacher_sorted.size(-1)
-                max_vocab_size = max(student_vocab_size, teacher_vocab_size)
+        return self.distillation_weight * torch.stack(distillation_losses).mean()
 
-                if student_vocab_size < max_vocab_size:
-                    student_sorted = F.pad(
-                        student_sorted, (0, max_vocab_size - student_vocab_size)
-                    )
-                if teacher_vocab_size < max_vocab_size:
-                    teacher_sorted = F.pad(
-                        teacher_sorted, (0, max_vocab_size - teacher_vocab_size)
-                    )
+    @staticmethod
+    def _require_predictable_start(i, student_start, teacher_start, region=False):
+        """Raise unless both completions start at position 1 or later.
 
-                # Compute L1 distance (ULD approach)
-                aligned_loss = F.l1_loss(
-                    student_sorted, teacher_sorted, reduction="sum"
-                )
-                aligned_loss /= student_aligned.size(0)  # Normalize by sequence length
-            distillation_losses.append(aligned_loss)
-
-        distillation_loss = torch.stack(distillation_losses).mean()
-        return self.distillation_weight * distillation_loss
+        Both ULD paths read the logits at start-1 .. start+size-2, because logits[t] predict
+        token t + 1. A completion at position 0 has no predictor, and start-1 = -1 would
+        silently slice from the END of the row instead. Every layout this trainer builds has
+        a prompt: the collator's spans start after the response template or the rendered
+        prompt, the single-region teacher crop keeps `teacher_prompt_length - 1`, and the
+        per-turn teacher pack puts each region at block offset + 1. So this is a
+        construction error, not a data condition to degrade over.
+        """
+        if student_start < 1 or teacher_start < 1:
+            kind = "region" if region else "row"
+            raise ValueError(
+                f"ULD {kind} {i}: completion starts at position 0 (student {student_start}, "
+                f"teacher {teacher_start}), so no logit predicts its first token"
+            )
 
     def _merge_probabilities_with_alignment_groups(
         self, probs, alignment_groups, token_ids=None
@@ -2190,6 +2219,11 @@ class CustomULDLoss(ULDLoss):
                 opd_losses.append(student_logits[row].sum() * 0.0)
                 opd_token_counts.append(0)
                 continue
+            # Before every start-1 read below (the full-vocab softmax, the chunked region
+            # terms, the OPD slices). The scaffold trim above only moves a start forward.
+            self._require_predictable_start(
+                i, student_start, teacher_start, region=True
+            )
 
             # Logits at positions start-1 .. start+size-2: probs[k] predicts token_ids[k]
             # (includes first answer token, excludes prediction after EOS)
@@ -2238,9 +2272,12 @@ class CustomULDLoss(ULDLoss):
                         student_token_ids, teacher_token_ids
                     )
 
+                self._alignment_rows += 1
                 if not s_groups:
                     # Alignment failed entirely (e.g. full Unicode mismatch + truncation);
-                    # skip this sample with a zero-gradient-preserving loss.
+                    # skip this sample with a zero-gradient-preserving loss. Counted, and
+                    # refused in bulk by ULDAlignmentGuard, as on the base path.
+                    self._alignment_unaligned += 1
                     uld_losses.append(student_logits[row].sum() * 0.0)
                     uld_token_counts.append(0)
                     opd_losses.append(student_logits[row].sum() * 0.0)
@@ -2732,6 +2769,165 @@ class _StopAtStepCallback(TrainerCallback):
         return control
 
 
+def _all_reduce_sum(values, device, distributed: bool) -> list[float]:
+    """Sum `values` over every rank (float64), or return them as they are on one process.
+
+    Every rank must call this the same number of times, so callers gate it on configuration
+    only, never on the values: a rank that skipped it would hang the others.
+    """
+    vec = torch.tensor([float(v) for v in values], dtype=torch.float64, device=device)
+    if distributed and dist.is_available() and dist.is_initialized():
+        dist.all_reduce(vec, op=dist.ReduceOp.SUM)
+    return vec.tolist()
+
+
+class ULDAlignmentGuard:
+    """Refuse to let skipped ULD rows become a run that trains on nothing.
+
+    CustomULDLoss skips a row (a region, on the hybrid path) whose alignment yields no groups:
+    zero loss, graph kept. That is the right answer for the rare row, and the WRONG answer
+    when the two renders disagree systematically, because then every row is skipped, every
+    step has exactly zero gradient, and the run checkpoints and reports success. That is not
+    hypothetical here: a think scaffold in the student's span and not the teacher's, or a
+    student span that runs across later turns, leaves every row unaligned (custom_gold_config's
+    `uld_per_turn_regions` help records a run that trained 100 steps at loss 0.0 that way).
+
+    So the counts are checked, after being summed over every rank (a rank-local count is
+    wrong on N GPUs, and a rank-local raise would hang the other ranks):
+
+    - at every optimizer step: if every row that reached alignment, on every rank, was
+      unaligned, raise. No loss term was computed for the step at all.
+    - over each window of `window_steps` optimizer steps (default: the logging window's
+      length): if more than `max_unaligned_fraction` of the window's rows were unaligned,
+      raise. The final, partial window is judged at train end (`end_train`), so a run
+      shorter than one window, and the steps after the last full one, are judged too.
+    - for logging: the unaligned count, row count and rate since the last log line, as
+      `train/alignment_unaligned_rows`, `train/alignment_rows` and
+      `train/alignment_unaligned_rate`, the same on every rank. The window and the log line
+      count separately. With the default window they cover the same steps when logging runs
+      every logging_steps from step 1, but not, for instance, on a resumed run whose first
+      step is off the logging grid.
+
+    THERE IS NO MINIMUM ROW COUNT, deliberately. With a global batch of 1 (one GPU, batch 1,
+    no accumulation), a single unaligned row is an all-unaligned step and raises. But that
+    step computed no loss at all, so the premise of skipping (the other rows of the step
+    still train) does not hold. And a minimum would blind the guard on exactly the small
+    runs that most need it: the 2-step, 2-rank build test has 4 rows in total. A run that
+    must tolerate a rare unaligned row should have more than one row per optimizer step
+    (gradient_accumulation_steps).
+
+    Rows with no completion on either side never reach alignment and are not counted here.
+    """
+
+    def __init__(self, max_unaligned_fraction: float, window_steps: int = 0):
+        self.max_unaligned_fraction = float(max_unaligned_fraction)
+        self.window_steps = int(window_steps)
+        self._win_unaligned = 0
+        self._win_rows = 0
+        self._win_steps = 0
+        self._last_step = 0
+        self._log_unaligned = 0
+        self._log_rows = 0
+
+    def end_step(self, loss_fn, step: int, reduce, window_steps: int = 0) -> None:
+        """Account for one optimizer step: drain `loss_fn`'s rank-local counters, reduce them
+        with `reduce` (a list -> list sum over ranks), check, and accumulate.
+
+        `window_steps` is the window to use when the guard was built with 0 (the trainer
+        passes its logging window). Raises RuntimeError, on every rank alike, as above.
+        """
+        local = [loss_fn._alignment_unaligned, loss_fn._alignment_rows]
+        loss_fn._alignment_unaligned = 0
+        loss_fn._alignment_rows = 0
+        unaligned, rows = (int(round(v)) for v in reduce(local))
+        self._log_unaligned += unaligned
+        self._log_rows += rows
+        if rows > 0 and unaligned == rows:
+            raise RuntimeError(
+                f"ULD step {step}: all {rows} rows that reached alignment, across all ranks, "
+                "yielded no alignment groups, so this step computed no loss at all. The "
+                "student's and the teacher's completion texts do not line up. Known causes: "
+                "last_message_only=false, under which the student's span covers every "
+                "assistant turn while the teacher renders only the last; and a "
+                "response_template that leaves template scaffolding (e.g. granite-4.2's "
+                "'\\n<think></think>') in the student's labels but not in the teacher's "
+                "completion. Set ULD_DEBUG=1 for the spans of the first batch."
+            )
+        self._win_unaligned += unaligned
+        self._win_rows += rows
+        self._win_steps += 1
+        self._last_step = step
+        window = max(1, int(self.window_steps or window_steps or 1))
+        if self._win_steps >= window:
+            self._judge_window()
+
+    def end_train(self) -> None:
+        """Judge the final, partial window, if training ended inside one. The counts are
+        already summed over ranks, so this needs no collective and raises on every rank
+        alike."""
+        if self._win_steps:
+            self._judge_window()
+
+    def _judge_window(self) -> None:
+        win_unaligned, win_rows = self._win_unaligned, self._win_rows
+        first, last = self._last_step - self._win_steps + 1, self._last_step
+        self._win_unaligned = self._win_rows = self._win_steps = 0
+        if win_rows > 0 and win_unaligned / win_rows > self.max_unaligned_fraction:
+            raise RuntimeError(
+                f"ULD steps {first}-{last}: {win_unaligned} of {win_rows} rows "
+                f"({win_unaligned / win_rows:.1%}) yielded no alignment groups and "
+                "contributed no loss, more than uld_max_unaligned_fraction="
+                f"{self.max_unaligned_fraction}. A rare unaligned row is skipped; this many "
+                "means the student's and the teacher's completions do not line up for a "
+                "whole class of rows (multi-turn rows under last_message_only=false are the "
+                "known one)."
+            )
+
+    def pop_log(self) -> dict:
+        """The counts since the last call, for the log line, and reset them. Empty when no
+        row reached alignment (an arm that does not align, or no step since)."""
+        if self._log_rows <= 0:
+            return {}
+        out = {
+            "train/alignment_unaligned_rows": self._log_unaligned,
+            "train/alignment_rows": self._log_rows,
+            "train/alignment_unaligned_rate": self._log_unaligned / self._log_rows,
+        }
+        self._log_unaligned = self._log_rows = 0
+        return out
+
+
+class _ULDAlignmentGuardCallback(TrainerCallback):
+    """Run the trainer's ULDAlignmentGuard once per optimizer step, on every rank.
+
+    on_pre_optimizer_step, not on_step_end, so a step whose rows were all skipped is refused
+    before the optimizer applies it. (Under DeepSpeed, accelerate's backward has already
+    run engine.step() at the accumulation boundary, so there the refusal follows that one
+    update.) It is called on every rank at every optimizer step, which is what keeps the
+    guard's all-reduce rank-uniform.
+    """
+
+    def __init__(self, trainer):
+        self._trainer = trainer
+
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        self._trainer._uld_alignment_step_end(state)
+        return control
+
+    def on_train_end(self, args, state, control, **kwargs):
+        # The steps after the last full window, or a run shorter than one.
+        self._trainer._uld_alignment_guard.end_train()
+        return control
+
+    def on_evaluate(self, args, state, control, **kwargs):
+        # Rows the loss counted during evaluation are not a training step's; the training
+        # counters were drained at the step that preceded the evaluation.
+        loss_fn = self._trainer.uld_loss_fn
+        loss_fn._alignment_unaligned = 0
+        loss_fn._alignment_rows = 0
+        return control
+
+
 class _VLLMWeightSyncCallback(TrainerCallback):
     """Push the student's weights to vLLM at the end of every vllm_sync_frequency-th step.
 
@@ -3065,6 +3261,18 @@ class CustomGOLDTrainer(GOLDTrainer):
                     f"uld_reuse_student_input requires identical tokenizers (jaccard=1.0), "
                     f"but got jaccard={self.uld_loss_fn.jaccard}"
                 )
+
+        # Gated on configuration alone (the loss class), so every rank registers it and the
+        # guard's per-step all-reduce runs on every rank alike.
+        self._uld_alignment_guard = None
+        if self.use_uld_loss and isinstance(
+            getattr(self, "uld_loss_fn", None), CustomULDLoss
+        ):
+            self._uld_alignment_guard = ULDAlignmentGuard(
+                self.args.uld_max_unaligned_fraction,
+                self.args.uld_unaligned_window_steps,
+            )
+            self.add_callback(_ULDAlignmentGuardCallback(self))
 
         if self.use_uld_loss and self.teacher_tokenizer is not None:
             _s = [{"role": "user", "content": ""}]
@@ -3446,7 +3654,7 @@ class CustomGOLDTrainer(GOLDTrainer):
                         # `tools` REACHES THIS LINE IN THREE SHAPES, and the original assumed one.
                         #
                         #   JSON STRING  -- upstream en_sft_4.1 stores it as the string "[]".
-                        #   LIST         -- our own distill-corpus-prep parsed it in order to
+                        #   LIST         -- our own data-prep parsed it in order to
                         #                   render and then emitted the parsed list
                         #                   (prep_corpus.py:423), so `json.loads(a list)` raised
                         #                     TypeError: the JSON object must be str, bytes or
@@ -5076,6 +5284,25 @@ class CustomGOLDTrainer(GOLDTrainer):
         else:
             return jsd
 
+    def _uld_alignment_step_end(self, state) -> None:
+        """One optimizer step of ULDAlignmentGuard, from _ULDAlignmentGuardCallback. The
+        window defaults to the logging window's length (see ULDAlignmentGuard for when the
+        two cover different steps)."""
+        distributed = (
+            getattr(self.accelerator, "distributed_type", DistributedType.NO)
+            != DistributedType.NO
+        )
+        device = getattr(self.accelerator, "device", torch.device("cpu"))
+        self._uld_alignment_guard.end_step(
+            self.uld_loss_fn,
+            state.global_step
+            + 1,  # the step being taken; global_step counts completed ones
+            lambda values: _all_reduce_sum(values, device, distributed),
+            window_steps=int(
+                getattr(state, "logging_steps", 0) or self.args.logging_steps or 1
+            ),
+        )
+
     def _student_rows_end_with_eos(self, inputs) -> list[bool]:
         """Per row: did the student's sequence end with EOS, i.e. was it NOT truncated?
 
@@ -6218,6 +6445,10 @@ class CustomGOLDTrainer(GOLDTrainer):
             logs["train/alignment_truncation_rate"] = trunc / total
             self.uld_loss_fn._alignment_total = 0
             self.uld_loss_fn._alignment_truncated = 0
+
+        # Already summed over ranks, step by step, by the guard; no collective here.
+        if mode == "train" and getattr(self, "_uld_alignment_guard", None) is not None:
+            logs.update(self._uld_alignment_guard.pop_log())
 
         if (
             mode == "train"

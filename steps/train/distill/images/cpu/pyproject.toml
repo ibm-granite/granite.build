@@ -12,15 +12,22 @@
 #   distill-tokenizer-align): tensor load/save for the embedding transplant,
 #                            no CUDA needed), safetensors>=0.4, tokenizers>=0.22,
 #                            clearml>=2.1.12, wandb>=0.28.2
-#   (distill-hf-export used to be the third member of this union; it moved to
+#   (hf-export used to be the third member of this union; it moved to
 #   steps/aux/hf-export with an image of its own.)
+#
+# EXCEPT clearml and wandb, which this image does not install (#752). Upstream declared
+# them, but nothing these steps run imports either: the CPU steps load only step_state,
+# tokenizer_identity, build_overlay, align_state, masking and retag_student from the
+# trainer package, and the only modules there that import a tracking library
+# (tracking.py, custom_gold_trainer.py) run in the GPU image's trainers. Installing
+# them shipped wandb's Go binary, and its advisories, for nothing.
 #
 # Both agree on requires-python>=3.10; pinned here to 3.12 for
 # consistency with steps/train/distill/images/gpu/'s image, not because any step needs
 # exactly 3.12 (none of these three pin an exact minor version the way
-# distill-gold-train/distill-logit-precompute do).
+# logit-distill/teacher-logits do).
 #
-# This set also covers corpus-pin-check and corpus-sources (granite.build's
+# This set also covers data-validate and data-mixture (granite.build's
 # own steps, not vendored from gb-steps-distillation): both are explicitly
 # "CPU-only and stdlib-only" per their own step-template.yaml header
 # comments, so they need no third-party package this manifest doesn't
@@ -35,8 +42,6 @@ dependencies = [
     "datasets>=3.0",
     "torch>=2.8",
     "safetensors>=0.4",
-    "clearml>=2.1.12",
-    "wandb>=0.28.2",
 ]
 
 [tool.uv]

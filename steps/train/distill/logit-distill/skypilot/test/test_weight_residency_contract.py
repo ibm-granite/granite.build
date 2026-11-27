@@ -59,7 +59,7 @@ def _module_of(name):
 
 
 def test_the_reference_step_is_present():
-    """Guards against this file passing vacuously if the gold step is ever renamed."""
+    """Guards against this file passing vacuously if logit-distill is ever renamed."""
     assert _REFERENCE in _wiring_it()
 
 
@@ -115,7 +115,7 @@ def test_the_only_guard_on_the_invocation_is_the_config_switch(name):
 
 
 def test_distill_gold_checks_before_the_vllm_role_split():
-    """distill-gold's run block `exec`s into run_vllm_serve on the server nodes, so
+    """logit-distill's run block `exec`s into run_vllm_serve on the server nodes, so
     anything spliced after that branch never runs there -- and a vLLM node loads the student
     too. This assertion is the reason the invocation sits where it does."""
     text = _templates()[_REFERENCE].read_text()

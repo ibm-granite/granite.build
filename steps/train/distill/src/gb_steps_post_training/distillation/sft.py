@@ -391,11 +391,12 @@ class CustomArguments:
         },
     )
 
-    # ---- Experiment tracking. ClearML is the DEFAULT backend; W&B is optional. The rules and
-    # the (measured) list of what each backend actually reads live in tracking.py -- read its
-    # docstring before changing any of this. In short: a backend needs a COMPLETE config to be
-    # enabled, a PARTIAL config aborts the launch, and a complete config with no credentials
-    # logs nothing and says so at full volume.
+    # ---- Experiment tracking. ONE tool per run, chosen by `tracking_tool` (wandb, clearml, or
+    # none, the default). The rules and the (measured) list of what each tool actually reads
+    # live in tracking.py -- read its docstring before changing any of this. In short: the
+    # chosen tool needs a COMPLETE config, a PARTIAL one or another tool's keys abort the
+    # launch, each tool talks to its public server unless the user set another, and a complete
+    # config with no credentials logs nothing and says so at full volume.
     #
     # These are typed fields rather than a `clearml:` block in the yaml for the same
     # fail_with_unknown_args reason as above.
@@ -408,6 +409,13 @@ class CustomArguments:
     # dataclasses.fields(SFTConfig), which contains no wandb_* name at all -- so here they must
     # be declared or the rendered yaml key would be an unknown argument. Do not "make the two
     # files consistent" by copying gold.py's omission across; the asymmetry is upstream's.
+    tracking_tool: str | None = field(
+        default=None,
+        metadata={
+            "help": "Experiment tracking tool for this run: wandb, clearml, or none (the "
+            "default; empty means none). Only the chosen tool's keys may be set."
+        },
+    )
     clearml_project: str | None = field(
         default=None,
         metadata={
@@ -1567,13 +1575,13 @@ if __name__ == "__main__":
     pprint(vars(custom_args))
 
     ################
-    # Experiment tracking (ClearML default, W&B optional).
+    # Experiment tracking: one tool per run, chosen by `tracking_tool` (wandb, clearml or none).
     #
     # HERE, and not later, for two reasons: `training_args.report_to` has to be final before the
     # trainer is constructed, and a tracking config that cannot be honoured should end the run
-    # while it has cost nothing. run-sft.sh runs the same resolution in its preflight, before the
-    # allocation -- this pass is the authoritative one because it sees the PARSED dataclass rather
-    # than the yaml, so a `--clearml_project` on the command line counts.
+    # while it has cost nothing but the allocation. This is the only check: no launcher runs one
+    # before the allocation. It reads the PARSED dataclass, so a `--clearml_project` on the
+    # command line counts.
     ################
     from gb_steps_post_training.distillation.tracking import (
         ALL_CONFIG_FIELDS as _TRACK_FIELDS,

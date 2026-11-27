@@ -2,11 +2,11 @@
 
 """Refuse to hold an allocation waiting for weights that live on tape.
 
-BYTE-IDENTICAL across every step that reads model weights (distill-gold,
-distill-sft, distill-logit-precompute) and asserted so by distill-gold's
+BYTE-IDENTICAL across every step that reads model weights (logit-distill,
+student-sft, teacher-logits) and asserted so by logit-distill's
 test_weight_residency_contract.py, for the same reason the source-delivery region is
 asserted by test_source_contract.py: three copies that drift are worse than one copy that
-is checked. distill-gold is the reference, and its test_check_weight_residency.py is where
+is checked. logit-distill is the reference, and its test_check_weight_residency.py is where
 this module's behaviour is pinned -- including the fixtures from the incident below.
 
 WHY THIS EXISTS. A shared network filesystem may be tape-backed (e.g. GPFS with HSM). A migrated file is fully

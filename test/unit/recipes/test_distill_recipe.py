@@ -75,6 +75,8 @@ _GENERIC_CONFIG = {
     "log_retrieval_mode",
     "compute_config",
     "launcher_config",
+    # Read by the SkyPilot environment itself: the declared space secrets.
+    "skypilot",
 }
 
 _BENCHMARK = re.compile(r"^(eval-.+-ck\d+|export-(sage|bfcl)-ck\d+|export-combined)$")
@@ -264,6 +266,70 @@ def test_zero_and_empty_drop_settings_render(tmp_path, mode):
     _render(tmp_path, LMBDA_MODE=mode, MIN_COMPLETION_LENGTH="")
 
 
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("lmo", [None, "false"], ids=["unset", "false"])
+def test_uld_without_last_message_only_fails_to_render(tmp_path, mode, lmo):
+    """ULD's teacher is the last assistant turn alone, so with LAST_MESSAGE_ONLY false no
+    multi-turn row aligns and the run trains at zero gradient. Refused before
+    submission, naming the parameter, rather than at launch on a held allocation."""
+    params = {"LMBDA_MODE": mode, "LOSS_ARM": "uld"}
+    if lmo is not None:
+        params["LAST_MESSAGE_ONLY"] = lmo
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld" in str(err.value)
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_uld_with_last_message_only_reaches_the_step(tmp_path, mode):
+    """Off-policy the recipe passes the key only for uld, since the step emits it
+    off-policy for that arm alone; on-policy its usual block carries it. Once either way.
+    """
+    text = _render_text(
+        tmp_path, LMBDA_MODE=mode, LOSS_ARM="uld", LAST_MESSAGE_ONLY="true"
+    )
+    gold = _gold(yaml.safe_load(text))
+    assert gold["loss_arm"] == "uld"
+    assert gold["last_message_only"] is True
+    assert text.count("last_message_only:") == 1
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+@pytest.mark.parametrize("lmo", [None, "false"], ids=["unset", "false"])
+def test_sampled_opd_without_last_message_only_fails_to_render(tmp_path, sopd, lmo):
+    """The same requirement, with the same render-time refusal, as uld: the step's
+    renderer and CustomGOLDConfig both refuse the sampled-OPD loss without it."""
+    params = {"LMBDA_MODE": "on-policy", **sopd}
+    if lmo is not None:
+        params["LAST_MESSAGE_ONLY"] = lmo
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss" in str(err.value)
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+def test_sampled_opd_with_last_message_only_renders(tmp_path, sopd):
+    gold = _gold(
+        _render(tmp_path, LMBDA_MODE="on-policy", LAST_MESSAGE_ONLY="true", **sopd)
+    )
+    assert gold["last_message_only"] is True
+
+
+def test_other_arms_pass_no_last_message_only_off_policy(tmp_path):
+    for arm in ("", "jsd", "ce"):
+        assert "last_message_only" not in _gold(
+            _render(tmp_path, LMBDA_MODE="off-policy", LOSS_ARM=arm)
+        )
+
+
 @pytest.mark.parametrize("mode", ["ramp", "on-policy"])
 def test_generation_floor_defaults_to_16_online(tmp_path, mode):
     assert _gold(_render(tmp_path, LMBDA_MODE=mode))["min_completion_length"] == 16
@@ -362,6 +428,15 @@ def _all_renders(tmp_path):
         yield _render(tmp_path, _SMOKE, LMBDA_MODE=mode)
     yield _render(tmp_path, INCLUDE_SFT="true", CORPUS_DIR="/c")
     yield _render(tmp_path, SCREEN_EVALS="olmes-gsm8k,bfcl", FULL_EVAL_RUNGS="8000")
+    for tool, keys in _TRACKING_OK.items():
+        yield _render(tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **keys)
+    yield _render(
+        tmp_path,
+        INCLUDE_SFT="true",
+        TRACKING_TOOL="clearml",
+        TRACKING_SECRETS="CLEARML_API_HOST,CLEARML_API_ACCESS_KEY,CLEARML_API_SECRET_KEY",
+        **_TRACKING_OK["clearml"],
+    )
 
 
 def test_every_step_uri_is_expected(tmp_path):
@@ -790,3 +865,144 @@ def test_gold_config_keys_are_logit_distill_keys(tmp_path):
     for mode in _MODES:
         gold = _gold(_render(tmp_path, LMBDA_MODE=mode))
         assert set(gold) <= set(schema), sorted(set(gold) - set(schema))
+
+
+# ─── Experiment tracking ──────────────────────────────────────────────────────
+
+_TRACKING_OK = {
+    "wandb": {"TRACKING_WANDB_ENTITY": "ibm", "TRACKING_WANDB_PROJECT": "kd"},
+    "clearml": {"TRACKING_CLEARML_PROJECT": "distill"},
+}
+_TRAINING_TARGETS = ("train", "train-sft")
+
+
+def test_tracking_is_off_by_default(tmp_path):
+    """No tracking block at all: the steps' own default is off, and a render that tracks
+    nothing is the render it was before tracking was a parameter."""
+    rendered = _render(tmp_path, INCLUDE_SFT="true")
+    for target in _TRAINING_TARGETS:
+        assert "tracking" not in _config(rendered, target), target
+
+
+@pytest.mark.parametrize("tool", sorted(_TRACKING_OK))
+def test_the_chosen_tool_reaches_both_training_targets(tmp_path, tool):
+    rendered = _render(
+        tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **_TRACKING_OK[tool]
+    )
+    suffix = {"train": "distill", "train-sft": "sft"}
+    for target in _TRAINING_TARGETS:
+        tracking = _config(rendered, target)["tracking"]
+        assert tracking["tool"] == tool
+        if tool == "wandb":
+            assert tracking == {
+                "tool": "wandb",
+                "wandb_entity": "ibm",
+                "wandb_project": "kd",
+                "wandb_run_name": f"test-run-{suffix[target]}",
+            }
+        else:
+            assert tracking == {
+                "tool": "clearml",
+                "clearml_project": "distill",
+                "clearml_run_name": f"test-run-{suffix[target]}",
+            }
+
+
+@pytest.mark.parametrize(
+    "params,needle",
+    [
+        ({"TRACKING_TOOL": "mlflow"}, "TRACKING_TOOL_must_be_none_wandb_or_clearml"),
+        (
+            {"TRACKING_TOOL": "wandb", "TRACKING_WANDB_PROJECT": "kd"},
+            "TRACKING_TOOL_wandb_needs_TRACKING_WANDB_ENTITY_and_TRACKING_WANDB_PROJECT",
+        ),
+        (
+            {"TRACKING_TOOL": "clearml"},
+            "TRACKING_TOOL_clearml_needs_TRACKING_CLEARML_PROJECT",
+        ),
+        (
+            {"TRACKING_TOOL": "none", "TRACKING_CLEARML_PROJECT": "d"},
+            "TRACKING_CLEARML_PROJECT_must_be_empty_unless_TRACKING_TOOL_is_clearml",
+        ),
+        (
+            {
+                "TRACKING_TOOL": "clearml",
+                "TRACKING_CLEARML_PROJECT": "d",
+                "TRACKING_WANDB_ENTITY": "e",
+            },
+            "TRACKING_WANDB_parameters_must_be_empty_unless_TRACKING_TOOL_is_wandb",
+        ),
+    ],
+)
+def test_bad_tracking_settings_fail_to_render(tmp_path, params, needle):
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert needle in str(err.value)
+
+
+def test_tracking_tool_is_case_and_space_insensitive(tmp_path):
+    rendered = _render(tmp_path, TRACKING_TOOL=" WandB ", **_TRACKING_OK["wandb"])
+    assert _config(rendered, "train")["tracking"]["tool"] == "wandb"
+
+
+def _secrets(rendered, target):
+    return (
+        _config(rendered, target)
+        .get("skypilot", {})
+        .get("secrets", {})
+        .get("secret_names_to_use_as_env_variable")
+    )
+
+
+def test_no_secret_is_declared_by_default(tmp_path):
+    """A declared secret the space does not hold fails the target, so none by default."""
+    for tool, keys in _TRACKING_OK.items():
+        rendered = _render(tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **keys)
+        for target in _TRAINING_TARGETS:
+            assert "skypilot" not in _config(rendered, target), (tool, target)
+
+
+@pytest.mark.parametrize(
+    "tool,names",
+    [
+        ("wandb", "WANDB_API_KEY"),
+        ("wandb", " WANDB_API_KEY , WANDB_BASE_URL "),
+        ("clearml", "CLEARML_API_HOST,CLEARML_API_ACCESS_KEY,CLEARML_API_SECRET_KEY"),
+    ],
+)
+def test_tracking_secrets_reach_both_training_targets(tmp_path, tool, names):
+    """The granite-switch recipes' shape: each variable from the space secret of its name."""
+    rendered = _render(
+        tmp_path,
+        INCLUDE_SFT="true",
+        TRACKING_TOOL=tool,
+        TRACKING_SECRETS=names,
+        **_TRACKING_OK[tool],
+    )
+    want = [{"env_name": n.strip(), "secret_name": n.strip()} for n in names.split(",")]
+    for target in _TRAINING_TARGETS:
+        assert _secrets(rendered, target) == want, target
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"TRACKING_TOOL": "none", "TRACKING_SECRETS": "WANDB_API_KEY"},
+        {
+            "TRACKING_TOOL": "wandb",
+            "TRACKING_SECRETS": "CLEARML_API_ACCESS_KEY",
+            **_TRACKING_OK["wandb"],
+        },
+        {
+            "TRACKING_TOOL": "clearml",
+            "TRACKING_SECRETS": "HF_TOKEN",
+            **_TRACKING_OK["clearml"],
+        },
+    ],
+)
+def test_secrets_of_another_tool_fail_to_render(tmp_path, params):
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "TRACKING_SECRETS_must_name_only_the_chosen_tools_variables" in str(
+        err.value
+    )

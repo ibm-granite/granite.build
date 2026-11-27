@@ -27,22 +27,22 @@ TWO KINDS OF FINDING, reported separately because they mean different things:
             environment, whatever its comments say.
 
 And one thing that is deliberately NOT a finding: a package installed here but not declared. The
-steps rely on that on purpose -- distill-eval does not list torch because the base image supplies
-a CUDA-matched build, and pinning it would replace a working wheel with a mismatched one. Naming
-that "undeclared" would report a considered decision as a defect.
+steps rely on that on purpose -- teacher-divergence does not list torch because the base image
+supplies a CUDA-matched build, and pinning it would replace a working wheel with a mismatched
+one. Naming that "undeclared" would report a considered decision as a defect.
 
 Exact-pinned steps are checked differently and on purpose, and WHICH steps those are is derived
-from their pyprojects rather than named here. distill-gold-train carries a uv.lock with `==` pins
+from their pyprojects rather than named here. logit-distill carries a uv.lock with `==` pins
 because seven monkeypatches reach into private third-party surface and a range would let a
-resolver pick a release the patches do not describe; distill-logit-precompute and
-distill-sft-baseline carry one because their images install `uv sync --locked`. For any such step
+resolver pick a release the patches do not describe; teacher-logits and
+student-sft carry one because their images install `uv sync --locked`. For any such step
 the question is not "does the range admit the environment" but "is the pin EQUAL to it", so any
 deviation at all is a finding. The name was hard-coded here until 2026-08-27 and was stale within
 a day of the other two steps landing -- during which they were range-checked, which for
 `torch==2.8.0` gives the right answer for the wrong reason and never opens the lock.
 
 A dependency declared with no specifier at all is reported UNPINNED and is NOT a finding.
-distill-sft-baseline declares a bare `pyyaml` deliberately, with the reason in the pyproject
+student-sft declares a bare `pyyaml` deliberately, with the reason in the pyproject
 beside it. An empty specifier admits every version, so reporting it as SATISFIED would claim a
 verification that did not happen -- and failing it would report a considered decision as a defect,
 which the paragraph above forbids for undeclared packages and forbids here for the same reason.
@@ -85,7 +85,7 @@ STEPS = REPO / "steps"
 def exact_pin_step(deps: list[str]) -> bool:
     """True when every dependency that constrains a version at all constrains it with `==`.
 
-    A bare dependency (no specifier) does not vote: distill-sft-baseline declares `pyyaml`
+    A bare dependency (no specifier) does not vote: student-sft declares `pyyaml`
     unpinned deliberately, and that decision should not flip the step into range-checking.
     An empty dependency list is not exact -- it is nothing, and returning True there would
     make a step with no dependencies claim the strictest possible contract.

@@ -1,14 +1,14 @@
 granite.build:
   name: distill-eval-smoke
-  # Smoke build for the distill-eval step on BlueVela (SkyPilot / LSF).
+  # Smoke build for the teacher-divergence step on BlueVela (SkyPilot / LSF).
   #
   # THREE targets, because this step's two data inputs are both produced by the pipeline
   # and neither can be faked from anything already on /proj:
   #   - the student must be a retagged model whose tokenizer AGREES WITH THE TEACHER'S,
   #     which is what align produces (and allow_tokenizer_mismatch stays false, so a
   #     mismatch is refused rather than measured);
-  #   - the corpus must be an EVAL SPLIT, which corpus-prep writes beside train.jsonl —
-  #     and corpus-prep itself needs align's chat template to locate assistant spans at
+  #   - the corpus must be an EVAL SPLIT, which data-prep writes beside train.jsonl —
+  #     and data-prep itself needs align's chat template to locate assistant spans at
   #     all (measured: no pre-existing /proj overlay carries a {% generation %} tag).
   #
   # The chain also means this fixture exercises the real bindings rather than paths typed
@@ -35,7 +35,7 @@ granite.build:
         # to the 4.2 tokenizer). That is fine for THIS fixture, whose subject is the
         # eval target: what it needs is a dense, tokenizer-matched student carrying
         # a chat template with {% generation %} markers, which align installs.
-        # distill-tokenizer-align's OWN fixture keeps the hybrid student on purpose,
+        # tokenizer-align's OWN fixture keeps the hybrid student on purpose,
         # because that is what exercises a real retag (transplant=12, mean_init=4) —
         # and align never instantiates the model, so no kernel is requested there.
         student:
@@ -102,7 +102,7 @@ granite.build:
               # recipe uses for the same reason.
               #
               # Re-running this fixture is therefore a resume case rather than a fresh one:
-              # corpus-prep's expectation is keyed on the tokenizer IDENTITY (not its path),
+              # data-prep's expectation is keyed on the tokenizer IDENTITY (not its path),
               # so a second run with the same pair reports SKIP and republishes the corpus.
               # That is correct behaviour and worth exercising.
               out_dir: "/proj/granite-build/g4os/gbtest/distill-eval-smoke/corpus"
@@ -119,7 +119,7 @@ granite.build:
         student:
           binding: align.retagged_student
         # Bound for the ORDERING EDGE, not for the path. eval.jsonl is deliberately not a
-        # declared artifact of corpus-prep (it exists only when eval_fraction > 0, and a
+        # declared artifact of data-prep (it exists only when eval_fraction > 0, and a
         # declared-but-absent output is a resolver failure), so the corpus path below is
         # composed from the same out_dir that target used. The binding is what still
         # guarantees this target cannot start before the split exists.

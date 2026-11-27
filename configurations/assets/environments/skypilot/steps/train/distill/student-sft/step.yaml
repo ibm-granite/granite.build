@@ -4,7 +4,7 @@ version: 1.0.0
 #
 # PRIMARY ROLE: the chat-template WARM-UP stage that runs before distillation. A raw base
 # student has never seen the teacher's chat template or turn markers; this step's checkpoint
-# is what distill-gold-train actually distills from. Skipping straight to distillation on a
+# is what logit-distill actually distills from. Skipping straight to distillation on a
 # base model conflates "did not learn the template" with "did not learn from the teacher" in
 # every metric the later steps report.
 #
@@ -25,11 +25,11 @@ config:
     # mismatch between what the recipe asked for and what LSF granted is a run that
     # trains at a different effective batch size than the config says.
     gpus_per_node: 8
-    # 1, unlike distill-gold's 2. There is no vLLM server here and no student rollout, so
+    # 1, unlike logit-distill's 2. There is no vLLM server here and no student rollout, so
     # there is no split-role allocation to size. run-sft.sh REFUSES nodes > 1, because it
     # gets no host list and a multi-node accelerate launch would have no main_process_ip,
     # port or machine_rank per node. Lifting that needs the provisioner's RANK/TOTAL_NODES/
-    # MASTER_ADDR fed in exactly as distill-gold does — a deliberate follow-up, not a
+    # MASTER_ADDR fed in exactly as logit-distill does — a deliberate follow-up, not a
     # default.
     nodes: 1
 
@@ -53,7 +53,7 @@ config:
     #
     # sft.py builds assistant_masks from apply_chat_template's {% generation %} markers and
     # raises if the resulting mask is all zeros. This is its FALLBACK: a literal string
-    # searched for in the rendered token ids. With distill-tokenizer-align in the pipeline
+    # searched for in the rendered token ids. With tokenizer-align in the pipeline
     # the markers are present, so the fallback should never be reached — it is here for a
     # student that arrives without them.
     #
@@ -65,7 +65,7 @@ config:
     #     '<|im_start|>assistant\n'  ->  '<|im_start|>assistant'
     #
     # which masks a span one token off, trains, and reports success — measured on
-    # distill-gold (build d8470f14) and fixed there the same way. So this is SINGLE-quoted
+    # logit-distill (build d8470f14) and fixed there the same way. So this is SINGLE-quoted
     # YAML holding a literal backslash-n, which has no trailing whitespace for anything to
     # strip, and the launcher decodes it once inside the container.
     response_template: '<|im_start|>assistant\n'
@@ -73,7 +73,8 @@ config:
     max_length: 4096
 
     # ── Optimization. Same keys as logit-distill, but not all the same defaults: see
-    # USAGE.md, "Using this step as a control", before running this step as a control.
+    # USAGE.md (published as README.md), "Using this step as a control", before running
+    # this step as a control.
     per_device_train_batch_size: 1
     gradient_accumulation_steps: 8
     learning_rate: "1e-6"
@@ -85,7 +86,7 @@ config:
     resume: auto
     # Relative resolves against $DISTILL_HOME (/opt/distill). The distill steps share
     # exactly one deepspeed config, baked into the GPU image at
-    # $DISTILL_HOME/configs/deepspeed/ -- distill-sft has
+    # $DISTILL_HOME/configs/deepspeed/ -- student-sft has
     # no config of its own and reuses that one. configs/distillation/deepspeed/
     # was the pre-port path (an in-image /opt copy that does not exist in this
     # image), and stayed here as a stale default through the port -- confirmed
@@ -111,7 +112,7 @@ config:
 
     # ── Off-policy KD from precomputed logits. SETTING THIS STOPS THIS BEING A CONTROL.
     # It becomes forward-KL distillation against a frozen teacher — the
-    # distill-logit-precompute arm. Empty on purpose.
+    # teacher-logits arm. Empty on purpose.
     precomputed_logits_dir: ""
     kd_top_k: 256
     kd_weight: 1.0
@@ -126,19 +127,21 @@ config:
     extra_config_yaml: ""
 
   # ─── Experiment tracking ──────────────────────────────────────────────────────
-  # ALL FIVE DEFAULT TO EMPTY, which means tracking off. A step that invented a project
-  # name would log every recipe's runs into one bucket named by whoever wrote this file.
+  # One tool per run: `tool` is wandb, clearml, or none (empty, the default: off). ALL
+  # DEFAULT TO EMPTY: a step that invented a project name would log every recipe's runs
+  # into one bucket named by whoever wrote this file.
   #
-  # A PARTIAL config aborts the run rather than being completed with a guess: neither
-  # backend fails on an incomplete config — they log to their own defaults — which is how a
-  # multi-day run ends up somewhere nobody looks.
+  # Only the chosen tool's keys may be set, and a PARTIAL config aborts the run rather
+  # than being completed with a guess: neither tool fails on an incomplete config — they
+  # log to their own defaults — which is how a multi-day run ends up somewhere nobody looks.
   #
-  # The shared GPU image (steps/train/distill/images/gpu/, replacing the opaque
-  # kd-sandbox-distill:0.1.0-uv) DOES carry clearml==2.1.12 and wandb==0.28.2 (both in
-  # steps/train/distill/images/gpu/pyproject.toml), so setting any of these five now works rather
-  # than failing at import. tracking.py still imports them lazily and only when a
-  # project is configured, so leaving all five empty (tracking off) stays safe either way.
+  # Each tool talks to its public server unless the job's environment or the tool's own
+  # config file names another: W&B to https://api.wandb.ai, ClearML to
+  # https://api.clear.ml (app.clear.ml, files.clear.ml). The shared GPU image carries
+  # clearml==2.1.12 and wandb==0.31.2 (steps/train/distill/images/gpu/pyproject.toml).
+  # tracking.py (steps/train/distill/src) holds the rules; USAGE.md documents them.
   tracking:
+    tool: ""
     clearml_project: ""
     clearml_run_name: ""
     wandb_entity: ""
@@ -159,7 +162,7 @@ inputs:
     student:
       type: model
       accept: [uri, binding]
-    # distill-corpus-prep's `corpus`. Text, not tokens — sft.py tokenizes at train time —
+    # data-prep's `corpus`. Text, not tokens — sft.py tokenizes at train time —
     # but tokenizer-specific anyway, because prep measured its length filter and its
     # assistant-mask check in tokens.
     corpus:
@@ -186,7 +189,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5"
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:d7b639cd"
           resources: {}
           envs:
             # The SLURM executor runs the task under `env -u PYTHONPATH` and without
@@ -196,7 +199,7 @@ environment_configs:
             # NO HF_HUB_OFFLINE: this step LOADS A MODEL, and the `kernels` package resolves
             # kernels-community/causal-conv1d through the Hub API at load time, which offline
             # mode turns into OfflineModeIsEnabled after the load has begun (measured on
-            # distill-eval, build 15267e81). distill-gold, which trains on this same image,
+            # teacher-divergence, build 15267e81). logit-distill, which trains on this same image,
             # sets HF_HOME and leaves the Hub reachable.
             # Fetch any required hub kernel that is not already in the image's cache,
             # inside the job. run-sft.sh PREFLIGHTS the kernel list and refuses without
@@ -222,7 +225,21 @@ environment_configs:
             PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
             DS_SKIP_CUDA_CHECK: "1"
             OMP_NUM_THREADS: "8"
+          # The run block opens with the tracking rules tracking.py applies in the trainer,
+          # checked when gbserver renders this block (strict, before anything is launched):
+          # #752 made the tool explicit, so a tracking block from before it (keys, no
+          # tool) is refused here, not at trainer start.
           run: |
+            {% set _trk = config.tracking | default({}) -%}
+            {% set _tool = _trk.tool | default("") | string | trim | lower -%}
+            {% set _cl = (_trk.clearml_project | default("") | string | trim) ~ (_trk.clearml_run_name | default("") | string | trim) -%}
+            {% set _wb = (_trk.wandb_entity | default("") | string | trim) ~ (_trk.wandb_project | default("") | string | trim) ~ (_trk.wandb_run_name | default("") | string | trim) -%}
+            {% if _tool not in ("", "none", "wandb", "clearml") %}{{ raise_error("student-sft: tracking.tool must be wandb, clearml or none, not '" ~ _trk.tool ~ "'.") }}{% endif -%}
+            {% if _tool in ("", "none") and (_cl or _wb) %}{{ raise_error("student-sft: tracking keys are set but tracking.tool is not. Since #752 the tool is chosen explicitly: add tracking.tool: clearml or wandb, or remove the keys.") }}{% endif -%}
+            {% if _tool == "wandb" and _cl %}{{ raise_error("student-sft: tracking.tool is wandb, but clearml keys are set too. One tool per run: remove them, or choose clearml.") }}{% endif -%}
+            {% if _tool == "clearml" and _wb %}{{ raise_error("student-sft: tracking.tool is clearml, but wandb keys are set too. One tool per run: remove them, or choose wandb.") }}{% endif -%}
+            {% if _tool == "wandb" and not ((_trk.wandb_entity | default("") | string | trim) and (_trk.wandb_project | default("") | string | trim)) %}{{ raise_error("student-sft: tracking.tool wandb needs tracking.wandb_entity and tracking.wandb_project.") }}{% endif -%}
+            {% if _tool == "clearml" and not (_trk.clearml_project | default("") | string | trim) %}{{ raise_error("student-sft: tracking.tool clearml needs tracking.clearml_project.") }}{% endif -%}
             echo "=== student-sft on $(hostname) ==="
 
             # The inputs used to be config keys. A recipe that still sets one would
@@ -305,7 +322,7 @@ environment_configs:
             # trainer through a BARE `accelerate` (ACCELERATE="${ACCELERATE:-accelerate}").
             # Without this the run reaches the launch and dies with
             # `accelerate: command not found`, rc=127, after the model has been resolved
-            # and the kernels fetched (build 75fa47d2). distill-gold exports the same line
+            # and the kernels fetched (build 75fa47d2). logit-distill exports the same line
             # for the same reason; the dispatcher runs this with `bash <file>` (non-login),
             # so the export sticks — a login shell would re-run /etc/profile and drop it.
             # And name it explicitly too, via the script's own guarded knob, so the launch
@@ -369,6 +386,7 @@ environment_configs:
               --gpus-per-node {{ config.workload.gpus_per_node }} \
               --nodes {{ config.workload.nodes }} \
               --hf-home "{{ config.workload.hf_home }}" \
+              --tracking-tool "{{ config.tracking.tool }}" \
               --clearml-project "{{ config.tracking.clearml_project }}" \
               --clearml-run-name "{{ config.tracking.clearml_run_name }}" \
               --wandb-entity "{{ config.tracking.wandb_entity }}" \
@@ -378,7 +396,7 @@ environment_configs:
             echo "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:${OUT_DIR}"
     monitors:
       skypilot_monitor:
-        # `periodic` retrieval, like distill-gold: a training run lasts far longer than the
+        # `periodic` retrieval, like logit-distill: a training run lasts far longer than the
         # library default on_completion mode surfaces anything for, so a stalled run would
         # look identical to a slow one.
         ref: space://monitors/skypilot
@@ -388,7 +406,7 @@ environment_configs:
             mode: "{{ config.log_retrieval_mode | default('periodic') }}"
             interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
           extra_event_configs:
-          # TRL logs a metrics dict, the same shape distill-gold pins against.
+          # TRL logs a metrics dict, the same shape logit-distill pins against.
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "'loss':"
             event_fields:

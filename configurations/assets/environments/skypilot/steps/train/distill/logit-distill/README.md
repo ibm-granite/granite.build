@@ -124,7 +124,7 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `vllm_sync_frequency` | integer | How often, in optimizer steps, the trainer pushes updated weights to the server; a larger value samples from a staler policy. Passed to the trainer only on the external-server path. Default: `1`. |
 | `top_p` | number | Rollout sampling `top_p`; emitted only on-policy. Default: `0.95`. |
 | `use_sampled_opd_loss` | boolean | Sampled on-policy-distillation loss; emitted only on-policy. Prefer `loss_arm: sampled_opd`, which enforces its requirements. Default: `false`. |
-| `last_message_only` | boolean | Trainer `last_message_only`; emitted only on-policy. Required `true` by the `sampled_opd` arm. Default: `false`. |
+| `last_message_only` | boolean | Trainer `last_message_only`: supervise only the final assistant turn. Emitted on-policy, and off-policy only for `loss_arm: uld` (every other off-policy render leaves the trainer at its default, `false`). Required `true` by the `sampled_opd` and `uld` arms. Default: `false`. |
 | `clip_alpha` | number | Trainer `clip_alpha`; emitted only on-policy. Default: `0.1`. |
 | `opd_importance_sampling` | boolean | Truncated importance sampling for the sampled OPD loss; emitted only on-policy. Default: `false`. |
 | `lmbda_schedule` | string | `constant`, or `linear` to ramp `lmbda` from `lmbda_init` up to `lmbda` across training — off-policy early, on-policy later. `linear` needs `vllm_num_servers > 0`; the renderer refuses it otherwise. Default: `constant`. |
@@ -153,6 +153,78 @@ harmless where the gap doesn't exist — see `steps/train/distill/images/gpu/REA
 | `poll_interval_seconds` | integer | Monitor poll interval. Default: `900`. |
 | `log_retrieval_mode` | string | Default: `periodic`, because a distillation run lasts hours and `on_completion` surfaces nothing until the end. |
 | `log_retrieval_interval_seconds` | integer | Periodic log retrieval interval. Default: `900`. |
+
+### Experiment tracking (top-level `config.tracking`)
+
+| Field | Type | Purpose |
+|---|---|---|
+| `tool` | string | `wandb`, `clearml`, or `none`. Default: `""` (none: tracking off). |
+| `clearml_project` | string | ClearML project; required with `tool: clearml`. Default: `""`. |
+| `clearml_run_name` | string | ClearML task name; derived when empty. Default: `""`. |
+| `wandb_entity` | string | W&B entity; required with `tool: wandb`. Default: `""`. |
+| `wandb_project` | string | W&B project; required with `tool: wandb`. Default: `""`. |
+| `wandb_run_name` | string | W&B run name; derived when empty. Default: `""`. |
+
+One tool per run. `tool` chooses it: `wandb`, `clearml`, or `none` (empty, the default, means
+none: tracking off). A step that invented a project name would log every recipe's runs into one
+bucket, so nothing is on unless the recipe says where.
+
+Refused when gbserver renders the step (before anything is launched; the distill recipe refuses
+the same at render time, from `TRACKING_TOOL`):
+- an unknown `tool`;
+- another tool's keys beside the chosen one, or any tool's keys with no tool chosen. Nothing is
+  inferred from which keys happen to be set;
+- a *partial* config: W&B needs `wandb_entity` and `wandb_project`, ClearML `clearml_project`.
+  Neither tool fails on an incomplete config, they log to their own defaults, which is how a
+  multi-day run ends up somewhere nobody looks.
+
+Refused when the trainer starts, before it loads a model (only the node can see these):
+- the chosen tool's package missing from the image;
+- a W&B server address wandb rejects, checked with wandb's own validator, and a `WANDB_MODE`
+  wandb rejects (it is case-sensitive: `online`, `offline`, `shared`, `disabled`, `dryrun`,
+  `run`).
+
+The chosen tool is the only tracker the Trainer reports to: any other integration in
+`report_to` is dropped, with a message; local TensorBoard stays. In student-sft,
+`extra_config_yaml` may set `report_to` only to `tensorboard` (or `[tensorboard]`), which is how
+to turn TensorBoard on there; logit-distill has no such passthrough. The run name is optional;
+left empty, it is derived from the student, the corpus and the arm.
+
+**Servers.** Each tool talks to its public server unless the user names another:
+- W&B: `https://api.wandb.ai`, unless the job's environment sets `WANDB_BASE_URL` or one of
+  wandb's settings files sets `base_url`: `wandb/settings` under the directory the trainer starts
+  in, then `~/.config/wandb/settings` (or `$WANDB_CONFIG_DIR/settings`). wandb 0.31 and later
+  default to `https://api.forge.coreweave.com` (CoreWeave Forge; W&B and CoreWeave say
+  `api.wandb.ai` keeps working with the same keys). The step sets
+  `WANDB_BASE_URL=https://api.wandb.ai` when nothing is set, as wandb before 0.31 defaulted.
+- ClearML: the step sets nothing. clearml reads its server from its environment
+  (`CLEARML_API_HOST`) and its configuration (`api.api_server`), and falls back to
+  `https://api.clear.ml` (with `https://app.clear.ml` and `https://files.clear.ml`) on its own.
+  A self-hosted server named in `clearml.conf` is therefore kept, and its keys go to it. The log
+  says only "public" or "self-hosted", never the URL.
+
+**Credentials** are looked up on the node, the way each tool looks them up, for that server:
+- W&B: `WANDB_API_KEY`, or `WANDB_IDENTITY_TOKEN_FILE` (not both); else the netrc entry for the
+  server's host (`$NETRC`, else `~/.netrc`, else `~/_netrc`), which `wandb login` writes. For a
+  Forge server the entry for `api.wandb.ai` also counts, as wandb accepts it.
+- ClearML: clearml's own config loader decides, in a subprocess that reports only yes/no:
+  `CLEARML_AUTH_TOKEN`, or an access/secret key pair from `CLEARML_API_ACCESS_KEY`/
+  `CLEARML_API_SECRET_KEY` or from the configuration clearml merges: `~/clearml.conf` and
+  `~/trains.conf` (or `$CLEARML_CONFIG_FILE` in their place), together with
+  `$CLEARML_CONFIG_PATH/default/*.conf` when that is set, in any HOCON form. One key without
+  the other is not enough to log in.
+
+The distill recipe can pass these from space secrets (`TRACKING_SECRETS`). None found means the
+run trains untracked, and its log says `NO CREDENTIALS` and where it looked.
+`WANDB_MODE=offline` or `CLEARML_OFFLINE_MODE=1` needs no credentials; `WANDB_MODE=disabled`
+turns W&B off and says so. ClearML's checkpoint upload is off (`CLEARML_LOG_MODEL=FALSE`) unless
+the environment sets it. If ClearML cannot create a task, the run continues untracked rather
+than fail.
+
+The shared GPU image carries both tools: clearml 2.1.12 and wandb 0.31.2
+(`steps/train/distill/images/gpu/pyproject.toml`). The rules live in
+`steps/train/distill/src/gb_steps_post_training/distillation/tracking.py`; its self-test runs in
+logit-distill's suite and in `make test-in-image`, not in CI.
 
 ### Source delivery
 
@@ -407,7 +479,7 @@ it silently becomes a different arm.
 | `distillm2_like` | DistiLLM-2 shape, non-comparative; policy class per microbatch | `0 < lmbda < 1` |
 | `reversed_distillm2_like` | `distillm2_like` with the divergence roles exchanged | `0 < lmbda < 1` |
 | `sampled_opd` | REINFORCE-style policy gradient on sampled tokens; optional truncated IS | `lmbda == 1.0`, `last_message_only: true` |
-| `uld` | Universal Logit Distillation over sorted logits; the cross-tokenizer arm | — |
+| `uld` | Universal Logit Distillation over sorted logits; the cross-tokenizer arm | `last_message_only: true` (ULD's teacher is the last assistant turn; with `false` the student's span starts at the first, so no multi-turn row aligns and the loss is zero) |
 | `ce` | cross entropy only — in-trainer SFT control; the teacher is still loaded | `lmbda == 0.0` |
 
 Under `lmbda_schedule: linear`, `0 < lmbda < 1` is judged over the whole ramp: a ramp from
@@ -418,6 +490,49 @@ The renderer also refuses an arm that contradicts a standalone flag (`use_liger_
 `use_sampled_opd_loss`), and an arm whose flag is on-policy-only on an off-policy render.
 `LOSS_ARMS` in [`src/render_gold_config.py`](src/render_gold_config.py) lists each arm and
 why.
+
+### ULD alignment refusal
+
+Under `loss_arm: uld`, each row's student completion is aligned with the teacher's by text.
+A row whose alignment yields no groups contributes no loss and is skipped. That is right for
+the rare row, but when the two renders disagree for every row, the run trains at exactly zero
+gradient and still checkpoints and reports success. So the trainer sums, over every rank, the
+rows that reached alignment and the ones that did not, at every optimizer step, and fails the
+run with a `RuntimeError` in two cases.
+
+When every row of an optimizer step is unaligned. The check runs at the optimizer step
+(`on_pre_optimizer_step`). Under this step's DeepSpeed ZeRO-3, accelerate's backward has
+already run `engine.step()` by then, so the run takes that step's update, with zero
+gradient, once. The raise then stops the run before the step is counted or saved:
+
+```
+RuntimeError: ULD step <n>: all <rows> rows that reached alignment, across all ranks, yielded no alignment groups, so this step computed no loss at all. ...
+```
+
+When more than half the rows of a logging window (`logging_steps` optimizer steps) are
+unaligned. The final, partial window is judged when training ends:
+
+```
+RuntimeError: ULD steps <a>-<b>: <u> of <r> rows (<pct>) yielded no alignment groups and contributed no loss, more than uld_max_unaligned_fraction=0.5. ...
+```
+
+A log line carries the counts since the previous line, summed over ranks:
+`train/alignment_rows`, `train/alignment_unaligned_rows` and
+`train/alignment_unaligned_rate`. It carries them only when at least one row reached
+alignment since the previous line. A row reaches alignment when it has a completion on both
+sides. On aligned data the rate is 0, or close to it. The
+known systematic cause, `last_message_only: false`, is refused before the run starts (see
+the `uld` row above), so the refusal is a backstop for causes nobody has met yet. If it
+fires, set `ULD_DEBUG=1` to print the first batch's spans.
+
+**Fixed through this step.** The threshold (0.5) and the window (`logging_steps`) are
+`CustomGOLDConfig` fields (`uld_max_unaligned_fraction`, `uld_unaligned_window_steps`). This
+step does not expose them, as it exposes no `uld_*` option (see
+[Choosing a student/teacher pair](#choosing-a-studentteacher-pair)). The all-unaligned rule
+has no threshold. At a global batch of 1 (one GPU, `per_device_train_batch_size` 1, no
+gradient accumulation), a single unaligned row is an all-unaligned step, so it fails the run:
+that step computed no loss at all. Raise `gradient_accumulation_steps` if a run must
+tolerate a rare unaligned row.
 
 ### Response template escape
 
