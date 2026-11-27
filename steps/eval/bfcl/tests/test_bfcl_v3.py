@@ -96,6 +96,20 @@ def test_each_handler_scores_in_its_own_dir(tmp_path, monkeypatch, v3_python):
         out = bfcl_v3.BFCLv3(cfg).run("", "m")
         assert out["value"] == pytest.approx(value) and out["handler"]["name"] == handler
         assert out["per_category"]["simple"]["accuracy"] == 0.5
+        assert out["max_tokens"] == bfcl_v3.BFCLv3(cfg).max_tokens_record(handler)
+
+
+@pytest.mark.parametrize("handler, options, cap, source", [
+    ("legacy-granite", {}, "min(4096, context - prompt - 2)", "legacy-granite, with every request"),
+    ("legacy-granite", {"max_tokens": "100"}, 100, "legacy-granite, with every request"),
+    ("fc", {}, 16384, "the bfcl step's served default (--override-generation-config max_new_tokens)"),
+    ("fc", {"max_tokens": "100"}, 100, "the max_tokens option, sent with every request"),
+])
+def test_max_tokens_record_by_handler(tmp_path, handler, options, cap, source):
+    # legacy-granite's own budget, never fc's served one (fc_budget.json says 16384 here).
+    (tmp_path / bfcl.FC_BUDGET_FILE).write_text(json.dumps({"fc_budget": "16384:step-default"}))
+    cfg = RunConfig(model="m", output_dir=tmp_path, phase="score", options={"handler": handler, **options})
+    assert bfcl_v3.BFCLv3(cfg).max_tokens_record(handler) == {"cap": cap, "source": source}
 
 
 def test_prune_and_missing_use_the_flat_v3_layout(tmp_path):
@@ -145,6 +159,7 @@ def test_generate_then_score(tmp_path, monkeypatch, v3_python):
     gen = bfcl_v3.BFCLv3(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="generate", options=opts))
     out = gen.run("http://srv/v1", "m")
     assert "value" not in out and (out["n"], out["missing"]) == (2, 0) and "max_tokens" not in out
+    assert out["entries_failed_by_category"] == {}
     assert out["harness_versions"] == {"bfcl-eval": "2025.8.6.2"}
     out = bfcl_v3.BFCLv3(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="score")).run("", "m")
     child = [v3_python, "-I", str(bfcl_v3.CHILD)]
@@ -798,6 +813,7 @@ def test_real_child_leaves_failed_entries_out_below_the_limit(tmp_path, monkeypa
     out = score()
     assert out["per_category"]["irrelevance"] == {"accuracy": 1.0, "correct_count": 19, "total_count": 19}
     assert (out["entries_failed"], out["entries_total"], out["incomplete"]) == (1, 20, True)
+    assert out["entries_failed_by_category"] == {"irrelevance": 1}
     write(2)
     with pytest.raises(SystemExit, match="refusing to score: bfcl-v3: entries_failed 2/20 is above the allowed fraction"):
         score()

@@ -326,6 +326,7 @@ def test_generate_then_score(tmp_path, monkeypatch):
     gen = bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="generate")).run("http://srv/v1", "m")
     assert "value" not in gen and (gen["n"], gen["missing"]) == (2, 0) and gen["web_search"] == {"calls": 4}
     assert "max_tokens" not in gen  # fc_budget.json is the record; generation.json does not repeat it
+    assert gen["entries_failed_by_category"] == {}
     assert not (tmp_path / "out" / "bfcl" / "score").exists()
     out = bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="score")).run("", "m")
     # score: no endpoint in the child's environment; the search stats are generation's
@@ -633,6 +634,7 @@ def test_score_leaves_failed_entries_out_below_the_limit(tmp_path, harness_env):
     out = score()
     assert out["per_category"]["irrelevance"] == {"accuracy": 1.0, "correct_count": 19, "total_count": 19}
     assert (out["entries_failed"], out["entries_total"], out["incomplete"]) == (1, 20, True)
+    assert out["entries_failed_by_category"] == {"irrelevance": 1}
     write(2)
     with pytest.raises(SystemExit, match="refusing to score: bfcl-v4: entries_failed 2/20 is above the allowed fraction"):
         score()
