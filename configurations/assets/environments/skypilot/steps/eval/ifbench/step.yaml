@@ -179,7 +179,9 @@ environment_configs:
             # the data (dataset and dataset_revision, when either is set: a bridge's
             # required pin or a curated id's swap), then every other option, sorted by
             # key -- protocol options such as lm-eval's mode, num_fewshot, gen_kwargs,
-            # thinking and metric, sampling, agent and judge settings. Only the
+            # thinking and metric, sampling, agent and judge settings -- and last the
+            # run's seed when it is not the default 0. limit and repeats do not count:
+            # a resume extends a smaller run into a larger one. Only the
             # operational options leave the name alone: OPERATIONAL (retries, timeouts
             # of a request, the failure threshold, worker counts) and the endpoint
             # addresses (*_base_url, *_api_url, *_mcp_url, *_api_key_env). E.g. lm-eval@tasks-hellaswag, tau3@domains-airline+2Cretail,
@@ -236,6 +238,8 @@ environment_configs:
               k="$(granite_enc "$key")"
               SEL="$SEL@${k//-/+2D}-$(granite_enc "$GRANITE_VAL")"
             done <<< "$KEYS"
+            {%- set seed_word = (config.seed | string | trim) if config.seed is not none else "" %}
+            {% if seed_word not in ("", "0") %}SEL="$SEL@seed-$(granite_enc "{{ seed_word }}")"  # another seed samples (and orders docs) differently{% endif %}
             BENCH_DIR="$BENCHMARK$SEL"
             if [ "$(printf '%s' "$BENCH_DIR" | wc -c)" -gt 200 ]; then
               h="$(printf '%s' "$BENCH_DIR" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"

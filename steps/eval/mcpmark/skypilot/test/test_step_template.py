@@ -578,3 +578,19 @@ def test_a_relative_output_dir_is_anchored(step, tmp_path, workdir):
     base = wd if workdir else tmp_path / "cwd"
     assert _out(proc)["OUT"] == str(base / "rel" / "x")
     assert (base / "rel" / "x").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("seed", "suffix"), [("0", ""), ("", ""), ("1", "@seed-1"), ("42", "@seed-42")]
+)
+def test_a_non_default_seed_names_the_dir(step, tmp_path, seed, suffix):
+    # Another seed samples (and orders shuffled docs) differently: its own dir.
+    proc = _run_until_output_dir(
+        step, tmp_path, benchmark="lm-eval", options="tasks=x thinking=on", seed=seed
+    )
+    assert Path(_dir(proc)).name == "lm-eval@tasks-x@thinking-on" + suffix
+
+
+def test_a_seed_alone_names_a_curated_dir(step, tmp_path):
+    proc = _run_until_output_dir(step, tmp_path, benchmark="mmlu-x", seed="7")
+    assert Path(_dir(proc)).name == "mmlu-x@seed-7"

@@ -119,8 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#766).** With `output_dir` empty, a run used to write `$OUTPUT_ROOT/$RUN_NAME/<benchmark>`
   whatever its options. It now writes `$OUTPUT_ROOT/$RUN_NAME/<benchmark>@<key>-<value>...`
   whenever it has a selection option (`tasks=`, `domains=`, `categories=`, `instances=`, ...),
-  a protocol option (`thinking=`, `num_fewshot=`, `judge_model=`, sampling or step limits, ...)
-  or a `dataset` / `dataset_revision`, every value escaped into one path segment (see
+  a protocol option (`thinking=`, `num_fewshot=`, `judge_model=`, sampling or step limits, ...),
+  a `dataset` / `dataset_revision`, or a `seed` other than 0, every value escaped into one path segment (see
   `steps/eval/README.md`, Run dirs). Only operational options (retries, request timeouts,
   `max_failed_frac`, worker counts, endpoint addresses) leave the name alone. This applies to
   the curated recipes too: one that passes options or swaps its data writes to a new dir (the
