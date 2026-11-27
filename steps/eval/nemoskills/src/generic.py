@@ -12,7 +12,10 @@ The curated ids stay as they are: they are the validated protocols.
 Data: ``dataset=`` is required, and pins the data in one of three forms:
 
 * a local path: ns's prepared rows (a dir holding ``<split>.jsonl``, or one
-  jsonl file), read directly -- ns's prepare does not run;
+  jsonl file), read directly -- ns's prepare does not run. A
+  ``dataset_revision`` with it must be ``sha256:<hex>`` of the file, and is
+  checked; any other (a commit, or any revision on a directory) is refused,
+  since nothing could check it;
 * a hub id with ``dataset_revision=<40-hex commit>``: the HF dataset ns's
   ``prepare.py`` reads, pinned to that commit (the base class's
   ``hf_revisions`` mechanism);
@@ -40,10 +43,15 @@ guards' sitecustomize recorded that it loaded in the prepare (fail closed). The
 wget shim prints no traceback: an unexpected error is reported by type only.
 
 Not intercepted: ``requests``, ``httpx``, ``aiohttp``, ``fsspec`` reads
-(``hf://``, ``https://`` paths opened directly), the ``wget`` Python package,
-``git``, ``curl`` and any other subprocess, and remote ``data_files`` given
-to a pinned hub id (``load_dataset(<pinned repo>, data_files="https://...")``:
-the revision pin covers the repo, not the URL). A prepare that fetches that
+(``hf://``, ``https://`` paths opened directly), ``huggingface_hub``'s
+``HfApi().hf_hub_download`` (a method, not the module function the base pins)
+and ``HfFileSystem``, an opener from ``urllib.request.build_opener`` (its
+``open`` bypasses ``urlopen``), the ``wget`` Python package, ``git``,
+``curl`` and any other subprocess, remote ``data_files`` given to a pinned
+hub id (``load_dataset(<pinned repo>, data_files="https://...")``: the
+revision pin covers the repo, not the URL), and remote data given to a local
+builder other than through ``datasets.load_dataset`` (``load_dataset_builder``,
+``Dataset.from_json`` and the like with a URL). A prepare that fetches that
 way still runs, so it can read data beyond the pin (the pin check above
 still demands the pinned data was read too): give such a benchmark a local
 ``dataset=``. The
@@ -362,6 +370,29 @@ exec(
 )  # noqa: S102 - our own source
 
 
+def check_local_pin(path: Path, revision: str) -> None:
+    """A local dataset= with a dataset_revision: checked where it can be (a
+    file's sha256), refused where it cannot -- a pin that is never checked
+    reads as one that was."""
+    match = SHA256.match(revision)
+    if match and path.is_file():
+        import hashlib
+
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != match.group(1):
+            raise SystemExit(
+                f"nemoskills: dataset={path} has sha256 {digest}, not the "
+                f"dataset_revision={revision} the recipe pins"
+            )
+        return
+    raise SystemExit(
+        f"nemoskills: dataset={path} is a local "
+        f"{'file' if path.is_file() else 'directory'}, and dataset_revision={revision} cannot be "
+        "checked against it (only sha256:<64 hex> of a local file can); drop dataset_revision, "
+        "or pin the file's sha256"
+    )
+
+
 def dataset_form(dataset: str, revision: str) -> str:
     """Which pinned form ``dataset=`` is (``local``, ``hub``, ``url``), or
     SystemExit naming what is missing."""
@@ -380,6 +411,8 @@ def dataset_form(dataset: str, revision: str) -> str:
             )
         return "url"
     if Path(dataset).exists():
+        if revision:
+            check_local_pin(Path(dataset), revision)
         return "local"
     if dataset.startswith(("/", ".", "~")) or not HUB_ID.match(dataset):
         raise SystemExit(

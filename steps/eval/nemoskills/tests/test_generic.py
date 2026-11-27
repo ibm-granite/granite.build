@@ -75,6 +75,21 @@ def test_dataset_forms(tmp_path):
         generic.dataset_form("not a hub id", COMMIT)
 
 
+def test_a_local_dataset_revision_is_checked_or_refused(tmp_path):
+    import hashlib
+
+    data = tmp_path / "prepared.jsonl"
+    data.write_text("{}\n")
+    sha = "sha256:" + hashlib.sha256(data.read_bytes()).hexdigest()
+    assert generic.dataset_form(str(data), sha) == "local"  # the file's own sha256
+    with pytest.raises(SystemExit, match="has sha256 .* not the dataset_revision"):
+        generic.dataset_form(str(data), "sha256:" + "0" * 64)
+    with pytest.raises(SystemExit, match="local file, and dataset_revision=.*cannot be checked"):
+        generic.dataset_form(str(data), COMMIT)  # a commit means nothing for a file
+    with pytest.raises(SystemExit, match="local directory, and dataset_revision=.*cannot be checked"):
+        generic.dataset_form(str(tmp_path), sha)
+
+
 def test_url_form_pins_urlretrieve(tmp_path):
     """The URL form feeds the base class's pinned_urls (prepare.py's
     urlretrieve) with the content pin."""
