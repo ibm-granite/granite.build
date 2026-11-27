@@ -59,12 +59,12 @@ def read_generation_config(model_path: str) -> dict:
         f = local / "generation_config.json"
         return json.loads(f.read_text()) if f.is_file() else {}
     from huggingface_hub import hf_hub_download
-    from huggingface_hub.errors import EntryNotFoundError
+    from huggingface_hub.errors import RemoteEntryNotFoundError
 
     try:
         return json.loads(Path(hf_hub_download(model_path, "generation_config.json")).read_text())
-    except EntryNotFoundError:
-        return {}
+    except RemoteEntryNotFoundError:  # the Hub's 404: the repo has none. Not its parent,
+        return {}  # EntryNotFoundError: LocalEntryNotFoundError (Hub unreachable) is one too.
 
 
 def plan(model_path: str, base_url: str, options: str) -> tuple[str, list[str]]:

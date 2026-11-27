@@ -76,9 +76,17 @@ def test_an_unreadable_generation_config_is_recorded_not_guessed(ckpt):
     assert record == "unknown:generation_config-unreadable-JSONDecodeError" and args == []
 
 
+def _hub_raises(monkeypatch, exc):
+    import huggingface_hub
+
+    def download(repo, name):
+        raise exc
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+
+
 def test_a_hub_id_is_read_through_the_hub_cache(tmp_path, monkeypatch):
     import huggingface_hub
-    from huggingface_hub.errors import EntryNotFoundError
 
     f = tmp_path / "generation_config.json"
     f.write_text(json.dumps({"max_new_tokens": 2048}))
@@ -87,16 +95,23 @@ def test_a_hub_id_is_read_through_the_hub_cache(tmp_path, monkeypatch):
     assert bfcl_serving.plan("ibm-granite/some-model", "", "") == ("2048:checkpoint-max_new_tokens", [])
     assert seen == [("ibm-granite/some-model", "generation_config.json")]
 
-    def missing(repo, name):
-        raise EntryNotFoundError("no generation_config.json")
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
+def test_only_a_file_the_hub_says_is_absent_means_no_config(monkeypatch):
+    # The real classes: RemoteEntryNotFoundError is the Hub's 404 for the file (the repo has
+    # none); LocalEntryNotFoundError, also an EntryNotFoundError, is raised when the Hub could
+    # not be asked (offline, a timeout, HF_HUB_OFFLINE without the file cached), so the
+    # checkpoint may well set a limit: unknown, never the budget.
+    from types import SimpleNamespace
+
+    from huggingface_hub.errors import LocalEntryNotFoundError, RemoteEntryNotFoundError
+
+    response = SimpleNamespace(headers={}, request=None)  # all the constructor reads
+    _hub_raises(monkeypatch, RemoteEntryNotFoundError("404 generation_config.json", response=response))
     assert bfcl_serving.plan("ibm-granite/some-model", "", "") == ("16384:step-default", [BUDGET])
-
-    def offline(repo, name):
-        raise OSError("offline")
-
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", offline)
+    _hub_raises(monkeypatch, LocalEntryNotFoundError("cannot reach the Hub, file not in the cache"))
+    assert bfcl_serving.plan("ibm-granite/some-model", "", "") == (
+        "unknown:generation_config-unreadable-LocalEntryNotFoundError", [])
+    _hub_raises(monkeypatch, OSError("offline"))
     assert bfcl_serving.plan("ibm-granite/some-model", "", "") == ("unknown:generation_config-unreadable-OSError", [])
 
 
