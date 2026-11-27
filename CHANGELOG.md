@@ -112,6 +112,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **distill: experiment tracking is one chosen tool per run (#752).** logit-distill and student-sft take a
+  `tracking` block whose `tool` is `wandb`, `clearml` or `none` (the default; logit-distill had no tracking
+  keys before), and the distill recipe takes `TRACKING_TOOL`. A config that sets a tool's keys without
+  choosing it, or both tools' keys, is refused; before, each tool was switched on by its own keys. W&B now
+  talks to `https://api.wandb.ai` unless `WANDB_BASE_URL` or wandb's settings file names another server
+  (wandb 0.31's own default is `https://api.forge.coreweave.com`), and ClearML to `https://api.clear.ml`
+  unless `CLEARML_API_HOST` or `clearml.conf` names one. The credential preflight looks up W&B's netrc entry
+  the way wandb 0.31.2 does (the entry's own password, `default` entries, quoted names, the server's host,
+  `WANDB_IDENTITY_TOKEN_FILE`) and ClearML's config files the way clearml 2.1.12 does.
+- **distill images: wandb 0.31.2, filelock 4.2.11 (#752).** The GPU image moves from wandb 0.28.2 and
+  filelock 3.32.7, and its `scan-ignore` lists no advisory any more. filelock is held below 4.2.12 until a
+  two-account shared-cache test (#788). The CPU image no longer installs wandb or clearml, which nothing in
+  it imports.
+
 - **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
   site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
   moved to `recipes/granite-switch/skypilot/slurm-bluevela/answerability-lora` in #639 (the

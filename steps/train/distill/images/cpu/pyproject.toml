@@ -15,6 +15,13 @@
 #   (hf-export used to be the third member of this union; it moved to
 #   steps/aux/hf-export with an image of its own.)
 #
+# EXCEPT clearml and wandb, which this image does not install (#752). Upstream declared
+# them, but nothing these steps run imports either: the CPU steps load only step_state,
+# tokenizer_identity, build_overlay, align_state, masking and retag_student from the
+# trainer package, and the only modules there that import a tracking library
+# (tracking.py, custom_gold_trainer.py) run in the GPU image's trainers. Installing
+# them shipped wandb's Go binary, and its advisories, for nothing.
+#
 # Both agree on requires-python>=3.10; pinned here to 3.12 for
 # consistency with steps/train/distill/images/gpu/'s image, not because any step needs
 # exactly 3.12 (none of these three pin an exact minor version the way
@@ -35,10 +42,6 @@ dependencies = [
     "datasets>=3.0",
     "torch>=2.8",
     "safetensors>=0.4",
-    "clearml>=2.1.12",
-    # Floor 0.31.2, above the step union's 0.28.2 (#752): its wandb-core binary scans
-    # clean, unlike 0.31.0's. Same release the GPU image pins.
-    "wandb>=0.31.2",
 ]
 
 [tool.uv]
