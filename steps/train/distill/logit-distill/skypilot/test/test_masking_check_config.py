@@ -82,6 +82,20 @@ def test_a_value_the_parser_refuses_is_a_problem(arm):
     assert "gold.py's TrlParser does not read it as a boolean" in problem
 
 
+@pytest.mark.parametrize("arm", _REQUIRING)
+def test_each_form_is_read_by_its_own_parser(arm):
+    """The two parsers differ at the edges: TrlParser reads "t" as true and refuses "on";
+    render_gold_config.py's _bool reads "on" as true and refuses "t". A step's
+    gold_config block (named arm) goes through the renderer, any other config through
+    TrlParser."""
+    named, switch = _forms(arm)
+    ok = {"response_template": _TEMPLATE}
+    assert _lmo_problems({**ok, **switch, "last_message_only": "t"}) == []
+    assert _lmo_problems({**ok, **named, "last_message_only": "on"}) == []
+    assert _lmo_problems({**ok, **switch, "last_message_only": "on"})
+    assert _lmo_problems({**ok, **named, "last_message_only": "t"})
+
+
 _READER_VALUES = [True, False, "true", "True", "TRUE", "false", "False", "t", "y"]
 _READER_VALUES += ["yes", "no", "n", "f", "on", "off", "1", "0", 1, 0, 2, "", "maybe"]
 
