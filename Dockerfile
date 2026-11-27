@@ -51,9 +51,25 @@ RUN pip install --upgrade "pip>=26.2"
 # 15s socket timeout tripping a ReadTimeoutError mid-download.
 RUN pip install --upgrade --timeout 120 --retries 5 -e ".[all]"
 # Temporary: SkyPilot caps click<8.2, which holds wandb at 0.26.1, whose bundled wandb-core
-# Go binary carries critical x/crypto and go-git CVEs. wandb 0.27.2 works on click 8.1;
-# --no-deps skips only its click>=8.2 floor. Drop once SkyPilot lifts the cap.
-RUN pip install --timeout 120 --retries 5 --no-deps "wandb==0.27.2"
+# Go binary carries critical x/crypto and go-git CVEs (0.27.2's still carries HIGH ones;
+# 0.31.2's has no trivy findings). wandb 0.31.2 works on click 8.1; --no-deps skips its
+# click>=8.2 floor. Its other requirements are already installed above, except cwevals, a
+# pre-release that wandb imports only to log CES eval tables, which gbserver never does; it
+# is left out. --require-hashes takes wandb only as one of the two Linux wheels hashed in
+# requirements-image-wandb.txt, whichever index serves it. The import and pip check below
+# fail the build on a broken import or on any unmet requirement other than those two.
+# Drop all this once SkyPilot lifts the cap.
+COPY requirements-image-wandb.txt /tmp/requirements-image-wandb.txt
+RUN pip install --timeout 120 --retries 5 --no-deps --require-hashes \
+        -r /tmp/requirements-image-wandb.txt && \
+    python -c "import wandb, sky; print('wandb', wandb.__version__)" && \
+    { pip check > /tmp/pip-check.txt 2>&1; \
+      grep -v -e '^wandb 0\.31\.2 has requirement click>=8\.2\.0, but you have click 8\.1\.' \
+              -e '^wandb 0\.31\.2 requires cwevals, which is not installed\.$' /tmp/pip-check.txt \
+        | grep -v '^No broken requirements found\.$' > /tmp/pip-check-other.txt; \
+      cat /tmp/pip-check.txt; \
+      if [ -s /tmp/pip-check-other.txt ]; then echo "unmet requirements besides wandb's click floor and cwevals" >&2; exit 1; fi; \
+      rm -f /tmp/pip-check.txt /tmp/pip-check-other.txt /tmp/requirements-image-wandb.txt; }
 # Drop .git now that setuptools_scm has derived the version. Removing it here (not in
 # the runner, where it would only add a whiteout over a committed layer) actually
 # shrinks the image; the server needs no git history in /app.
