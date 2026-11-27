@@ -250,12 +250,13 @@ constraint-dependencies = [
     # vllm 0.11.0 capped setuptools<80; vllm now allows <81, so setuptools can take the
     # release that vendors fixed jaraco.context and wheel copies.
     "setuptools>=80.10.2",
-    # A CEILING, not a fix: filelock 4.x changes UnixFileLock's behaviour on shared lock
-    # directories (4.2.12 refuses, with PermissionError, a lock file another account owns
-    # under a sticky parent), and these steps share one HF cache across accounts on
-    # group-shared filesystems. vllm 0.33.0 accepts filelock>=3.20.3 and torch 2.14.0 any,
-    # so without this the resolver is free to take 4.x. Moving to 4.x is its own,
-    # cluster-tested change (#752; see scan-ignore). vllm 0.34.0 requires >=4.2.4, so
-    # the next vllm raise brings that test with it.
-    "filelock<4",
+    # 4.2.1 is the floor: it fixes the 13 advisories OSV lists for 3.32.7 (one HIGH,
+    # GHSA-v4x8-3wr5-3wq8, plus three in the UnixFileLock and SoftFileLock classes
+    # huggingface_hub's cache locks use). The CEILING below 4.2.12 is deliberate: 4.2.12
+    # made UnixFileLock refuse, with PermissionError, a lock file another account owns under
+    # a sticky parent, and these steps share one HF cache across accounts on group-shared
+    # filesystems. Lifting it needs a two-account shared-cache test on the cluster (#788).
+    # vllm 0.33.0 accepts filelock>=3.20.3 and torch 2.14.0 any, so without this the
+    # resolver takes 4.3.1; vllm 0.34.0 requires >=4.2.4, which this range meets.
+    "filelock>=4.2.1,<4.2.12",
 ]

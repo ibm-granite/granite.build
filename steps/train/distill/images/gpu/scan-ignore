@@ -31,20 +31,8 @@
 # follow-up: bind each server to the node's address, or to loopback where the trainer
 # shares its node. Until 2027-05-31.
 
-# ---- accepted HIGH advisories (tracked in #752) ----
-# The vllm 0.33.0 lock (#676) has one HIGH advisory in osv, filelock's below: vllm, torch,
-# transformers, accelerate, fsspec and setuptools all moved to fixed releases, and ray is
-# no longer installed. The wandb-core ids trivy found inside the wandb 0.28.2 binary went
-# with the raise to wandb 0.31.2 (#752).
-
-# filelock 3.32.7: the fix is 4.2.1, a major-version move. filelock 4.x changes
-# UnixFileLock's behaviour on shared lock directories (4.2.12 refuses, with
-# PermissionError, a lock file another account owns under a sticky parent), and these
-# steps share one HF cache across accounts on group-shared filesystems. That move belongs
-# in its own change, tested on the cluster (#752); pyproject.toml holds it with a
-# filelock<4 constraint (vllm 0.34.0 would force it). Not reachable: the flaw is only in
-# ReadWriteLock / AsyncReadWriteLock (the SQLite-backed lock, added in 3.20.4), and no
-# module in the venv outside filelock itself names ReadWriteLock (checked in the vllm
-# 0.33.0 / torch 2.14.0 dev image), nor does the distill code. Until 2027-05-31.
-CVE-2026-112940
-GHSA-v4x8-3wr5-3wq8
+# ---- accepted HIGH advisories ----
+# None. The vllm 0.33.0 lock (#676) moved vllm, torch, transformers, accelerate, fsspec
+# and setuptools to fixed releases, and ray is no longer installed; the wandb-core ids
+# trivy found inside the wandb 0.28.2 binary went with the raise to wandb 0.31.2, and
+# filelock's (CVE-2026-112940 / GHSA-v4x8-3wr5-3wq8) with the raise to 4.2.x (#752).
