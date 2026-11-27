@@ -96,6 +96,18 @@ def test_each_form_is_read_by_its_own_parser(arm):
     assert _lmo_problems({**ok, **named, "last_message_only": "t"})
 
 
+@pytest.mark.parametrize("arm", _REQUIRING)
+def test_a_switch_given_as_a_string_is_the_switch(arm):
+    """TrlParser reads `use_uld_loss: "true"` (or `use_sampled_opd_loss: "true"`) as
+    the switch, so the arm's rule applies to it as to the boolean."""
+    (switch,) = rgc.LOSS_ARMS[arm]["flags"]
+    (problem,) = _lmo_problems({"response_template": _TEMPLATE, switch: "true"})
+    assert f"loss_arm {arm} requires last_message_only: true" in problem
+    cfg = {"response_template": _TEMPLATE, switch: "false", "last_message_only": True}
+    (problem,) = _lmo_problems(cfg)
+    assert "bypasses the response_template scan" in problem
+
+
 _READER_VALUES = [True, False, "true", "True", "TRUE", "false", "False", "t", "y"]
 _READER_VALUES += ["yes", "no", "n", "f", "on", "off", "1", "0", 1, 0, 2, "", "maybe"]
 
