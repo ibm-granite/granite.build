@@ -193,6 +193,16 @@ environment_configs:
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
             VLLM_ARGS=()
+            # FC's output budget, as the served vLLM's default (USAGE.md): an FC request
+            # that sends no max_tokens gets min(16384, the context left). A served default,
+            # not a request field: vLLM rejects a request whose prompt plus max_tokens
+            # exceeds the context. legacy-granite sends its own max_tokens with every
+            # request, so its serving stays as calibrated. A vllm_args value comes later
+            # and wins; an explicit max_tokens option is sent and wins.
+            case " {{ config.options }} " in
+              *" handler=legacy-granite "*) ;;
+              *) VLLM_ARGS+=('--vllm-arg=--override-generation-config={"max_new_tokens":16384}') ;;
+            esac
             for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 
             granite-evals run "$BENCHMARK" \
