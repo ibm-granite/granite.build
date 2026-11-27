@@ -532,7 +532,9 @@ def test_child_regenerates_a_memory_category_with_infra_errors(tmp_path, harness
     prereq, scored = d / "BFCL_v4_memory_kv_prereq_result.json", d / "BFCL_v4_memory_kv_result.json"
     prereq.write_text(json.dumps({"id": "memory_kv_prereq_0-a-0", "result": INFRA + " STALE-PREREQ"}) + "\n")
     scored.write_text(json.dumps({"id": "memory_kv_0", "result": [{"stale_scored": "{}"}]}) + "\n")
-    snapshot = root / "result" / bfcl.REGISTRY_NAME / "memory_snapshot" / "memory_kv"
+    # Where BFCL's memory backend keeps a category's state (memory_api_metaclass:
+    # result/<model>/<category dir>/memory_snapshot), not BFCL's own overwrite path.
+    snapshot = d / "memory_snapshot"
     snapshot.mkdir(parents=True)
     (snapshot / "stale-marker").write_text("")
     proc = _child(root, "generate", ["memory_kv"], _closed_port_url())

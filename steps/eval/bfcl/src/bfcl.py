@@ -513,13 +513,16 @@ def child_main(config_path: str) -> None:
         f = d / get_file_name_by_category(cat, is_result_file=True)
         if is_memory(cat):
             # Memory prereq chains carry state, so never regenerate part of one: a
-            # category with an infrastructure error is regenerated whole, as BFCL's
-            # own overwrite does (its result and prereq files and its snapshot).
+            # category with an infrastructure error is regenerated whole: its result
+            # and prereq files, and its snapshot where BFCL's memory backend keeps it
+            # (memory_api_metaclass: result/<model>/<category dir>/memory_snapshot;
+            # BFCL's own overwrite path, result/<model>/memory_snapshot/<cat>, is
+            # never written).
             files = [f, d / get_file_name_by_category(f"{cat}_prereq", is_result_file=True)]
             if n := sum(is_infra_error(rec) for p in files for rec in _records(p)):
                 for p in files:
                     p.unlink(missing_ok=True)
-                shutil.rmtree(result_root / "memory_snapshot" / cat, ignore_errors=True)
+                shutil.rmtree(d / "memory_snapshot", ignore_errors=True)
                 print(f"bfcl-v4: {cat}: regenerating the category, {n} entries hit infrastructure errors", flush=True)
             continue
         if n := prune_infra_errors(f):
