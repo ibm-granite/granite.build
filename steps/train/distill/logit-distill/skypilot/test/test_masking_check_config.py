@@ -11,6 +11,7 @@ false or unset is the problem, which is the config the renderer refuses.
 """
 
 import dataclasses
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -177,6 +178,8 @@ def test_check_config_reads_each_switch_as_its_parser_does(
         parsed = _trl_parser_reads(tmp_path, fields)
         read = None if parsed is None else bool(parsed[switch])
     cfg = {"response_template": _TEMPLATE, switch: value, "last_message_only": True}
+    if form == _STEP:
+        cfg["vllm_num_servers"] = 1  # on-policy, where the step emits both keys
     problems = masking.check_config(_DOC, cfg, form=form)
     about_it = [p for p in problems if p.startswith(switch)]
     if read is None:
@@ -195,14 +198,68 @@ _READER_VALUES = [True, False, "true", "True", "TRUE", "false", "False", "t", "y
 _READER_VALUES += ["yes", "no", "n", "f", "on", "off", "1", "0", 1, 0, 2, "", "maybe"]
 
 
-@pytest.mark.parametrize("value", _READER_VALUES, ids=repr)
-def test_the_renderer_reader_is_render_gold_configs_bool(value):
-    """As the step's template puts the value on the command line: str(value)."""
-    try:
-        want = rgc._bool(str(value))
-    except Exception:
-        want = None
+@pytest.mark.parametrize("value", [*_READER_VALUES, None, " "], ids=repr)
+def test_the_renderer_reader_is_what_the_step_renders(tmp_path, value):
+    """Through the step itself: its template renders a gold_config with this
+    last_message_only onto render_gold_config.py's command line, unquoted, and the
+    renderer runs (on-policy, where it emits the key). A null renders as "None", an
+    empty value as nothing; the renderer refuses both."""
+    rc, cfg = _step_renders(tmp_path, {"last_message_only": value})
+    want = None if rc != 0 else cfg["last_message_only"]
     assert masking._renderer_reads(value) is want
+
+
+def _step_renders(tmp_path, gold):
+    """The logit-distill step's run script, rendered from its template's config with
+    `gold` merged into gold_config (on-policy, one external server, lmbda 0.5, the two
+    delivered-file checks off), and its render_gold_config.py command run under bash.
+    Returns (exit code, the gold config written, or None)."""
+    import os
+
+    from jinja2 import Template
+
+    step = yaml.safe_load((_RENDER.parent.parent / "step-template.yaml").read_text())
+    script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+        "run"
+    ]
+    config = dict(step["config"])
+    config["gold_config"] = {
+        **config["gold_config"],
+        "vllm_num_servers": 1,
+        "lmbda": 0.5,
+        "verify_trainer_accepts_keys": False,
+        "check_corpus_tokenizer": False,
+        **gold,
+    }
+    bindings = {
+        "student": {"binding": {"path": "/models/student"}},
+        "teacher": {"binding": {"path": "/models/teacher"}},
+        "corpus": {"binding": {"path": "/data/corpus/train.jsonl"}},
+        "vllm": {"binding": {"state": "http://rollout:8000"}},
+    }
+    rendered = Template(script).render(config=config, bindings=bindings)
+    start = rendered.index(
+        '"$PYBIN" "$DISTILL_HOME/steps/logit-distill/render_gold_config.py"'
+    )
+    lines = []
+    for line in rendered[start:].splitlines():
+        lines.append(line)
+        if not line.rstrip().endswith("\\"):
+            break
+    home = tmp_path / "distill-home"
+    (home / "steps").mkdir(parents=True, exist_ok=True)
+    link = home / "steps" / "logit-distill"
+    if not link.exists():
+        link.symlink_to(_RENDER.parent)
+    out = tmp_path / "rendered.yaml"
+    env = dict(os.environ, PYBIN=sys.executable, DISTILL_HOME=str(home), CFG=str(out))
+    env["NODES"] = "2"
+    result = subprocess.run(
+        ["bash", "-c", "\n".join(lines)], env=env, capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        return result.returncode, None
+    return 0, yaml.safe_load(out.read_text())
 
 
 @pytest.mark.parametrize("value", _READER_VALUES, ids=repr)
@@ -433,6 +490,80 @@ def test_the_table_is_what_the_renderer_and_custom_gold_config_decide(
     assert starts is (lmo in _STARTS_WITH[(form, mode)])
 
 
+@pytest.mark.parametrize("mode", _ULD_EXEMPT_MODES)
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, "maybe"], ids=repr)
+@pytest.mark.parametrize("lmo", [False, True], ids=["lmo-false", "lmo-true"])
+def test_a_trainer_configs_mode_is_read_as_trl_parser_reads_it(
+    tmp_path, mode, value, lmo
+):
+    """The ULD modes in a gold config gold.py reads, given as strings and integers:
+    check-config passes it exactly when TrlParser and CustomGOLDConfig accept it, and
+    names the mode when the parser refuses its value."""
+    pytest.importorskip("trl")
+    fields = {"use_uld_loss": True, mode: value, "last_message_only": lmo}
+    if mode == "uld_per_turn_regions":
+        fields["uld_use_hybrid_loss"] = True
+    starts = _trl_parser_reads(tmp_path, fields) is not None
+    problems = masking.check_config(_DOC, {"response_template": _TEMPLATE, **fields})
+    assert (problems == []) is starts
+    if value == "maybe":
+        assert any(p.startswith(f"{mode} is 'maybe'") for p in problems)
+
+
+def _write_check_config_inputs(tmp_path, cfg):
+    masking_json = tmp_path / "masking.json"
+    doc = {**_DOC, "source": {"tokenizer_dir": "/t"}}
+    masking_json.write_text(json.dumps(doc))
+    gold = tmp_path / "gold.yaml"
+    gold.write_text(yaml.safe_dump({"response_template": _TEMPLATE, **cfg}))
+    return ["check-config", "--masking", str(masking_json), "--gold-config", str(gold)]
+
+
+def test_the_cli_reads_a_trainer_config_by_default_and_a_step_block_with_form_step(
+    tmp_path,
+):
+    """main() end to end: a step block (loss_arm uld, last_message_only true) is a
+    problem as a trainer config (TrlParser refuses loss_arm), sound with --form step."""
+    argv = _write_check_config_inputs(
+        tmp_path, {"loss_arm": "uld", "last_message_only": True}
+    )
+    assert masking.main(argv) == 1
+    assert masking.main([*argv, "--form", "trainer"]) == 1
+    assert masking.main([*argv, "--form", "step"]) == 0
+
+
+def test_the_cli_refuses_an_unknown_form(tmp_path):
+    argv = _write_check_config_inputs(tmp_path, {"last_message_only": False})
+    with pytest.raises(SystemExit) as err:
+        masking.main([*argv, "--form", "rendered"])
+    assert err.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "key, value, reported",
+    [
+        ("uld_reuse_student_input", "f", False),
+        ("uld_reuse_student_input", "off", False),
+        ("uld_reuse_student_input", None, False),
+        ("uld_reuse_student_input", "t", True),
+        ("uld_max_unaligned_fraction", 0.5, True),
+        ("uld_use_hybrid_loss", True, True),
+    ],
+    ids=repr,
+)
+def test_a_step_blocks_uld_keys_are_reported_when_they_ask_for_something(
+    key, value, reported
+):
+    """The step drops every uld_* key, and nothing reads the value. A mode that either
+    parser reads as false, or null, asks for nothing; any other uld_* key is a setting
+    that has no effect."""
+    cfg = {"response_template": _TEMPLATE, "loss_arm": "uld", "last_message_only": True}
+    problems = masking.check_config(_DOC, {**cfg, key: value}, form=_STEP)
+    assert any(p.startswith(f"{key} in a step's gold_config") for p in problems) is (
+        reported
+    )
+
+
 @pytest.mark.parametrize("arm", _REQUIRING)
 def test_a_requiring_arm_with_it_is_sound(arm):
     """The direction that changed: true is no longer reported for these arms."""
@@ -450,6 +581,12 @@ def test_every_other_arm_keeps_todays_rule(arm):
     forms = _forms(arm) if arm else [({}, _TRAINER), ({"loss_arm": ""}, _STEP)]
     for named, form in forms:
         base = {"response_template": _TEMPLATE, **named}
+        if form == _STEP:
+            # The renderer emits a step block's last_message_only on-policy only (for
+            # these arms), so the bypass exists there; off-policy it is dropped.
+            off = {**base, "last_message_only": True}
+            assert masking.check_config(_DOC, off, form=form) == []
+            base["vllm_num_servers"] = 1
         check = lambda cfg: masking.check_config(_DOC, cfg, form=form)  # noqa: E731
         assert check(base) == []
         assert check({**base, "last_message_only": False}) == []

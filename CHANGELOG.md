@@ -560,8 +560,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Each of those booleans is read with its form's parser (`TrlParser`, or the
       renderer's `_bool`), so `"true"` and 1 now satisfy the uld and sampled_opd rule
       (they were reported), `"true"` is reported as the scan bypass for every other arm
-      (it was not), and a value the parser refuses is reported for any of those keys.
+      (it was not), and a value its parser refuses is reported for each key that parser
+      reads. A step block's value is read as the step's template renders it, so null and
+      an empty value, which the renderer refuses, are reported.
     - A `loss_arm` key in a trainer config is reported: `TrlParser` refuses it.
+    - In a step block, `last_message_only: true` off-policy is no longer reported as the
+      scan bypass for an arm other than uld: the renderer drops it there. Every other
+      `uld_*` key in a step block is reported as having no effect.
+  - The distill recipe refuses, before submission, every arm configuration the step's
+    renderer refuses: an unknown or rejected arm, a switch set against the arm
+    (`USE_LIGER_FUSED_JSD`, `USE_SAMPLED_OPD_LOSS`), ce off its lmbda 0, the distillm2
+    arms without both policy classes, and the kl_interpolation arms with `BETA` at 0 or 1.
+    It passes the arm trimmed and lowercased, and `use_liger_fused_jsd: true` with a
+    liger arm (the two liger arms failed at launch at their defaults).
   - `uld_reuse_student_input` without `uld_use_hybrid_loss` no longer fails at trainer
     init with `AttributeError: ... 'jaccard'` (#785). Its tokenizer check now compares the
     two vocabularies and requires them to be equal, since the teacher reads the student's

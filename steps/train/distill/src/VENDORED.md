@@ -218,8 +218,13 @@ check-config --form trainer|step`, default `trainer`):
   rendered command line (`loss_arm` defaults to the template's `""`).
 - Each of `last_message_only`, the two switches and the three ULD modes is read with that
   rule, so `"true"` and `1` satisfy a rule, and a value the parser refuses is a problem.
-- In a step block, `use_uld_loss` and the ULD modes are dropped by the template; any value
-  the renderer would not read as false is reported.
+- In a step block, `use_uld_loss` and every `uld_*` key are dropped by the template. A
+  mode or `use_uld_loss` is reported unless its value is null or false by either parser's
+  reading; any other `uld_*` key with a value is reported as having no effect.
+- A step block's present value is read as the template renders it, unquoted: null becomes
+  "None" and an empty value becomes nothing, and the renderer refuses both.
+- A step block's `last_message_only` is dropped off-policy except for `loss_arm: uld`
+  (the renderer's `_ONLINE_ONLY`), so `true` there is not reported as the scan bypass.
 
 Every other arm keeps the old report.
 `steps/train/distill/logit-distill/skypilot/test/test_masking_check_config.py` pins both
