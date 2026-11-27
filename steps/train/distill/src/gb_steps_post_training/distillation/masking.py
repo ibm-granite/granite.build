@@ -472,13 +472,60 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
             f"on this student implies {want!r}. The config was not derived from the template it "
             "will train against."
         )
-    if cfg.get("last_message_only") is True:
+    arm, named = _arm_requiring_last_message_only(cfg)
+    lmo = cfg.get("last_message_only")
+    if arm is not None:
+        # The positional split IS this arm's masking policy, so true is the contract and
+        # anything else -- false, unset, or a non-boolean like the string "true", which the
+        # trainer's parser would not read as the boolean -- is the problem: the rule
+        # render_gold_config.py and CustomGOLDConfig.__post_init__ both enforce.
+        if lmo is not True:
+            given = "unset (the trainer's default, false)" if lmo is None else repr(lmo)
+            refused_by = (
+                "render_gold_config.py refuses it at render and CustomGOLDConfig at startup"
+                if named
+                else "CustomGOLDConfig refuses it at startup"
+            )
+            problems.append(
+                f"loss_arm {arm} requires last_message_only: true, and it is {given}. "
+                "Without it the collator labels every assistant turn while the arm "
+                f"supervises only the last; {refused_by}."
+            )
+    elif lmo is True:
         problems.append(
             "last_message_only: true bypasses the response_template scan entirely "
             "(utils.py:470) for a positional split. A different masking policy; masking.json "
             "describes the scanning one."
         )
     return problems
+
+
+def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool]:
+    """The loss arm in `cfg` whose render_gold_config.py LOSS_ARMS entry requires
+    last_message_only: true, and whether `cfg` names it as `loss_arm`; (None, False) if none.
+
+    Read either from `loss_arm` (a step's gold_config block) or from the switch the arm
+    renders (a rendered gold config has no `loss_arm` key): `use_uld_loss` for uld,
+    `use_sampled_opd_loss` for sampled_opd. Kept in step with those two `requires` entries
+    by test_masking_check_config.py, which reads the renderer's table.
+
+    ULD is exempt in the two modes that render the teacher another way and so do not need
+    the last turn alone, the same exemptions CustomGOLDConfig makes: per-turn teacher regions
+    (uld_per_turn_regions, which require last_message_only false) and the student's own input
+    reused as the teacher's (uld_reuse_student_input). Neither is reachable through the
+    logit-distill step, whose renderer exposes no uld_* option.
+    """
+    uld_exempt = cfg.get("uld_per_turn_regions") is True or (
+        cfg.get("uld_reuse_student_input") is True
+    )
+    arm = cfg.get("loss_arm")
+    if arm == "sampled_opd" or (arm == "uld" and not uld_exempt):
+        return arm, True
+    if cfg.get("use_uld_loss") is True and not uld_exempt:
+        return "uld", False
+    if cfg.get("use_sampled_opd_loss") is True:
+        return "sampled_opd", False
+    return None, False
 
 
 def _self_test() -> int:
@@ -570,11 +617,28 @@ def _self_test() -> int:
             {"response_template": "<|im_start|>assistant\n", "last_message_only": True},
             "bypasses",
         ),
+        (
+            "uld without last_message_only",
+            {"response_template": "<|im_start|>assistant\n", "use_uld_loss": True},
+            "requires last_message_only: true",
+        ),
     ):
         got = check_config(doc, cfg)
         if not any(needle in g for g in got):
             print(f"  FAIL config check {name}: expected {needle!r}, got {got}")
             bad = 1
+    eq(
+        "config check, uld with last_message_only",
+        check_config(
+            doc,
+            {
+                "response_template": "<|im_start|>assistant\n",
+                "use_uld_loss": True,
+                "last_message_only": True,
+            },
+        ),
+        [],
+    )
 
     if not bad:
         print(

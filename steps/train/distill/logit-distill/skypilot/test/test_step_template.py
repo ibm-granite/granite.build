@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1354,7 +1355,8 @@ class TestSlurmExecutorEnv:
 # just before the train_dir change, and pin that nothing train_dir (or rollout_stop_file)
 # adds leaks into a render that does not set it. Regenerated since only for changes that
 # legitimately alter the no-train_dir render, each named in its commit: the shared
-# completeness rule in the watcher, and the move-aside's skip for seeded checkpoints.
+# completeness rule in the watcher, the move-aside's skip for seeded checkpoints, and the
+# watcher's backgrounded, killable sleep (the emit cases only).
 _GOLDEN = Path(__file__).resolve().parent / "golden_run_scripts.json"
 
 
@@ -1784,9 +1786,17 @@ class TestRolloutStopFile:
         assert result.returncode == 1
         assert not stop.exists()
 
-    def test_the_later_exit_traps_keep_writing_it(self, tmp_path):
-        """The resume handshake and the checkpoint watcher each replace the EXIT
-        trap on rank 0; both must still write the file, and keep the status."""
+    # Where the watcher's sleep is started and its PID taken, in the rendered script. The tests
+    # below insert a ready marker (and, for the window test, a delay) at these points.
+    _FORK = "\n    _watch_sleep=$!\n"
+    # The timeout: well under the watcher's 60 s interval, so a sleep left holding the
+    # script's output fails the test instead of passing late.
+    _TIMEOUT = 30
+
+    def _rank0(self, tmp_path):
+        """Rank 0's script from the rollout stop file through the watcher's start, split
+        into the stop-file head and the train_dir-to-watcher body, and its environment.
+        """
         stop = tmp_path / "shared" / "rollout.stop"
         train = tmp_path / "train"
         rendered = self._render(
@@ -1804,6 +1814,9 @@ class TestRolloutStopFile:
         watcher = rendered.index("WATCH_PID=$!", start)
         end = rendered.index("\nfi\n", watcher) + len("\nfi\n")
         body = rendered[start:end]
+        assert (
+            body.count(self._FORK) == 1
+        ), "the watcher no longer takes $! after its sleep"
         home = tmp_path / "distill-home"
         (home / "steps").mkdir(parents=True)
         (home / "steps" / "logit-distill").symlink_to(_STEP.parent / "src")
@@ -1817,35 +1830,107 @@ class TestRolloutStopFile:
             "PYBIN": sys.executable,
             "DISTILL_HOME": str(home),
             "GB_TARGETRUN_ID": "tr-9",
+            "WATCH_READY": str(tmp_path / "watch.ready"),
         }
+        return head, body, env, stop, train
 
-        def run(script):
-            return subprocess.run(
-                ["bash", "-c", "set -eu\n" + head + script],
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
-            )
+    @classmethod
+    def _synced(cls, body, then, delay_after_fork=0):
+        """`body`, with the watcher signalling once its sleep is running, and the script
+        waiting for that signal before it runs `then` (an exit). Waiting on the watcher,
+        not on a fixed head start, is what makes the case below run every time on any
+        machine: the script exits, and cleanup_watcher kills the watcher, while the
+        watcher's sleep is running. `delay_after_fork` holds the watcher between starting
+        the sleep and taking its PID, which is the window a remembered PID misses."""
+        hold = f"    sleep {delay_after_fork}\n" if delay_after_fork else ""
+        signal = '    : > "$WATCH_READY"\n'
+        synced = body.replace(
+            cls._FORK,
+            (
+                (f"\n{signal}{hold}    _watch_sleep=$!\n")
+                if delay_after_fork
+                else f"{cls._FORK}{signal}"
+            ),
+        )
+        wait = (
+            "_n=0\n"
+            'while [ ! -e "$WATCH_READY" ]; do\n'
+            "  _n=$((_n + 1)); [ $_n -lt 600 ] || exit 98\n"
+            "  sleep 0.05\n"
+            "done\n"
+        )
+        return synced + wait + then
 
+    def _run_rank0(self, head, script, env):
+        start = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", "set -eu\n" + head + script],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=self._TIMEOUT,
+        )
+        return result, time.monotonic() - start
+
+    def test_the_later_exit_traps_keep_writing_it(self, tmp_path):
+        """The resume handshake and the checkpoint watcher each replace the EXIT
+        trap on rank 0; both must still write the file, and keep the status."""
+        head, body, env, stop, train = self._rank0(tmp_path)
         # Failing under the handshake's trap (mid-preparation), then under the
-        # watcher's (after it started).
+        # watcher's, once its sleep is running.
         seeding = body.replace('RESUME_HELD=""', 'exit 6\nRESUME_HELD=""', 1)
         assert seeding != body
-        for label, script in (("seed", seeding), ("watch", body + "exit 6\n")):
+        watching = self._synced(body, "exit 6\n")
+        for label, script in (("seed", seeding), ("watch", watching)):
             if stop.exists():
                 stop.unlink()
-            result = run(script)
+            if Path(env["WATCH_READY"]).exists():
+                Path(env["WATCH_READY"]).unlink()
+            result, _ = self._run_rank0(head, script, env)
             assert result.returncode == 6, (label, result.stderr)
             assert stop.read_text().splitlines()[0] == "tr-9", label
         if (train / "checkpoints" / "gold_node2" / ".resume-seeded").exists():
             (train / "checkpoints" / "gold_node2" / ".resume-seeded").unlink()
         # A clean pass through both leaves no file.
         stop.unlink()
-        result = run(body + "exit 0\n")
+        Path(env["WATCH_READY"]).unlink()
+        result, _ = self._run_rank0(head, self._synced(body, "exit 0\n"), env)
         assert result.returncode == 0, result.stderr
         assert not stop.exists()
+
+    @pytest.mark.parametrize(
+        "delay_after_fork", [0, 5], ids=["asleep", "between-fork-and-pid"]
+    )
+    def test_the_watcher_leaves_nothing_holding_the_output(
+        self, tmp_path, delay_after_fork
+    ):
+        """cleanup_watcher kills the watcher subshell, not its sleep. A sleep left running
+        with the script's stdout and stderr holds the caller's pipe open for up to 60 s
+        after the script exits, which is how this suite's watcher test timed out under load.
+        Killed while asleep, and killed between starting the sleep and taking its PID (the
+        case a TERM trap that kills a remembered PID misses), the script's output must close
+        when the script exits. The injected 5 s hold is the only wait expected."""
+        head, body, env, _, _ = self._rank0(tmp_path)
+        script = self._synced(body, "exit 0\n", delay_after_fork=delay_after_fork)
+        result, elapsed = self._run_rank0(head, script, env)
+        assert result.returncode == 0, result.stderr
+        assert elapsed < delay_after_fork + 15, f"output held open for {elapsed:.1f}s"
+
+    def test_a_rejected_interval_stops_the_watcher_once_and_loudly(self, tmp_path):
+        """The watcher's sleep has no stdout or stderr, so the error from a `sleep` that
+        rejects the interval is gone. Its exit status is checked instead: the watcher says
+        so once on stderr and stops, rather than spinning or failing silently. The final
+        sweep after the trainer still emits every checkpoint."""
+        head, body, env, _, _ = self._rank0(tmp_path)
+        body = body.replace(
+            'CKPT_WATCH_INTERVAL="60"', 'CKPT_WATCH_INTERVAL="never"', 1
+        )
+        assert 'CKPT_WATCH_INTERVAL="never"' in body
+        script = self._synced(body, 'wait "$WATCH_PID"\nexit 0\n')
+        result, _ = self._run_rank0(head, script, env)
+        assert result.returncode == 0, result.stderr
+        assert result.stderr.count("'sleep never' failed") == 1, result.stderr
 
 
 class TestOneCompletenessRule:
