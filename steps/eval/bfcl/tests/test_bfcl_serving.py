@@ -103,7 +103,8 @@ def test_a_generation_config_in_vllm_args_is_recorded_not_overridden(ckpt, vllm_
 
 
 @pytest.mark.parametrize("vllm_args", ["", "--max-num-seqs=4 --enforce-eager", "--config-format=hf",
-                                       "--generation-config-x=1", "--max-model-len=8192"])
+                                       "--generation-config-x=1", "--max-model-len=8192",
+                                       "--gpu-memory-utilization .9", "-tp 2", "--enforce-eager --"])
 def test_other_vllm_args_keep_the_budget(ckpt, vllm_args):
     assert bfcl_serving.plan("bfcl-v3", ckpt({}), "", "", shlex.split(vllm_args)) == ("16384:step-default", [BUDGET])
 
@@ -161,6 +162,16 @@ def test_only_a_file_the_hub_says_is_absent_means_no_config(monkeypatch):
         "unknown:generation_config-unreadable-LocalEntryNotFoundError", [])
     _hub_raises(monkeypatch, OSError("offline"))
     assert bfcl_serving.plan("bfcl-v3", "ibm-granite/some-model", "", "") == ("unknown:generation_config-unreadable-OSError", [])
+
+
+def test_main_reads_its_arguments_in_the_templates_order(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(bfcl_serving, "plan", lambda *a: seen.append(a) or ("none:base_url", []))
+    out = tmp_path / "fc_budget.json"
+    bfcl_serving.main([str(out), "bfcl-v4", "/models/m", "http://h/v1", "handler=fc", "--max-num-seqs", "4"])
+    assert seen == [("bfcl-v4", "/models/m", "http://h/v1", "handler=fc", ["--max-num-seqs", "4"])]
+    bfcl_serving.main([str(out), "bfcl-v3", "/models/m", "", ""])
+    assert seen[-1] == ("bfcl-v3", "/models/m", "", "", [])
 
 
 def test_main_records_the_decision_and_prints_the_arguments(ckpt, tmp_path, capsys):
