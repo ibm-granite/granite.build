@@ -24,7 +24,7 @@ target_expectations:
   - config:
       benchmark: bfcl-v4
       phase: score
-      image: quay.io/granitebuild/steps/eval/bfcl/images/cpu:e9a4ac4d
+      image: quay.io/granitebuild/steps/eval/bfcl/images/cpu:7676aba6
     step_uri: space://steps/eval/bfcl
 space_uri: ../../space
 tests:
