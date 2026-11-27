@@ -56,7 +56,14 @@ _JOB_DETAIL_KEYS = (
 class WandBLineageService(LineageService):
 
     def __init__(self):
-        wandb.login(key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL)
+        # verify=False, as before: wandb 0.31.2 (the image's) defaults to verifying
+        # the key over the network at login and raises AuthenticationError on any
+        # failure, an unreachable host included, so a slow or down W&B server would
+        # fail the service here. wandb 0.27.2 and 0.26.1 (`make venv`) default to
+        # False.
+        wandb.login(
+            key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL, verify=False
+        )
         # Route wandb's Python-logger messages through gbserver's root handler
         # (CustomFormatter) so any that surface match the gbserver log format,
         # instead of wandb's own handler printing them raw. See issue #181 Task 1.

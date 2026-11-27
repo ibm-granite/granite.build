@@ -1572,7 +1572,10 @@ class WandBLineageIndexer(JobLineageIndexer):
         )
 
         if not self._logged_in:
-            wandb.login(key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL)
+            # verify=False, as before: see WandBLineageService.__init__.
+            wandb.login(
+                key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL, verify=False
+            )
             self._logged_in = True
         return wandb.Api()
 

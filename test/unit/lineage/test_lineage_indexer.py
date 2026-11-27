@@ -990,6 +990,24 @@ def test_wandb_api_is_fresh_per_scan(monkeypatch):
     fake.login.assert_called_once()
 
 
+def test_wandb_login_skips_the_network_check(monkeypatch):
+    """wandb 0.31.2 verifies the key over the network at login by default and
+    raises on an unreachable host; the indexer keeps 0.27.2's no-verify login."""
+    import sys
+
+    from gbserver.types.constants import (
+        GBSERVER_WANDB_API_KEY,
+        GBSERVER_WANDB_BASE_URL,
+    )
+
+    fake = SimpleNamespace(login=MagicMock(), Api=MagicMock())
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+    idx.WandBLineageIndexer(sink=MagicMock())._wandb_api()
+    fake.login.assert_called_once_with(
+        key=GBSERVER_WANDB_API_KEY, host=GBSERVER_WANDB_BASE_URL, verify=False
+    )
+
+
 def test_index_storage_error_propagates_instead_of_advancing():
     from gbserver.lineage.index_writer import LineageIndexWriter
 
