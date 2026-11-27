@@ -306,8 +306,16 @@ def redact(text):
     for key, value in os.environ.items():
         if len(value) >= 8 and any(w in key.upper() for w in SECRET_ENV_WORDS):
             text = text.replace(value, "<redacted>")
-    text = re.sub(r"(?i)(authorization:\s*)(\w+\s+)?[^\s'\",\]]+", r"\1\2<redacted>", text)
-    return re.sub(r"(?i)(bearer\s+)[^\s'\",\]]+", r"\1<redacted>", text)
+    # A header value never spans a line, and a scheme word is not a value: an
+    # empty token (HF_TOKEN=) leaves "Authorization: Bearer " alone instead of
+    # eating the next line's first word.
+    scheme = r"(?:bearer|basic|token|digest)"
+    text = re.sub(
+        rf"(?i)(authorization:[ \t]*)({scheme}[ \t]+)?(?!{scheme}\b)[^\s'\",\]]+",
+        r"\1\2<redacted>",
+        text,
+    )
+    return re.sub(r"(?i)(bearer[ \t]+)[^\s'\",\]]+", r"\1<redacted>", text)
 
 
 def redact_urls(text):

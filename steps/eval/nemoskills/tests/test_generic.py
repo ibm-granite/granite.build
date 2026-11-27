@@ -491,10 +491,42 @@ def test_local_builders_refuse_remote_data_files():
         ((), {"data_files": {"test": ["a.json", "https://h/b.json?t=1"]}}),
         ((None, None, "s3://bucket/x.csv"), {}),
         ((), {"data_dir": "hf://datasets/a/b"}),
+        ((None, "hf://datasets/a/b"), {}),  # data_dir, positional (load_dataset's 3rd)
     ]:
         with pytest.raises(SystemExit, match="not local") as err:
             check("json", args, kwargs)
         assert "t=1" not in str(err.value)
+
+
+@pytest.mark.parametrize("builder", sorted(generic.guard["LOCAL_BUILDERS"]))
+def test_every_local_builder_refuses_remote_data(builder):
+    assert generic.guard["LOCAL_BUILDERS"] == {"json", "csv", "parquet", "text", "arrow", "webdataset"}
+    with pytest.raises(SystemExit, match="not local"):
+        generic.guard["check_local_builder"](builder, (), {"data_files": "https://h/x"})
+
+
+def test_urlopen_is_guarded_before_datasets_is_imported(tmp_path, monkeypatch):
+    """datasets may fetch at import time: the urlopen guard is in place
+    before install_guards imports it."""
+    pkg = tmp_path / "site" / "datasets"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        "import urllib.request\n"
+        "SEEN = urllib.request.urlopen.__name__\n"
+        "def load_dataset(path, *a, **k):\n"
+        "    return 'ok'\n"
+    )
+    monkeypatch.delitem(sys.modules, "datasets", raising=False)
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    monkeypatch.setenv("GRANITE_NS_READS", "/dev/null")
+    import runpy
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", urllib.request.urlopen)
+    monkeypatch.setattr(runpy, "run_path", runpy.run_path)
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    generic.guard["install_guards"]()
+    assert sys.modules["datasets"].SEEN == "guarded_urlopen"
 
 
 def test_install_guards_wraps_load_dataset(monkeypatch):
@@ -598,6 +630,29 @@ def test_redact_authorization_without_bearer(monkeypatch):
         "-H 'Authorization: Basic <redacted>'"
     )
     assert redact("authorization: tok123456") == "authorization: <redacted>"
+
+
+@pytest.mark.parametrize("value", ["", "short"])
+def test_an_empty_or_short_secret_redacts_nothing(monkeypatch, value):
+    # HF_TOKEN= (set but empty): replacing "" would put <redacted> between
+    # every character.
+    redact = generic.guard["redact"]
+    monkeypatch.setenv("HF_TOKEN", value)
+    assert redact("prepare.py failed: exit 1") == "prepare.py failed: exit 1"
+
+
+def test_an_empty_token_header_leaves_the_message_alone(monkeypatch):
+    # mmau-pro's argv with HF_TOKEN=: the header has no value, so nothing is
+    # redacted -- not the scheme word, not the next line's first word.
+    redact = generic.guard["redact"]
+    monkeypatch.setenv("HF_TOKEN", "")
+    text = "Authorization: Bearer \nresult 42 written\n"
+    assert redact(text) == text
+    assert redact("['-H', 'Authorization: Bearer ', 'https://x']") == (
+        "['-H', 'Authorization: Bearer ', 'https://x']"
+    )
+    # a real value on the header line is still redacted, the next line kept
+    assert redact("Authorization: Bearer abc123\nnext") == "Authorization: Bearer <redacted>\nnext"
 
 
 def test_redact_urls():
