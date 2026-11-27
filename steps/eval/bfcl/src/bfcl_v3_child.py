@@ -257,7 +257,12 @@ class EndpointError(RuntimeError):
     Every message holds a phrase ``INFRA_ERROR`` matches, so the entry BFCL records
     as "Error during inference: ..." is an infrastructure error, never a scored
     answer: generate exits non-zero and its retry prunes the entry and tries again
-    (where the startup probe fails the job loudly if the endpoint is gone)."""
+    (where the startup probe fails the job loudly if the endpoint is gone). A 4xx keeps
+    its HTTP code and vLLM's reply body (VLLMTokens.count reads them)."""
+
+    def __init__(self, message: str, code: int | None = None, body: str = ""):
+        super().__init__(message)
+        self.code, self.body = code, body
 
 
 class VLLMTokens:
@@ -293,7 +298,12 @@ class VLLMTokens:
                     reply = resp.read()
             except urllib.error.HTTPError as e:
                 if e.code < 500:
-                    raise EndpointError(f"vLLM endpoint error: HTTP {e.code} {e.reason} from {url}") from e
+                    try:
+                        body = e.read(4096).decode("utf-8", "replace")
+                    except Exception:  # noqa: BLE001  the reason is a courtesy; the code decides
+                        body = ""
+                    raise EndpointError(f"vLLM endpoint error: HTTP {e.code} {e.reason} from {url}: "
+                                        f"{' '.join(body.split())[:300]}", e.code, body) from e
                 err = f"Error code: {e.code} from {url}"
             except (OSError, http.client.HTTPException) as e:  # URLError, TimeoutError, ConnectionError
                 reason = getattr(e, "reason", e)
@@ -329,7 +339,17 @@ class VLLMTokens:
 
     def count(self, prompt: str) -> int:
         url = f"{self.root}/tokenize"
-        out = self._json(url, {"model": self.model, "prompt": prompt, "add_special_tokens": False})
+        try:
+            out = self._json(url, {"model": self.model, "prompt": prompt, "add_special_tokens": False})
+        except EndpointError as e:
+            # vLLM 0.27.1's /tokenize never length-checks (its TokenizeParams has no
+            # max_total_tokens; read from its source), so an over-length prompt is counted,
+            # sent and rejected with a 400, scored as the entry's wrong answer as in BFCL's
+            # prompt mode. Should a later vLLM reject it here with its over-length 400, keep
+            # that: one past the context is max_new_tokens' overflow case.
+            if e.code == 400 and "maximum context length" in e.body:
+                return self.context_length() + 1
+            raise
         try:
             return int(out["count"])
         except (KeyError, TypeError, ValueError):

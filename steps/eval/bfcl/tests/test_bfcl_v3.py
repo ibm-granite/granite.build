@@ -575,8 +575,8 @@ def test_real_child_scores_legacy_text_results(tmp_path):
 def fake_vllm():
     """A stand-in OpenAI-compatible server: /v1/models, /tokenize, /v1/completions
     and /v1/chat/completions, every answer a refusal (no tool call), every request kept.
-    ``fail[path]`` is a list of HTTP codes the next requests to ``path`` get instead,
-    and ``delay[path]`` seconds each of them waits first."""
+    ``fail[path]`` is a list of HTTP codes (or (code, body) pairs) the next requests to
+    ``path`` get instead, and ``delay[path]`` seconds each of them waits first."""
     import http.server
     import threading
     import time
@@ -604,6 +604,8 @@ def fake_vllm():
                     self.send_header("Content-Length", str(len(item)))
                     self.end_headers()
                     self.wfile.write(item)
+                elif isinstance(item, tuple):
+                    self._send(item[1], item[0])
                 else:
                     self._send({"detail": "injected"}, item)
                 return True
@@ -706,6 +708,31 @@ def test_vllm_tokens_mid_run_failures_are_infra_errors(tmp_path, fake_vllm, quic
     result = tmp_path / "BFCL_v3_simple_result.json"
     result.write_text(json.dumps({"id": "simple_0", "result": f"Error during inference: {err.value}"}) + "\n")
     assert bfcl.prune_infra_errors(result) == 1, str(err.value)
+
+
+OVER_LENGTH = {"object": "error", "type": "BadRequestError", "code": 400, "param": "input_tokens",
+               "message": "This model's maximum context length is 32768 tokens. However, you requested 0 output "
+                          "tokens and your prompt contains 40000 input tokens, for a total of 40000 tokens. "
+                          "Please reduce the length of the input prompt or the number of requested output tokens."}
+
+
+def test_a_tokenize_that_length_checks_counts_an_over_length_prompt(fake_vllm, quick_retries):
+    """vLLM 0.27.1's /tokenize never length-checks (TokenizeParams has no
+    max_total_tokens), so an over-length prompt is counted, sent, rejected with a 400 and
+    scored as the entry's wrong answer, as in BFCL's prompt mode. Should an upgrade's
+    /tokenize reject it with vLLM's over-length 400 instead, it still is: the count is
+    one past the context (max_new_tokens' overflow case), not an infrastructure error."""
+    fake_vllm.fail["/tokenize"] = [(400, OVER_LENGTH)]
+    tokens = bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m")
+    assert tokens.count("a long prompt") == 32769
+    assert bfcl_v3_child.max_new_tokens(32768, 32769) == 1000  # sent; the server rejects it
+
+
+def test_any_other_tokenize_4xx_is_an_infra_error_with_vllms_reason(fake_vllm, quick_retries):
+    fake_vllm.fail["/tokenize"] = [(400, {"object": "error", "message": "The model `x` does not exist.",
+                                         "type": "NotFoundError", "code": 400})]
+    with pytest.raises(bfcl_v3_child.EndpointError, match=r"vLLM endpoint error: HTTP 400 .*does not exist"):
+        bfcl_v3_child.VLLMTokens(fake_vllm.base_url, "m").count("p")
 
 
 @pytest.mark.parametrize("path", ["/tokenize", "/v1/models"])
