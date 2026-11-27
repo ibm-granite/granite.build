@@ -621,6 +621,13 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
             "of the sampled-OPD loss. Set vllm_num_servers > 0 (the loss needs lmbda 1.0), "
             "or leave use_sampled_opd_loss false"
         )
+    # On-policy, the loss needs lmbda 1.0 too. LOSS_ARMS refuses other values for the arm
+    # (_validate_arm); the switch alone left them for CustomGOLDConfig to refuse at startup.
+    if args.use_sampled_opd_loss and args.lmbda != 1.0:
+        raise ValueError(
+            f"use_sampled_opd_loss requires lmbda 1.0 (fully on-policy), as "
+            f"CustomGOLDConfig.__post_init__ does; got {args.lmbda}"
+        )
 
     # The one exception to _ONLINE_ONLY: keys an arm needs off-policy too. The trainer reads
     # last_message_only off-policy (the collator's labels), so dropping it there made the uld

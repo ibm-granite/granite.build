@@ -199,6 +199,18 @@ class TestOnPolicyBlockGating:
         assert "use_sampled_opd_loss" in result.stderr
         assert "vllm_num_servers" in result.stderr
 
+    def test_on_policy_refuses_the_sampled_opd_switch_below_lmbda_1(self, tmp_path):
+        """CustomGOLDConfig requires lmbda 1.0 for it; the arm already refused other
+        values, the switch alone rendered them for the trainer to refuse at startup."""
+        on_policy = ["--vllm-num-servers", "1", "--last-message-only", "true"]
+        sopd = ["--use-sampled-opd-loss", "true"]
+        result = _render(
+            tmp_path, extra=[*on_policy, *sopd, "--lmbda", "0.5"], expect_rc=2
+        )
+        assert "use_sampled_opd_loss" in result.stderr and "1.0" in result.stderr
+        config = _render(tmp_path, extra=[*on_policy, *sopd, "--lmbda", "1.0"])
+        assert config["use_sampled_opd_loss"] is True and config["lmbda"] == 1.0
+
     def test_off_policy_takes_the_sampled_opd_switch_off(self, tmp_path):
         """False is the default, and off-policy it is still not emitted."""
         config = _render(tmp_path, extra=["--use-sampled-opd-loss", "false"])
