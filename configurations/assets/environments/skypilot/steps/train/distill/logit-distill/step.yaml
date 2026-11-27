@@ -922,20 +922,27 @@ environment_configs:
               done
             }
 
-            # The sleep runs in the background and is waited on, with a TERM trap that
-            # kills it. A foreground sleep would outlive cleanup_watcher's kill of this
-            # subshell (the signal reaches the subshell, not its child) and hold the
-            # script's stdout and stderr open for up to CKPT_WATCH_INTERVAL after the
-            # script has exited. `wait` returns at once on a trapped signal.
+            # cleanup_watcher's kill reaches this subshell, not its children, so a sleep left
+            # running could outlive the script and hold its stdout and stderr open for up to
+            # CKPT_WATCH_INTERVAL after it exits. Two things prevent that:
+            #   - the sleep runs in the background under a TERM trap that kills every job of
+            #     this subshell (`jobs -p`), not a remembered PID, so a TERM that lands between
+            #     `&` and `$!` still finds it; `wait` returns at once on a trapped signal;
+            #   - the sleep inherits no stdout or stderr, so even one that survived would hold
+            #     nothing. Nothing is lost: sleep prints only an error for an invalid
+            #     interval, and the status check below reports that instead.
             watch_checkpoints() {
-              _watch_sleep=""
-              trap '[ -n "$_watch_sleep" ] && kill "$_watch_sleep" 2>/dev/null; exit 0' TERM
+              trap 'kill $(jobs -p) 2>/dev/null || true; exit 0' TERM
               while true; do
                 emit_new_checkpoints
-                sleep "$CKPT_WATCH_INTERVAL" &
+                sleep "$CKPT_WATCH_INTERVAL" </dev/null >/dev/null 2>&1 &
                 _watch_sleep=$!
-                wait "$_watch_sleep" || true
-                _watch_sleep=""
+                _watch_rc=0
+                wait "$_watch_sleep" || _watch_rc=$?
+                if [ "$_watch_rc" -ne 0 ] && [ "$_watch_rc" -le 128 ]; then
+                  echo "logit-distill: checkpoint watcher: 'sleep $CKPT_WATCH_INTERVAL' failed (status $_watch_rc); no more mid-run checkpoint artifacts, the final sweep still emits them" >&2
+                  return 0
+                fi
               done
             }
 
