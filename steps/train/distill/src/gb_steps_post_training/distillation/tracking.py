@@ -462,31 +462,35 @@ def _truthy(value) -> bool:
 
 _CLEARML_PROBE = r"""
 import json
-from clearml.config import config_obj as c
-from clearml.backend_api.session.session import Session
-from clearml.backend_api.session.defs import ENV_ACCESS_KEY, ENV_SECRET_KEY, ENV_AUTH_TOKEN
-out = {}
-for k, f in (("api", Session.get_api_server_host), ("web", Session.get_app_server_host), ("files", Session.get_files_server_host)):
-    try:
-        out[k] = f(c)
-    except Exception as e:
-        out[k] = "error: %s" % type(e).__name__
-out["token"] = bool(ENV_AUTH_TOKEN.get())
-out["access"] = bool(ENV_ACCESS_KEY.get(default=(c.get("api.credentials.access_key", None) or Session.default_key)))
-out["secret"] = bool(ENV_SECRET_KEY.get(default=(c.get("api.credentials.secret_key", None) or Session.default_secret)))
+try:
+    from clearml.config import config_obj as c
+    from clearml.backend_api.session.session import Session
+    from clearml.backend_api.session.defs import ENV_ACCESS_KEY, ENV_SECRET_KEY, ENV_AUTH_TOKEN
+    out = {"public": Session.get_api_server_host(c) == Session.default_host}
+    out["token"] = bool(ENV_AUTH_TOKEN.get())
+    out["access"] = bool(ENV_ACCESS_KEY.get(default=(c.get("api.credentials.access_key", None) or Session.default_key)))
+    out["secret"] = bool(ENV_SECRET_KEY.get(default=(c.get("api.credentials.secret_key", None) or Session.default_secret)))
+except Exception as e:
+    out = {"error": type(e).__name__}
 print("CLEARML_PROBE" + json.dumps(out))
 """
 
 
 def clearml_probe(environ: Mapping[str, str], home: Path) -> dict | None:
-    """clearml's own resolution of servers and credential presence, or None without clearml."""
+    """clearml's own resolution, as booleans, or None where clearml is not importable.
+
+    {"public": the API server is clearml's public default, "token", "access", "secret": whether
+    each credential is present}, or {"error": <exception type>}. The subprocess runs with -I
+    (isolated: no user site, no PYTHON* variables, no script directory on sys.path) and prints
+    nothing else: never a server URL, which can carry userinfo, nor a message or a stderr line.
+    """
     if importlib.util.find_spec("clearml") is None:
         return None
     env = {k: v for k, v in environ.items()}
     env["HOME"] = str(home)
     try:
         result = subprocess.run(
-            [sys.executable, "-c", _CLEARML_PROBE],
+            [sys.executable, "-I", "-c", _CLEARML_PROBE],
             env=env,
             capture_output=True,
             text=True,
@@ -494,12 +498,11 @@ def clearml_probe(environ: Mapping[str, str], home: Path) -> dict | None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return {"error": type(exc).__name__}
     for line in result.stdout.splitlines():
         if line.startswith("CLEARML_PROBE"):
             return json.loads(line[len("CLEARML_PROBE") :])
-    tail = (result.stderr or result.stdout).strip().splitlines()[-1:] or ["no output"]
-    return {"error": tail[0]}
+    return {"error": f"probe exited {result.returncode} without a result"}
 
 
 def clearml_verdict(probe: dict | None) -> tuple[bool, str, str]:
@@ -508,6 +511,7 @@ def clearml_verdict(probe: dict | None) -> tuple[bool, str, str]:
     Present means what clearml needs to log in: CLEARML_AUTH_TOKEN, or BOTH keys (it uses basic
     auth only with both, backend_api/session/session.py, Session._do_refresh_token). One key alone
     gets past clearml's MissingConfigError but fails at login, so it is not credentials here.
+    The server is reported as public or self-hosted only, never by its URL.
     """
     if probe is None:
         return (
@@ -521,13 +525,10 @@ def clearml_verdict(probe: dict | None) -> tuple[bool, str, str]:
             f"clearml's config could not be read ({probe['error']})",
             "server not checked",
         )
-    api = probe.get("api") or "?"
-    origin = (
-        "clearml's default"
-        if api == CLEARML_PUBLIC_API
-        else "from clearml's config or environment"
-    )
-    server = f"server={api} ({origin})"
+    if probe.get("public"):
+        server = "server: the public ClearML server (clearml's default)"
+    else:
+        server = "server: self-hosted (from clearml's config or environment)"
     if probe.get("token"):
         return True, "CLEARML_AUTH_TOKEN", server
     if probe.get("access") and probe.get("secret"):
@@ -555,7 +556,8 @@ def clearml_verdict(probe: dict | None) -> tuple[bool, str, str]:
 #     else the netrc entry for the server's netloc, then, for a Forge server, the entry for the
 #     W&B API host behind it. An entry found but without a password is NOT followed by the
 #     fallback. The netrc file is $NETRC, else ~/.netrc, else ~/_netrc.
-#   * offline: WANDB_MODE=offline (or the older "dryrun").
+#   * the mode: WANDB_MODE, case-sensitive, one of online, offline, shared, disabled, dryrun,
+#     run; offline and dryrun need no credentials, and any other value makes wandb raise.
 #
 # One wandb source is not read here: an `api_key` in a wandb settings file, which wandb uses
 # only after the environment and netrc and only for the same base_url.
@@ -632,30 +634,37 @@ def wandb_forge_upstream(url: str) -> str:
 
 
 def wandb_settings_base_url(
-    environ: Mapping[str, str], home: Path
+    environ: Mapping[str, str], home: Path, cwd: Path | None = None
 ) -> tuple[str, str] | None:
-    """(base_url, file) from wandb's global settings file, if it sets one.
+    """(base_url, file) from wandb's settings files, if one sets it.
 
-    That file is $WANDB_CONFIG_DIR/settings, else ~/.config/wandb/settings. The per-directory
-    file (<WANDB_DIR>/wandb/settings) is not read: apply() points WANDB_DIR at output_dir.
+    wandb reads two (Settings.read_system_settings): the workspace file, <cwd>/wandb/settings,
+    which wins, and the global one, $WANDB_CONFIG_DIR/settings, else ~/.config/wandb/settings. It
+    reads them before it applies the environment, so WANDB_DIR does not move the workspace file:
+    it is the one under the directory the trainer starts in. Then WANDB_BASE_URL, which
+    overrides both.
     """
     cfg_dir = (environ.get("WANDB_CONFIG_DIR") or "").strip()
-    path = (
+    global_file = (
         Path(cfg_dir).expanduser() / "settings"
         if cfg_dir
         else home / ".config" / "wandb" / "settings"
     )
-    parser = configparser.ConfigParser()
-    try:
-        parser.read_string(path.read_text(errors="replace"))
-    except (OSError, configparser.Error):
-        return None
-    value = parser.get("default", "base_url", fallback="").strip()
-    return (value, str(path)) if value else None
+    workspace_file = (Path.cwd() if cwd is None else cwd) / "wandb" / "settings"
+    for path in (workspace_file, global_file):
+        parser = configparser.ConfigParser()
+        try:
+            parser.read_string(path.read_text(errors="replace"))
+        except (OSError, configparser.Error):
+            continue
+        value = parser.get("default", "base_url", fallback="").strip()
+        if value:
+            return value, str(path)
+    return None
 
 
 def wandb_base_url(
-    environ: Mapping[str, str], home: Path, strip: bool = False
+    environ: Mapping[str, str], home: Path, strip: bool = False, cwd: Path | None = None
 ) -> tuple[str, str]:
     """(the server URL as configured, where it came from). Not yet validated.
 
@@ -665,7 +674,7 @@ def wandb_base_url(
     raw = environ.get("WANDB_BASE_URL") or ""
     if raw.strip():
         return (raw.strip() if strip else raw), "WANDB_BASE_URL"
-    found = wandb_settings_base_url(environ, home)
+    found = wandb_settings_base_url(environ, home, cwd)
     if found:
         return found[0], found[1]
     return WANDB_DEFAULT_BASE_URL, "default"
@@ -740,27 +749,45 @@ def wandb_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, str
     return False, f"no WANDB_API_KEY and no {path} entry for {' or '.join(machines)}"
 
 
+WANDB_MODES = ("online", "offline", "shared", "disabled", "dryrun", "run")
+
+
+def _clearml_env(environ: Mapping[str, str], name: str) -> str:
+    """clearml's EnvEntry: CLEARML_<x>, else TRAINS_<x>; a value that strips to empty is unset."""
+    for key in (name, "TRAINS_" + name[len("CLEARML_") :]):
+        value = (environ.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def is_offline(backend: str, environ: Mapping[str, str]) -> bool:
     """Offline mode needs no credentials, so it SATISFIES the key requirement.
 
     No new config field for this: both libraries already have a standard env var, and a gold
     yaml can set either through TrlParser's native `env:` block. Recognising them here is what
-    keeps "offline" from being reported as "no credentials, tracking off".
+    keeps "offline" from being reported as "no credentials, tracking off". Each is read the way
+    its library reads it: clearml's CLEARML_OFFLINE_MODE / TRAINS_OFFLINE_MODE through its bool
+    parser; WANDB_MODE exactly, since wandb's mode values are case-sensitive.
     """
     if backend == "clearml":
-        # clearml's ENV_OFFLINE_MODE: CLEARML_OFFLINE_MODE, else TRAINS_OFFLINE_MODE.
-        value = environ.get("CLEARML_OFFLINE_MODE")
-        if value is None:
-            value = environ.get("TRAINS_OFFLINE_MODE")
-        return _truthy(value)
-    return str(environ.get("WANDB_MODE", "")).strip().lower() in {"offline", "dryrun"}
+        return _truthy(_clearml_env(environ, "CLEARML_OFFLINE_MODE"))
+    return environ.get("WANDB_MODE") in ("offline", "dryrun")
 
 
 def is_disabled(backend: str, environ: Mapping[str, str]) -> bool:
     """WANDB_MODE=disabled makes every wandb call a no-op: the tool is chosen but logs nothing."""
+    return backend == "wandb" and environ.get("WANDB_MODE") == "disabled"
+
+
+def wandb_mode_problem(environ: Mapping[str, str]) -> str | None:
+    """A WANDB_MODE wandb would refuse at wandb.init (its Settings.mode is a case-sensitive Literal)."""
+    mode = environ.get("WANDB_MODE")
+    if mode is None or mode == "" or mode in WANDB_MODES:
+        return None
     return (
-        backend == "wandb"
-        and str(environ.get("WANDB_MODE", "")).strip().lower() == "disabled"
+        f"WANDB_MODE={mode!r} is not a mode wandb accepts; it is case-sensitive, one of "
+        f"{', '.join(WANDB_MODES)}. wandb would refuse it when the run starts."
     )
 
 
@@ -905,6 +932,28 @@ def resolve(
         )
         return plan
 
+    # The package first: without it there is nothing to talk to (and for ClearML, nothing to
+    # read its configuration with). A missing key is an unconfigured environment; a missing
+    # package is a broken one, so this is fatal, credentials or not.
+    if is_installed is None:
+
+        def is_installed(name: str) -> bool:
+            return importlib.util.find_spec(name) is not None
+
+    if not is_installed(backend):
+        plan.fatal.append(
+            f"tracking_tool is {backend}, but the `{backend}` package is not installed in this "
+            f"interpreter. Training would proceed UNTRACKED, which is the failure this config "
+            f"exists to prevent. Use the distill GPU image, or set tracking_tool to none."
+        )
+        return plan
+
+    if backend == "wandb":
+        problem = wandb_mode_problem(environ)
+        if problem:
+            plan.fatal.append(f"wandb: {problem}")
+            return plan
+
     if is_disabled(backend, environ):
         plan.lines.append(
             "tracking : wandb    OFF      WANDB_MODE=disabled: wandb logs nothing, so it is not "
@@ -923,9 +972,15 @@ def resolve(
         try:
             url = wandb_normalize_base_url(raw)
         except ValueError as exc:
-            plan.fatal.append(
-                f"wandb: {exc} (from {source}). wandb would refuse it when the run starts."
-            )
+            if source == "WANDB_BASE_URL":
+                why = "wandb would refuse it when the run starts."
+            else:
+                why = (
+                    "wandb itself would print an error, ignore the file's settings and use its own "
+                    "default server; refused here instead, so the run does not silently go "
+                    "somewhere other than the file says."
+                )
+            plan.fatal.append(f"wandb: {exc} (from {source}). {why}")
             return plan
         if source == "default":
             plan.env["WANDB_BASE_URL"] = WANDB_DEFAULT_BASE_URL
@@ -996,23 +1051,6 @@ def resolve(
         )
     plan.enabled = (backend,)
 
-    # An enabled backend whose package is absent is fatal, and deliberately so. transformers
-    # would raise from inside the callback anyway; catching it here means the launch dies
-    # before the trainer is built. It is NOT the same condition as "no key": a missing key is
-    # an unconfigured environment, a missing package is a broken one.
-    if is_installed is None:
-
-        def is_installed(name: str) -> bool:
-            import importlib.util
-
-            return importlib.util.find_spec(name) is not None
-
-    if not is_installed(backend):
-        plan.fatal.append(
-            f"{backend} is configured, credentialed and enabled, but the `{backend}` package "
-            f"is not installed in this interpreter. Training would proceed UNTRACKED, which is "
-            f"the failure this config exists to prevent. Install it or set tracking_tool to none."
-        )
     return plan
 
 
@@ -1053,9 +1091,7 @@ def load_yaml_fields(path: Path) -> tuple[dict, dict]:
 def _fake_clearml_probe(environ, home):
     """The self-test's stand-in for clearml_probe(): keys and token from the environment only."""
     return {
-        "api": CLEARML_PUBLIC_API,
-        "web": "https://app.clear.ml",
-        "files": "https://files.clear.ml",
+        "public": True,
         "token": bool(environ.get("CLEARML_AUTH_TOKEN")),
         "access": bool(
             environ.get("CLEARML_API_ACCESS_KEY")
@@ -1301,8 +1337,33 @@ def _self_test() -> int:
         == "cfg_node2-lsf1152213",
     )
 
-    # 12. Enabled + package absent -> FATAL. Distinct from the no-key case above: this one refuses
-    #     to train, because the config is fully honoured except by the interpreter.
+    # 12. The chosen tool's package absent -> FATAL, credentials or not. Distinct from the no-key
+    #     case above: a missing key is an unconfigured environment, a missing package a broken one.
+    #     For ClearML this is also the path where no probe can run (clearml_probe() is None), so
+    #     the case below passes no probe at all, as the real code has none.
+    p = resolve(
+        {"tracking_tool": "clearml", "clearml_project": "d"},
+        environ=env,
+        home=Path("/nonexistent"),
+        is_installed=no,
+        clearml_probe_fn=lambda e, h: None,
+    )
+    check(
+        "clearml chosen, keys present, clearml not installed (no probe) -> FATAL not installed",
+        not p.enabled and any("not installed" in f for f in p.fatal),
+        f"{p.lines} {p.fatal}",
+    )
+    p = resolve(
+        {"tracking_tool": "wandb", "wandb_entity": "e", "wandb_project": "p"},
+        environ={},
+        home=Path("/nonexistent"),
+        is_installed=no,
+    )
+    check(
+        "wandb chosen, no credentials, wandb not installed -> FATAL not installed (not off)",
+        any("not installed" in f for f in p.fatal),
+        f"{p.lines} {p.fatal}",
+    )
     p = resolve(
         {"tracking_tool": "clearml", "clearml_project": "d"},
         environ=env,
@@ -1814,14 +1875,7 @@ def _self_test() -> int:
             ),
             f"{p.env}",
         )
-        corp = {
-            "api": "https://clearml.corp:8008",
-            "web": "https://clearml.corp:8080",
-            "files": "https://clearml.corp:8081",
-            "token": False,
-            "access": True,
-            "secret": True,
-        }
+        corp = {"public": False, "token": False, "access": True, "secret": True}
         p = resolve(
             cl,
             environ={},
@@ -1833,8 +1887,7 @@ def _self_test() -> int:
             "clearml: a self-hosted server clearml resolves is reported and left alone",
             p.enabled == ("clearml",)
             and any(
-                "server=https://clearml.corp:8008 (from clearml's config or environment)"
-                in l
+                "server: self-hosted (from clearml's config or environment)" in l
                 for l in p.lines
             )
             and "CLEARML_API_HOST" not in p.env,
@@ -1843,7 +1896,7 @@ def _self_test() -> int:
         for probe, want, name in (
             (
                 {
-                    "api": CLEARML_PUBLIC_API,
+                    "public": True,
                     "token": True,
                     "access": False,
                     "secret": False,
@@ -1853,7 +1906,7 @@ def _self_test() -> int:
             ),
             (
                 {
-                    "api": CLEARML_PUBLIC_API,
+                    "public": True,
                     "token": False,
                     "access": True,
                     "secret": True,
@@ -1863,7 +1916,7 @@ def _self_test() -> int:
             ),
             (
                 {
-                    "api": CLEARML_PUBLIC_API,
+                    "public": True,
                     "token": False,
                     "access": True,
                     "secret": False,
@@ -1873,7 +1926,7 @@ def _self_test() -> int:
             ),
             (
                 {
-                    "api": CLEARML_PUBLIC_API,
+                    "public": True,
                     "token": False,
                     "access": False,
                     "secret": True,
@@ -1883,7 +1936,7 @@ def _self_test() -> int:
             ),
             (
                 {
-                    "api": CLEARML_PUBLIC_API,
+                    "public": True,
                     "token": False,
                     "access": False,
                     "secret": False,
@@ -1902,7 +1955,7 @@ def _self_test() -> int:
             home=h,
             is_installed=yes,
             clearml_probe_fn=lambda e, hh: {
-                "api": CLEARML_PUBLIC_API,
+                "public": True,
                 "token": False,
                 "access": True,
                 "secret": False,
@@ -2013,6 +2066,59 @@ def _self_test() -> int:
             and not any("NO CREDENTIALS" in l for l in p.lines),
             f"{p.lines}",
         )
+        check(
+            "clearml offline: an empty CLEARML_OFFLINE_MODE is unset, so TRAINS_OFFLINE_MODE counts",
+            is_offline(
+                "clearml", {"CLEARML_OFFLINE_MODE": "", "TRAINS_OFFLINE_MODE": "1"}
+            )
+            and is_offline(
+                "clearml", {"CLEARML_OFFLINE_MODE": " ", "TRAINS_OFFLINE_MODE": "1"}
+            ),
+        )
+        check(
+            "wandb offline: WANDB_MODE is case-sensitive, as in wandb",
+            not is_offline("wandb", {"WANDB_MODE": "Offline"})
+            and is_offline("wandb", {"WANDB_MODE": "offline"}),
+        )
+        for bad_mode in ("Offline", "OFFLINE", " offline", "nope"):
+            p = resolve(
+                wb,
+                environ={"WANDB_API_KEY": "k", "WANDB_MODE": bad_mode},
+                home=h,
+                is_installed=yes,
+            )
+            check(
+                f"wandb: WANDB_MODE={bad_mode!r} is refused, as wandb refuses it",
+                not p.enabled and any("not a mode wandb accepts" in f for f in p.fatal),
+                f"{p.fatal}",
+            )
+        ws = h / "workspace"
+        (ws / "wandb").mkdir(parents=True)
+        (ws / "wandb" / "settings").write_text(
+            "[default]\nbase_url = https://wandb.workspace.example\n"
+        )
+        (h / ".config" / "wandb").mkdir(parents=True, exist_ok=True)
+        (h / ".config" / "wandb" / "settings").write_text(
+            "[default]\nbase_url = https://wandb.global.example\n"
+        )
+        check(
+            "wandb: the workspace settings file (<cwd>/wandb/settings) wins over the global one",
+            wandb_base_url({}, h, cwd=ws)[0] == "https://wandb.workspace.example"
+            and wandb_base_url({}, h, cwd=h / "elsewhere")[0]
+            == "https://wandb.global.example",
+            f"{wandb_base_url({}, h, cwd=ws)} {wandb_base_url({}, h, cwd=h / 'elsewhere')}",
+        )
+        (h / ".config" / "wandb" / "settings").write_text(
+            "[default]\nbase_url = https://forge.coreweave.com\n"
+        )
+        p = resolve(wb, environ={"WANDB_API_KEY": "k"}, home=h, is_installed=yes)
+        check(
+            "wandb: an invalid base_url in a settings file is refused, saying wandb would ignore it",
+            any("ignore the file" in f for f in p.fatal),
+            f"{p.fatal}",
+        )
+        (h / ".config" / "wandb" / "settings").unlink()
+
         nh = h / "netrc-order"
         nh.mkdir()
         (nh / "_netrc").write_text("machine api.wandb.ai login u password p\n")

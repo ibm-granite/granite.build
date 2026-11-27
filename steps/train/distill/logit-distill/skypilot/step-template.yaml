@@ -444,7 +444,21 @@ environment_configs:
           # before the enroot config is written, and the generated environ()
           # forwards the outer environment. Confirm on a real run with
           # `grep NCCL_ job.log`; if that file does not set them, add both here.
+          # The run block opens with the tracking rules tracking.py applies in the trainer,
+          # checked when gbserver renders this block (strict, before anything is launched):
+          # #752 made the tool explicit, so a tracking block from before it (keys, no
+          # tool) is refused here, not at trainer start.
           run: |
+            {% set _trk = config.tracking | default({}) -%}
+            {% set _tool = _trk.tool | default("") | string | trim | lower -%}
+            {% set _cl = (_trk.clearml_project | default("") | string | trim) ~ (_trk.clearml_run_name | default("") | string | trim) -%}
+            {% set _wb = (_trk.wandb_entity | default("") | string | trim) ~ (_trk.wandb_project | default("") | string | trim) ~ (_trk.wandb_run_name | default("") | string | trim) -%}
+            {% if _tool not in ("", "none", "wandb", "clearml") %}{{ raise_error("logit-distill: tracking.tool must be wandb, clearml or none, not '" ~ _trk.tool ~ "'.") }}{% endif -%}
+            {% if _tool in ("", "none") and (_cl or _wb) %}{{ raise_error("logit-distill: tracking keys are set but tracking.tool is not. Since #752 the tool is chosen explicitly: add tracking.tool: clearml or wandb, or remove the keys.") }}{% endif -%}
+            {% if _tool == "wandb" and _cl %}{{ raise_error("logit-distill: tracking.tool is wandb, but clearml keys are set too. One tool per run: remove them, or choose clearml.") }}{% endif -%}
+            {% if _tool == "clearml" and _wb %}{{ raise_error("logit-distill: tracking.tool is clearml, but wandb keys are set too. One tool per run: remove them, or choose wandb.") }}{% endif -%}
+            {% if _tool == "wandb" and not ((_trk.wandb_entity | default("") | string | trim) and (_trk.wandb_project | default("") | string | trim)) %}{{ raise_error("logit-distill: tracking.tool wandb needs tracking.wandb_entity and tracking.wandb_project.") }}{% endif -%}
+            {% if _tool == "clearml" and not (_trk.clearml_project | default("") | string | trim) %}{{ raise_error("logit-distill: tracking.tool clearml needs tracking.clearml_project.") }}{% endif -%}
             {% set train_dir = config.train_dir | default("") | string | trim -%}
             {% set resume_src = config.resume_from_checkpoint_dir | default("") | string | trim -%}
             {% set rollout_stop = config.rollout_stop_file | default("") | string | trim -%}

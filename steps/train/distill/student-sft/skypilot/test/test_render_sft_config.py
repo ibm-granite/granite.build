@@ -424,7 +424,17 @@ def test_extra_yaml_can_add_a_key():
     assert cfg["bf16"] is True
 
 
-@pytest.mark.parametrize("value", ["all", "wandb", "[clearml, tensorboard]", "none"])
+@pytest.mark.parametrize("value", ["tensorboard", "[tensorboard]"])
+def test_extra_yaml_may_turn_on_tensorboard(value):
+    """TensorBoard writes local files only, and extra_config_yaml is the one way to ask for it
+    in this step; tracking.py keeps it in report_to beside the chosen tool."""
+    cfg = render(parse("--extra-config-yaml", f"report_to: {value}"))
+    assert cfg["report_to"] in ("tensorboard", ["tensorboard"])
+
+
+@pytest.mark.parametrize(
+    "value", ["all", "wandb", "[clearml, tensorboard]", "none", "[]", "{a: 1}"]
+)
 def test_extra_yaml_cannot_set_report_to(value):
     """The tracking block chooses the tool; `report_to: all` here would turn on every
     installed integration, whatever tracking.tool says."""

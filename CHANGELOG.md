@@ -112,6 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: student-sft's `tracking` block needs `tool` (#752).** A block that sets `clearml_project` or the
+  `wandb_*` keys without `tracking.tool` turned that tool on before; it is now refused when gbserver renders the step,
+  before anything is launched. Add `tool: clearml` or `tool: wandb`.
 - **distill: experiment tracking is one chosen tool per run (#752).** logit-distill and student-sft take a
   `tracking` block whose `tool` is `wandb`, `clearml` or `none` (the default; logit-distill had no tracking
   keys before), and the distill recipe takes `TRACKING_TOOL`. A config that sets a tool's keys without

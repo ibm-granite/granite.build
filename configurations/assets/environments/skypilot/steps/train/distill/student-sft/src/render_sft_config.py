@@ -375,12 +375,22 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         # escape hatch that can override an explicit contract key is not an escape hatch, it is
         # a second config system with undefined precedence.
         # report_to chooses the tracking integrations, and the tracking block owns that: one tool
-        # per run, or none. Through here, `report_to: all` would turn on every installed one.
+        # per run, or none. Through here, `report_to: all` would turn on every installed one. The
+        # one exception is TensorBoard, which only writes local files: `report_to: tensorboard`
+        # (or a list of just that) is passed through, and tracking.py keeps it beside the tool.
         if "report_to" in extra:
-            raise ConfigError(
-                "extra_config_yaml sets report_to, which the step's tracking block owns: choose "
-                "the tool with tracking.tool (wandb, clearml or none) instead."
-            )
+            value = extra["report_to"]
+            names = [value] if isinstance(value, str) else value
+            if not (
+                isinstance(names, list)
+                and names
+                and all(n == "tensorboard" for n in names)
+            ):
+                raise ConfigError(
+                    f"extra_config_yaml sets report_to: {value!r}. Only tensorboard may be set "
+                    "here; the tracking tool is the step's tracking block's to choose: set "
+                    "tracking.tool (wandb, clearml or none) instead."
+                )
         collisions = sorted(set(extra) & set(cfg))
         if collisions:
             raise ConfigError(
