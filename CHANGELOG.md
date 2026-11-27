@@ -122,6 +122,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **bfcl-v4 no longer scores infrastructure errors (#237).** An entry whose inference failed
+  for an infrastructure reason (a vLLM 5xx, a refused connection, a timeout) used to be graded
+  as an answer: wrong in AST categories, correct in irrelevance. It now follows
+  `granite_evals.registry.failure_policy`, as the other infra-dependent families do: resume
+  retries it (a memory category is regenerated whole), and one that still fails is left out of
+  the score, with `entries_failed`, `entries_total`, `entries_failed_by_category` and
+  `incomplete` in `results.json`. Above `--option max_failed_frac` (default 0.05; recipes:
+  `MAX_FAILED_FRAC`), overall or in any one category, generate fails and score refuses. A
+  smaller `--limit` on an output dir generated at a larger scope now scores only its
+  selection. bfcl-v3 does the same.
+- **bfcl FC requests get an output budget (#237).** When the bfcl step serves the model, an FC
+  request that sends no `max_tokens` is capped at 16,384 tokens or the context left, as vLLM's
+  served default (`--override-generation-config`), so a checkpoint that loops ends in a scored
+  answer instead of a timeout. Not applied with `base_url`, `handler=legacy-granite`, an
+  explicit `max_tokens`, or a checkpoint whose generation_config sets an output limit;
+  `results.json` records the cap and its source under `max_tokens`.
 - **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
   site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
   moved to `recipes/granite-switch/skypilot/slurm-bluevela/answerability-lora` in #639 (the
@@ -569,6 +585,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **datamodel-code-generator 0.25.7 → 0.84.0 in both bfcl venvs (#237).** bfcl-eval pins 0.25.7,
+  under 8 fixable HIGH advisories (fixed by 0.81.0); the job venv overrides it
+  (`steps/eval/src/core/pyproject.toml`) and the bfcl-v3 side venv compiles it in
+  (`bfcl-v3-overrides.txt`). The handlers the step uses never call it; only BFCL's MiniCPM
+  handler does, which the step never selects. The 24 accepted ids leave `steps/eval/scan-ignore`;
+  the other 17 eval images' install sets are unchanged.
 - **Reflected XSS on the legacy SSO `/api/v1/auth/callback` page (#723).** The provider's
   `error_description` was put into the HTML unescaped; it is now escaped.
 - **Eval step images: security baseline and a publish gate (#764).** All 19 images
