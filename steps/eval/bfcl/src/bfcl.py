@@ -352,8 +352,10 @@ def infra_failure(benchmark: str, failed: list[str], total: int, by_cat: dict[st
     first = f" (first: {', '.join(failed[:5])})"
     if score_only:
         how = ("This build's generate target already succeeded, so a retry or `gb build restart` of the build "
-               "reuses it and does not retry them. Start a new build (gb build start) with the same RUN_NAME and "
-               "OUTPUT_ROOT: its generate resumes in this output dir and retries only these entries.")
+               "reuses it and does not retry them; and a new build with the same RUN_NAME emits this output dir's "
+               "artifact URIs again, which gbserver refuses to register for a second build (\"Same artifact URI "
+               "found ... for another build\"). Start a new build (gb build start) with a new RUN_NAME: a fresh "
+               "output dir, generated in full.")
     else:
         how = "A retry of this generate target (the recipes' MAX_RETRIES) resumes in this output dir and retries them."
     return SystemExit(f"{'refusing to score' if score_only else 'generation incomplete'}: {why}{first}. {how} "

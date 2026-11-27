@@ -402,7 +402,8 @@ def test_infra_errors_fail_the_phase(tmp_path, monkeypatch, phase, what):
     # score-only refusal needs a new build, since a retry or restart reuses the
     # generate target that succeeded (target reuse only searches the same build).
     if phase == "score":
-        assert "Start a new build (gb build start) with the same RUN_NAME" in msg and "`gb build restart`" in msg
+        assert "Start a new build (gb build start) with a new RUN_NAME" in msg and "`gb build restart`" in msg
+        assert "Same artifact URI found" in msg  # why the same RUN_NAME does not work
     else:
         assert "A retry of this generate target" in msg
 

@@ -53,9 +53,12 @@ still fails is left out of the score and the run is marked incomplete (`entries_
 do. Above `max_failed_frac` (default 0.05), overall or in any one category (as tau applies it
 per domain), or with a category that has no entry left,
 generate fails, so the target retry resumes it, and the score phase refuses; its message
-names the recovery. A score-only run whose generate target already succeeded needs a new
-build (`gb build start`) with the same `RUN_NAME` and `OUTPUT_ROOT`: a retry or
-`gb build restart` of the same build reuses that target and does not retry the entries.
+names the recovery. A failed generate is retried by the build itself. A score-only run whose
+generate target already succeeded cannot retry the entries in place: a retry or
+`gb build restart` of the same build reuses that target, and a new build with the same
+`RUN_NAME` emits the same artifact URIs, which gbserver refuses to register for a second build
+("Same artifact URI found ... for another build"). Start a new build with a new `RUN_NAME`
+(a fresh output dir, generated in full), or raise `max_failed_frac` to score without them.
 
 The code is the vendored granite-evals runtime (`steps/eval/src`), baked into this
 family's image by `Dockerfile.gpu` / `Dockerfile.cpu` one directory up (built by
