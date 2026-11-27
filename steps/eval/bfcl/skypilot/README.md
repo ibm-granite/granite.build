@@ -73,12 +73,16 @@ do. Above `max_failed_frac` (default 0.05), overall or in any one category (as t
 per domain; a category may always lose one entry, since BFCL's smallest hold 16, where one
 failure is already 6.25%), or with a category that has no entry left,
 generate fails, so the target retry resumes it, and the score phase refuses; its message
-names the recovery. A failed generate is retried by the build itself. A score-only run whose
-generate target already succeeded cannot retry the entries in place: a retry or
-`gb build restart` of the same build reuses that target, and a new build with the same
-`RUN_NAME` emits the same artifact URIs, which gbserver refuses to register for a second build
-("Same artifact URI found ... for another build"). Start a new build with a new `RUN_NAME`
-(a fresh output dir, generated in full), or raise `max_failed_frac` to score without them.
+names the recovery. A failed generate is retried by the build itself; to score without the
+entries that still fail, start a new build with the same `RUN_NAME` and a higher
+`max_failed_frac` (options are fixed when a build starts; a failed generate registered no
+artifact, so its generate resumes in the same output dir). A score-only run whose generate
+target already succeeded cannot retry the entries in place: a retry or `gb build restart` of
+the same build reuses that target, and a new build with the same `RUN_NAME` emits the same
+artifact URIs, which gbserver refuses to register for a second build ("Same artifact URI
+found ... for another build"). Start a new build with a new `RUN_NAME`: a fresh output dir,
+generated in full. A higher `max_failed_frac` is no shortcut there, since it needs that new
+build too.
 
 The code is the vendored granite-evals runtime (`steps/eval/src`), baked into this
 family's image by `Dockerfile.gpu` / `Dockerfile.cpu` one directory up (built by

@@ -41,10 +41,9 @@ WORKERS: 8
 OPTIONS: ""
 # Infrastructure-failed entries (an endpoint error that outlasted the retries) are left out
 # of the score up to this fraction, overall and in each category (each may lose one entry:
-# the smallest hold 16), and results.json marks the
-# run incomplete; above it the run fails, so the target retry resumes it. 0 = any failure is
-# fatal. The step's
-# max_failed_frac option, the other families' name and default; an OPTIONS value wins.
+# the smallest hold 16), and results.json marks the run incomplete; above it the run fails,
+# so the target retry resumes it. 0 = any failure is fatal. The step's max_failed_frac
+# option, the other families' name and default; an OPTIONS value wins.
 MAX_FAILED_FRAC: 0.05
 TENSOR_PARALLEL_SIZE: 1
 

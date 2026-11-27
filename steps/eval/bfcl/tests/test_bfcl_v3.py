@@ -227,7 +227,9 @@ def test_infra_errors_fail_the_phase(tmp_path, monkeypatch, v3_python, phase, wh
     monkeypatch.setattr(bfcl_v3.subprocess, "run", run)
     with pytest.raises(SystemExit, match=f"{what}: bfcl-v3: entries_failed 1/1 is above the allowed fraction 0.05") as err:
         bfcl_v3.BFCLv3(RunConfig(model="m", output_dir=tmp_path / "out", phase=phase)).run("http://s", "m")
-    assert "(first: simple_0)" in str(err.value) and "raise max_failed_frac (now 0.05)" in str(err.value)
+    msg = str(err.value)
+    assert "(first: simple_0)" in msg  # the parent's message is bfcl.infra_failure's (tested there)
+    assert ("higher max_failed_frac (now 0.05" in msg) == (phase == "generate")
 
 
 def test_child_failure_rule_is_failure_policys():

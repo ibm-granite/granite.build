@@ -382,11 +382,13 @@ def infra_failure(benchmark: str, failed: list[str], total: int, by_cat: dict[st
                "reuses it and does not retry them; and a new build with the same RUN_NAME emits this output dir's "
                "artifact URIs again, which gbserver refuses to register for a second build (\"Same artifact URI "
                "found ... for another build\"). Start a new build (gb build start) with a new RUN_NAME: a fresh "
-               "output dir, generated in full.")
-    else:
-        how = "A retry of this generate target (the recipes' MAX_RETRIES) resumes in this output dir and retries them."
-    return SystemExit(f"{'refusing to score' if score_only else 'generation incomplete'}: {why}{first}. {how} "
-                      f"To score without them instead, raise max_failed_frac (now {max_frac:g}).")
+               "output dir, generated in full.")  # max_failed_frac is no shortcut: it needs that new build too
+    else:  # A failed generate registered no artifact (the step emits it only on success).
+        how = ("A retry of this generate target (the recipes' MAX_RETRIES) resumes in this output dir and retries "
+               "them. To score without them instead, start a new build with the same RUN_NAME and a higher "
+               f"max_failed_frac (now {max_frac:g}; it is fixed when a build starts): its generate resumes in this "
+               "output dir.")
+    return SystemExit(f"{'refusing to score' if score_only else 'generation incomplete'}: {why}{first}. {how}")
 
 
 def check_failures(benchmark: str, root: Path, max_frac: float) -> set[str]:

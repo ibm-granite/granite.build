@@ -402,15 +402,20 @@ def test_infra_errors_fail_the_phase(tmp_path, monkeypatch, phase, what):
     with pytest.raises(SystemExit, match=f"{what}: bfcl-v4: entries_failed 1/1 is above the allowed fraction 0.05") as err:
         bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", phase=phase)).run("http://s", "m")
     msg = str(err.value)
-    assert "(first: simple_python_0)" in msg and "raise max_failed_frac (now 0.05)" in msg
+    assert "(first: simple_python_0)" in msg
     # The recovery that works: a failed generate target is retried by the build; a
     # score-only refusal needs a new build, since a retry or restart reuses the
     # generate target that succeeded (target reuse only searches the same build).
     if phase == "score":
         assert "Start a new build (gb build start) with a new RUN_NAME" in msg and "`gb build restart`" in msg
         assert "Same artifact URI found" in msg  # why the same RUN_NAME does not work
+        # No max_failed_frac shortcut: it is fixed per build, and the new build regenerates in full.
+        assert "max_failed_frac" not in msg
     else:
         assert "A retry of this generate target" in msg
+        # A failed generate registered no artifact, so a new build may keep the RUN_NAME.
+        assert ("start a new build with the same RUN_NAME and a higher max_failed_frac (now 0.05; it is "
+                "fixed when a build starts): its generate resumes in this output dir") in msg
 
 
 def test_failure_rule_is_failure_policys():
