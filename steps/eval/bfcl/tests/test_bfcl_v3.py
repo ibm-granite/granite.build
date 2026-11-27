@@ -245,6 +245,34 @@ def test_child_check_failures_fails_a_category_left_empty(tmp_path):
     assert bfcl_v3_child.failed_entries(root, "legacy-granite") == ([], 51, {"simple": (0, 50), "java": (0, 1)})  # the other handler's results
 
 
+@needs_v3_venv
+def test_child_a_full_run_tolerates_one_failure_in_any_category(tmp_path):
+    """The real v3 category sizes (read in the side venv; the smallest 16 entries): one
+    persistent failure in any one category is scored, two in a 16-entry one are not."""
+    code = (
+        "import json\n"
+        "from bfcl_eval.utils import load_file, parse_test_category_argument\n"
+        "from bfcl_eval.constants.category_mapping import TEST_FILE_MAPPING\n"
+        "from bfcl_eval.constants.eval_config import PROMPT_PATH\n"
+        "_, cats = parse_test_category_argument(['all'])\n"
+        "print(json.dumps({c: [e['id'] for e in load_file(PROMPT_PATH / TEST_FILE_MAPPING[c])] for c in cats}))\n"
+    )
+    sizes = json.loads(_v3(code, tmp_path))
+    assert len(sizes) == 17 and min(len(v) for v in sizes.values()) == 16  # live_parallel
+    for cat, ids in sizes.items():
+        assert bfcl_v3_child.over_limit_categories({cat: (1, len(ids))}, 0.05) == [], cat
+    root = tmp_path / "bfcl"
+    d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
+    d.mkdir(parents=True)
+    (root / bfcl_v3_child.TEST_IDS_FILE).write_text(json.dumps(sizes))
+    f = d / "BFCL_v3_live_parallel_result.json"
+    f.write_text(json.dumps({"id": sizes["live_parallel"][0], "result": INFRA}) + "\n")
+    assert bfcl_v3_child.check_failures(root, "fc", 0.05) == {sizes["live_parallel"][0]}
+    f.write_text("".join(json.dumps({"id": i, "result": INFRA}) + "\n" for i in sizes["live_parallel"][:2]))
+    with pytest.raises(SystemExit):
+        bfcl_v3_child.check_failures(root, "fc", 0.05)
+
+
 def test_child_one_category_above_the_fraction_fails_under_the_overall_one(tmp_path):
     root = tmp_path / "bfcl"
     d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]

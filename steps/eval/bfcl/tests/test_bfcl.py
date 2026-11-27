@@ -456,6 +456,46 @@ def test_check_failures_fails_a_category_left_empty_under_the_fraction(tmp_path,
     assert bfcl.check_failures("bfcl-v4", root, 0.05) == {"simple_python_0"}
 
 
+def _real_v4_sizes():
+    from bfcl_eval.utils import load_dataset_entry, parse_test_category_argument
+
+    cats = [c for c in parse_test_category_argument(["all_scoring"]) if c not in bfcl.EXCLUDED_CATEGORIES]
+    return {c: [e["id"] for e in load_dataset_entry(c) if "prereq" not in e["id"]] for c in cats}
+
+
+def test_a_full_run_tolerates_one_failure_in_any_category(tmp_path, harness_env):
+    """A full v4 run (the real category sizes, the smallest 16 entries) with one
+    persistent failure in any one category is scored, not refused on every retry:
+    1/16 is 6.25%, above 0.05, but each category may lose one entry."""
+    sizes = _real_v4_sizes()
+    assert min(len(v) for v in sizes.values()) == 16  # live_parallel, live_relevance
+    for cat, ids in sizes.items():
+        assert bfcl.over_limit_categories({cat: (1, len(ids))}, 0.05) == [], cat
+    root = tmp_path / "bfcl"
+    _ids(root, sizes)
+    d = root / "result" / bfcl.REGISTRY_NAME / "live"
+    d.mkdir(parents=True)
+    f = d / "BFCL_v4_live_parallel_result.json"
+    f.write_text(json.dumps({"id": sizes["live_parallel"][0], "result": INFRA}) + "\n")
+    assert bfcl.check_failures("bfcl-v4", root, 0.05) == {sizes["live_parallel"][0]}
+    # Two in the same 16-entry category (12.5%) are refused, and so is one at max_failed_frac=0.
+    f.write_text("".join(json.dumps({"id": i, "result": INFRA}) + "\n" for i in sizes["live_parallel"][:2]))
+    for frac in (0.05, 0.0):
+        with pytest.raises(SystemExit):
+            bfcl.check_failures("bfcl-v4", root, frac)
+    f.write_text(json.dumps({"id": sizes["live_parallel"][0], "result": INFRA}) + "\n")
+    with pytest.raises(SystemExit):
+        bfcl.check_failures("bfcl-v4", root, 0.0)
+
+
+def test_the_refusal_names_the_category_over_its_bound():
+    """live_parallel's one failure is allowed; the message must name simple_python's 2/20."""
+    by_cat = {"live_parallel": (1, 16), "simple_python": (2, 20), "multiple": (0, 1000)}
+    msg = str(bfcl.infra_failure("bfcl-v4", ["live_parallel_0", "simple_python_0", "simple_python_1"], 1036,
+                                 by_cat, 0.05, False))
+    assert "bfcl-v4 simple_python: entries_failed 2/20" in msg and "live_parallel: entries_failed" not in msg
+
+
 def test_one_category_above_the_fraction_fails_under_the_overall_one(tmp_path):
     """2 of 20 live_simple entries failed (10%) next to 200 clean ones: 2/220 is under
     0.05 overall, but the category is above it (tau's per-domain rule)."""

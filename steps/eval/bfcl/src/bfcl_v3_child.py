@@ -122,10 +122,16 @@ def over_failure_limit(failed: int, total: int, max_frac: float) -> bool:
     return bool(failed) and (not total or failed / total > max_frac)
 
 
+def category_over_limit(failed: int, total: int, max_frac: float) -> bool:
+    """One category's bound, as bfcl.category_over_limit: max_failed_frac, but a category
+    may always lose one entry (v3's smallest category, live_parallel, holds 16)."""
+    return failed > 1 and over_failure_limit(failed, total, max_frac)
+
+
 def over_limit_categories(by_cat: dict[str, tuple[int, int]], max_frac: float) -> list[str]:
-    """Categories above max_failed_frac on their own, or with no entry left to score
+    """Categories above their bound, or with no entry left to score
     (bfcl.over_limit_categories; tau's per-domain rule)."""
-    return [c for c, (f, n) in by_cat.items() if over_failure_limit(f, n, max_frac) or (n and f == n)]
+    return [c for c, (f, n) in by_cat.items() if category_over_limit(f, n, max_frac) or (n and f == n)]
 
 
 def check_failures(root: Path, handler: str, max_frac: float) -> set[str]:

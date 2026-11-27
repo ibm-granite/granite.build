@@ -355,11 +355,20 @@ def over_failure_limit(failed: int, total: int, max_frac: float) -> bool:
     return bool(failed) and (not total or failed / total > max_frac)
 
 
+def category_over_limit(failed: int, total: int, max_frac: float) -> bool:
+    """One category's bound: max_failed_frac, but a category may always lose one entry.
+    BFCL's smallest categories hold 16 entries (live_parallel, live_relevance), where one
+    failure is already 6.25%; without this, one persistent failure in a healthy full run
+    would fail generate on every retry. Two failures there (12.5%) are refused, and the
+    overall bound still makes max_failed_frac=0 fatal for any failure."""
+    return failed > 1 and over_failure_limit(failed, total, max_frac)
+
+
 def over_limit_categories(by_cat: dict[str, tuple[int, int]], max_frac: float) -> list[str]:
-    """Categories above max_failed_frac on their own, or with no entry left to score:
-    failures in one category must not hide behind another's successes (tau's
+    """Categories above their bound (category_over_limit), or with no entry left to
+    score: failures in one category must not hide behind another's successes (tau's
     per-domain rule)."""
-    return [c for c, (f, n) in by_cat.items() if over_failure_limit(f, n, max_frac) or (n and f == n)]
+    return [c for c, (f, n) in by_cat.items() if category_over_limit(f, n, max_frac) or (n and f == n)]
 
 
 def infra_failure(benchmark: str, failed: list[str], total: int, by_cat: dict[str, tuple[int, int]],
@@ -368,7 +377,8 @@ def infra_failure(benchmark: str, failed: list[str], total: int, by_cat: dict[st
     try:
         failure_policy(benchmark, "entries", len(failed), total, max_frac)
         for cat, (f, n) in by_cat.items():
-            failure_policy(f"{benchmark} {cat}", "entries", f, n, max_frac)
+            if category_over_limit(f, n, max_frac):  # a category may lose one entry
+                failure_policy(f"{benchmark} {cat}", "entries", f, n, max_frac)
         empty = [c for c, (f, n) in by_cat.items() if n and f == n]
         why = f"{benchmark}: every entry of {', '.join(empty)} hit an infrastructure error, so it has none to score"
     except SystemExit as e:
