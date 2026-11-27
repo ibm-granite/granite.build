@@ -7,10 +7,11 @@
 # outbound internet (backup downloads) and the job's usual non-root container user
 # (initdb refuses root).
 #
-# LIMIT is empty: the full 21-task standard (MCPMark Verified) suite. For a quick
-# functional check, the first N tasks of the easy suite:
+# LIMIT is empty: the full 10-task easy suite (build.yaml selects service=postgres
+# task_suite=easy; the 21-task standard suite is the curated mcpmark-postgres). For a
+# quick functional check, its first N tasks:
 #   gb build start -f recipes/evals/mcpmark/mcpmark-postgres-easy/skypilot/build.yaml \
-#     --space <space> --param RUN_NAME=<unique> --param LIMIT=5 --param "OPTIONS=task_suite=easy"
+#     --space <space> --param RUN_NAME=<unique> --param LIMIT=3
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────

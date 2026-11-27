@@ -5,10 +5,11 @@
 # records digests of what it got. Tasks need outbound internet (state downloads, the
 # npx filesystem MCP server).
 #
-# LIMIT is empty: the full 30-task standard (MCPMark Verified) suite. For a quick
-# functional check, the first N tasks of the easy suite:
+# LIMIT is empty: the full 10-task easy suite (build.yaml selects service=filesystem
+# task_suite=easy; the 30-task standard suite is the curated mcpmark-filesystem). For a
+# quick functional check, its first N tasks:
 #   gb build start -f recipes/evals/mcpmark/mcpmark-filesystem-easy/skypilot/build.yaml \
-#     --space <space> --param RUN_NAME=<unique> --param LIMIT=5 --param "OPTIONS=task_suite=easy"
+#     --space <space> --param RUN_NAME=<unique> --param LIMIT=3
 # Override any value with --param KEY=VALUE.
 
 # ─── Model ────────────────────────────────────────────────────────────

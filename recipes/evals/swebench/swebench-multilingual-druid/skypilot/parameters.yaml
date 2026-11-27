@@ -1,6 +1,7 @@
 # swebench (the generic bridge) on SWE-bench_Multilingual, the apache/druid instances -- BlueVela (SkyPilot / SLURM), swebench family image.
 # Data: https://huggingface.co/datasets/SWE-bench/SWE-bench_Multilingual @ 846e647b9f33c0b51b739d005d13d85493c9af09
-# (pinned in the image's code; fetch it into the HF cache with `make -C steps/eval prefetch HF_HOME=<cache>`).
+# (pinned by this recipe's DATASET / DATASET_REVISION below, the bridge's required pin, not
+# by the image's code; the job reads it from the hub into HF_HOME at run start).
 #
 # LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
 # examples (3-10 is enough to prove the plumbing):
