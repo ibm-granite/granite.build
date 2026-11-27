@@ -46,6 +46,7 @@ def _run(tmp_path, phase="generate", vllm_args="", helper_out=BUDGET, helper_rc=
     assert "{{" not in script, script
     script = (
         "set -e -o pipefail\n"
+        "BENCHMARK=bfcl-v3\n"
         f"OUTPUT_DIR={_sq(str(tmp_path / 'out'))}\n"
         + script
         + 'printf "OPT %s\\n" "${OPTS[@]}"; printf "VLLM %s\\n" "${VLLM_ARGS[@]}"'
@@ -75,6 +76,7 @@ def test_the_budget_reaches_the_run(tmp_path, phase):
     # (vllm_args too: a generation config set there is recorded, not overridden).
     assert proc.helper_argv == [
         str(tmp_path / "out" / "fc_budget.json"),
+        "bfcl-v3",
         "/models/m",
         "",
         "handler=fc temperature=0.5",
@@ -101,7 +103,7 @@ def test_the_helper_sees_vllm_args_as_vllm_gets_them(tmp_path):
     proc = _run(tmp_path, vllm_args=vllm_args, helper_out="")
     assert proc.returncode == 0, proc.stderr
     words = ["--max-num-seqs=4", "--override-generation-config", '{"temperature": 0.5}']
-    assert proc.helper_argv[4:] == words
+    assert proc.helper_argv[5:] == words
     assert _lines(proc, "VLLM") == [f"--vllm-arg={w}" for w in words]
 
 

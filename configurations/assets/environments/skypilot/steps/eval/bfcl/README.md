@@ -36,14 +36,16 @@ applies it only when nothing else sets the output length, and `results.json` rec
 effective cap and its source under `max_tokens`:
 
 - not with `base_url` (an endpoint the step does not start: no budget applies);
-- not with `handler=legacy-granite`, which sends its own budget (below);
+- not with `handler=legacy-granite` (bfcl-v3), which sends its own budget (below); bfcl-v4
+  has no `handler` option and always gets the budget;
 - not with an explicit `max_tokens` option, which is sent with every request and wins;
 - not when `vllm_args` set the generation config: `--override-generation-config` in any form
   vLLM's parser accepts (dotted keys, underscores, a unique prefix), `--generation-config`, or
   a `--config` file (recorded as unknown: the step does not read what they set);
 - not when the checkpoint's `generation_config.json` sets `max_new_tokens` (vLLM applies it;
   the override would replace it, in either direction) or `max_length`, nor when that file
-  cannot be read (recorded as unknown).
+  cannot be read or is not a JSON object (recorded as unknown). An output dir generated
+  before the step recorded this reports `not recorded`.
 
 The evidence for 16,384 is v3 only: the largest per-request FC output in the four bfcl-v3
 calibration runs (granite-4.0-micro and -h-small) was 8,697 tokens. There is none for
