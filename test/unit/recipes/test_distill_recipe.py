@@ -75,6 +75,8 @@ _GENERIC_CONFIG = {
     "log_retrieval_mode",
     "compute_config",
     "launcher_config",
+    # Read by the SkyPilot environment itself: the declared space secrets.
+    "skypilot",
 }
 
 _BENCHMARK = re.compile(r"^(eval-.+-ck\d+|export-(sage|bfcl)-ck\d+|export-combined)$")
@@ -428,6 +430,13 @@ def _all_renders(tmp_path):
     yield _render(tmp_path, SCREEN_EVALS="olmes-gsm8k,bfcl", FULL_EVAL_RUNGS="8000")
     for tool, keys in _TRACKING_OK.items():
         yield _render(tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **keys)
+    yield _render(
+        tmp_path,
+        INCLUDE_SFT="true",
+        TRACKING_TOOL="clearml",
+        TRACKING_SECRETS="CLEARML_API_HOST,CLEARML_API_ACCESS_KEY,CLEARML_API_SECRET_KEY",
+        **_TRACKING_OK["clearml"],
+    )
 
 
 def test_every_step_uri_is_expected(tmp_path):
@@ -934,3 +943,66 @@ def test_bad_tracking_settings_fail_to_render(tmp_path, params, needle):
 def test_tracking_tool_is_case_and_space_insensitive(tmp_path):
     rendered = _render(tmp_path, TRACKING_TOOL=" WandB ", **_TRACKING_OK["wandb"])
     assert _config(rendered, "train")["tracking"]["tool"] == "wandb"
+
+
+def _secrets(rendered, target):
+    return (
+        _config(rendered, target)
+        .get("skypilot", {})
+        .get("secrets", {})
+        .get("secret_names_to_use_as_env_variable")
+    )
+
+
+def test_no_secret_is_declared_by_default(tmp_path):
+    """A declared secret the space does not hold fails the target, so none by default."""
+    for tool, keys in _TRACKING_OK.items():
+        rendered = _render(tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **keys)
+        for target in _TRAINING_TARGETS:
+            assert "skypilot" not in _config(rendered, target), (tool, target)
+
+
+@pytest.mark.parametrize(
+    "tool,names",
+    [
+        ("wandb", "WANDB_API_KEY"),
+        ("wandb", " WANDB_API_KEY , WANDB_BASE_URL "),
+        ("clearml", "CLEARML_API_HOST,CLEARML_API_ACCESS_KEY,CLEARML_API_SECRET_KEY"),
+    ],
+)
+def test_tracking_secrets_reach_both_training_targets(tmp_path, tool, names):
+    """The granite-switch recipes' shape: each variable from the space secret of its name."""
+    rendered = _render(
+        tmp_path,
+        INCLUDE_SFT="true",
+        TRACKING_TOOL=tool,
+        TRACKING_SECRETS=names,
+        **_TRACKING_OK[tool],
+    )
+    want = [{"env_name": n.strip(), "secret_name": n.strip()} for n in names.split(",")]
+    for target in _TRAINING_TARGETS:
+        assert _secrets(rendered, target) == want, target
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"TRACKING_TOOL": "none", "TRACKING_SECRETS": "WANDB_API_KEY"},
+        {
+            "TRACKING_TOOL": "wandb",
+            "TRACKING_SECRETS": "CLEARML_API_ACCESS_KEY",
+            **_TRACKING_OK["wandb"],
+        },
+        {
+            "TRACKING_TOOL": "clearml",
+            "TRACKING_SECRETS": "HF_TOKEN",
+            **_TRACKING_OK["clearml"],
+        },
+    ],
+)
+def test_secrets_of_another_tool_fail_to_render(tmp_path, params):
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "TRACKING_SECRETS_must_name_only_the_chosen_tools_variables" in str(
+        err.value
+    )

@@ -261,13 +261,24 @@ RESUME_EMIT_SEEDED: true
 # <RUN_NAME>-distill and <RUN_NAME>-sft. Each tool talks to its public server
 # (W&B https://api.wandb.ai, ClearML https://api.clear.ml) unless the job's
 # environment or the tool's own config file names another, and the credentials
-# are looked up on the cluster, the way the tool does: a WANDB_API_KEY or a
-# ~/.netrc entry for W&B, CLEARML_API_ACCESS_KEY/SECRET_KEY or ~/clearml.conf for
-# ClearML. None found means the run trains untracked, said in its log.
+# are looked up on the cluster node, the way the tool does: WANDB_API_KEY or a
+# ~/.netrc entry for W&B; CLEARML_API_ACCESS_KEY/SECRET_KEY, CLEARML_AUTH_TOKEN
+# or clearml.conf for ClearML. TRACKING_SECRETS passes them from space secrets.
+# None found means the run trains untracked, said in its log.
 TRACKING_TOOL: "none"
 TRACKING_WANDB_ENTITY: ""
 TRACKING_WANDB_PROJECT: ""
 TRACKING_CLEARML_PROJECT: ""
+# The credentials, from space secrets: a comma-separated list of variable names, each passed
+# to both training targets from the space secret of the same name, as the granite-switch
+# recipes pass theirs. Only the chosen tool's: WANDB_API_KEY and WANDB_BASE_URL for wandb;
+# CLEARML_API_HOST, CLEARML_WEB_HOST, CLEARML_FILES_HOST, CLEARML_API_ACCESS_KEY and
+# CLEARML_API_SECRET_KEY for clearml. Empty (the default) declares none, and the tool then
+# finds its credentials, if any, in the container's $HOME. A declared secret the space does
+# not hold fails the target. For example:
+#   --param TRACKING_SECRETS=WANDB_API_KEY
+#   --param TRACKING_SECRETS=CLEARML_API_HOST,CLEARML_API_ACCESS_KEY,CLEARML_API_SECRET_KEY
+TRACKING_SECRETS: ""
 
 # ─── Monitoring ───────────────────────────────────────────────────────
 POLL_INTERVAL_SECONDS: 30

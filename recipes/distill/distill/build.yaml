@@ -130,6 +130,15 @@ $${ TRACKING_WANDB_parameters_must_be_empty_unless_TRACKING_TOOL_is_wandb }
 <%- if TRACK != "clearml" and T_CL %>
 $${ TRACKING_CLEARML_PROJECT_must_be_empty_unless_TRACKING_TOOL_is_clearml }
 <%- endif %>
+# Credentials (and a server) from space secrets of the same names, for the chosen tool only. A
+# declared secret the space does not hold fails the target, so none is declared by default.
+<%- set T_SECRET_OK = {"none": (), "wandb": ("WANDB_API_KEY", "WANDB_BASE_URL"), "clearml": ("CLEARML_API_HOST", "CLEARML_WEB_HOST", "CLEARML_FILES_HOST", "CLEARML_API_ACCESS_KEY", "CLEARML_API_SECRET_KEY")} %>
+<%- set T_SECRETS = (TRACKING_SECRETS | string).split(",") | map("trim") | select | list %>
+<%- for _n in T_SECRETS %>
+<%- if _n not in T_SECRET_OK.get(TRACK, ()) %>
+$${ TRACKING_SECRETS_must_name_only_the_chosen_tools_variables }
+<%- endif %>
+<%- endfor %>
 # ── CKPT_LADDER, checked once ──────────────────────────────────────────────
 # Every rung binds a checkpoint the trainer emits MID-RUN. A rung it never
 # writes is not a late error but a target that never dispatches, so the ladder
@@ -509,6 +518,15 @@ $${ corpus_inputs() }
               # batch than the config says. More than one node is refused.
               gpus_per_node: $${SFT_NUM_GPUS}
               nodes: 1
+<%- if T_SECRETS %>
+            # Tracking credentials, from space secrets of the same names.
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+<%- for _n in T_SECRETS %>
+                  - { env_name: $${_n}, secret_name: $${_n} }
+<%- endfor %>
+<%- endif %>
 <%- if TRACK != "none" %>
             tracking:
               tool: "$${TRACK}"
@@ -664,6 +682,15 @@ $${ corpus_inputs() }
 <%- if ONLINE %>
             # The rollout server's stop_file, the same path; see STOP_FILE above.
             rollout_stop_file: "$${STOP_FILE}"
+<%- endif %>
+<%- if T_SECRETS %>
+            # Tracking credentials, from space secrets of the same names.
+            skypilot:
+              secrets:
+                secret_names_to_use_as_env_variable:
+<%- for _n in T_SECRETS %>
+                  - { env_name: $${_n}, secret_name: $${_n} }
+<%- endfor %>
 <%- endif %>
 <%- if TRACK != "none" %>
             tracking:
