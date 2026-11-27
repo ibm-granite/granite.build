@@ -27,8 +27,9 @@ source); the handler parses the tool calls from the model's ``<tool_call>``
 blocks itself. Both send ``temperature`` and ``top_p`` only when set
 (``temperature=0.001`` is BFCL's own default, which those runs used).
 ``max_tokens``: ``fc`` sends it only when set; ``legacy-granite`` always sends
-one, BFCL prompt mode's min(4096, context - prompt - 2) unless set, counted by
-the serving vLLM (/tokenize, max_model_len), so it needs a vLLM endpoint.
+one, BFCL prompt mode's min(4096, context - prompt - 2) unless set,
+counted by the serving vLLM (/tokenize, max_model_len), so it needs a vLLM endpoint.
+Infrastructure errors: failure_policy, as for ``bfcl-v4`` (``max_failed_frac``).
 No web search, no memory: v3 has neither.
 
 Phases, resume and ``--repeats`` as in ``bfcl-v4``.
@@ -44,7 +45,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from granite_evals.benchmarks.bfcl import _pct, infra_error_message, prune_infra_errors
+from granite_evals.benchmarks.bfcl import _pct, infra_failure, prune_infra_errors
 from granite_evals.benchmarks.bfcl_v3_child import (
     HARNESS_VERSIONS,
     INFRA_EXIT,
@@ -52,14 +53,16 @@ from granite_evals.benchmarks.bfcl_v3_child import (
     DEFAULT_HANDLER,
     REGISTRY_NAMES,
     RESULT_PREFIX,
-    infra_error_ids,
+    TEST_IDS_FILE,
+    DEFAULT_MAX_FAILED_FRAC,
+    failed_entries,
     missing_results,
     registry_name,
     result_files,
     score_dir,
     selected_ids,
 )
-from granite_evals.registry import Benchmark, pass_at_k_record, register
+from granite_evals.registry import Benchmark, failure_policy, pass_at_k_record, register
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +166,7 @@ class BFCLv3(Benchmark):
             "include_input_log": self.opt("include_input_log", "false").lower() == "true",
             "phase": self.phase,
             "handler": handler,
+            "max_failed_frac": self.opt("max_failed_frac", DEFAULT_MAX_FAILED_FRAC),
         }
         (root / CHILD_CONFIG).write_text(json.dumps(child, indent=2))
         if self.generating:
@@ -184,18 +188,20 @@ class BFCLv3(Benchmark):
         if proc.returncode == MISSING_EXIT and not self.generating:
             missing = missing_results(root, handler)
             raise self.not_generated(f"{len(missing)} test ids (first: {', '.join(missing[:5])})")
+        failed, total, dead = failed_entries(root, handler) if (root / TEST_IDS_FILE).exists() else ([], 0, [])
         if proc.returncode == INFRA_EXIT:
-            raise RuntimeError(infra_error_message(self.id, infra_error_ids(root, handler),
-                                                   self.scoring and not self.generating))
+            raise infra_failure(self.id, failed, total, dead, child["max_failed_frac"], not self.generating)
         if proc.returncode != 0:
             raise RuntimeError(f"bfcl-v3 child process exited with {proc.returncode}")
+        policy = failure_policy(self.id, "entries", len(failed), total, child["max_failed_frac"])
         versions_path = root / HARNESS_VERSIONS
         versions = json.loads(versions_path.read_text()) if versions_path.exists() else {}
         if not self.scoring:
             missing = missing_results(root, handler)
             generated = len(selected_ids(root)) - len(missing)
-            log.info("%s: generated %d entries, %d without a result", self.id, generated, len(missing))
-            return {"n": generated, "missing": len(missing), "categories": categories, "handler": handler,
+            log.info("%s: generated %d entries, %d without a result, %d with an infrastructure error",
+                     self.id, generated, len(missing), len(failed))
+            return {"n": generated, "missing": len(missing), "categories": categories, "handler": handler, **policy,
                     "sampling": child["sampling"] or "checkpoint generation_config", "harness_versions": versions}
 
         scores = score_dir(root, handler)
@@ -216,6 +222,7 @@ class BFCLv3(Benchmark):
             "sampling": child["sampling"] or "checkpoint generation_config",
             "categories": categories,
             "partial": self.config.limit is not None,
+            **policy,  # entries_failed / entries_total / incomplete: failed entries are left out of the score
             "groups": overall["groups"],
             "pass_at_k": pass_at_k_record(1, overall["overall"], overall["overall"], n, "BFCL v3 Overall Acc, one sample"),
             "per_category": per_category,

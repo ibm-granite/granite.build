@@ -383,8 +383,83 @@ def test_infra_errors_fail_the_phase(tmp_path, monkeypatch, phase, what):
         return type("P", (), {"returncode": bfcl.INFRA_EXIT})()
 
     monkeypatch.setattr(bfcl.subprocess, "run", run)
-    with pytest.raises(RuntimeError, match=f"{what}: 1 results hold infrastructure errors .first: simple_python_0"):
+    with pytest.raises(SystemExit, match=f"{what}: bfcl-v4: entries_failed 1/1 is above the allowed fraction 0.05") as err:
         bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", phase=phase)).run("http://s", "m")
+    msg = str(err.value)
+    assert "(first: simple_python_0)" in msg and "raise max_failed_frac (now 0.05)" in msg
+    # The recovery that works: a failed generate target is retried by the build; a
+    # score-only refusal needs a new build, since a retry or restart reuses the
+    # generate target that succeeded (target reuse only searches the same build).
+    if phase == "score":
+        assert "Start a new build (gb build start) with the same RUN_NAME" in msg and "`gb build restart`" in msg
+    else:
+        assert "A retry of this generate target" in msg
+
+
+def test_failure_rule_is_failure_policys():
+    """The children choose their exit by failure_policy's own rule (v4's here, v3's copy
+    in test_bfcl_v3): fail exactly when failure_policy would."""
+    from granite_evals.registry import failure_policy
+
+    for failed in range(0, 7):
+        for total in (0, 1, 5, 20, 100):
+            for frac in (0.0, 0.05, 0.2, 1.0):
+                try:
+                    failure_policy("b", "entries", failed, total, frac)
+                    raises = False
+                except SystemExit:
+                    raises = True
+                assert bfcl.over_failure_limit(failed, total, frac) == raises, (failed, total, frac)
+
+
+def _ids(root, ids):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / bfcl.TEST_IDS_FILE).write_text(json.dumps(ids))
+
+
+def test_failed_entries_memory_prereq_fails_its_category(tmp_path):
+    root = tmp_path / "bfcl"
+    _ids(root, {"simple_python": ["simple_python_0", "simple_python_1"],
+                "memory_kv": ["memory_kv_prereq_0-a-0", "memory_kv_0", "memory_kv_1"]})
+    d = root / "result" / bfcl.REGISTRY_NAME / "agentic" / "memory" / "kv"
+    d.mkdir(parents=True)
+    (d / "BFCL_v4_memory_kv_prereq_result.json").write_text(json.dumps({"id": "memory_kv_prereq_0-a-0", "result": INFRA}) + "\n")
+    # A prereq failure fails every scored entry of its category (they replay its state).
+    assert bfcl.failed_entries(root) == (["memory_kv_0", "memory_kv_1"], 4, ["memory_kv"])
+
+
+def test_check_failures_fails_a_category_left_empty_under_the_fraction(tmp_path, monkeypatch):
+    root = tmp_path / "bfcl"
+    _ids(root, {"simple_python": [f"simple_python_{i}" for i in range(50)], "simple_java": ["simple_java_0"]})
+    d = root / "result" / bfcl.REGISTRY_NAME / "non_live"
+    d.mkdir(parents=True)
+    (d / "BFCL_v4_simple_java_result.json").write_text(json.dumps({"id": "simple_java_0", "result": INFRA}) + "\n")
+    for frac in (0.05, 1.0):  # 1/51 is under either fraction, but simple_java has nothing left to score
+        with pytest.raises(SystemExit) as err:
+            bfcl.check_failures("bfcl-v4", root, frac)
+        assert err.value.code == bfcl.INFRA_EXIT
+    # The same one failure in a category that keeps others is left out, not fatal.
+    (d / "BFCL_v4_simple_java_result.json").unlink()
+    (d / "BFCL_v4_simple_python_result.json").write_text(json.dumps({"id": "simple_python_0", "result": INFRA}) + "\n")
+    assert bfcl.check_failures("bfcl-v4", root, 0.05) == {"simple_python_0"}
+
+
+def test_max_failed_frac_option_reaches_the_child(tmp_path, monkeypatch):
+    from granite_evals.registry import RunConfig
+
+    cfgs = []
+    real = _fake_child(tmp_path, [])
+
+    def run(cmd, env, check):
+        cfgs.append(json.loads((tmp_path / "out" / "bfcl" / bfcl.CHILD_CONFIG).read_text()))
+        return real(cmd, env, check)
+
+    monkeypatch.setattr(bfcl.subprocess, "run", run)
+    out = bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="generate")).run("http://s", "m")
+    bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="generate",
+                          options={"max_failed_frac": "0.5"})).run("http://s", "m")
+    assert [c["max_failed_frac"] for c in cfgs] == [0.05, 0.5]
+    assert (out["entries_failed"], out["entries_total"], out["incomplete"]) == (0, 2, False)
 
 
 def _closed_port_url():
@@ -411,10 +486,39 @@ def test_child_infra_errors_fail_generate_and_score(tmp_path, harness_env):
     root = tmp_path / "bfcl"
     proc = _child(root, "generate", ["simple_python"], _closed_port_url())
     assert proc.returncode == bfcl.INFRA_EXIT, proc.stderr[-2000:]
-    assert "1 results hit infrastructure errors (first: simple_python_0)" in proc.stdout
+    assert "1/1 entries hit infrastructure errors (first: simple_python_0)" in proc.stdout
     assert bfcl.infra_error_ids(root) == ["simple_python_0"]
     assert _child(root, "score", ["simple_python"]).returncode == bfcl.INFRA_EXIT
     assert not list((root / "score").rglob("*_score.json"))
+
+
+def test_score_leaves_failed_entries_out_below_the_limit(tmp_path, harness_env):
+    """The real child through the parent: at max_failed_frac (1/20 = 0.05) the failed
+    entry is left out of the score, so irrelevance does not count it as correct, and
+    results.json records the policy; one more (2/20) and the score refuses."""
+    from bfcl_eval.utils import get_directory_structure_by_category
+
+    from granite_evals.registry import RunConfig
+
+    d = tmp_path / "out" / "bfcl" / "result" / bfcl.REGISTRY_NAME / get_directory_structure_by_category("irrelevance")
+    d.mkdir(parents=True)
+
+    def write(n_failed):
+        recs = [{"id": f"irrelevance_{i}", "result": INFRA if i < n_failed else "I cannot help with that."}
+                for i in range(20)]
+        (d / "BFCL_v4_irrelevance_result.json").write_text("".join(json.dumps(r) + "\n" for r in recs))
+
+    def score():
+        cfg = RunConfig(model="m", output_dir=tmp_path / "out", limit=20, phase="score", options={"categories": "irrelevance"})
+        return bfcl.BFCLv4(cfg).run("", "m")
+
+    write(1)
+    out = score()
+    assert out["per_category"]["irrelevance"] == {"accuracy": 1.0, "correct_count": 19, "total_count": 19}
+    assert (out["entries_failed"], out["entries_total"], out["incomplete"]) == (1, 20, True)
+    write(2)
+    with pytest.raises(SystemExit, match="refusing to score: bfcl-v4: entries_failed 2/20 is above the allowed fraction"):
+        score()
 
 
 def test_child_regenerates_a_memory_category_with_infra_errors(tmp_path, harness_env):

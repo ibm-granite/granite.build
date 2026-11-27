@@ -27,10 +27,12 @@ BFCL runs in a child process (``python -m granite_evals.benchmarks.bfcl``) becau
 it reads ``BFCL_PROJECT_ROOT`` at import time and keeps state in module globals.
 Generation resumes natively (finished test ids are skipped); inference errors
 that look like infrastructure failures are dropped on restart so they are retried
-(a memory category with one is regenerated whole). While any remain, generate
-exits non-zero, so the target retry resumes it, and the score phase refuses to
-score: counted as model answers, they would read as wrong (AST) or as correct
-(irrelevance).
+(a memory category with one is regenerated whole). Those that remain are never
+scored as model answers (they would read as wrong in AST categories and as
+correct in irrelevance): failure_policy, as for the other infra-dependent
+families, leaves them out of the score and marks the run incomplete, up to
+``--option max_failed_frac`` (default 0.05). Above it, generate exits non-zero,
+so the target retry resumes it, and the score phase refuses.
 
 Phases: ``--phase generate`` runs BFCL's generation only (vLLM and the search
 MCP server; results under ``bfcl/result/``); ``--phase score`` runs only BFCL's
@@ -64,7 +66,7 @@ from pathlib import Path
 from typing import Any
 
 from granite_evals.mcp_search import SEARCH_TOOL, MCPSearch, parse_search_text  # noqa: F401
-from granite_evals.registry import Benchmark, pass_at_k_record, register
+from granite_evals.registry import Benchmark, failure_policy, pass_at_k_record, register
 
 log = logging.getLogger(__name__)
 
@@ -76,7 +78,8 @@ CHILD_CONFIG = "granite_bfcl_config.json"
 SEARCH_STATS = "web_search_stats.json"
 TEST_IDS_FILE = "test_case_ids_to_generate.json"  # BFCL's TEST_IDS_TO_GENERATE_PATH, under BFCL_PROJECT_ROOT
 MISSING_EXIT = 3  # the child's exit code when the score phase finds test ids without a result
-INFRA_EXIT = 4  # the child's exit code while results still hold infrastructure errors
+INFRA_EXIT = 4  # the child's exit code while too many results hold infrastructure errors
+DEFAULT_MAX_FAILED_FRAC = 0.05  # as bird, tau, mcpmark and officeqa
 
 EXCLUDED_CATEGORIES = {"memory_vector"}
 """The reference run excludes this category: granite-4.2's 128k context can't
@@ -136,6 +139,7 @@ class BFCLv4(Benchmark):
             "search_mcp_url": self.opt("search_mcp_url", DEFAULT_SEARCH_MCP_URL),
             "include_input_log": self.opt("include_input_log", "false").lower() == "true",
             "phase": self.phase,
+            "max_failed_frac": self.opt("max_failed_frac", DEFAULT_MAX_FAILED_FRAC),
         }
         (root / CHILD_CONFIG).write_text(json.dumps(child, indent=2))
         env = {
@@ -154,17 +158,20 @@ class BFCLv4(Benchmark):
         if proc.returncode == MISSING_EXIT and not self.generating:
             missing = missing_results(root)
             raise self.not_generated(f"{len(missing)} test ids (first: {', '.join(missing[:5])})")
+        failed, total, dead = failed_entries(root) if (root / TEST_IDS_FILE).exists() else ([], 0, [])
         if proc.returncode == INFRA_EXIT:
-            raise RuntimeError(infra_error_message(self.id, infra_error_ids(root), self.scoring and not self.generating))
+            raise infra_failure(self.id, failed, total, dead, child["max_failed_frac"], not self.generating)
         if proc.returncode != 0:
             raise RuntimeError(f"bfcl child process exited with {proc.returncode}")
+        policy = failure_policy(self.id, "entries", len(failed), total, child["max_failed_frac"])
         stats_path = root / SEARCH_STATS
         search_stats = json.loads(stats_path.read_text()) if stats_path.exists() else {}
         if not self.scoring:
             missing = missing_results(root)
             generated = len(scored_ids(root)) - len(missing)
-            log.info("%s: generated %d entries, %d without a result", self.id, generated, len(missing))
-            return {"n": generated, "missing": len(missing), "categories": categories,
+            log.info("%s: generated %d entries, %d without a result, %d with an infrastructure error",
+                     self.id, generated, len(missing), len(failed))
+            return {"n": generated, "missing": len(missing), "categories": categories, **policy,
                     "sampling": child["sampling"] or "checkpoint generation_config", "web_search": search_stats}
 
         per_category = read_category_scores(root / "score" / REGISTRY_NAME)
@@ -183,6 +190,7 @@ class BFCLv4(Benchmark):
             "sampling": child["sampling"] or "checkpoint generation_config",
             "categories": categories,
             "partial": self.config.limit is not None,
+            **policy,  # entries_failed / entries_total / incomplete: failed entries are left out of the score
             "groups": overall["groups"],
             "pass_at_k": pass_at_k_record(1, overall["overall"], overall["overall"], n, "BFCL Overall Acc, one sample"),
             "per_category": per_category,
@@ -285,24 +293,76 @@ def _records(path: Path) -> list[dict]:
 
 def infra_error_ids(root: Path) -> list[str]:
     """Selected test ids (memory prereqs included: their state feeds the scored
-    entries) whose result is an infrastructure error. Neither generate nor score
-    may finish while any remain: scored, they would count as model answers."""
+    entries) whose result is an infrastructure error."""
     selected = {i for cat_ids in json.loads((root / TEST_IDS_FILE).read_text()).values() for i in cat_ids}
     return [rec["id"] for path in sorted((root / "result" / REGISTRY_NAME).rglob("BFCL_v4_*_result.json"))
             for rec in _records(path) if rec["id"] in selected and is_infra_error(rec)]
 
 
-def infra_error_message(benchmark: str, ids: list[str], score_only: bool) -> str:
-    """The parent's error for a child that stopped on infrastructure errors."""
-    what = "refusing to score" if score_only else "generation incomplete"
-    return (f"{benchmark}: {what}: {len(ids)} results hold infrastructure errors (first: {', '.join(ids[:5])}); "
-            "run --phase generate on this output dir again: it retries them")
+# -- infrastructure errors: granite_evals' failure_policy ----------------------------
+#
+# An entry whose result is an infrastructure error is no model answer: it is left out
+# of the score (scored, it would read as wrong in AST categories and as correct in
+# irrelevance), and the run is marked incomplete, as failure_policy does for every
+# infra-dependent family. Resume prunes and retries such entries. Generate fails
+# (INFRA_EXIT, so the target retry resumes it), and score refuses, only while the
+# failed fraction is above max_failed_frac, or when a category has nothing else left.
 
 
-def infra_error_exit(benchmark: str, ids: list[str]) -> None:
-    print(f"{benchmark}: {len(ids)} results hit infrastructure errors (first: {', '.join(ids[:5])}); "
-          "re-run --phase generate on this output dir to retry them", flush=True)
-    sys.exit(INFRA_EXIT)
+def failed_entries(root: Path) -> tuple[list[str], int, list[str]]:
+    """(failed scored ids, scored ids in all, categories with every scored id failed).
+    A scored entry fails on its own infrastructure error, or, in a memory category,
+    on one in any of the category's prereq conversations (they set its state)."""
+    ids = json.loads((root / TEST_IDS_FILE).read_text())
+    bad = set(infra_error_ids(root))
+    failed, dead = [], []
+    for cat, cat_ids in ids.items():
+        scored = [i for i in cat_ids if "prereq" not in i]
+        prereq_failed = any(i in bad for i in cat_ids if "prereq" in i)
+        cat_failed = [i for i in scored if prereq_failed or i in bad]
+        failed += cat_failed
+        if scored and len(cat_failed) == len(scored):
+            dead.append(cat)
+    return failed, sum(1 for v in ids.values() for i in v if "prereq" not in i), dead
+
+
+def over_failure_limit(failed: int, total: int, max_frac: float) -> bool:
+    """failure_policy's rule (granite_evals.registry), for a child to choose its exit."""
+    return bool(failed) and (not total or failed / total > max_frac)
+
+
+def infra_failure(benchmark: str, failed: list[str], total: int, dead: list[str], max_frac: float,
+                  score_only: bool) -> SystemExit:
+    """The parent's error when the child stopped on infrastructure errors (INFRA_EXIT)."""
+    try:
+        failure_policy(benchmark, "entries", len(failed), total, max_frac)
+        why = f"{benchmark}: every entry of {', '.join(dead)} hit an infrastructure error, so it has none to score"
+    except SystemExit as e:
+        why = str(e)
+    first = f" (first: {', '.join(failed[:5])})"
+    if score_only:
+        how = ("This build's generate target already succeeded, so a retry or `gb build restart` of the build "
+               "reuses it and does not retry them. Start a new build (gb build start) with the same RUN_NAME and "
+               "OUTPUT_ROOT: its generate resumes in this output dir and retries only these entries.")
+    else:
+        how = "A retry of this generate target (the recipes' MAX_RETRIES) resumes in this output dir and retries them."
+    return SystemExit(f"{'refusing to score' if score_only else 'generation incomplete'}: {why}{first}. {how} "
+                      f"To score without them instead, raise max_failed_frac (now {max_frac:g}).")
+
+
+def check_failures(benchmark: str, root: Path, max_frac: float) -> set[str]:
+    """Child side: exit INFRA_EXIT above the limit (or with a category left empty);
+    otherwise the failed scored ids, which the score leaves out."""
+    failed, total, dead = failed_entries(root)
+    if over_failure_limit(len(failed), total, max_frac) or dead:
+        print(f"{benchmark}: {len(failed)}/{total} entries hit infrastructure errors (first: {', '.join(failed[:5])})"
+              f"{'; no entry left in ' + ', '.join(dead) if dead else ''}; above max_failed_frac={max_frac:g}",
+              flush=True)
+        sys.exit(INFRA_EXIT)
+    if failed:
+        print(f"{benchmark}: {len(failed)}/{total} entries hit infrastructure errors; left out of the score "
+              f"(max_failed_frac={max_frac:g})", flush=True)
+    return set(failed)
 
 
 def prune_infra_errors(result_file: Path) -> int:
@@ -440,9 +500,8 @@ def child_main(config_path: str) -> None:
         if missing := missing_results(root):
             print(f"bfcl-v4: {len(missing)} test ids have no result (run --phase generate)", flush=True)
             sys.exit(MISSING_EXIT)
-        if bad := infra_error_ids(root):
-            infra_error_exit("bfcl-v4", bad)
-        evaluation_main([REGISTRY_NAME], cfg["categories"], None, None, cfg["limit"] is not None)
+        failed = check_failures("bfcl-v4", root, cfg.get("max_failed_frac", DEFAULT_MAX_FAILED_FRAC))
+        evaluate_without(root, cfg, failed, evaluation_main)
         return
 
     search = MCPSearch(cfg["search_mcp_url"])
@@ -474,11 +533,31 @@ def child_main(config_path: str) -> None:
         run_ids=True, enable_lora=False, max_lora_rank=None, lora_modules=None,
     ))
     (root / SEARCH_STATS).write_text(json.dumps(search.stats, indent=2))
-    if bad := infra_error_ids(root):
-        infra_error_exit("bfcl-v4", bad)  # fail the job, so the target retry resumes and retries them
+    # Above the limit, fail the job, so the target retry resumes and retries them.
+    failed = check_failures("bfcl-v4", root, cfg.get("max_failed_frac", DEFAULT_MAX_FAILED_FRAC))
     if cfg["phase"] == "generate":
         return
-    evaluation_main([REGISTRY_NAME], cfg["categories"], None, None, cfg["limit"] is not None)
+    evaluate_without(root, cfg, failed, evaluation_main)
+
+
+def evaluate_without(root: Path, cfg: dict, failed: set[str], evaluation_main) -> None:
+    """BFCL's evaluation with the failed entries' results left out. Only the result
+    files are filtered (BFCL aligns prompts and ground truth by position, and some
+    ground-truth ids differ from the prompt ids); partial evaluation then scores the
+    entries present, so a failed entry counts nowhere, irrelevance included."""
+    if failed:
+        from bfcl_eval.eval_checker import eval_runner
+
+        load, results = eval_runner.load_file, (root / "result").resolve()
+
+        def load_without_failed(path, *args, **kwargs):
+            entries = load(path, *args, **kwargs)
+            if Path(path).resolve().is_relative_to(results):
+                entries = [e for e in entries if not (isinstance(e, dict) and e.get("id") in failed)]
+            return entries
+
+        eval_runner.load_file = load_without_failed
+    evaluation_main([REGISTRY_NAME], cfg["categories"], None, None, cfg["limit"] is not None or bool(failed))
 
 
 def sampling_temperature(cfg: dict) -> float:

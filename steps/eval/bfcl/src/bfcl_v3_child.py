@@ -49,7 +49,8 @@ DEFAULT_HANDLER = "fc"
 TEST_IDS_FILE = "test_case_ids_to_generate.json"  # BFCL's TEST_IDS_TO_GENERATE_PATH, under BFCL_PROJECT_ROOT
 HARNESS_VERSIONS = "harness_versions.json"
 MISSING_EXIT = 3
-INFRA_EXIT = 4  # results still hold infrastructure errors (bfcl.INFRA_EXIT)
+INFRA_EXIT = 4  # too many results hold infrastructure errors (bfcl.INFRA_EXIT)
+DEFAULT_MAX_FAILED_FRAC = 0.05  # bfcl.DEFAULT_MAX_FAILED_FRAC
 RESULT_PREFIX = "BFCL_v3_"
 # bfcl.INFRA_ERROR, copied: this module cannot import granite_evals (a test keeps them equal).
 INFRA_ERROR = re.compile(
@@ -92,8 +93,7 @@ def missing_results(root: Path, handler: str = DEFAULT_HANDLER) -> list[str]:
 
 def infra_error_ids(root: Path, handler: str = DEFAULT_HANDLER) -> list[str]:
     """Selected test ids whose result is an infrastructure error (what
-    bfcl.prune_infra_errors drops). Neither generate nor score may finish while
-    any remain: scored, they would count as model answers."""
+    bfcl.prune_infra_errors drops)."""
     selected = set(selected_ids(root))
     out = []
     for path in result_files(root, handler):
@@ -106,11 +106,35 @@ def infra_error_ids(root: Path, handler: str = DEFAULT_HANDLER) -> list[str]:
     return out
 
 
-def exit_on_infra_errors(root: Path, handler: str) -> None:
-    if bad := infra_error_ids(root, handler):
-        print(f"bfcl-v3: {len(bad)} results hit infrastructure errors (first: {', '.join(bad[:5])}); "
-              "re-run --phase generate on this output dir to retry them", flush=True)
+def failed_entries(root: Path, handler: str = DEFAULT_HANDLER) -> tuple[list[str], int, list[str]]:
+    """(failed selected ids, selected ids in all, categories with every selected id
+    failed), as bfcl.failed_entries (v3 has no memory prereqs)."""
+    ids = json.loads((root / TEST_IDS_FILE).read_text())
+    bad = set(infra_error_ids(root, handler))
+    failed = [i for v in ids.values() for i in v if i in bad]
+    dead = [cat for cat, v in ids.items() if v and all(i in bad for i in v)]
+    return failed, sum(len(v) for v in ids.values()), dead
+
+
+def over_failure_limit(failed: int, total: int, max_frac: float) -> bool:
+    """failure_policy's rule (granite_evals.registry), copied like INFRA_ERROR (a test
+    keeps it equal): above the allowed fraction the run fails."""
+    return bool(failed) and (not total or failed / total > max_frac)
+
+
+def check_failures(root: Path, handler: str, max_frac: float) -> set[str]:
+    """Exit INFRA_EXIT above max_failed_frac (or with a category left empty); otherwise
+    the failed ids, which the score leaves out (bfcl.check_failures, for v4)."""
+    failed, total, dead = failed_entries(root, handler)
+    if over_failure_limit(len(failed), total, max_frac) or dead:
+        print(f"bfcl-v3: {len(failed)}/{total} entries hit infrastructure errors (first: {', '.join(failed[:5])})"
+              f"{'; no entry left in ' + ', '.join(dead) if dead else ''}; above max_failed_frac={max_frac:g}",
+              flush=True)
         sys.exit(INFRA_EXIT)
+    if failed:
+        print(f"bfcl-v3: {len(failed)}/{total} entries hit infrastructure errors; left out of the score "
+              f"(max_failed_frac={max_frac:g})", flush=True)
+    return set(failed)
 
 
 def select_ids(entries_by_category: dict[str, list[dict]], limit: int | None) -> dict[str, list[str]]:
@@ -477,11 +501,13 @@ def harness_versions() -> dict[str, str]:
     return out
 
 
-def evaluate(cfg: dict) -> None:
+def evaluate(cfg: dict, failed: set[str] = frozenset()) -> None:
+    """BFCL's evaluation of the selected entries, the failed ones left out (so a failed
+    entry counts nowhere, irrelevance included)."""
     from bfcl_eval.eval_checker.eval_runner import main as evaluation_main
 
-    if cfg["limit"] is not None:
-        restrict_evaluation_to(set(cfg["selected"]))
+    if cfg["limit"] is not None or failed:
+        restrict_evaluation_to(set(cfg["selected"]) - set(failed))
     scores = score_dir(Path(os.environ["BFCL_PROJECT_ROOT"]), cfg["handler"])
     scores.mkdir(parents=True, exist_ok=True)
     evaluation_main([registry_name(cfg["handler"])], cfg["categories"], None, str(scores))
@@ -530,8 +556,8 @@ def child_main(config_path: str) -> None:
         if missing := missing_results(root, cfg["handler"]):
             print(f"bfcl-v3: {len(missing)} test ids have no result (run --phase generate)", flush=True)
             sys.exit(MISSING_EXIT)
-        exit_on_infra_errors(root, cfg["handler"])
-        evaluate(cfg)
+        failed = check_failures(root, cfg["handler"], cfg.get("max_failed_frac", DEFAULT_MAX_FAILED_FRAC))
+        evaluate(cfg, failed)
         return
 
     generation_main(SimpleNamespace(
@@ -542,10 +568,11 @@ def child_main(config_path: str) -> None:
         skip_server_setup=True, local_model_path=None, result_dir=None, allow_overwrite=False,
         run_ids=True,
     ))
-    exit_on_infra_errors(root, cfg["handler"])  # fail the job, so the target retry resumes and retries them
+    # Above the limit, fail the job, so the target retry resumes and retries them.
+    failed = check_failures(root, cfg["handler"], cfg.get("max_failed_frac", DEFAULT_MAX_FAILED_FRAC))
     if cfg["phase"] == "generate":
         return
-    evaluate(cfg)
+    evaluate(cfg, failed)
 
 
 if __name__ == "__main__":

@@ -207,8 +207,41 @@ def test_infra_errors_fail_the_phase(tmp_path, monkeypatch, v3_python, phase, wh
         return type("P", (), {"returncode": bfcl_v3_child.INFRA_EXIT})()
 
     monkeypatch.setattr(bfcl_v3.subprocess, "run", run)
-    with pytest.raises(RuntimeError, match=f"{what}: 1 results hold infrastructure errors .first: simple_0"):
+    with pytest.raises(SystemExit, match=f"{what}: bfcl-v3: entries_failed 1/1 is above the allowed fraction 0.05") as err:
         bfcl_v3.BFCLv3(RunConfig(model="m", output_dir=tmp_path / "out", phase=phase)).run("http://s", "m")
+    assert "(first: simple_0)" in str(err.value) and "raise max_failed_frac (now 0.05)" in str(err.value)
+
+
+def test_child_failure_rule_is_failure_policys():
+    """The stdlib-only child's copy of failure_policy's rule (as INFRA_ERROR's)."""
+    from granite_evals.registry import failure_policy
+
+    for failed in range(0, 7):
+        for total in (0, 1, 5, 20, 100):
+            for frac in (0.0, 0.05, 0.2, 1.0):
+                try:
+                    failure_policy("b", "entries", failed, total, frac)
+                    raises = False
+                except SystemExit:
+                    raises = True
+                assert bfcl_v3_child.over_failure_limit(failed, total, frac) == raises, (failed, total, frac)
+    assert bfcl_v3_child.DEFAULT_MAX_FAILED_FRAC == bfcl.DEFAULT_MAX_FAILED_FRAC
+
+
+def test_child_check_failures_fails_a_category_left_empty(tmp_path):
+    root = tmp_path / "bfcl"
+    d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
+    d.mkdir(parents=True)
+    (root / bfcl_v3_child.TEST_IDS_FILE).write_text(json.dumps(
+        {"simple": [f"simple_{i}" for i in range(50)], "java": ["java_0"]}))
+    (d / "BFCL_v3_java_result.json").write_text(json.dumps({"id": "java_0", "result": INFRA}) + "\n")
+    with pytest.raises(SystemExit) as err:  # 1/51 is under 0.05, but java has nothing left to score
+        bfcl_v3_child.check_failures(root, "fc", 0.05)
+    assert err.value.code == bfcl_v3_child.INFRA_EXIT
+    (d / "BFCL_v3_java_result.json").unlink()
+    (d / "BFCL_v3_simple_result.json").write_text(json.dumps({"id": "simple_0", "result": INFRA}) + "\n")
+    assert bfcl_v3_child.check_failures(root, "fc", 0.05) == {"simple_0"}
+    assert bfcl_v3_child.failed_entries(root, "legacy-granite") == ([], 51, [])  # the other handler's results
 
 
 def test_needs_the_side_venv(tmp_path, monkeypatch):
@@ -304,6 +337,7 @@ def test_real_handler_sends_served_name_and_only_configured_sampling(tmp_path):
         "messages": [{"role": "user", "content": "hi"}], "model": "served"}
     sent = json.loads(_v3(code % (src, "{'temperature': 0.7}"), tmp_path))
     assert sent["temperature"] == 0.7 and sent["model"] == "served"
+
 
 
 def test_list_shows_both_versions():
@@ -650,9 +684,9 @@ def test_real_child_infra_errors_fail_generate_and_score_until_retried(tmp_path,
         cfg = RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase=phase, workers=2, options=opts)
         return bfcl_v3.BFCLv3(cfg).run(base_url, "m")
 
-    with pytest.raises(RuntimeError, match="generation incomplete: 2 results hold infrastructure errors"):
+    with pytest.raises(SystemExit, match="generation incomplete: bfcl-v3: entries_failed 2/2 is above"):
         run("generate", _closed_port_url())
-    with pytest.raises(RuntimeError, match="refusing to score: 2 results hold infrastructure errors"):
+    with pytest.raises(SystemExit, match="refusing to score: bfcl-v3: entries_failed 2/2 is above"):
         run("score", "")
     root = tmp_path / "out" / "bfcl"
     assert not list(bfcl_v3_child.score_dir(root).rglob("*_score.json"))
@@ -660,6 +694,36 @@ def test_real_child_infra_errors_fail_generate_and_score_until_retried(tmp_path,
     assert bfcl_v3_child.infra_error_ids(root) == []
     out = run("score", "")
     assert out["per_category"]["simple"] == {"accuracy": 0.0, "correct_count": 0, "total_count": 2}  # refusals
+
+
+@needs_v3_venv
+def test_real_child_leaves_failed_entries_out_below_the_limit(tmp_path, monkeypatch):
+    """BFCL v3's own evaluator through the parent: at max_failed_frac (1/20 = 0.05) the
+    failed entry is left out, so irrelevance does not count it as correct, and the
+    policy is recorded; one more (2/20) and the score refuses."""
+    monkeypatch.setenv(bfcl_v3.PYTHON_ENV, V3_PYTHON)
+    d = tmp_path / "out" / "bfcl" / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
+    d.mkdir(parents=True)
+
+    def write(n_failed):
+        recs = [{"id": f"irrelevance_{i}", "result": INFRA if i < n_failed else "I cannot help with that."}
+                for i in range(20)]
+        (d / "BFCL_v3_irrelevance_result.json").write_text("".join(json.dumps(r) + "\n" for r in recs))
+
+    def score(**opts):
+        cfg = RunConfig(model="m", output_dir=tmp_path / "out", limit=20, phase="score",
+                        options={"categories": "irrelevance", **opts})
+        return bfcl_v3.BFCLv3(cfg).run("", "m")
+
+    write(1)
+    out = score()
+    assert out["per_category"]["irrelevance"] == {"accuracy": 1.0, "correct_count": 19, "total_count": 19}
+    assert (out["entries_failed"], out["entries_total"], out["incomplete"]) == (1, 20, True)
+    write(2)
+    with pytest.raises(SystemExit, match="refusing to score: bfcl-v3: entries_failed 2/20 is above the allowed fraction"):
+        score()
+    out = score(max_failed_frac="0.1")  # the option raises the limit
+    assert out["per_category"]["irrelevance"]["total_count"] == 18 and out["entries_failed"] == 2
 
 
 @needs_v3_venv
