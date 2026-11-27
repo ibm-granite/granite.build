@@ -372,6 +372,24 @@ def test_sampled_opd_with_lmbda_other_than_1_fails_to_render(tmp_path, sopd, mod
 
 
 @pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+def test_sampled_opd_with_the_fused_liger_jsd_fails_to_render(tmp_path, sopd):
+    """CustomGOLDConfig refuses use_sampled_opd_loss with use_liger_fused_jsd; the step's
+    renderer refuses both forms at launch."""
+    params = dict(
+        LMBDA_MODE="on-policy", LAST_MESSAGE_ONLY="true", USE_LIGER_FUSED_JSD="true"
+    )
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params, **sopd)
+    assert "USE_LIGER_FUSED_JSD_must_be_false_for_the_sampled_OPD_loss" in str(
+        err.value
+    )
+
+
+@pytest.mark.parametrize(
     "params",
     [
         {"LMBDA_MODE": "off-policy"},

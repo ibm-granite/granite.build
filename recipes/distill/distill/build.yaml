@@ -116,6 +116,10 @@ $${ LMBDA_MODE_must_be_ramp_or_on_policy_for_the_sampled_OPD_loss }
 <%- if SOPD and ONLINE and L != 1.0 %>
 $${ LMBDA_must_be_1_for_the_sampled_OPD_loss }
 <%- endif %>
+# Nor with the fused Liger JSD, which CustomGOLDConfig refuses beside it.
+<%- if SOPD and (USE_LIGER_FUSED_JSD | string | trim | lower) in YES %>
+$${ USE_LIGER_FUSED_JSD_must_be_false_for_the_sampled_OPD_loss }
+<%- endif %>
 <%- if SOPD and not LMO %>
 $${ LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss }
 <%- endif %>
