@@ -436,7 +436,7 @@ def test_failed_entries_memory_prereq_fails_its_category(tmp_path):
     d.mkdir(parents=True)
     (d / "BFCL_v4_memory_kv_prereq_result.json").write_text(json.dumps({"id": "memory_kv_prereq_0-a-0", "result": INFRA}) + "\n")
     # A prereq failure fails every scored entry of its category (they replay its state).
-    assert bfcl.failed_entries(root) == (["memory_kv_0", "memory_kv_1"], 4, ["memory_kv"])
+    assert bfcl.failed_entries(root) == (["memory_kv_0", "memory_kv_1"], 4, {"simple_python": (0, 2), "memory_kv": (2, 2)})
 
 
 def test_check_failures_fails_a_category_left_empty_under_the_fraction(tmp_path, monkeypatch):
@@ -453,6 +453,26 @@ def test_check_failures_fails_a_category_left_empty_under_the_fraction(tmp_path,
     (d / "BFCL_v4_simple_java_result.json").unlink()
     (d / "BFCL_v4_simple_python_result.json").write_text(json.dumps({"id": "simple_python_0", "result": INFRA}) + "\n")
     assert bfcl.check_failures("bfcl-v4", root, 0.05) == {"simple_python_0"}
+
+
+def test_one_category_above_the_fraction_fails_under_the_overall_one(tmp_path):
+    """2 of 20 live_simple entries failed (10%) next to 200 clean ones: 2/220 is under
+    0.05 overall, but the category is above it (tau's per-domain rule)."""
+    root = tmp_path / "bfcl"
+    _ids(root, {"simple_python": [f"simple_python_{i}" for i in range(200)],
+                "live_simple": [f"live_simple_{i}" for i in range(20)]})
+    d = root / "result" / bfcl.REGISTRY_NAME / "live"
+    d.mkdir(parents=True)
+    (d / "BFCL_v4_live_simple_result.json").write_text(
+        "".join(json.dumps({"id": f"live_simple_{i}", "result": INFRA}) + "\n" for i in range(2)))
+    assert bfcl.over_limit_categories(bfcl.failed_entries(root)[2], 0.05) == ["live_simple"]
+    with pytest.raises(SystemExit) as err:
+        bfcl.check_failures("bfcl-v4", root, 0.05)
+    assert err.value.code == bfcl.INFRA_EXIT
+    assert bfcl.check_failures("bfcl-v4", root, 0.1) == {"live_simple_0", "live_simple_1"}  # 10% is not above 0.1
+    msg = str(bfcl.infra_failure("bfcl-v4", ["live_simple_0", "live_simple_1"], 220,
+                                 bfcl.failed_entries(root)[2], 0.05, False))
+    assert "bfcl-v4 live_simple: entries_failed 2/20 is above the allowed fraction 0.05" in msg
 
 
 def test_max_failed_frac_option_reaches_the_child(tmp_path, monkeypatch):

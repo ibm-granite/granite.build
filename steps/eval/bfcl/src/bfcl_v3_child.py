@@ -106,14 +106,14 @@ def infra_error_ids(root: Path, handler: str = DEFAULT_HANDLER) -> list[str]:
     return out
 
 
-def failed_entries(root: Path, handler: str = DEFAULT_HANDLER) -> tuple[list[str], int, list[str]]:
-    """(failed selected ids, selected ids in all, categories with every selected id
-    failed), as bfcl.failed_entries (v3 has no memory prereqs)."""
+def failed_entries(root: Path, handler: str = DEFAULT_HANDLER) -> tuple[list[str], int, dict[str, tuple[int, int]]]:
+    """(failed selected ids, selected ids in all, {category: (failed, selected)}), as
+    bfcl.failed_entries (v3 has no memory prereqs)."""
     ids = json.loads((root / TEST_IDS_FILE).read_text())
     bad = set(infra_error_ids(root, handler))
     failed = [i for v in ids.values() for i in v if i in bad]
-    dead = [cat for cat, v in ids.items() if v and all(i in bad for i in v)]
-    return failed, sum(len(v) for v in ids.values()), dead
+    by_cat = {cat: (sum(i in bad for i in v), len(v)) for cat, v in ids.items()}
+    return failed, sum(n for _, n in by_cat.values()), by_cat
 
 
 def over_failure_limit(failed: int, total: int, max_frac: float) -> bool:
@@ -122,14 +122,22 @@ def over_failure_limit(failed: int, total: int, max_frac: float) -> bool:
     return bool(failed) and (not total or failed / total > max_frac)
 
 
+def over_limit_categories(by_cat: dict[str, tuple[int, int]], max_frac: float) -> list[str]:
+    """Categories above max_failed_frac on their own, or with no entry left to score
+    (bfcl.over_limit_categories; tau's per-domain rule)."""
+    return [c for c, (f, n) in by_cat.items() if over_failure_limit(f, n, max_frac) or (n and f == n)]
+
+
 def check_failures(root: Path, handler: str, max_frac: float) -> set[str]:
-    """Exit INFRA_EXIT above max_failed_frac (or with a category left empty); otherwise
-    the failed ids, which the score leaves out (bfcl.check_failures, for v4)."""
-    failed, total, dead = failed_entries(root, handler)
-    if over_failure_limit(len(failed), total, max_frac) or dead:
+    """Exit INFRA_EXIT above max_failed_frac, overall or in any one category (or with a
+    category left empty); otherwise the failed ids, which the score leaves out
+    (bfcl.check_failures, for v4)."""
+    failed, total, by_cat = failed_entries(root, handler)
+    over = over_limit_categories(by_cat, max_frac)
+    if over_failure_limit(len(failed), total, max_frac) or over:
+        detail = ", ".join(f"{c} {by_cat[c][0]}/{by_cat[c][1]}" for c in over)
         print(f"bfcl-v3: {len(failed)}/{total} entries hit infrastructure errors (first: {', '.join(failed[:5])})"
-              f"{'; no entry left in ' + ', '.join(dead) if dead else ''}; above max_failed_frac={max_frac:g}",
-              flush=True)
+              f"{'; by category: ' + detail if over else ''}; above max_failed_frac={max_frac:g}", flush=True)
         sys.exit(INFRA_EXIT)
     if failed:
         print(f"bfcl-v3: {len(failed)}/{total} entries hit infrastructure errors; left out of the score "

@@ -188,12 +188,13 @@ class BFCLv3(Benchmark):
         if proc.returncode == MISSING_EXIT and not self.generating:
             missing = missing_results(root, handler)
             raise self.not_generated(f"{len(missing)} test ids (first: {', '.join(missing[:5])})")
-        failed, total, dead = failed_entries(root, handler) if (root / TEST_IDS_FILE).exists() else ([], 0, [])
+        failed, total, by_cat = failed_entries(root, handler) if (root / TEST_IDS_FILE).exists() else ([], 0, {})
         if proc.returncode == INFRA_EXIT:
-            raise infra_failure(self.id, failed, total, dead, child["max_failed_frac"], not self.generating)
+            raise infra_failure(self.id, failed, total, by_cat, child["max_failed_frac"], not self.generating)
         if proc.returncode != 0:
             raise RuntimeError(f"bfcl-v3 child process exited with {proc.returncode}")
-        policy = failure_policy(self.id, "entries", len(failed), total, child["max_failed_frac"])
+        policy = {**failure_policy(self.id, "entries", len(failed), total, child["max_failed_frac"]),
+                  "entries_failed_by_category": {c: f for c, (f, _) in by_cat.items() if f}}
         versions_path = root / HARNESS_VERSIONS
         versions = json.loads(versions_path.read_text()) if versions_path.exists() else {}
         if not self.scoring:

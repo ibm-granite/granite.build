@@ -158,12 +158,13 @@ class BFCLv4(Benchmark):
         if proc.returncode == MISSING_EXIT and not self.generating:
             missing = missing_results(root)
             raise self.not_generated(f"{len(missing)} test ids (first: {', '.join(missing[:5])})")
-        failed, total, dead = failed_entries(root) if (root / TEST_IDS_FILE).exists() else ([], 0, [])
+        failed, total, by_cat = failed_entries(root) if (root / TEST_IDS_FILE).exists() else ([], 0, {})
         if proc.returncode == INFRA_EXIT:
-            raise infra_failure(self.id, failed, total, dead, child["max_failed_frac"], not self.generating)
+            raise infra_failure(self.id, failed, total, by_cat, child["max_failed_frac"], not self.generating)
         if proc.returncode != 0:
             raise RuntimeError(f"bfcl child process exited with {proc.returncode}")
-        policy = failure_policy(self.id, "entries", len(failed), total, child["max_failed_frac"])
+        policy = {**failure_policy(self.id, "entries", len(failed), total, child["max_failed_frac"]),
+                  "entries_failed_by_category": {c: f for c, (f, _) in by_cat.items() if f}}
         stats_path = root / SEARCH_STATS
         search_stats = json.loads(stats_path.read_text()) if stats_path.exists() else {}
         if not self.scoring:
@@ -309,21 +310,20 @@ def infra_error_ids(root: Path) -> list[str]:
 # failed fraction is above max_failed_frac, or when a category has nothing else left.
 
 
-def failed_entries(root: Path) -> tuple[list[str], int, list[str]]:
-    """(failed scored ids, scored ids in all, categories with every scored id failed).
-    A scored entry fails on its own infrastructure error, or, in a memory category,
-    on one in any of the category's prereq conversations (they set its state)."""
+def failed_entries(root: Path) -> tuple[list[str], int, dict[str, tuple[int, int]]]:
+    """(failed scored ids, scored ids in all, {category: (failed, scored)}). A scored
+    entry fails on its own infrastructure error, or, in a memory category, on one in
+    any of the category's prereq conversations (they set its state)."""
     ids = json.loads((root / TEST_IDS_FILE).read_text())
     bad = set(infra_error_ids(root))
-    failed, dead = [], []
+    failed, by_cat = [], {}
     for cat, cat_ids in ids.items():
         scored = [i for i in cat_ids if "prereq" not in i]
         prereq_failed = any(i in bad for i in cat_ids if "prereq" in i)
         cat_failed = [i for i in scored if prereq_failed or i in bad]
         failed += cat_failed
-        if scored and len(cat_failed) == len(scored):
-            dead.append(cat)
-    return failed, sum(1 for v in ids.values() for i in v if "prereq" not in i), dead
+        by_cat[cat] = (len(cat_failed), len(scored))
+    return failed, sum(n for _, n in by_cat.values()), by_cat
 
 
 def over_failure_limit(failed: int, total: int, max_frac: float) -> bool:
@@ -331,12 +331,22 @@ def over_failure_limit(failed: int, total: int, max_frac: float) -> bool:
     return bool(failed) and (not total or failed / total > max_frac)
 
 
-def infra_failure(benchmark: str, failed: list[str], total: int, dead: list[str], max_frac: float,
-                  score_only: bool) -> SystemExit:
+def over_limit_categories(by_cat: dict[str, tuple[int, int]], max_frac: float) -> list[str]:
+    """Categories above max_failed_frac on their own, or with no entry left to score:
+    failures in one category must not hide behind another's successes (tau's
+    per-domain rule)."""
+    return [c for c, (f, n) in by_cat.items() if over_failure_limit(f, n, max_frac) or (n and f == n)]
+
+
+def infra_failure(benchmark: str, failed: list[str], total: int, by_cat: dict[str, tuple[int, int]],
+                  max_frac: float, score_only: bool) -> SystemExit:
     """The parent's error when the child stopped on infrastructure errors (INFRA_EXIT)."""
     try:
         failure_policy(benchmark, "entries", len(failed), total, max_frac)
-        why = f"{benchmark}: every entry of {', '.join(dead)} hit an infrastructure error, so it has none to score"
+        for cat, (f, n) in by_cat.items():
+            failure_policy(f"{benchmark} {cat}", "entries", f, n, max_frac)
+        empty = [c for c, (f, n) in by_cat.items() if n and f == n]
+        why = f"{benchmark}: every entry of {', '.join(empty)} hit an infrastructure error, so it has none to score"
     except SystemExit as e:
         why = str(e)
     first = f" (first: {', '.join(failed[:5])})"
@@ -351,13 +361,15 @@ def infra_failure(benchmark: str, failed: list[str], total: int, dead: list[str]
 
 
 def check_failures(benchmark: str, root: Path, max_frac: float) -> set[str]:
-    """Child side: exit INFRA_EXIT above the limit (or with a category left empty);
-    otherwise the failed scored ids, which the score leaves out."""
-    failed, total, dead = failed_entries(root)
-    if over_failure_limit(len(failed), total, max_frac) or dead:
+    """Child side: exit INFRA_EXIT above the limit, overall or in any one category (or
+    with a category left empty); otherwise the failed scored ids, which the score
+    leaves out."""
+    failed, total, by_cat = failed_entries(root)
+    over = over_limit_categories(by_cat, max_frac)
+    if over_failure_limit(len(failed), total, max_frac) or over:
+        detail = ", ".join(f"{c} {by_cat[c][0]}/{by_cat[c][1]}" for c in over)
         print(f"{benchmark}: {len(failed)}/{total} entries hit infrastructure errors (first: {', '.join(failed[:5])})"
-              f"{'; no entry left in ' + ', '.join(dead) if dead else ''}; above max_failed_frac={max_frac:g}",
-              flush=True)
+              f"{'; by category: ' + detail if over else ''}; above max_failed_frac={max_frac:g}", flush=True)
         sys.exit(INFRA_EXIT)
     if failed:
         print(f"{benchmark}: {len(failed)}/{total} entries hit infrastructure errors; left out of the score "

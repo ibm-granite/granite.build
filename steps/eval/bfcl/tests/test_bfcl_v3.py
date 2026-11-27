@@ -241,7 +241,24 @@ def test_child_check_failures_fails_a_category_left_empty(tmp_path):
     (d / "BFCL_v3_java_result.json").unlink()
     (d / "BFCL_v3_simple_result.json").write_text(json.dumps({"id": "simple_0", "result": INFRA}) + "\n")
     assert bfcl_v3_child.check_failures(root, "fc", 0.05) == {"simple_0"}
-    assert bfcl_v3_child.failed_entries(root, "legacy-granite") == ([], 51, [])  # the other handler's results
+    assert bfcl_v3_child.failed_entries(root, "legacy-granite") == ([], 51, {"simple": (0, 50), "java": (0, 1)})  # the other handler's results
+
+
+def test_child_one_category_above_the_fraction_fails_under_the_overall_one(tmp_path):
+    root = tmp_path / "bfcl"
+    d = root / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
+    d.mkdir(parents=True)
+    (root / bfcl_v3_child.TEST_IDS_FILE).write_text(json.dumps(
+        {"simple": [f"simple_{i}" for i in range(200)], "live_simple": [f"live_simple_{i}" for i in range(20)]}))
+    (d / "BFCL_v3_live_simple_result.json").write_text(
+        "".join(json.dumps({"id": f"live_simple_{i}", "result": INFRA}) + "\n" for i in range(2)))
+    by_cat = bfcl_v3_child.failed_entries(root, "fc")[2]
+    assert bfcl_v3_child.over_limit_categories(by_cat, 0.05) == ["live_simple"]
+    assert bfcl_v3_child.over_limit_categories(by_cat, 0.05) == bfcl.over_limit_categories(by_cat, 0.05)
+    with pytest.raises(SystemExit) as err:  # 2/220 overall is under 0.05; live_simple's 2/20 is not
+        bfcl_v3_child.check_failures(root, "fc", 0.05)
+    assert err.value.code == bfcl_v3_child.INFRA_EXIT
+    assert bfcl_v3_child.check_failures(root, "fc", 0.1) == {"live_simple_0", "live_simple_1"}
 
 
 def test_needs_the_side_venv(tmp_path, monkeypatch):

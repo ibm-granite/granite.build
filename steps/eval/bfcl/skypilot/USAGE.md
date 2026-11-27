@@ -50,7 +50,8 @@ An entry whose inference failed for an infrastructure reason (a vLLM 5xx, a refu
 connection, a timeout) is never scored as an answer: resume retries it, and an entry that
 still fails is left out of the score and the run is marked incomplete (`entries_failed`,
 `entries_total`, `incomplete` in `results.json`), as the other infra-dependent families
-do. Above `max_failed_frac` (default 0.05), or with a category that has no entry left,
+do. Above `max_failed_frac` (default 0.05), overall or in any one category (as tau applies it
+per domain), or with a category that has no entry left,
 generate fails, so the target retry resumes it, and the score phase refuses; its message
 names the recovery. A score-only run whose generate target already succeeded needs a new
 build (`gb build start`) with the same `RUN_NAME` and `OUTPUT_ROOT`: a retry or
@@ -80,7 +81,7 @@ steps:
 | `repeats` | `""` (1) | Both versions are a single run. |
 | `workers` | `8` | Concurrent test entries (BFCL `--num-threads`). |
 | `dataset` / `dataset_revision` | `""` | Unused: the data ships inside the pinned bfcl-eval package. |
-| `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups of that version; default `all_scoring` for v4, `all` for v3), `temperature`, `top_p`, `max_tokens` (default: 16,384 or the context left after the prompt, whichever is smaller, as the served vLLM's default; with `handler=legacy-granite`, min(4096, context length − prompt tokens − 2); an explicit value is sent with every request and wins), `max_failed_frac` (default `0.05`: infrastructure-failed entries above this fraction fail the run; below it they are left out of the score and the run is marked incomplete), `include_input_log`; v4 only: `search_mcp_url`; v3 only: `handler` (`fc`, the default, or `legacy-granite`). |
+| `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups of that version; default `all_scoring` for v4, `all` for v3), `temperature`, `top_p`, `max_tokens` (default: 16,384 or the context left after the prompt, whichever is smaller, as the served vLLM's default; with `handler=legacy-granite`, min(4096, context length − prompt tokens − 2); an explicit value is sent with every request and wins), `max_failed_frac` (default `0.05`: infrastructure-failed entries above this fraction, overall or in any one category, fail the run; below it they are left out of the score and the run is marked incomplete), `include_input_log`; v4 only: `search_mcp_url`; v3 only: `handler` (`fc`, the default, or `legacy-granite`). |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
 | `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
