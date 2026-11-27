@@ -1081,6 +1081,33 @@ def test_failed_and_empty_docs_are_left_out_of_the_score(tmp_path, monkeypatch):
     assert outcome["responses_failed"] == 2 and outcome["incomplete"] is True
 
 
+def test_the_headline_n_is_the_selection_not_a_repeats_scored_docs(tmp_path, monkeypatch):
+    rows = _gsm8k_rows([("#### 4", 1.0), ("", 0.0)])
+    outcome, _ = _mixed_run(
+        tmp_path, monkeypatch, [_gsm8k()], samples={"gsm8k": rows}, max_failed_frac="1"
+    )
+    assert outcome["n"] == 2 + 2  # the harness's effective sizes (fake: 2 each)
+    assert outcome["per_repeat"][0]["n"] == 2 + 1  # hellaswag 2, gsm8k 1 of 2 scored
+    assert outcome["per_task"]["gsm8k"]["n"] == 1
+
+
+@pytest.mark.parametrize(
+    ("resps", "empty"), [([["", ""]], True), ([["", "#### 4"]], False), ([["#### 4", ""]], False)]
+)
+def test_a_doc_is_empty_only_when_every_response_is(resps, empty):
+    # repeats in a task yaml give a doc several generations
+    counts = generic.response_counts({"t": [{"doc_id": 0, "resps": resps}]}, {"t"})
+    assert counts["t"]["empty"] == int(empty)
+
+
+def test_the_none_answer_placeholder_counts_as_empty(monkeypatch):
+    monkeypatch.setenv("LMEVAL_MODEL_NONE_ANSWER_PLACEHOLDER", "[none]")
+    assert generic.is_empty_response("[none]")
+    assert not generic.is_empty_response("[none] but more")
+    counts = generic.response_counts({"t": [{"doc_id": 0, "resps": [["[none]"]]}]}, {"t"})
+    assert counts["t"]["empty"] == 1
+
+
 def test_a_metric_that_does_not_average_cannot_leave_docs_out(tmp_path, monkeypatch):
     gsm8k = _gsm8k()
     gsm8k.config.metric_list = [{"metric": "exact_match", "aggregation": "corpus_bleu"}]
@@ -1226,6 +1253,22 @@ def test_seed_like_simple_evaluate_seeds_numpy_too():
     first = (random.random(), numpy.random.random())
     generic.seed_like_simple_evaluate(3)
     assert (random.random(), numpy.random.random()) == first
+    # as simple_evaluate: random takes the run's seed, numpy lm-eval's 1234
+    assert first[0] == random.Random(3).random()
+    assert first[1] == numpy.random.RandomState(1234).random_sample()
+    generic.seed_like_simple_evaluate(4)
+    assert numpy.random.random() == first[1]  # numpy does not follow the run seed
+
+
+def test_response_counts_sum_over_repeats(tmp_path, monkeypatch):
+    """repeats=2: the failure threshold sees every repeat's failures, not
+    the last one's."""
+    rows = _gsm8k_rows([("#### 4", 1.0), ("", 0.0), ("#### 6", 1.0), ("#### 7", 1.0)])
+    outcome, _ = _mixed_run(
+        tmp_path, monkeypatch, [_gsm8k()], samples={"gsm8k": rows}, repeats=2, max_failed_frac="1"
+    )
+    assert outcome["responses"]["gsm8k"] == {"docs": 8, "empty": 2, "errors": 0}
+    assert outcome["responses_failed"] == 2 and outcome["responses_total"] == 8
 
 
 def test_failed_requests_are_dropped_in_both_modes(tmp_path, monkeypatch):

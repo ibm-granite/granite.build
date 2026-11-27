@@ -528,9 +528,8 @@ def failed_docs(samples: dict, generation_tasks: set[str]) -> dict[str, dict[str
         empty: set = set()
         errors: set = set()
         for index, row in enumerate(rows):
+            # every row of a doc carries the same raw resps: the sets count it once
             doc = row.get("doc_id", ("row", index))
-            if doc in seen:
-                continue
             seen.add(doc)
             resps = [r for choice in row.get("resps") or [] for r in choice]
             if task in generation_tasks:
@@ -626,6 +625,7 @@ def leave_out_failed(
         if isinstance(entry["n"], int):
             n += entry["n"]
     summary["value"] = sum(values) / len(values) if values else None
+    summary["n_selected"] = summary["n"]  # the harness's sizes, before any left out
     summary["n"] = n
 
 
@@ -1136,7 +1136,9 @@ class LMEval(Benchmark):
         values = [r["value"] for r in per_repeat if r["value"] is not None]
         return {
             "value": sum(values) / len(values) if values else None,
-            "n": per_repeat[0]["n"],
+            # the selection's size (the same every repeat); each repeat's own
+            # n counts the docs it scored
+            "n": per_repeat[0]["n_selected"],
             "tasks": self.task_list,
             "leaf_tasks": sorted(task_objects),
             "groups": sorted(groups),
