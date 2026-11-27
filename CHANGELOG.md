@@ -561,3 +561,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Reflected XSS on the legacy SSO `/api/v1/auth/callback` page (#723).** The provider's
   `error_description` was put into the HTML unescaped; it is now escaped.
+- **The gbserver image's wandb moves from 0.27.2 to 0.31.2 (#787).** 0.27.2's bundled
+  `wandb-core` binary has 49 trivy findings, 24 of them HIGH; 0.31.2's has none. SkyPilot
+  still caps `click<8.2`, so wandb is still installed with `--no-deps`, now also with
+  `--require-hashes` from `requirements-image-wandb.txt`. Its new `cwevals` requirement (a
+  pre-release that wandb imports only to log CES eval tables) is left out. The image build
+  now fails on a broken `import wandb, sky` and on any unmet requirement other than wandb's
+  `click>=8.2` floor and `cwevals`. wandb 0.31.2 verifies the API key over the network at
+  `wandb.login` by default and raises if the server is unreachable, so the lineage service
+  and indexer now pass `verify=False`, as 0.27.2 did by default.
