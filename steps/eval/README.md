@@ -107,18 +107,26 @@ exists on the curated ids: `bfcl`'s `categories=` (`bfcl/bfcl-multiturn`,
 `bird`, `ifbench` and `judged/gdpval` (the recipes' `DATASET` / `DATASET_REVISION`
 parameters).
 
-**Run dirs.** A bridge runs many benchmarks through one id, so a run that
-selects gets a dir named after every selection value:
-`$OUTPUT_ROOT/$RUN_NAME/<id>@<key>-<value>[@<key>-<value>...]`. The keys, in this
-fixed order: the options `benchmark=`, `service=`, `task_suite=`, `domains=`,
-`categories=`, `tasks=`, `exclude=`, `instances=`, `split=` (a repeated option
-counts once, its last value, as the harness reads it), then the dataset-pinned
-bridges' (`swebench`, `terminal-bench`, `nemoskills`) `dataset` and
-`dataset_revision`. So `lm-eval@tasks-hellaswag`,
-`tau3@domains-airline+2Cretail`, `mcpmark@service-filesystem@task_suite-easy`.
+**Run dirs.** A run gets a dir named after everything in it that can change
+its results, so two runs that differ never share one (nor resume into each
+other's caches): `$OUTPUT_ROOT/$RUN_NAME/<id>@<key>-<value>[@<key>-<value>...]`.
+First the selection options in this fixed order: `benchmark=`, `service=`,
+`task_suite=`, `task_split=`, `domains=`, `categories=`, `tasks=`, `exclude=`,
+`instances=`, `split=`; then the data, `dataset` and `dataset_revision`, when
+either is set (a dataset-pinned bridge's required pin, or a swap on a curated
+id); then every other option, sorted by key: the protocol options (lm-eval's
+`mode=`, `num_fewshot=`, `gen_kwargs=`, `thinking=`, `metric=`; sampling, agent,
+judge and step-limit settings). Only operational options leave the name alone:
+`max_failed_frac`, `max_retries`, `retry_delay`, `request_timeout`,
+`grade_workers`, `comet_batch_size` and the endpoint addresses
+(`judge_base_url`, `search_mcp_url`, `critpt_api_url`, `critpt_api_key_env`).
+A repeated option counts once, its last value, as the harness reads it. So
+`lm-eval@tasks-hellaswag`, `tau3@domains-airline+2Cretail`,
+`mcpmark@service-filesystem@task_suite-easy`, `lm-eval@tasks-gsm8k@thinking-on`.
 No curated id contains `@`, so a bridge run never shares a curated recipe's dir
-(`tau3@domains-airline` is not `tau3-airline`); no key contains `-`, so the
-first `-` ends the key. Each value is escaped into one path segment:
+(`tau3@domains-airline` is not `tau3-airline`). A key is escaped like a value
+and its `-` becomes `+2D`, so the first `-` ends the key. Each value is
+escaped into one path segment:
 `[A-Za-z0-9._-]` stay, every other byte becomes `+XX` (hex: a `/` is `+2F`, a
 comma `+2C`, a `+` itself `+2B`), so distinct selections never map to one dir.
 Every character of the name is one a Hydra override value takes unquoted
@@ -126,10 +134,10 @@ Every character of the name is one a Hydra override value takes unquoted
 break its parser or make a sweep), none is a shell glob character, and there is
 no `%`. A name over 200 bytes is cut to 180 plus `@h-` and 16 hex of its sha256
 (ns-math-500's URL pin is). The options are read without glob expansion.
-A run without a selection keeps `$OUTPUT_ROOT/$RUN_NAME/<id>`: a curated recipe that
-passes none of those options, a dataset swap on a curated id included. The curated
-recipes that do select (the bfcl `categories=` recipes, `bfcl-v4@categories-live`)
-get the selection form like the bridges.
+A run with none of these keeps `$OUTPUT_ROOT/$RUN_NAME/<id>`. A curated recipe
+that passes options or a dataset swap gets the named form too (the bfcl
+`categories=` recipes, a `judge_model=` or `thinking=` option, a `DATASET`
+swap), so it does not resume into a dir an older run wrote under `<id>`.
 
 ## The warm HF cache
 

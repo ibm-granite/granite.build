@@ -166,9 +166,11 @@ environment_configs:
                 non-empty strings): 1/true/yes/on turn it on, empty/0/false/no/off leave
                 it off, anything else fails the run. -#}
             {%- set offline_word = (config.hf_offline | string | trim | lower) if config.hf_offline is not none else "" -%}
-            {%- set offline = offline_word in ("1", "true", "yes", "on") -%}
+            {%- set on_words = ("1", "true", "yes", "on") -%}
+            {%- set off_words = ("", "0", "false", "no", "off") -%}
+            {%- set offline = offline_word in on_words -%}
             {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
-            {% if offline_word not in ("", "0", "false", "no", "off", "1", "true", "yes", "on") %}echo "granite: hf_offline must be 1, true, yes or on (offline), or empty, 0, false, no or off" >&2; exit 1{% endif %}
+            {% if offline_word not in on_words and offline_word not in off_words %}echo "granite: hf_offline must be 1, true, yes or on (offline), or empty, 0, false, no or off" >&2; exit 1{% endif %}
             {% if offline and not config.hf_home %}echo "granite: hf_offline needs hf_home pointing at a cache warmed by make -C steps/eval prefetch" >&2; exit 1{% endif %}
             {% if offline %}export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1  # warm-cache mode: hub reads hit HF_HOME's cache only, never the hub{% endif %}
 
@@ -186,26 +188,30 @@ environment_configs:
             # run_name defaults to the model_path basename (the same defaulting as
             # served_model_name), so one output_root serves every model.
             if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
-            # The generic bridges run many benchmarks through one id, so a run that
-            # selects (a selection option, or a dataset-pinned bridge's dataset) gets
-            # its own dir, named after EVERY selection value, so two runs that select
-            # differently never share a dir (results.json would overwrite):
+            # A run is named after everything in it that can change its results, so two
+            # runs that differ never share a dir (results.json would overwrite, and a
+            # resume would mix their caches):
             #   <id>@<key>-<value>[@<key>-<value>...]
-            # in a fixed key order (the options below, then a dataset-pinned bridge's
-            # dataset and dataset_revision), e.g. lm-eval@tasks-hellaswag,
-            # tau3@domains-airline+2Cretail, mcpmark@service-filesystem@task_suite-easy.
-            # The @ keeps it apart from every curated id's dir (no id has one), so a
-            # bridge run never lands in a curated recipe's dir. A repeated key takes its
-            # last value, as the harness reads it. No key contains a -, so the first -
-            # ends the key. Each value is escaped into ONE path segment: [A-Za-z0-9._-]
-            # stay, any other byte (a /, a comma, a @, a + itself) becomes +XX (hex), so
-            # distinct values stay distinct. Every character of the name is one a Hydra
-            # override value takes unquoted (NeMo-Skills passes paths as
-            # ++output_file=<path>; = , ~ and the like break its parser or make a sweep),
-            # none is special to a shell glob, and there is no %, which URI handling
-            # could decode. A name over 200 bytes keeps its first 180 and appends @h-
-            # and 16 hex of its sha256 (h is no key). With no selection the dir is the
-            # benchmark id, as for every curated benchmark.
+            # First the selection options in a fixed key order (SELECTION below), then
+            # the data (dataset and dataset_revision, when either is set: a bridge's
+            # required pin or a curated id's swap), then every other option, sorted by
+            # key -- protocol options such as lm-eval's mode, num_fewshot, gen_kwargs,
+            # thinking and metric, sampling, agent and judge settings. Only the
+            # operational options in OPERATIONAL (retries, timeouts of a request, the
+            # failure threshold, endpoint addresses, worker counts) leave the name
+            # alone. E.g. lm-eval@tasks-hellaswag, tau3@domains-airline+2Cretail,
+            # mcpmark@service-filesystem@task_suite-easy, lm-eval@tasks-gsm8k@thinking-on.
+            # The @ keeps it apart from every curated id's dir (no id has one). A
+            # repeated key takes its last value, as the harness reads it. A key is
+            # escaped like a value and its - becomes +2D, so the first - ends the key.
+            # Each value is escaped into ONE path segment: [A-Za-z0-9._-] stay, any
+            # other byte (a /, a comma, a @, a + itself) becomes +XX (hex), so distinct
+            # values stay distinct. Every character of the name is one a Hydra override
+            # value takes unquoted (NeMo-Skills passes paths as ++output_file=<path>;
+            # = , ~ and the like break its parser or make a sweep), none is special to
+            # a shell glob, and there is no %, which URI handling could decode. A name
+            # over 200 bytes keeps its first 180 and appends @h- and 16 hex of its
+            # sha256 (h is no key). With none of these the dir is the benchmark id.
             granite_enc() {
               # byte by byte (LC_ALL=C); no length expansions, whose brace-hash would
               # open a Jinja comment in this template
@@ -219,17 +225,32 @@ environment_configs:
               done
               printf '%s' "$out"
             }
-            SEL=""
-            for key in benchmark service task_suite domains categories tasks exclude instances split; do
-              found=""
+            granite_val() {
+              # the last value of option $1, and 0 if it is set (the harness reads the last)
+              local kv found=1
+              GRANITE_VAL=""
               for kv in "${OPT_WORDS[@]}"; do
-                case "$kv" in "$key"=*) found=1; val="${kv#*=}" ;; esac
+                case "$kv" in "$1"=*) found=0; GRANITE_VAL="${kv#*=}" ;; esac
               done
-              if [ -n "$found" ]; then SEL="$SEL@$key-$(granite_enc "$val")"; fi
+              return $found
+            }
+            SELECTION=" benchmark service task_suite task_split domains categories tasks exclude instances split "
+            OPERATIONAL=" max_failed_frac max_retries retry_delay request_timeout grade_workers comet_batch_size judge_base_url search_mcp_url critpt_api_url critpt_api_key_env "
+            SEL=""
+            for key in $SELECTION; do
+              if granite_val "$key"; then SEL="$SEL@$key-$(granite_enc "$GRANITE_VAL")"; fi
             done
-            {% if config.dataset and config.benchmark in ("swebench", "terminal-bench", "nemoskills") %}
+            {% if config.dataset or config.dataset_revision %}
             SEL="$SEL@dataset-$(granite_enc "{{ config.dataset }}")@dataset_revision-$(granite_enc "{{ config.dataset_revision }}")"
             {% endif %}
+            KEYS="$(for kv in "${OPT_WORDS[@]}"; do case "$kv" in (?*=*) printf '%s\n' "${kv%%=*}" ;; esac; done | LC_ALL=C sort -u)"
+            while IFS= read -r key; do
+              [ -n "$key" ] || continue
+              case "$SELECTION$OPERATIONAL" in (*" $key "*) continue ;; esac
+              granite_val "$key"
+              k="$(granite_enc "$key")"
+              SEL="$SEL@${k//-/+2D}-$(granite_enc "$GRANITE_VAL")"
+            done <<< "$KEYS"
             BENCH_DIR="$BENCHMARK$SEL"
             if [ "$(printf '%s' "$BENCH_DIR" | wc -c)" -gt 200 ]; then
               h="$(printf '%s' "$BENCH_DIR" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"

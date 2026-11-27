@@ -54,7 +54,7 @@ has `details.judge_usage` (tokens, cache hits, estimated cost) and `details.api_
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
 | `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a run that selects (`benchmark=`, `service=`, `task_suite=`, `domains=`, `categories=`, `tasks=`, `exclude=`, `instances=`, `split=`, or a dataset-pinned bridge's `dataset`) writes `…/<benchmark>@<key>-<value>…` instead, every selection value escaped into one Hydra-safe path segment, e.g. `…/lm-eval@tasks-hellaswag` (see steps/eval/README.md, The generic bridges). |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a run with options that can change its results (a selection such as `tasks=`, `domains=` or `instances=`, a protocol option such as `thinking=` or `num_fewshot=`, or a `dataset` / `dataset_revision`) writes `…/<benchmark>@<key>-<value>…` instead, every value escaped into one Hydra-safe path segment, e.g. `…/lm-eval@tasks-hellaswag@thinking-on`; operational options (retries, request timeouts, `max_failed_frac`, endpoint URLs) do not count (see steps/eval/README.md, Run dirs). |
 | `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N tasks/items (the benchmark's own order). Empty = the full set. |
 | `repeats` | Independent runs per task/item, where the benchmark supports it. Empty = benchmark default (1). |

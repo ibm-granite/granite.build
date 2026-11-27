@@ -124,9 +124,10 @@ caveat the curated benchmarks do not have: the harness's task yamls name their
 datasets but pin no revisions, so a bridge run reads each dataset at the hub's
 current snapshot.
 
-The composed run dir is `$output_root/$run_name/lm-eval@tasks-<tasks>` (every
-selection value, escaped into one path segment, so two bridge recipes scoring one
-model never share an output dir).
+The composed run dir is `$output_root/$run_name/lm-eval@tasks-<tasks>[@<key>-<value>...]`:
+the selection, then every protocol option given (`gen_kwargs=`, `metric=`, `mode=`,
+`num_fewshot=`, `thinking=`, sorted by key), each value escaped into one path
+segment, so two runs that differ in any of them never share an output dir.
 
 Two recipes ship as templates: `recipes/evals/lmeval/hellaswag` (base mode —
 multiple-choice loglikelihood, the leaderboard-standard `metric=acc_norm`) and
@@ -156,7 +157,7 @@ the missing ones.
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a run that selects (`benchmark=`, `service=`, `task_suite=`, `domains=`, `categories=`, `tasks=`, `exclude=`, `instances=`, `split=`, or a dataset-pinned bridge's `dataset`) writes `…/<benchmark>@<key>-<value>…` instead, every selection value escaped into one Hydra-safe path segment, e.g. `…/lm-eval@tasks-hellaswag` (see steps/eval/README.md, The generic bridges). |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a run with options that can change its results (a selection such as `tasks=`, `domains=` or `instances=`, a protocol option such as `thinking=` or `num_fewshot=`, or a `dataset` / `dataset_revision`) writes `…/<benchmark>@<key>-<value>…` instead, every value escaped into one Hydra-safe path segment, e.g. `…/lm-eval@tasks-hellaswag@thinking-on`; operational options (retries, request timeouts, `max_failed_frac`, endpoint URLs) do not count (see steps/eval/README.md, Run dirs). |
 | `run_name` | basename of `model_path` | Run directory under `output_root`. |
 | `limit` | `""` (full set) | **Smoke knob:** first N examples. mmlu-prox-lite orders by (question_id, language), so a small N covers every language; include-44 orders by (in-task index, language), so a small N covers the first languages' tasks (LIMIT=5 sees Albanian's five); lm-eval uses the harness's own per-task first N. |
 | `repeats` | `""` (1) | Repeats of the whole run. mmlu-prox-lite samples afresh at temperature 1.0; include-44 reports pass@1[avg-of-k] with `details.pass_at_k`; lm-eval reports the mean over repeats (no pass@k). |

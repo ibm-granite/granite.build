@@ -173,7 +173,7 @@ def test_siblings_share_one_config_contract(step):
 # ---- hf_offline and the composed run dir, as gbserver renders the run script ----
 
 
-def _run_until_output_dir(step, tmp_path, **config):
+def _run_until_output_dir(step, tmp_path, env_extra=None, **config):
     """Render the run script with gbserver's strict renderer, cut it after the
     output dir is made, and run that head under bash (a stub granite-evals on
     PATH, a cwd holding a file a glob in an option would match). Returns the
@@ -203,6 +203,7 @@ def _run_until_output_dir(step, tmp_path, **config):
         + 'for w in "${OPT_WORDS[@]}"; do echo "OPT=$w"; done\n'
     )
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path)}
+    env.update(env_extra or {})
     return subprocess.run(
         ["bash", "-c", probe], cwd=cwd, env=env, capture_output=True, text=True
     )
@@ -260,20 +261,35 @@ def test_hf_offline_on_words_run_offline(step, tmp_path, word):
     assert _out(proc)["OFF"] == "1"
 
 
-def test_hf_offline_rejects_other_words(step, tmp_path):
+@pytest.mark.parametrize("word", ["maybe", "y", "n", "2", "enabled"])
+def test_hf_offline_rejects_other_words(step, tmp_path, word):
     proc = _run_until_output_dir(
-        step, tmp_path, benchmark="b", hf_offline="maybe", hf_home=str(tmp_path / "c")
+        step, tmp_path, benchmark="b", hf_offline=word, hf_home=str(tmp_path / "c")
     )
     assert proc.returncode == 1
     assert "hf_offline must be" in proc.stderr
     assert not (tmp_path / "out").exists()
 
 
-@pytest.mark.parametrize("options", ["", "limit_langs=en judge_model=self"])
+@pytest.mark.parametrize(
+    "options", ["", "max_retries=3 max_failed_frac=0.1 request_timeout=60"]
+)
 def test_a_curated_benchmark_keeps_its_own_dir(step, tmp_path, options):
-    # No selection option: $OUTPUT_ROOT/$RUN_NAME/<benchmark>, as before the bridges.
+    # No option that can change results: $OUTPUT_ROOT/$RUN_NAME/<benchmark>, as
+    # before the bridges. Operational options (retries, timeouts, the failure
+    # threshold) do not count.
     proc = _run_until_output_dir(step, tmp_path, benchmark="mmlu-x", options=options)
     assert _out(proc)["OUT"] == str(tmp_path / "out" / "model-x" / "mmlu-x")
+
+
+def test_a_curated_benchmarks_options_name_its_dir(step, tmp_path):
+    # A curated recipe that passes options gets a dir named after them, so two
+    # runs with different options never resume into one dir.
+    proc = _run_until_output_dir(
+        step, tmp_path, benchmark="mmlu-x", options="limit_langs=en judge_model=self"
+    )
+    name = Path(_dir(proc)).name
+    assert name == "mmlu-x@judge_model-self@limit_langs-en"
 
 
 HYDRA_SAFE = re.compile(r"[A-Za-z0-9._@+-]+")
@@ -319,11 +335,36 @@ def _dir(proc):
         ("tasks=x exclude=y", "lm-eval@tasks-x@exclude-y"),
         ("instances=^apache__druid", "lm-eval@instances-+5Eapache__druid"),
         ("tasks=a tasks=b", "lm-eval@tasks-b"),  # the harness reads the last
-        ("tasks=hellaswag metric=acc_norm", "lm-eval@tasks-hellaswag"),
+        ("tasks=hellaswag metric=acc_norm", "lm-eval@tasks-hellaswag@metric-acc_norm"),
+        ("tasks=a@b", "lm-eval@tasks-a+40b"),  # an @ in a value is escaped
+        (
+            "domains=airline task_split=test",
+            "lm-eval@task_split-test@domains-airline",
+        ),
+        (
+            "tasks=gsm8k thinking=on mode=chat num_fewshot=5 "
+            "gen_kwargs=temperature=0.6 metric=exact_match,strict-match",
+            "lm-eval@tasks-gsm8k@gen_kwargs-temperature+3D0.6"
+            "@metric-exact_match+2Cstrict-match@mode-chat@num_fewshot-5@thinking-on",
+        ),
+        ("tasks=x thinking=on thinking=off", "lm-eval@tasks-x@thinking-off"),
+        ("tasks=x max_retries=3 max_failed_frac=0.1", "lm-eval@tasks-x"),
+        (
+            "a=0 split=10 instances=9 exclude=8 tasks=7 categories=6 domains=5 "
+            "task_split=4 task_suite=3 service=2 benchmark=1",
+            "lm-eval@benchmark-1@service-2@task_suite-3@task_split-4@domains-5"
+            "@categories-6@tasks-7@exclude-8@instances-9@split-10@a-0",
+        ),
+        ("tasks=x a-b=1 c*=2", "lm-eval@tasks-x@a+2Db-1@c+2A-2"),
+        (
+            "tasks=x step_limit=50 temperature=0.7",
+            "lm-eval@tasks-x@step_limit-50@temperature-0.7",
+        ),
     ],
 )
 def test_a_selection_names_the_dir(step, tmp_path, options, name):
-    # Every selection value, in a fixed key order; other options do not count.
+    # Every selection value in a fixed key order, then every other option
+    # that can change results, sorted by key (operational ones do not count).
     proc = _run_until_output_dir(step, tmp_path, benchmark="lm-eval", options=options)
     assert _dir(proc) == str(tmp_path / "out" / "model-x" / name)
 
@@ -344,6 +385,12 @@ def test_distinct_selections_never_share_a_dir(step, tmp_path):
         ("lm-eval", "tasks=a domains=b"),
         ("lm-eval", "tasks=a@domains-b"),
         ("lm-eval", "tasks=a-b"),
+        ("lm-eval", "tasks=a@b"),
+        ("lm-eval", "tasks=a+40b"),
+        ("lm-eval", "tasks=a thinking=on"),
+        ("lm-eval", "tasks=a thinking=off"),
+        ("lm-eval", "tasks=a a-b=1"),
+        ("lm-eval", "tasks=a a=b-1"),
         ("mcpmark", "service=filesystem"),
         ("mcpmark", "service=filesystem task_suite=easy"),
         ("mcpmark-filesystem", ""),
@@ -400,7 +447,7 @@ def test_options_over_several_lines_are_all_read(step, tmp_path):
         options="tasks=a metric=m\n  exclude=b\r\n\tsplit=c\n",
     )
     assert _opts(proc) == ["tasks=a", "metric=m", "exclude=b", "split=c"]
-    assert Path(_dir(proc)).name == "lm-eval@tasks-a@exclude-b@split-c"
+    assert Path(_dir(proc)).name == "lm-eval@tasks-a@exclude-b@split-c@metric-m"
 
 
 def test_a_long_selection_is_shortened_but_stays_distinct(step, tmp_path):
@@ -458,16 +505,23 @@ NS_MATH_500_SHA = (
             "SWE-bench/SWE-bench_Verified",
             "x",
             "",
+            "swebench-verified@dataset-SWE-bench+2FSWE-bench_Verified@dataset_revision-x",
+        ),
+        (
             "swebench-verified",
+            "",
+            "abc123",
+            "",
+            "swebench-verified@dataset-@dataset_revision-abc123",
         ),
     ],
 )
 def test_a_dataset_pinned_bridge_names_its_pin(
     step, tmp_path, benchmark, dataset, revision, options, name
 ):
-    # The dataset-pinned bridges' data is a selection too (the bridge's
-    # terminal-bench-2.1 is not the curated terminal-bench-2.1 dir); a curated
-    # id with a dataset swap keeps its dir.
+    # The data is a selection too: a dataset-pinned bridge's (the bridge's
+    # terminal-bench-2.1 is not the curated terminal-bench-2.1 dir), and a
+    # curated id's dataset or revision swap.
     proc = _run_until_output_dir(
         step,
         tmp_path,
@@ -503,3 +557,18 @@ def test_ns_math_500s_dir_is_hydra_safe_and_stable(step, tmp_path):
         "nemoskills@benchmark-math-500@dataset-https+3A+2F+2Fgithub.com"
     )
     assert name[180:183] == "@h-"
+
+
+@pytest.mark.parametrize("workdir", [True, False])
+def test_a_relative_output_dir_is_anchored(step, tmp_path, workdir):
+    # A relative output_dir resolves against $GB_BUILD_WORKDIR (the build's
+    # workdir), else the job's cwd -- never left relative to wherever the
+    # harness later changes directory.
+    wd = tmp_path / "wd"
+    extra = {"GB_BUILD_WORKDIR": str(wd)} if workdir else {}
+    proc = _run_until_output_dir(
+        step, tmp_path, env_extra=extra, benchmark="b", output_dir="rel/x"
+    )
+    base = wd if workdir else tmp_path / "cwd"
+    assert _out(proc)["OUT"] == str(base / "rel" / "x")
+    assert (base / "rel" / "x").is_dir()
