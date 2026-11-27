@@ -1,9 +1,11 @@
 """The bfcl step's FC output budget, decided before ``granite-evals run`` serves the model.
 
-Run by the step template (``python -m granite_evals.benchmarks.bfcl_serving MODEL_PATH
-BASE_URL OPTIONS``). It prints one ``fc_budget=<cap>:<source>`` line, which the template
-passes as an ``--option`` so results.json records the decision, then the extra ``vllm
-serve`` arguments, one per line (none, or the budget).
+Run by the step template in the generate and all phases (``python -m
+granite_evals.benchmarks.bfcl_serving BUDGET_FILE MODEL_PATH BASE_URL OPTIONS``). It writes
+its decision, ``{"fc_budget": "<cap>:<source>"}``, to BUDGET_FILE (the output dir's
+fc_budget.json, which results.json's max_tokens reports in either phase), and prints the
+extra ``vllm serve`` arguments, one per line (none, or the budget). Not an ``--option``:
+the score phase, which serves nothing, would warn that its options differ.
 
 The budget: FC sends no max_tokens, so a checkpoint that loops runs to the end of its
 context, into the client's 600 s timeout, an infrastructure error instead of its (wrong)
@@ -88,7 +90,7 @@ def plan(model_path: str, base_url: str, options: str) -> tuple[str, list[str]]:
 
 
 def describe(record: str | None) -> dict:
-    """results.json's max_tokens record from the fc_budget option."""
+    """results.json's max_tokens record from fc_budget.json's fc_budget."""
     if not record:
         return {"cap": "unknown", "source": "not recorded (granite-evals run outside the bfcl step)"}
     cap, _, source = record.partition(":")
@@ -104,9 +106,9 @@ def describe(record: str | None) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    model_path, base_url, options = (argv + ["", "", ""])[:3]
+    budget_file, model_path, base_url, options = (argv + ["", "", ""])[:4]
     record, args = plan(model_path, base_url, options)
-    print(f"fc_budget={record}")
+    Path(budget_file).write_text(json.dumps({"fc_budget": record}))
     for a in args:
         print(a)
     return 0

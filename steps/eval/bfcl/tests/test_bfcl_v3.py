@@ -140,9 +140,11 @@ def test_generate_then_score(tmp_path, monkeypatch, v3_python):
     monkeypatch.setattr(bfcl_v3.subprocess, "run", _fake_child(tmp_path, seen))
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     opts = {"temperature": "0.001"}
+    (tmp_path / "out").mkdir()  # the step's bfcl_serving records its decision here
+    (tmp_path / "out" / bfcl.FC_BUDGET_FILE).write_text(json.dumps({"fc_budget": "4096:checkpoint-max_new_tokens"}))
     gen = bfcl_v3.BFCLv3(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="generate", options=opts))
     out = gen.run("http://srv/v1", "m")
-    assert "value" not in out and (out["n"], out["missing"]) == (2, 0)
+    assert "value" not in out and (out["n"], out["missing"]) == (2, 0) and "max_tokens" not in out
     assert out["harness_versions"] == {"bfcl-eval": "2025.8.6.2"}
     out = bfcl_v3.BFCLv3(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="score")).run("", "m")
     child = [v3_python, "-I", str(bfcl_v3.CHILD)]
@@ -150,6 +152,7 @@ def test_generate_then_score(tmp_path, monkeypatch, v3_python):
     assert out["value"] == pytest.approx(0.05) and out["n"] == 2 and out["partial"]
     assert out["harness"] == "bfcl-eval==2025.8.6.2" and out["per_category"]["simple"]["total_count"] == 2
     assert out["pass_at_k"]["how"] == "BFCL v3 Overall Acc, one sample"
+    assert out["max_tokens"]["cap"] == 4096 and "generation_config" in out["max_tokens"]["source"]
 
 
 def test_score_with_a_missing_generation_fails(tmp_path, monkeypatch, v3_python):

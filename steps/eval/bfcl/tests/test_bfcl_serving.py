@@ -115,11 +115,15 @@ def test_only_a_file_the_hub_says_is_absent_means_no_config(monkeypatch):
     assert bfcl_serving.plan("ibm-granite/some-model", "", "") == ("unknown:generation_config-unreadable-OSError", [])
 
 
-def test_main_prints_the_record_then_the_arguments(ckpt, capsys):
-    assert bfcl_serving.main([ckpt({}), "", "handler=fc"]) == 0
-    assert capsys.readouterr().out.splitlines() == ["fc_budget=16384:step-default", BUDGET]
-    bfcl_serving.main([ckpt({}), "", "handler=legacy-granite"])
-    assert capsys.readouterr().out.splitlines() == ["fc_budget=none:legacy-granite"]
+def test_main_records_the_decision_and_prints_the_arguments(ckpt, tmp_path, capsys):
+    out = tmp_path / "out" / "fc_budget.json"
+    out.parent.mkdir()
+    assert bfcl_serving.main([str(out), ckpt({}), "", "handler=fc"]) == 0
+    assert capsys.readouterr().out.splitlines() == [BUDGET]
+    assert json.loads(out.read_text()) == {"fc_budget": "16384:step-default"}
+    bfcl_serving.main([str(out), ckpt({}), "", "handler=legacy-granite"])  # a rerun replaces it
+    assert capsys.readouterr().out == ""
+    assert json.loads(out.read_text()) == {"fc_budget": "none:legacy-granite"}
 
 
 @pytest.mark.parametrize("record, cap", [
@@ -131,9 +135,12 @@ def test_describe(record, cap):
     assert out["cap"] == cap and out["source"]
 
 
-def test_the_score_phase_reports_what_generate_recorded(tmp_path):
-    rec = bfcl.budget_record(tmp_path, {"fc_budget": "16384:step-default"}, generating=True)
+def test_both_phases_report_the_recorded_decision(tmp_path):
+    # Generate and score read the step's record from the output dir; nothing comes from an
+    # option (the score phase's options would differ from the generation's).
+    (tmp_path / bfcl.FC_BUDGET_FILE).write_text(json.dumps({"fc_budget": "16384:step-default"}))
+    rec = bfcl.budget_record(tmp_path, {})
     assert rec["cap"] == 16384 and "served default" in rec["source"]
-    assert bfcl.budget_record(tmp_path, {}, generating=False) == rec  # score: no option, the file
-    assert bfcl.budget_record(tmp_path, {"max_tokens": "100"}, generating=False)["cap"] == 100
-    assert bfcl.budget_record(tmp_path / "nowhere", {}, generating=False)["cap"] == "unknown"
+    assert bfcl.budget_record(tmp_path, {"fc_budget": "none:base_url"}) == rec  # not an input any more
+    assert bfcl.budget_record(tmp_path, {"max_tokens": "100"})["cap"] == 100
+    assert bfcl.budget_record(tmp_path / "nowhere", {})["cap"] == "unknown"

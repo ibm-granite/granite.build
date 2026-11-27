@@ -147,6 +147,15 @@ class BFCLv3(Benchmark):
                              f"set {PYTHON_ENV} to a venv with {HARNESS}=={HARNESS_VERSION})")
         return python
 
+    def max_tokens_record(self, handler: str) -> dict[str, Any]:
+        """results.json's max_tokens: fc's is the step's served budget (bfcl.budget_record);
+        legacy-granite sends its own with every request."""
+        if handler == "fc":
+            return budget_record(self.config.output_dir, self.config.options)
+        explicit = self.config.options.get("max_tokens")
+        return {"cap": int(explicit) if explicit else "min(4096, context - prompt - 2)",
+                "source": "legacy-granite, with every request"}
+
     def run(self, base_url: str, served_model_name: str) -> dict[str, Any]:
         if self.repeats != 1:
             raise SystemExit(f"{self.id} is a single-run metric (one BFCL result per test id); use --repeats 1")
@@ -196,9 +205,6 @@ class BFCLv3(Benchmark):
         policy = {**failure_policy(self.id, "entries", len(failed), total, child["max_failed_frac"]),
                   "entries_failed_by_category": {c: f for c, (f, _) in by_cat.items() if f}}
         versions_path = root / HARNESS_VERSIONS
-        budget = (budget_record(root, self.config.options, self.generating) if handler == "fc" else
-                  {"cap": self.config.options.get("max_tokens") and int(self.config.options["max_tokens"])
-                   or "min(4096, context - prompt - 2)", "source": "legacy-granite, with every request"})
         versions = json.loads(versions_path.read_text()) if versions_path.exists() else {}
         if not self.scoring:
             missing = missing_results(root, handler)
@@ -206,8 +212,7 @@ class BFCLv3(Benchmark):
             log.info("%s: generated %d entries, %d without a result, %d with an infrastructure error",
                      self.id, generated, len(missing), len(failed))
             return {"n": generated, "missing": len(missing), "categories": categories, "handler": handler, **policy,
-                    "sampling": child["sampling"] or "checkpoint generation_config", "max_tokens": budget,
-                    "harness_versions": versions}
+                    "sampling": child["sampling"] or "checkpoint generation_config", "harness_versions": versions}
 
         scores = score_dir(root, handler)
         per_category = read_category_scores(scores / registry_name(handler))
@@ -225,7 +230,7 @@ class BFCLv3(Benchmark):
             "harness_versions": versions,
             "handler": {"name": handler, "how": HANDLER_DESCRIPTIONS[handler]},
             "sampling": child["sampling"] or "checkpoint generation_config",
-            "max_tokens": budget,
+            "max_tokens": self.max_tokens_record(handler),
             "categories": categories,
             "partial": self.config.limit is not None,
             **policy,  # entries_failed / entries_total / incomplete: failed entries are left out of the score

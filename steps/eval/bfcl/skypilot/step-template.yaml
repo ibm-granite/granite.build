@@ -196,16 +196,16 @@ environment_configs:
             # FC's output budget (granite_evals.benchmarks.bfcl_serving, USAGE.md): the
             # served vLLM's default max_new_tokens (16384) unless base_url, legacy-granite,
             # an explicit max_tokens or the checkpoint's own generation_config sets the
-            # output length. Its first line is the fc_budget option results.json records;
-            # the rest are vllm serve arguments, ahead of vllm_args. The score phase serves
-            # nothing: it reports the budget its generate phase recorded.
+            # output length. The helper records its decision in the output dir's
+            # fc_budget.json (results.json reports it, in either phase) and prints the vllm
+            # serve arguments, ahead of vllm_args. The score phase serves nothing.
             if [ "{{ config.phase }}" != "score" ]; then
-              BUDGET_OUT=$(python -m granite_evals.benchmarks.bfcl_serving "{{ config.model_path }}" \
-                "{{ config.base_url }}" "{{ config.options }}") || { echo "granite: bfcl_serving failed" >&2; exit 1; }
-              BUDGET=()
-              while IFS= read -r line; do BUDGET+=("$line"); done <<< "$BUDGET_OUT"
-              OPTS+=(--option "${BUDGET[0]}")
-              for a in "${BUDGET[@]:1}"; do VLLM_ARGS+=(--vllm-arg="$a"); done
+              BUDGET_OUT=$(python -m granite_evals.benchmarks.bfcl_serving "$OUTPUT_DIR/fc_budget.json" \
+                "{{ config.model_path }}" "{{ config.base_url }}" "{{ config.options }}") \
+                || { echo "granite: bfcl_serving failed" >&2; exit 1; }
+              while IFS= read -r a; do
+                if [ -n "$a" ]; then VLLM_ARGS+=(--vllm-arg="$a"); fi
+              done <<< "$BUDGET_OUT"
             fi
             for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 

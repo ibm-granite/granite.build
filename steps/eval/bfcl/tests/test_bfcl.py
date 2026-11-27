@@ -321,14 +321,18 @@ def test_generate_then_score(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(bfcl.subprocess, "run", _fake_child(tmp_path, seen))
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    (tmp_path / "out").mkdir()  # the step's bfcl_serving records its decision here
+    (tmp_path / "out" / bfcl.FC_BUDGET_FILE).write_text(json.dumps({"fc_budget": "16384:step-default"}))
     gen = bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="generate")).run("http://srv/v1", "m")
     assert "value" not in gen and (gen["n"], gen["missing"]) == (2, 0) and gen["web_search"] == {"calls": 4}
+    assert "max_tokens" not in gen  # fc_budget.json is the record; generation.json does not repeat it
     assert not (tmp_path / "out" / "bfcl" / "score").exists()
     out = bfcl.BFCLv4(RunConfig(model="m", output_dir=tmp_path / "out", limit=2, phase="score")).run("", "m")
     # score: no endpoint in the child's environment; the search stats are generation's
     assert seen == [("generate", "http://srv/v1"), ("score", None)]
     assert out["value"] == pytest.approx(0.05) and out["n"] == 2
     assert out["web_search_backend"]["calls"] == 4
+    assert out["max_tokens"]["cap"] == 16384 and "served default" in out["max_tokens"]["source"]
 
 
 def test_score_with_a_missing_generation_fails(tmp_path, monkeypatch):
