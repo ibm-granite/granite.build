@@ -1,11 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""ClearML / W&B experiment tracking: ONE place that decides whether either backend is on, and why.
+"""ClearML / W&B experiment tracking: ONE place that decides whether a backend is on, and why.
 
 THE RULES THIS ENCODES (as specified for this project):
-  * ClearML is the DEFAULT backend. W&B is offered as an OPTIONAL extra.
-  * A backend is enabled only with a COMPLETE config -- project, and for W&B also entity.
-  * No credentials present -> that backend is not used.
+  * ONE tool per run, chosen by `tracking_tool`: "wandb", "clearml", or empty / "none" (off).
+    Off is the default. The two tools are never on together.
+  * Setting another tool's keys, or any tool's keys without choosing a tool, is refused: it is
+    an expressed intent to track that the config does not say how to honour.
+  * The chosen tool is enabled only with a COMPLETE config -- project, and for W&B also entity.
+  * Each tool talks to its PUBLIC server unless the user names another: W&B to
+    https://api.wandb.ai (wandb >= 0.31's own default is https://api.forge.coreweave.com), and
+    ClearML to https://api.clear.ml / https://app.clear.ml / https://files.clear.ml. A server
+    the user set -- in the environment, or in the tool's own config file -- is never replaced.
+  * No credentials present -> the tool is not used. They are looked up the way the tool itself
+    looks them up, against the server it will talk to.
   * The run name may be omitted, and is then auto-generated from the build yaml.
 
 WHY A MODULE AND NOT A FEW LINES IN gold.py. Two callers need the same answer: the launcher
@@ -54,14 +62,18 @@ ClearML's third coordinate is established by the same check that answers "is a k
 and inventing a `clearml_entity` field would mean shipping a field that does nothing. FLAGGED
 FOR HEW rather than silently decided, in HANDOFF.md.
 
-CREDENTIALS ARE NOT READ, ONLY DETECTED. This module never opens a secret to look at its value;
-it establishes presence and reports which source supplied it. A tracking key must not end up in
-a log line, and the only way to guarantee that is to never hold it.
+CREDENTIALS ARE DETECTED, NEVER REPORTED. This module establishes presence and reports which
+source supplied it; a key never ends up in a log line or a return value. The ClearML key pair
+is matched by a pattern without being captured. The W&B netrc entry is parsed with the stdlib
+`netrc` module, as wandb itself parses it, so the password passes through that parser; it is
+tested for being non-empty and dropped.
 """
 
 from __future__ import annotations
 
+import configparser
 import hashlib
+import netrc as _netrc
 import os
 import re
 from dataclasses import dataclass, field
@@ -69,12 +81,13 @@ from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
 
-# The config surface. These names are fields on gold.py's `CustomArguments`, and this tuple is
-# the single source of truth for them: the launcher's preflight reads the yaml through THIS
-# module, so a field added here needs no second edit in bash.
+# The config surface. These names are fields on gold.py's and sft.py's `CustomArguments`, and
+# this tuple is the single source of truth for them: the steps' renderers emit these keys, and
+# gold.py/sft.py read every name listed here off their parsed dataclasses.
+TOOL_FIELD = "tracking_tool"
 CLEARML_CONFIG_FIELDS = ("clearml_project", "clearml_run_name")
 WANDB_CONFIG_FIELDS = ("wandb_entity", "wandb_project", "wandb_run_name")
-ALL_CONFIG_FIELDS = CLEARML_CONFIG_FIELDS + WANDB_CONFIG_FIELDS
+ALL_CONFIG_FIELDS = (TOOL_FIELD,) + CLEARML_CONFIG_FIELDS + WANDB_CONFIG_FIELDS
 
 # What must be present for a backend to be COMPLETE. The run-name fields are deliberately absent:
 # they are auto-fillable, which is the whole point of auto_run_name() below.
@@ -83,9 +96,19 @@ REQUIRED = {
     "wandb": ("wandb_entity", "wandb_project"),
 }
 
-# ClearML is first because it is the default backend; the order is also the order of
-# `report_to`, which is the order the callbacks run in.
+# The values `tracking_tool` accepts. "" and "none" both mean off.
 BACKENDS = ("clearml", "wandb")
+TOOL_OFF = ("", "none")
+OWN_FIELDS = {"clearml": CLEARML_CONFIG_FIELDS, "wandb": WANDB_CONFIG_FIELDS}
+
+# The servers each tool reaches unless the user names another (see resolve()).
+WANDB_DEFAULT_BASE_URL = "https://api.wandb.ai"
+CLEARML_DEFAULT_HOSTS = (
+    # (env var, the clearml.conf `api` key that sets the same thing, default)
+    ("CLEARML_API_HOST", "api_server", "https://api.clear.ml"),
+    ("CLEARML_WEB_HOST", "web_server", "https://app.clear.ml"),
+    ("CLEARML_FILES_HOST", "files_server", "https://files.clear.ml"),
+)
 
 
 @dataclass
@@ -404,75 +427,273 @@ def _clean(value) -> str | None:
 _KEY_RE = r'"?%s"?\s*[:=]\s*"?[^"\s]'
 
 
-def clearml_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, str]:
-    """(present, where). Presence only -- the value is never read or returned."""
-    if environ.get("CLEARML_API_ACCESS_KEY") and environ.get("CLEARML_API_SECRET_KEY"):
-        return True, "CLEARML_API_ACCESS_KEY/SECRET_KEY in the environment"
-    conf = environ.get("CLEARML_CONFIG_FILE")
-    candidates = (
-        [Path(conf)] if conf else [home / "clearml.conf", home / ".clearml.conf"]
-    )
-    for c in candidates:
+def _truthy(value) -> bool:
+    """The strings both tools read as true from the environment."""
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y", "t"}
+
+
+# ---- ClearML ---------------------------------------------------------------------------------
+#
+# What clearml 2.1.12 reads, in its own order (backend_config/defs.py, backend_api/session):
+#   * credentials: CLEARML_API_ACCESS_KEY + CLEARML_API_SECRET_KEY (or the TRAINS_* aliases), else
+#     `api.credentials` in its config file;
+#   * the config file: CLEARML_CONFIG_FILE (or TRAINS_CONFIG_FILE) if set, and then NO other;
+#     otherwise ~/trains.conf and ~/clearml.conf. Not ~/.clearml.conf, which an earlier version of
+#     this check also accepted and clearml never reads;
+#   * the servers: CLEARML_API_HOST / CLEARML_WEB_HOST / CLEARML_FILES_HOST (or TRAINS_*), else
+#     `api.api_server` / `api.web_server` / `api.files_server` in the config file, else
+#     https://api.clear.ml, https://app.clear.ml and https://files.clear.ml (session.py).
+#   * offline: CLEARML_OFFLINE_MODE (or TRAINS_OFFLINE_MODE).
+
+
+def _env2(environ: Mapping[str, str], name: str) -> str:
+    """A CLEARML_* variable, or its TRAINS_* alias, as clearml's EnvEntry reads them."""
+    return (
+        environ.get(name) or environ.get("TRAINS_" + name[len("CLEARML_") :]) or ""
+    ).strip()
+
+
+def clearml_config_files(environ: Mapping[str, str], home: Path) -> list[Path]:
+    override = _env2(environ, "CLEARML_CONFIG_FILE")
+    if override:
+        return [Path(override).expanduser()]
+    return [home / "trains.conf", home / "clearml.conf"]
+
+
+def _read_confs(environ: Mapping[str, str], home: Path) -> list[tuple[Path, str]]:
+    out = []
+    for c in clearml_config_files(environ, home):
         try:
-            text = c.read_text(errors="replace")
+            out.append((c, c.read_text(errors="replace")))
         except OSError:
             continue
+    return out
+
+
+def clearml_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, str]:
+    """(present, where). Presence only -- the value is never captured or returned."""
+    if _env2(environ, "CLEARML_API_ACCESS_KEY") and _env2(
+        environ, "CLEARML_API_SECRET_KEY"
+    ):
+        return True, "CLEARML_API_ACCESS_KEY/SECRET_KEY in the environment"
+    for c, text in _read_confs(environ, home):
         # Presence of a non-empty access_key/secret_key pair. Deliberately crude: this is a
         # HOCON file and parsing it properly would mean holding the secret.
         if re.search(_KEY_RE % "access_key", text) and re.search(
             _KEY_RE % "secret_key", text
         ):
             return True, f"{c}"
-    return False, "no CLEARML_API_* env vars and no clearml.conf with a key pair"
+    files = " or ".join(str(c) for c in clearml_config_files(environ, home))
+    return False, f"no CLEARML_API_ACCESS_KEY/SECRET_KEY and no key pair in {files}"
 
 
-# wandb >= 0.31's default server, and the W&B API host behind each CoreWeave Forge host
-# (wandb/sdk/lib/urls.py, DEFAULT_BASE_URL and FORGE_HOSTS, in wandb 0.31.2).
-WANDB_DEFAULT_BASE_URL = "https://api.forge.coreweave.com"
+def clearml_servers(
+    environ: Mapping[str, str], home: Path
+) -> tuple[dict[str, str], str]:
+    """(env vars to set, a description of the server in use).
+
+    The public servers are set only for what the user left unset. Once the API server is set
+    anywhere -- the environment or a config file -- nothing is added: clearml derives the web
+    and files servers from it, and a public default beside a private API server would send
+    uploads to the wrong place.
+    """
+    confs = _read_confs(environ, home)
+
+    def configured(var: str, key: str) -> str | None:
+        if _env2(environ, var):
+            return var
+        for c, text in confs:
+            # A non-empty `api_server: ...` / `"api_server" = "..."`. `host` is clearml's legacy
+            # spelling of api_server, so it counts too.
+            keys = (key, "host") if key == "api_server" else (key,)
+            if any(
+                re.search(r'(?m)^\s*"?%s"?\s*[:=]\s*"?[^"\s]' % k, text) for k in keys
+            ):
+                return str(c)
+        return None
+
+    api_src = configured("CLEARML_API_HOST", "api_server")
+    if api_src:
+        host = _env2(environ, "CLEARML_API_HOST") or f"the api_server in {api_src}"
+        return (
+            {},
+            f"server={host} (set by {'the environment' if api_src == 'CLEARML_API_HOST' else api_src})",
+        )
+    env = {
+        var: default
+        for var, key, default in CLEARML_DEFAULT_HOSTS
+        if not configured(var, key)
+    }
+    return (
+        env,
+        f"server={CLEARML_DEFAULT_HOSTS[0][2]} (the public ClearML server; default)",
+    )
+
+
+# ---- W&B ---------------------------------------------------------------------------------------
+#
+# What wandb 0.31.2 does, read from its source (sdk/lib/urls.py, sdk/lib/wbauth/host_url.py,
+# wbnetrc.py, authenticate.py) and checked case by case against it (see the parity cases in
+# self_test()):
+#   * the server: WANDB_BASE_URL, else `base_url` in its settings files, else
+#     https://api.forge.coreweave.com. This module puts https://api.wandb.ai in that last place.
+#   * the URL is validated (http/https with a host); a Forge host is accepted only as its
+#     `https://<forge>/api/wandb` proxy form, without a port, which becomes `https://api.<forge>`;
+#     a wandb.ai address must be an `api.` one and https.
+#   * credentials: WANDB_API_KEY, or WANDB_IDENTITY_TOKEN_FILE (both at once is an error);
+#     else the netrc entry for the server's netloc, then, for a Forge server, the entry for the
+#     W&B API host behind it. An entry found but without a password is NOT followed by the
+#     fallback. The netrc file is $NETRC, else ~/.netrc, else ~/_netrc.
+#   * offline: WANDB_MODE=offline (or the older "dryrun").
+#
+# One wandb source is not read here: an `api_key` in a wandb settings file, which wandb uses
+# only after the environment and netrc and only for the same base_url.
+
 WANDB_FORGE_HOSTS = {
     "forge.coreweave.com": "api.wandb.ai",
     "qa.forge.coreweave.com": "api.qa.wandb.ai",
 }
+WANDB_FORGE_API_PATH = "/api/wandb"
 
 
-def wandb_netrc_machines(environ: Mapping[str, str]) -> tuple[str, ...]:
-    """The ~/.netrc machines wandb reads an API key from, in the order it tries them.
+def wandb_normalize_base_url(url: str) -> str:
+    """The server URL wandb would use for `url`, or ValueError where wandb raises one."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(
+            f"{url!r} is not a valid server address (need http(s)://<host>)"
+        )
+    if parts.hostname in WANDB_FORGE_HOSTS:
+        if (
+            parts.scheme == "https"
+            and parts.port is None
+            and parts.path.rstrip("/") == WANDB_FORGE_API_PATH
+        ):
+            url = f"https://api.{parts.hostname}"
+        else:
+            raise ValueError(
+                f"{url!r} is not a valid Forge server address; use https://api.{parts.hostname}"
+            )
+    if re.match(r".*wandb\.ai[^\.]*$", url):
+        if "api." not in url:
+            raise ValueError(
+                f"{url!r} is not a valid server address (use an api. address)"
+            )
+        if not url.startswith("https"):
+            raise ValueError(f"{url!r}: http is not secure, use https")
+    return url.rstrip("/")
 
-    wandb 0.31.2 (wbnetrc.read_netrc_auth_with_source) looks up the netloc of its base_url,
-    then, for a Forge base_url, the W&B API host behind it. `wandb login` writes the entry
-    under the base_url's netloc, so since wandb 0.31 a fresh login writes
-    `machine api.forge.coreweave.com`, while one made before it wrote `machine api.wandb.ai`;
-    wandb accepts either. base_url comes from WANDB_BASE_URL here; a base_url set only in a
-    wandb settings file is not read.
+
+def wandb_forge_upstream(url: str) -> str:
+    """The W&B API URL behind a Forge URL (urls.forge_upstream_url), or the URL as is."""
+    hostname = urlsplit(url).hostname
+    for forge, api in WANDB_FORGE_HOSTS.items():
+        if hostname in (forge, f"api.{forge}", api):
+            return f"https://{api}"
+    return url
+
+
+def wandb_settings_base_url(
+    environ: Mapping[str, str], home: Path
+) -> tuple[str, str] | None:
+    """(base_url, file) from wandb's global settings file, if it sets one.
+
+    That file is $WANDB_CONFIG_DIR/settings, else ~/.config/wandb/settings. The per-directory
+    file (<WANDB_DIR>/wandb/settings) is not read: apply() points WANDB_DIR at output_dir.
     """
-    base = (environ.get("WANDB_BASE_URL") or "").strip() or WANDB_DEFAULT_BASE_URL
-    parts = urlsplit(base)
-    netloc = parts.netloc
-    # urls.normalize_forge_base_url: the Forge proxy form is the api. host.
-    if parts.hostname in WANDB_FORGE_HOSTS and parts.path.rstrip("/") == "/api/wandb":
-        netloc = f"api.{parts.hostname}"
+    cfg_dir = (environ.get("WANDB_CONFIG_DIR") or "").strip()
+    path = (
+        Path(cfg_dir).expanduser() / "settings"
+        if cfg_dir
+        else home / ".config" / "wandb" / "settings"
+    )
+    parser = configparser.ConfigParser()
+    try:
+        parser.read_string(path.read_text(errors="replace"))
+    except (OSError, configparser.Error):
+        return None
+    value = parser.get("default", "base_url", fallback="").strip()
+    return (value, str(path)) if value else None
+
+
+def wandb_base_url(environ: Mapping[str, str], home: Path) -> tuple[str, str]:
+    """(the server URL as configured, where it came from). Not yet validated."""
+    env = (environ.get("WANDB_BASE_URL") or "").strip()
+    if env:
+        return env, "WANDB_BASE_URL"
+    found = wandb_settings_base_url(environ, home)
+    if found:
+        return found[0], found[1]
+    return WANDB_DEFAULT_BASE_URL, "default"
+
+
+def wandb_netrc_path(environ: Mapping[str, str], home: Path) -> Path:
+    """wbnetrc._get_netrc_file_path, with `home` for ~."""
+    if environ.get("NETRC"):
+        return Path(environ["NETRC"]).expanduser()
+    for name in (".netrc", "_netrc"):
+        if (home / name).exists():
+            return home / name
+    return home / ".netrc"
+
+
+def wandb_netrc_machines(url: str) -> tuple[str, ...]:
+    """The netrc machines wandb tries for the (normalized) server URL, in order."""
+    netloc = urlsplit(url).netloc
     machines = [netloc] if netloc else []
-    for forge, upstream in WANDB_FORGE_HOSTS.items():
-        if netloc == f"api.{forge}":
-            machines.append(upstream)
+    upstream = wandb_forge_upstream(url)
+    if upstream != url:
+        machines.append(urlsplit(upstream).netloc)
     return tuple(machines)
 
 
+def wandb_auth_conflict(environ: Mapping[str, str]) -> str | None:
+    if environ.get("WANDB_API_KEY") and environ.get("WANDB_IDENTITY_TOKEN_FILE"):
+        return (
+            "both WANDB_API_KEY and WANDB_IDENTITY_TOKEN_FILE are set; wandb refuses that "
+            "combination at login. Unset one of them."
+        )
+    return None
+
+
 def wandb_credentials(environ: Mapping[str, str], home: Path) -> tuple[bool, str]:
+    """(present, where) for the server wandb will use. Presence only."""
+    if wandb_auth_conflict(environ):
+        return False, "WANDB_API_KEY and WANDB_IDENTITY_TOKEN_FILE are both set"
     if environ.get("WANDB_API_KEY"):
         return True, "WANDB_API_KEY in the environment"
-    netrc = Path(environ["NETRC"]) if environ.get("NETRC") else home / ".netrc"
+    token_file = (environ.get("WANDB_IDENTITY_TOKEN_FILE") or "").strip()
+    if token_file:
+        if Path(token_file).expanduser().is_file():
+            return True, f"WANDB_IDENTITY_TOKEN_FILE ({token_file})"
+        return (
+            False,
+            f"WANDB_IDENTITY_TOKEN_FILE names {token_file}, which is not a file",
+        )
+    raw, _ = wandb_base_url(environ, home)
     try:
-        text = netrc.read_text(errors="replace")
-    except OSError:
-        text = ""
-    machines = wandb_netrc_machines(environ)
-    # `machine <host>` followed by a password somewhere in the same entry.
-    if re.search(r'password\s+"?[^"\s]', text):
+        url = wandb_normalize_base_url(raw)
+    except ValueError as exc:
+        return False, f"invalid server address: {exc}"
+    path = wandb_netrc_path(environ, home)
+    try:
+        parsed = _netrc.netrc(str(path))
+    except FileNotFoundError:
+        parsed = None
+    except (_netrc.NetrcParseError, OSError) as exc:
+        return False, f"cannot read {path}: {getattr(exc, 'msg', exc)}"
+    machines = wandb_netrc_machines(url)
+    if parsed is not None:
         for m in machines:
-            if re.search(rf"machine\s+{re.escape(m)}(?!\S)", text):
-                return True, f"{netrc} (machine {m})"
-    return False, f"no WANDB_API_KEY and no ~/.netrc entry for {' or '.join(machines)}"
+            creds = parsed.authenticators(m)
+            if not creds:
+                continue
+            if not creds[2]:
+                # wandb stops at the first entry it finds, and warns, even if a later one has a key.
+                return False, f"{path}: the entry for {m} has no password"
+            entry = f"machine {m}" if m in parsed.hosts else "default entry"
+            return True, f"{path} ({entry})"
+    return False, f"no WANDB_API_KEY and no {path} entry for {' or '.join(machines)}"
 
 
 def is_offline(backend: str, environ: Mapping[str, str]) -> bool:
@@ -483,11 +704,7 @@ def is_offline(backend: str, environ: Mapping[str, str]) -> bool:
     keeps "offline" from being reported as "no credentials, tracking off".
     """
     if backend == "clearml":
-        return str(environ.get("CLEARML_OFFLINE_MODE", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-        }
+        return _truthy(_env2(environ, "CLEARML_OFFLINE_MODE"))
     return str(environ.get("WANDB_MODE", "")).strip().lower() in {"offline", "dryrun"}
 
 
@@ -573,12 +790,12 @@ def resolve(
     config_path: str | None = None,
     is_installed=None,
 ) -> Plan:
-    """Decide, for each backend, on/off/fatal -- and say why in every case.
+    """Decide on/off/fatal for the chosen tool -- and say why in every case.
 
     `fields` are the CustomArguments tracking values (or the raw yaml keys, for the preflight).
     `hints` are the semantic config keys used only to compose a fallback run name.
     `is_installed` is injectable so the self-test can exercise the ENABLED path in an
-    interpreter where neither package is installed -- which is the state of this venv today.
+    interpreter where neither package is installed -- which is the state of the repo venv.
     Without that seam every happy-path case would abort on the package check and the on-path
     would never be tested at all.
     """
@@ -588,99 +805,135 @@ def resolve(
 
     plan = Plan()
     vals = {k: _clean(fields.get(k)) for k in ALL_CONFIG_FIELDS}
-    generated = auto_run_name(config_path, hints, environ)
-    enabled: list[str] = []
+    tool = (vals.get(TOOL_FIELD) or "").lower()
+    set_keys = {b: sorted(k for k in OWN_FIELDS[b] if vals.get(k)) for b in BACKENDS}
 
-    for backend in BACKENDS:
-        own = CLEARML_CONFIG_FIELDS if backend == "clearml" else WANDB_CONFIG_FIELDS
-        set_here = {k: v for k, v in vals.items() if k in own and v}
-        role = "default" if backend == "clearml" else "optional"
-
-        if not set_here:
-            plan.lines.append(
-                f"tracking : {backend:8s} off      ({role}; nothing configured)"
-            )
-            continue
-
-        missing = [k for k in REQUIRED[backend] if not vals.get(k)]
-        if missing:
+    # ---- Which tool. One, explicitly, or none.
+    if tool not in TOOL_OFF + BACKENDS:
+        plan.fatal.append(
+            f"tracking_tool={vals.get(TOOL_FIELD)!r} is not one of wandb, clearml, none "
+            "(empty means none)."
+        )
+        return plan
+    if tool in TOOL_OFF:
+        stray = [k for b in BACKENDS for k in set_keys[b]]
+        if stray:
             plan.fatal.append(
-                f"{backend} is partially configured: {', '.join(sorted(set_here))} given, but "
-                f"{', '.join(missing)} missing. A partial tracking config is an expressed intent "
-                f"to track that cannot be honoured -- and {backend} would not fail, it would log "
-                f"to its own default project. Complete it or remove it."
-            )
-            continue
-
-        offline = is_offline(backend, environ)
-        if offline:
-            keyed, where = True, "offline mode -- no credentials needed"
-        elif backend == "clearml":
-            keyed, where = clearml_credentials(environ, home)
-        else:
-            keyed, where = wandb_credentials(environ, home)
-
-        run_name = vals.get(f"{backend}_run_name") or generated
-        origin = "from config" if vals.get(f"{backend}_run_name") else "auto-generated"
-
-        if not keyed:
-            # Configured completely, but no key. Per the rules this is OFF, not fatal -- and it
-            # is printed at full volume, because "I configured tracking and got none" is the
-            # exact surprise this line exists to prevent.
-            plan.lines.append(
-                f"tracking : {backend:8s} OFF      config is complete but NO CREDENTIALS ({where}). "
-                f"Not tracking. Would have been: {run_name}"
-            )
-            continue
-
-        enabled.append(backend)
-        if backend == "clearml":
-            plan.env["CLEARML_PROJECT"] = vals["clearml_project"]
-            plan.env["CLEARML_TASK"] = run_name
-            # CHECKPOINT UPLOAD OFF BY DEFAULT, and this is not a preference.
-            #
-            # transformers' ClearMLCallback hardcodes `output_uri=True` and then sets
-            # `_log_model = os.getenv("CLEARML_LOG_MODEL", "TRUE")` -- note the default -- for a
-            # task it created itself (integration_utils.py:1914-1922). `on_save` therefore zips
-            # the ENTIRE checkpoint directory and uploads it, synchronously, inside training
-            # ("Logging checkpoint artifact ... This may take some time"). Under ZeRO-3 that
-            # directory holds sharded optimizer state, so it is tens of GB per save, and every
-            # gold config sets save_steps. Nobody asked for that, and on a preemptable
-            # allocation it is wall-clock spent not training.
-            #
-            # Where it would go, since that was worth checking rather than assuming:
-            # ~/clearml.conf declares no `files_server`, and clearml composes one by appending
-            # :8081 to the app host (session.py:774-806) -- the self-hosted ClearML server's
-            # own host. The public files.clear.ml default applies only when api_server is
-            # clearml's own, which it is not here. So this is not weights leaving the
-            # organization; it is a large synchronous upload to a port whose reachability is
-            # a separate question.
-            #
-            # setdefault semantics, not policy: an operator who exports CLEARML_LOG_MODEL means
-            # it, and Plan.apply() does env.update(), which would otherwise clobber the
-            # deliberate choice. Turning this on for real wants a config key rather than an
-            # export -- deliberately not added until somebody wants the behaviour.
-            if "CLEARML_LOG_MODEL" not in environ:
-                plan.env["CLEARML_LOG_MODEL"] = "FALSE"
-            plan.lines.append(
-                f"tracking : clearml  ON       project={vals['clearml_project']} "
-                f"task={run_name} ({origin}); key: {where}"
+                f"{', '.join(stray)} set, but tracking_tool is not: choose the tool "
+                "(tracking_tool: wandb or clearml) or remove those keys. Nothing is inferred "
+                "from which keys happen to be set."
             )
         else:
-            plan.env["WANDB_ENTITY"] = vals["wandb_entity"]
-            plan.env["WANDB_PROJECT"] = vals["wandb_project"]
-            plan.run_name = run_name
             plan.lines.append(
-                f"tracking : wandb    ON       entity={vals['wandb_entity']} "
-                f"project={vals['wandb_project']} name={run_name} ({origin}); key: {where}"
+                "tracking : off      (tracking_tool not set; nothing configured)"
             )
+        return plan
+    other = next(b for b in BACKENDS if b != tool)
+    if set_keys[other]:
+        plan.fatal.append(
+            f"tracking_tool is {tool}, but {', '.join(set_keys[other])} ({other}'s keys) are set "
+            f"too. One tool per run: remove the {other} keys, or choose {other}."
+        )
+        return plan
 
-    plan.enabled = tuple(enabled)
+    backend = tool
+    missing = [k for k in REQUIRED[backend] if not vals.get(k)]
+    if missing:
+        given = ", ".join(set_keys[backend]) or "no project keys"
+        plan.fatal.append(
+            f"{backend} is partially configured: {given} given, but {', '.join(missing)} "
+            f"missing. A partial tracking config is an expressed intent to track that cannot "
+            f"be honoured -- and {backend} would not fail, it would log to its own default "
+            f"project. Complete it, or set tracking_tool to none."
+        )
+        return plan
+
+    # ---- Which server. The public one unless the user set another (see the module docstring).
+    if backend == "wandb":
+        conflict = wandb_auth_conflict(environ)
+        if conflict:
+            plan.fatal.append(f"wandb: {conflict}")
+            return plan
+        raw, source = wandb_base_url(environ, home)
+        try:
+            url = wandb_normalize_base_url(raw)
+        except ValueError as exc:
+            plan.fatal.append(
+                f"wandb: {exc} (from {source}). wandb would refuse it when the run starts."
+            )
+            return plan
+        if source == "default":
+            plan.env["WANDB_BASE_URL"] = WANDB_DEFAULT_BASE_URL
+            server = f"server={url} (default)"
+        else:
+            server = f"server={url} (set by {source})"
+    else:
+        server_env, server = clearml_servers(environ, home)
+        plan.env.update(server_env)
+
+    # ---- Credentials, for that server.
+    if is_offline(backend, environ):
+        keyed, where = True, "offline mode -- no credentials needed"
+    elif backend == "clearml":
+        keyed, where = clearml_credentials(environ, home)
+    else:
+        keyed, where = wandb_credentials({**environ, **plan.env}, home)
+
+    run_name = vals.get(f"{backend}_run_name") or auto_run_name(
+        config_path, hints, environ
+    )
+    origin = "from config" if vals.get(f"{backend}_run_name") else "auto-generated"
+
+    if not keyed:
+        # Configured completely, but no key. Per the rules this is OFF, not fatal -- and it
+        # is printed at full volume, because "I configured tracking and got none" is the
+        # exact surprise this line exists to prevent. The server env is dropped with it.
+        plan.env.clear()
+        plan.lines.append(
+            f"tracking : {backend:8s} OFF      config is complete but NO CREDENTIALS ({where}); "
+            f"{server}. Not tracking. Would have been: {run_name}"
+        )
+        return plan
+
+    if backend == "clearml":
+        plan.env["CLEARML_PROJECT"] = vals["clearml_project"]
+        plan.env["CLEARML_TASK"] = run_name
+        # CHECKPOINT UPLOAD OFF BY DEFAULT, and this is not a preference.
+        #
+        # transformers' ClearMLCallback hardcodes `output_uri=True` and then sets
+        # `_log_model = os.getenv("CLEARML_LOG_MODEL", "TRUE")` -- note the default -- for a
+        # task it created itself (integration_utils.py:1914-1922). `on_save` therefore zips
+        # the ENTIRE checkpoint directory and uploads it, synchronously, inside training
+        # ("Logging checkpoint artifact ... This may take some time"). Under ZeRO-3 that
+        # directory holds sharded optimizer state, so it is tens of GB per save, and every
+        # gold config sets save_steps. Nobody asked for that, and on a preemptable
+        # allocation it is wall-clock spent not training. With the public files server as
+        # the default, it would also be checkpoints leaving for files.clear.ml.
+        #
+        # setdefault semantics, not policy: an operator who exports CLEARML_LOG_MODEL means
+        # it, and Plan.apply() does env.update(), which would otherwise clobber the
+        # deliberate choice. Turning this on for real wants a config key rather than an
+        # export -- deliberately not added until somebody wants the behaviour.
+        if "CLEARML_LOG_MODEL" not in environ:
+            plan.env["CLEARML_LOG_MODEL"] = "FALSE"
+        plan.lines.append(
+            f"tracking : clearml  ON       project={vals['clearml_project']} "
+            f"task={run_name} ({origin}); {server}; key: {where}"
+        )
+    else:
+        plan.env["WANDB_ENTITY"] = vals["wandb_entity"]
+        plan.env["WANDB_PROJECT"] = vals["wandb_project"]
+        plan.run_name = run_name
+        plan.lines.append(
+            f"tracking : wandb    ON       entity={vals['wandb_entity']} "
+            f"project={vals['wandb_project']} name={run_name} ({origin}); {server}; key: {where}"
+        )
+    plan.enabled = (backend,)
 
     # An enabled backend whose package is absent is fatal, and deliberately so. transformers
-    # would raise from inside the callback anyway; catching it here means the launch dies in
-    # the preflight instead of after the allocation. It is NOT the same condition as "no key":
-    # a missing key is an unconfigured environment, a missing package is a broken one.
+    # would raise from inside the callback anyway; catching it here means the launch dies
+    # before the trainer is built. It is NOT the same condition as "no key": a missing key is
+    # an unconfigured environment, a missing package is a broken one.
     if is_installed is None:
 
         def is_installed(name: str) -> bool:
@@ -688,13 +941,12 @@ def resolve(
 
             return importlib.util.find_spec(name) is not None
 
-    for b in list(plan.enabled):
-        if not is_installed(b):
-            plan.fatal.append(
-                f"{b} is configured, credentialed and enabled, but the `{b}` package is not "
-                f"installed in this interpreter. Training would proceed UNTRACKED, which is the "
-                f"failure this config exists to prevent. Install it or remove the {b}_* keys."
-            )
+    if not is_installed(backend):
+        plan.fatal.append(
+            f"{backend} is configured, credentialed and enabled, but the `{backend}` package "
+            f"is not installed in this interpreter. Training would proceed UNTRACKED, which is "
+            f"the failure this config exists to prevent. Install it or set tracking_tool to none."
+        )
     return plan
 
 
@@ -750,15 +1002,15 @@ def self_test() -> int:
     # 1. Nothing configured. The default-off case, which must be silent-but-reported, not fatal.
     p = resolve({}, environ={}, home=Path("/nonexistent"), is_installed=yes)
     check(
-        "nothing configured -> both off, no fatal",
-        p.enabled == () and not p.fatal and len(p.lines) == 2,
+        "nothing configured -> off, no fatal",
+        p.enabled == () and not p.fatal and len(p.lines) == 1,
         f"{p.enabled} {p.fatal}",
     )
 
     # 2. ClearML complete, key in env. The default backend on its happy path.
     env = {"CLEARML_API_ACCESS_KEY": "x", "CLEARML_API_SECRET_KEY": "y"}
     p = resolve(
-        {"clearml_project": "distill"},
+        {"tracking_tool": "clearml", "clearml_project": "distill"},
         environ=env,
         home=Path("/nonexistent"),
         config_path="/c/granite-4.1-3b_onpolicy_node2.yaml",
@@ -776,7 +1028,7 @@ def self_test() -> int:
     # 3. Partial: a run name but no project. Must ABORT, because ClearML would silently use its
     #    own default project instead of failing.
     p = resolve(
-        {"clearml_run_name": "mine"},
+        {"tracking_tool": "clearml", "clearml_run_name": "mine"},
         environ=env,
         home=Path("/nonexistent"),
         is_installed=yes,
@@ -792,7 +1044,7 @@ def self_test() -> int:
 
     # 4. Partial the other way round, on the backend where entity is real.
     p = resolve(
-        {"wandb_entity": "ibm"},
+        {"tracking_tool": "wandb", "wandb_entity": "ibm"},
         environ={"WANDB_API_KEY": "k"},
         home=Path("/nonexistent"),
         is_installed=yes,
@@ -806,7 +1058,12 @@ def self_test() -> int:
     # 5. W&B complete. Note run_name lands on the PLAN (for training_args.run_name), not in env --
     #    the asymmetry the docstring describes.
     p = resolve(
-        {"wandb_entity": "ibm", "wandb_project": "distill", "wandb_run_name": "r1"},
+        {
+            "tracking_tool": "wandb",
+            "wandb_entity": "ibm",
+            "wandb_project": "distill",
+            "wandb_run_name": "r1",
+        },
         environ={"WANDB_API_KEY": "k"},
         home=Path("/nonexistent"),
         is_installed=yes,
@@ -824,7 +1081,7 @@ def self_test() -> int:
     # 6. Complete but unkeyed -> off, NOT fatal, and loud. This is the specified behaviour and
     #    the one most likely to be quietly mis-implemented as either fatal or silent.
     p = resolve(
-        {"clearml_project": "distill"},
+        {"tracking_tool": "clearml", "clearml_project": "distill"},
         environ={},
         home=Path("/nonexistent"),
         is_installed=yes,
@@ -837,7 +1094,7 @@ def self_test() -> int:
 
     # 7. Offline mode needs no key, so it must NOT be reported as unkeyed.
     p = resolve(
-        {"clearml_project": "d"},
+        {"tracking_tool": "clearml", "clearml_project": "d"},
         environ={"CLEARML_OFFLINE_MODE": "1"},
         home=Path("/nonexistent"),
         is_installed=yes,
@@ -848,7 +1105,7 @@ def self_test() -> int:
         f"{p.lines}",
     )
     p = resolve(
-        {"wandb_entity": "e", "wandb_project": "p"},
+        {"tracking_tool": "wandb", "wandb_entity": "e", "wandb_project": "p"},
         environ={"WANDB_MODE": "offline"},
         home=Path("/nonexistent"),
         is_installed=yes,
@@ -861,7 +1118,11 @@ def self_test() -> int:
 
     # 8. A name in the config beats the generated one, and says so.
     p = resolve(
-        {"clearml_project": "d", "clearml_run_name": "explicit"},
+        {
+            "tracking_tool": "clearml",
+            "clearml_project": "d",
+            "clearml_run_name": "explicit",
+        },
         environ=env,
         home=Path("/nonexistent"),
         config_path="/c/some_config.yaml",
@@ -947,7 +1208,7 @@ def self_test() -> int:
     # 12. Enabled + package absent -> FATAL. Distinct from the no-key case above: this one refuses
     #     to train, because the config is fully honoured except by the interpreter.
     p = resolve(
-        {"clearml_project": "d"},
+        {"tracking_tool": "clearml", "clearml_project": "d"},
         environ=env,
         home=Path("/nonexistent"),
         is_installed=no,
@@ -1012,19 +1273,23 @@ def self_test() -> int:
             "netrc entry for api.wandb.ai is detected", ok and ".netrc" in where, where
         )
         # wandb >= 0.31's `wandb login` writes its default server's host, not api.wandb.ai.
+        # That entry is credentials only when the run talks to Forge...
         (h / ".netrc").write_text(
             "machine api.forge.coreweave.com\n  login user\n  password abc123\n"
         )
-        ok, where = wandb_credentials({}, h)
+        ok, where = wandb_credentials(
+            {"WANDB_BASE_URL": "https://api.forge.coreweave.com"}, h
+        )
         check(
-            "netrc entry for api.forge.coreweave.com is detected",
+            "netrc entry for api.forge.coreweave.com is detected for a Forge server",
             ok and "api.forge.coreweave.com" in where,
             where,
         )
-        # ...but not when WANDB_BASE_URL names api.wandb.ai: wandb then reads only that entry.
+        # ...and not for api.wandb.ai, this module's default: wandb then reads only that entry.
         check(
-            "forge netrc entry is not credentials for WANDB_BASE_URL=https://api.wandb.ai",
-            not wandb_credentials({"WANDB_BASE_URL": "https://api.wandb.ai"}, h)[0],
+            "forge netrc entry is not credentials for the default server, api.wandb.ai",
+            not wandb_credentials({}, h)[0]
+            and not wandb_credentials({"WANDB_BASE_URL": "https://api.wandb.ai"}, h)[0],
         )
         (h / ".netrc").write_text(
             "machine example.com\n  login user\n  password abc123\n"
@@ -1056,7 +1321,7 @@ def self_test() -> int:
     a = FakeArgs()
     env2: dict[str, str] = {}
     resolve(
-        {"wandb_entity": "e", "wandb_project": "p"},
+        {"tracking_tool": "wandb", "wandb_entity": "e", "wandb_project": "p"},
         environ={"WANDB_API_KEY": "k"},
         home=Path("/nonexistent"),
         config_path="/c/cfg.yaml",
@@ -1072,7 +1337,7 @@ def self_test() -> int:
 
     b = FakeArgs()
     resolve(
-        {"clearml_project": "d"},
+        {"tracking_tool": "clearml", "clearml_project": "d"},
         environ=env,
         home=Path("/nonexistent"),
         config_path="/c/cfg.yaml",
@@ -1129,7 +1394,8 @@ def self_test() -> int:
         # environment, read by both.
         e: dict[str, str] = dict(environ or {})
         resolve(
-            cfg or {"wandb_entity": "e", "wandb_project": "p"},
+            cfg
+            or {"tracking_tool": "wandb", "wandb_entity": "e", "wandb_project": "p"},
             environ={"WANDB_API_KEY": "k", **(environ or {})},
             home=Path("/nonexistent"),
             config_path="/c/cfg.yaml",
@@ -1171,7 +1437,7 @@ def self_test() -> int:
     clearml_env = pin(
         "/runs/mine",
         {"CLEARML_API_ACCESS_KEY": "a", "CLEARML_API_SECRET_KEY": "b"},
-        cfg={"clearml_project": "d"},
+        cfg={"tracking_tool": "clearml", "clearml_project": "d"},
     )
     check(
         "clearml-only run does not get a WANDB_RUN_ID",
@@ -1185,7 +1451,7 @@ def self_test() -> int:
     #     rank. The kwargs are asserted individually, not as a blob, because `continue_last_task=0`
     #     versus `False` and `reuse_last_task_id=<id>` versus `True` are single-token differences
     #     with opposite consequences.
-    cl_cfg = {"clearml_project": "d"}
+    cl_cfg = {"tracking_tool": "clearml", "clearml_project": "d"}
     cl_env = {"CLEARML_API_ACCESS_KEY": "a", "CLEARML_API_SECRET_KEY": "b"}
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "ckpt-dir"
@@ -1284,24 +1550,296 @@ def self_test() -> int:
             f"{rec6.calls}",
         )
 
-    # 16. Both at once. ClearML first, because it is the default.
+    # 16. One tool per run, chosen explicitly. Every way of not choosing is refused, not guessed.
+    both = {"clearml_project": "d", "wandb_entity": "e", "wandb_project": "p"}
+    keyed_env = {**env, "WANDB_API_KEY": "k"}
+    for tool in ("clearml", "wandb"):
+        p = resolve(
+            {**both, "tracking_tool": tool},
+            environ=keyed_env,
+            home=Path("/nonexistent"),
+            is_installed=yes,
+        )
+        check(
+            f"tracking_tool={tool} with the other tool's keys -> FATAL, nothing enabled",
+            not p.enabled and any("One tool per run" in f for f in p.fatal),
+            f"{p.enabled} {p.fatal}",
+        )
+    for tool in ("", "none", "NONE"):
+        p = resolve(
+            {"clearml_project": "d", "tracking_tool": tool},
+            environ=keyed_env,
+            home=Path("/nonexistent"),
+            is_installed=yes,
+        )
+        check(
+            f"tracking_tool={tool!r} with clearml keys set -> FATAL (not inferred)",
+            not p.enabled and any("tracking_tool is not" in f for f in p.fatal),
+            f"{p.fatal}",
+        )
+    p = resolve({"tracking_tool": "none"}, environ=keyed_env, home=Path("/nonexistent"))
+    check(
+        "tracking_tool=none alone -> off, no fatal",
+        not p.enabled and not p.fatal,
+        f"{p.fatal}",
+    )
     p = resolve(
-        {"clearml_project": "d", "wandb_entity": "e", "wandb_project": "p"},
-        environ={**env, "WANDB_API_KEY": "k"},
-        home=Path("/nonexistent"),
-        config_path="/c/cfg.yaml",
-        is_installed=yes,
+        {"tracking_tool": "mlflow"}, environ=keyed_env, home=Path("/nonexistent")
     )
     check(
-        "both backends -> clearml first in report_to",
-        p.enabled == ("clearml", "wandb"),
-        f"{p.enabled}",
+        "an unknown tracking_tool -> FATAL",
+        any("is not one of" in f for f in p.fatal),
+        f"{p.fatal}",
     )
+    p = resolve(
+        {"tracking_tool": "WandB", "wandb_entity": "e", "wandb_project": "p"},
+        environ=keyed_env,
+        home=Path("/nonexistent"),
+        is_installed=yes,
+    )
+    check("tracking_tool is case-insensitive", p.enabled == ("wandb",), f"{p.fatal}")
+
+    # 19. Servers. Each tool gets its public server unless the user set another, and a user
+    #     setting is never replaced -- the default goes into plan.env only when nothing set it.
+    wb = {"tracking_tool": "wandb", "wandb_entity": "e", "wandb_project": "p"}
+    with tempfile.TemporaryDirectory() as td:
+        h = Path(td)
+        p = resolve(wb, environ={"WANDB_API_KEY": "k"}, home=h, is_installed=yes)
+        check(
+            "wandb: no server set -> WANDB_BASE_URL=https://api.wandb.ai (not wandb's Forge default)",
+            p.env.get("WANDB_BASE_URL") == "https://api.wandb.ai"
+            and any("server=https://api.wandb.ai (default)" in l for l in p.lines),
+            f"{p.env} {p.lines}",
+        )
+        p = resolve(
+            wb,
+            environ={
+                "WANDB_API_KEY": "k",
+                "WANDB_BASE_URL": "https://wandb.corp.example",
+            },
+            home=h,
+            is_installed=yes,
+        )
+        check(
+            "wandb: a user WANDB_BASE_URL is kept, not overwritten",
+            "WANDB_BASE_URL" not in p.env
+            and any("wandb.corp.example" in l for l in p.lines),
+            f"{p.env} {p.lines}",
+        )
+        (h / ".config" / "wandb").mkdir(parents=True)
+        (h / ".config" / "wandb" / "settings").write_text(
+            "[default]\nbase_url = https://wandb.corp.example\n"
+        )
+        p = resolve(wb, environ={"WANDB_API_KEY": "k"}, home=h, is_installed=yes)
+        check(
+            "wandb: a base_url in wandb's settings file counts as set by the user",
+            "WANDB_BASE_URL" not in p.env
+            and any("wandb.corp.example" in l for l in p.lines),
+            f"{p.env} {p.lines}",
+        )
+        (h / ".config" / "wandb" / "settings").unlink()
+        for bad_url in (
+            "https://forge.coreweave.com",
+            "http://forge.coreweave.com/api/wandb",
+            "https://forge.coreweave.com:443/api/wandb",
+            "https://app.wandb.ai",
+            "http://api.wandb.ai",
+            "api.wandb.ai",
+        ):
+            p = resolve(
+                wb,
+                environ={"WANDB_API_KEY": "k", "WANDB_BASE_URL": bad_url},
+                home=h,
+                is_installed=yes,
+            )
+            check(
+                f"wandb: an address wandb rejects is FATAL here, before training ({bad_url})",
+                not p.enabled and any("wandb would refuse it" in f for f in p.fatal),
+                f"{p.fatal}",
+            )
+        p = resolve(
+            wb,
+            environ={
+                "WANDB_API_KEY": "k",
+                "WANDB_BASE_URL": "https://forge.coreweave.com/api/wandb/",
+            },
+            home=h,
+            is_installed=yes,
+        )
+        check(
+            "wandb: the Forge proxy address is accepted as wandb normalises it",
+            p.enabled == ("wandb",)
+            and any("server=https://api.forge.coreweave.com" in l for l in p.lines),
+            f"{p.lines} {p.fatal}",
+        )
+        p = resolve(
+            wb,
+            environ={"WANDB_API_KEY": "k", "WANDB_IDENTITY_TOKEN_FILE": "/t"},
+            home=h,
+            is_installed=yes,
+        )
+        check(
+            "wandb: API key and identity token file together -> FATAL, as wandb refuses it",
+            any("WANDB_IDENTITY_TOKEN_FILE" in f for f in p.fatal),
+            f"{p.fatal}",
+        )
+        (h / "token.jwt").write_text("x")
+        ok, where = wandb_credentials(
+            {"WANDB_IDENTITY_TOKEN_FILE": str(h / "token.jwt")}, h
+        )
+        check(
+            "wandb: an identity token file is credentials",
+            ok and "IDENTITY_TOKEN" in where,
+            where,
+        )
+        ok, _ = wandb_credentials(
+            {"WANDB_IDENTITY_TOKEN_FILE": str(h / "missing.jwt")}, h
+        )
+        check("wandb: an identity token file that does not exist is not", not ok)
+
+        cl = {"tracking_tool": "clearml", "clearml_project": "d"}
+        cl_keys = {"CLEARML_API_ACCESS_KEY": "a", "CLEARML_API_SECRET_KEY": "b"}
+        p = resolve(cl, environ=cl_keys, home=h, is_installed=yes)
+        check(
+            "clearml: no server set -> the public api/app/files servers",
+            p.env.get("CLEARML_API_HOST") == "https://api.clear.ml"
+            and p.env.get("CLEARML_WEB_HOST") == "https://app.clear.ml"
+            and p.env.get("CLEARML_FILES_HOST") == "https://files.clear.ml",
+            f"{p.env}",
+        )
+        p = resolve(
+            cl,
+            environ={**cl_keys, "CLEARML_API_HOST": "https://api.corp"},
+            home=h,
+            is_installed=yes,
+        )
+        check(
+            "clearml: a user CLEARML_API_HOST -> no server default added at all",
+            not any(
+                k in p.env
+                for k in ("CLEARML_API_HOST", "CLEARML_WEB_HOST", "CLEARML_FILES_HOST")
+            ),
+            f"{p.env}",
+        )
+        (h / "clearml.conf").write_text(
+            "api {\n  api_server: https://clearml.corp:8008\n  credentials {\n"
+            '    "access_key" = "AK"\n    "secret_key" = "SK"\n  }\n}\n'
+        )
+        p = resolve(cl, environ={}, home=h, is_installed=yes)
+        check(
+            "clearml: an api_server in clearml.conf -> kept, no default, and its key pair counts",
+            p.enabled == ("clearml",)
+            and not any(
+                k in p.env
+                for k in ("CLEARML_API_HOST", "CLEARML_WEB_HOST", "CLEARML_FILES_HOST")
+            ),
+            f"{p.env} {p.lines}",
+        )
+        (h / "clearml.conf").unlink()
+        (h / ".clearml.conf").write_text(
+            'api {\n  access_key: "AK"\n  secret_key: "SK"\n}\n'
+        )
+        check(
+            "clearml: ~/.clearml.conf is not read (clearml reads ~/clearml.conf and ~/trains.conf)",
+            not clearml_credentials({}, h)[0],
+        )
+        (h / "trains.conf").write_text(
+            'api {\n  access_key: "AK"\n  secret_key: "SK"\n}\n'
+        )
+        check("clearml: ~/trains.conf is read", clearml_credentials({}, h)[0])
+        check(
+            "clearml: CLEARML_CONFIG_FILE replaces the home files",
+            not clearml_credentials({"CLEARML_CONFIG_FILE": str(h / "none.conf")}, h)[
+                0
+            ],
+        )
+        check(
+            "clearml: the TRAINS_* key aliases count",
+            clearml_credentials(
+                {"TRAINS_API_ACCESS_KEY": "a", "TRAINS_API_SECRET_KEY": "b"}, h
+            )[0],
+        )
+
+    # 20. Netrc parity with wandb 0.31.2's own lookup (wbnetrc.read_netrc_auth_with_source),
+    #     case by case. The netrc texts and server addresses are the #752 review's
+    #     (netrc_diff.py); the expected letters were produced by running wandb 0.31.2 on each
+    #     case with the same server this module uses (an unset WANDB_BASE_URL meaning
+    #     https://api.wandb.ai): T credentials, F none, E wandb rejects the address.
+    pw = "0123456789abcdef0123456789abcdef01234567"
+    parity_netrcs = {
+        "A api.wandb.ai": f"machine api.wandb.ai\n  login user\n  password {pw}\n",
+        "B forge": f"machine api.forge.coreweave.com\n  login user\n  password {pw}\n",
+        "C corp": f"machine wandb.corp.example\n  login user\n  password {pw}\n",
+        "D default-only": f"default login user password {pw}\n",
+        "E forge-no-pw + other-pw": "machine api.forge.coreweave.com\n  login user\nmachine github.com login x password y\n",
+        "F suffix host": f"machine api.wandb.ai.evil.com login user password {pw}\n",
+        "G quoted host": f'machine "api.wandb.ai" login user password {pw}\n',
+        "H qa api": f"machine api.qa.wandb.ai login user password {pw}\n",
+        "I forge with port": f"machine api.forge.coreweave.com:443 login user password {pw}\n",
+        "J one-line forge": f"machine api.forge.coreweave.com login user password {pw}",
+        "K both": f"machine api.wandb.ai login u password {pw}\nmachine api.forge.coreweave.com login u password {pw[:-1]}X\n",
+        "L api.wandb.ai empty pw": 'machine api.wandb.ai\n  login user\n  password ""\n',
+        "M forge no pw, wandb.ai pw": f"machine api.forge.coreweave.com login u\nmachine api.wandb.ai login u password {pw[:-1]}Y\n",
+    }
+    parity_bases = [
+        None,
+        "https://api.wandb.ai",
+        "https://api.wandb.ai/",
+        "https://api.forge.coreweave.com",
+        "https://forge.coreweave.com/api/wandb",
+        "https://forge.coreweave.com/api/wandb/",
+        "https://qa.forge.coreweave.com/api/wandb",
+        "https://api.qa.forge.coreweave.com",
+        "https://api.qa.wandb.ai",
+        "https://wandb.corp.example",
+        "https://api.forge.coreweave.com:443",
+        "http://forge.coreweave.com/api/wandb",
+        "https://forge.coreweave.com",
+        "https://forge.coreweave.com:443/api/wandb",
+    ]
+    parity_expected = {
+        "A api.wandb.ai": "TTTTTTFFFFTEEE",
+        "B forge": "FFFTTTFFFFFEEE",
+        "C corp": "FFFFFFFFFTFEEE",
+        "D default-only": "TTTTTTTTTTTEEE",
+        "E forge-no-pw + other-pw": "FFFFFFFFFFFEEE",
+        "F suffix host": "FFFFFFFFFFFEEE",
+        "G quoted host": "TTTTTTFFFFTEEE",
+        "H qa api": "FFFFFFTTTFFEEE",
+        "I forge with port": "FFFFFFFFFFTEEE",
+        "J one-line forge": "FFFTTTFFFFFEEE",
+        "K both": "TTTTTTFFFFTEEE",
+        "L api.wandb.ai empty pw": "FFFFFFFFFFFEEE",
+        "M forge no pw, wandb.ai pw": "TTTFFFFFFFTEEE",
+    }
+    with tempfile.TemporaryDirectory() as td:
+        h = Path(td)
+        wrong = []
+        for name, text in parity_netrcs.items():
+            (h / "netrc").write_text(text)
+            got = ""
+            for base in parity_bases:
+                e = {"NETRC": str(h / "netrc")}
+                if base is not None:
+                    e["WANDB_BASE_URL"] = base
+                try:
+                    wandb_normalize_base_url(base or WANDB_DEFAULT_BASE_URL)
+                    got += "T" if wandb_credentials(e, h)[0] else "F"
+                except ValueError:
+                    got += "E"
+            if got != parity_expected[name]:
+                wrong.append(f"{name}: got {got}, wandb {parity_expected[name]}")
+        check(
+            f"netrc lookup agrees with wandb 0.31.2 on all {len(parity_netrcs) * len(parity_bases)} cases",
+            not wrong,
+            "; ".join(wrong),
+        )
 
     if not bad:
         print(
-            "\nTRACKING RESOLUTION EXERCISED: on, off, partial-fatal, unkeyed, offline, "
-            "auto-name (both sources), credential detection on disk, apply(), the "
+            "\nTRACKING RESOLUTION EXERCISED: the tool choice, on, off, partial-fatal, unkeyed, "
+            "offline, the default servers and user-set ones, auto-name (both sources), "
+            "credential detection on disk, netrc parity with wandb 0.31.2, apply(), the "
             "output_dir-pinned W&B run id, and output_dir-keyed ClearML task continuation"
         )
     return bad

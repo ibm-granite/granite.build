@@ -127,19 +127,21 @@ config:
     extra_config_yaml: ""
 
   # ─── Experiment tracking ──────────────────────────────────────────────────────
-  # ALL FIVE DEFAULT TO EMPTY, which means tracking off. A step that invented a project
-  # name would log every recipe's runs into one bucket named by whoever wrote this file.
+  # One tool per run: `tool` is wandb, clearml, or none (empty, the default: off). ALL
+  # DEFAULT TO EMPTY: a step that invented a project name would log every recipe's runs
+  # into one bucket named by whoever wrote this file.
   #
-  # A PARTIAL config aborts the run rather than being completed with a guess: neither
-  # backend fails on an incomplete config — they log to their own defaults — which is how a
-  # multi-day run ends up somewhere nobody looks.
+  # Only the chosen tool's keys may be set, and a PARTIAL config aborts the run rather
+  # than being completed with a guess: neither tool fails on an incomplete config — they
+  # log to their own defaults — which is how a multi-day run ends up somewhere nobody looks.
   #
-  # The shared GPU image (steps/train/distill/images/gpu/, replacing the opaque
-  # kd-sandbox-distill:0.1.0-uv) DOES carry clearml==2.1.12 and wandb==0.31.2 (both in
-  # steps/train/distill/images/gpu/pyproject.toml), so setting any of these five now works rather
-  # than failing at import. tracking.py still imports them lazily and only when a
-  # project is configured, so leaving all five empty (tracking off) stays safe either way.
+  # Each tool talks to its public server unless the job's environment or the tool's own
+  # config file names another: W&B to https://api.wandb.ai, ClearML to
+  # https://api.clear.ml (app.clear.ml, files.clear.ml). The shared GPU image carries
+  # clearml==2.1.12 and wandb==0.31.2 (steps/train/distill/images/gpu/pyproject.toml).
+  # tracking.py (steps/train/distill/src) holds the rules; USAGE.md documents them.
   tracking:
+    tool: ""
     clearml_project: ""
     clearml_run_name: ""
     wandb_entity: ""
@@ -370,6 +372,7 @@ environment_configs:
               --gpus-per-node {{ config.workload.gpus_per_node }} \
               --nodes {{ config.workload.nodes }} \
               --hf-home "{{ config.workload.hf_home }}" \
+              --tracking-tool "{{ config.tracking.tool }}" \
               --clearml-project "{{ config.tracking.clearml_project }}" \
               --clearml-run-name "{{ config.tracking.clearml_run_name }}" \
               --wandb-entity "{{ config.tracking.wandb_entity }}" \

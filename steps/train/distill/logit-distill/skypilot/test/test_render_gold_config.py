@@ -1123,6 +1123,15 @@ _GOLD_REQUIRED_ARGS = [
 _RENDERER_DEFAULTS_THE_TEMPLATE_DOES_NOT_PASS = {
     # Passed, but from the `vllm` input binding (empty when unbound), not from config.
     "--vllm-server-url",
+    # Passed only when some `tracking:` key is set, so a run that tracks nothing renders the
+    # run script it rendered before (golden_run_scripts.json). test_step_template.py's
+    # TestTracking renders the block both ways.
+    "--tracking-tool",
+    "--clearml-project",
+    "--clearml-run-name",
+    "--wandb-entity",
+    "--wandb-project",
+    "--wandb-run-name",
 }
 
 # Template defaults that deliberately differ from the renderer's, as (template, renderer).

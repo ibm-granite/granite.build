@@ -95,7 +95,7 @@ KD_TEMPERATURE="1.0" ; MAX_DATASET_SIZE="-1"
 # `export` or `set -a` (this script exports HF_HOME below) would hand a library a raw,
 # unvalidated project name, bypassing the partial-config abort in tracking.py that is the whole
 # point of routing through it.
-TRK_CLEARML_PROJECT="" ; TRK_CLEARML_RUN_NAME=""
+TRK_TRACKING_TOOL="" ; TRK_CLEARML_PROJECT="" ; TRK_CLEARML_RUN_NAME=""
 TRK_WANDB_ENTITY="" ; TRK_WANDB_PROJECT="" ; TRK_WANDB_RUN_NAME=""
 
 while (( $# )); do
@@ -130,6 +130,7 @@ while (( $# )); do
     --gpus-per-node)        GPN="$2"; shift 2 ;;
     --nodes)                NODES="$2"; shift 2 ;;
     --hf-home)              HF_HOME_ARG="$2"; shift 2 ;;
+    --tracking-tool)        TRK_TRACKING_TOOL="$2"; shift 2 ;;
     --clearml-project)      TRK_CLEARML_PROJECT="$2"; shift 2 ;;
     --clearml-run-name)     TRK_CLEARML_RUN_NAME="$2"; shift 2 ;;
     --wandb-entity)         TRK_WANDB_ENTITY="$2"; shift 2 ;;
@@ -270,6 +271,7 @@ LIGER_SWIGLU_FLAG=(--no-use-liger-swiglu-mlp)
   --max-dataset-size "$MAX_DATASET_SIZE" \
   --extra-config-yaml "$EXTRA_YAML" \
   --gpus-per-node "$GPN" --nodes "$NODES" \
+  --tracking-tool "$TRK_TRACKING_TOOL" \
   --clearml-project "$TRK_CLEARML_PROJECT" \
   --clearml-run-name "$TRK_CLEARML_RUN_NAME" \
   --wandb-entity "$TRK_WANDB_ENTITY" \

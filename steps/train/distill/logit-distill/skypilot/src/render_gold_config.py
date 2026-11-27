@@ -633,7 +633,28 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
                 "opd_importance_sampling": args.opd_importance_sampling,
             }
         )
+
+    # Experiment tracking: emitted ONLY when non-empty, so a run that sets none renders the
+    # config it rendered before. Not validated here: gold.py hands these keys to tracking.py,
+    # which owns the rules (one tool, a complete config, credentials) and refuses a bad
+    # combination before the trainer is built.
+    for key in _TRACKING_KEYS:
+        value = (getattr(args, key) or "").strip()
+        if value:
+            config[key] = value
     return config
+
+
+# The tracking keys this renderer passes through, in tracking.py's ALL_CONFIG_FIELDS order.
+# They are CustomArguments fields in gold.py, so TrlParser accepts them.
+_TRACKING_KEYS = (
+    "tracking_tool",
+    "clearml_project",
+    "clearml_run_name",
+    "wandb_entity",
+    "wandb_project",
+    "wandb_run_name",
+)
 
 
 def _decode_escapes(value: str) -> str:
@@ -913,6 +934,13 @@ def _parse_args(argv=None) -> argparse.Namespace:
     # the config file instead would bet on them being accepted config-file keys,
     # and TRL's parse_args_and_config rejects unknown top-level keys outright.
     p.add_argument("--vllm-server-url", default="")
+    # Experiment tracking (the step's `tracking:` block). Empty means unset.
+    p.add_argument("--tracking-tool", default="")
+    p.add_argument("--clearml-project", default="")
+    p.add_argument("--clearml-run-name", default="")
+    p.add_argument("--wandb-entity", default="")
+    p.add_argument("--wandb-project", default="")
+    p.add_argument("--wandb-run-name", default="")
     return p.parse_args(argv)
 
 

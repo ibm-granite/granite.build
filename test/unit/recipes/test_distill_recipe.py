@@ -426,6 +426,8 @@ def _all_renders(tmp_path):
         yield _render(tmp_path, _SMOKE, LMBDA_MODE=mode)
     yield _render(tmp_path, INCLUDE_SFT="true", CORPUS_DIR="/c")
     yield _render(tmp_path, SCREEN_EVALS="olmes-gsm8k,bfcl", FULL_EVAL_RUNGS="8000")
+    for tool, keys in _TRACKING_OK.items():
+        yield _render(tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **keys)
 
 
 def test_every_step_uri_is_expected(tmp_path):
@@ -854,3 +856,81 @@ def test_gold_config_keys_are_logit_distill_keys(tmp_path):
     for mode in _MODES:
         gold = _gold(_render(tmp_path, LMBDA_MODE=mode))
         assert set(gold) <= set(schema), sorted(set(gold) - set(schema))
+
+
+# ─── Experiment tracking ──────────────────────────────────────────────────────
+
+_TRACKING_OK = {
+    "wandb": {"TRACKING_WANDB_ENTITY": "ibm", "TRACKING_WANDB_PROJECT": "kd"},
+    "clearml": {"TRACKING_CLEARML_PROJECT": "distill"},
+}
+_TRAINING_TARGETS = ("train", "train-sft")
+
+
+def test_tracking_is_off_by_default(tmp_path):
+    """No tracking block at all: the steps' own default is off, and a render that tracks
+    nothing is the render it was before tracking was a parameter."""
+    rendered = _render(tmp_path, INCLUDE_SFT="true")
+    for target in _TRAINING_TARGETS:
+        assert "tracking" not in _config(rendered, target), target
+
+
+@pytest.mark.parametrize("tool", sorted(_TRACKING_OK))
+def test_the_chosen_tool_reaches_both_training_targets(tmp_path, tool):
+    rendered = _render(
+        tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **_TRACKING_OK[tool]
+    )
+    suffix = {"train": "distill", "train-sft": "sft"}
+    for target in _TRAINING_TARGETS:
+        tracking = _config(rendered, target)["tracking"]
+        assert tracking["tool"] == tool
+        if tool == "wandb":
+            assert tracking == {
+                "tool": "wandb",
+                "wandb_entity": "ibm",
+                "wandb_project": "kd",
+                "wandb_run_name": f"test-run-{suffix[target]}",
+            }
+        else:
+            assert tracking == {
+                "tool": "clearml",
+                "clearml_project": "distill",
+                "clearml_run_name": f"test-run-{suffix[target]}",
+            }
+
+
+@pytest.mark.parametrize(
+    "params,needle",
+    [
+        ({"TRACKING_TOOL": "mlflow"}, "TRACKING_TOOL_must_be_none_wandb_or_clearml"),
+        (
+            {"TRACKING_TOOL": "wandb", "TRACKING_WANDB_PROJECT": "kd"},
+            "TRACKING_TOOL_wandb_needs_TRACKING_WANDB_ENTITY_and_TRACKING_WANDB_PROJECT",
+        ),
+        (
+            {"TRACKING_TOOL": "clearml"},
+            "TRACKING_TOOL_clearml_needs_TRACKING_CLEARML_PROJECT",
+        ),
+        (
+            {"TRACKING_TOOL": "none", "TRACKING_CLEARML_PROJECT": "d"},
+            "TRACKING_CLEARML_PROJECT_must_be_empty_unless_TRACKING_TOOL_is_clearml",
+        ),
+        (
+            {
+                "TRACKING_TOOL": "clearml",
+                "TRACKING_CLEARML_PROJECT": "d",
+                "TRACKING_WANDB_ENTITY": "e",
+            },
+            "TRACKING_WANDB_parameters_must_be_empty_unless_TRACKING_TOOL_is_wandb",
+        ),
+    ],
+)
+def test_bad_tracking_settings_fail_to_render(tmp_path, params, needle):
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert needle in str(err.value)
+
+
+def test_tracking_tool_is_case_and_space_insensitive(tmp_path):
+    rendered = _render(tmp_path, TRACKING_TOOL=" WandB ", **_TRACKING_OK["wandb"])
+    assert _config(rendered, "train")["tracking"]["tool"] == "wandb"

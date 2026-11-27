@@ -298,15 +298,18 @@ class TestFlagSurface:
     # the preflight -- so the exemption cannot hide a key that goes nowhere.
     STEP_ONLY = ("check_weight_residency", "allow_offline_weights")
 
+    # The one key whose flag is not its own name: `tracking.tool` is the trainer's
+    # `tracking_tool`, and a bare `--tool` would say nothing about what it chooses.
+    FLAG_NAMES = {("tracking", "tool"): "--tracking-tool"}
+
     def test_every_config_key_reaches_the_script(self, step, run_script):
         cfg = step["config"]
         for block in ("sft_config", "workload", "tracking"):
             for key in cfg[block]:
                 if key in self.BOOLEAN_KEYS or key in self.STEP_ONLY:
                     continue
-                assert (
-                    "--" + key.replace("_", "-")
-                ) in run_script, f"{block}.{key} never reaches run-sft.sh"
+                flag = self.FLAG_NAMES.get((block, key), "--" + key.replace("_", "-"))
+                assert flag in run_script, f"{block}.{key} never reaches run-sft.sh"
 
     def test_booleans_are_flag_pairs_not_values(self, step, run_script):
         """THIS STEP is where that rule was learned: jinja renders a YAML boolean with
@@ -412,11 +415,27 @@ class TestConfigDefaults:
         assert "FATAL: nodes=" in sft_sh
 
     def test_tracking_is_entirely_off(self, step):
-        """All five empty means off. The shared GPU image now carries both clearml and
-        wandb (steps/train/distill/images/gpu/pyproject.toml), so setting any of them works rather
-        than failing at import; tracking.py still imports them lazily and only when a
-        project is configured, so leaving all five empty stays the safe default."""
-        assert set(step["config"]["tracking"].values()) == {""}
+        """All empty means off: no tool chosen and no project named. The shared GPU image
+        carries both clearml and wandb (steps/train/distill/images/gpu/pyproject.toml), so
+        choosing either works rather than failing at import."""
+        assert step["config"]["tracking"] == {
+            "tool": "",
+            "clearml_project": "",
+            "clearml_run_name": "",
+            "wandb_entity": "",
+            "wandb_project": "",
+            "wandb_run_name": "",
+        }
+
+    def test_every_tracking_key_reaches_run_sft(self, step, sft_sh):
+        """Each `tracking` key is passed to run-sft.sh, which passes it to the renderer."""
+        run = step["environment_configs"]["Skypilot"]["launchers"]["train"]["config"][
+            "run"
+        ]
+        for key in step["config"]["tracking"]:
+            flag = "--tracking-tool" if key == "tool" else "--" + key.replace("_", "-")
+            assert f'{flag} "{{{{ config.tracking.{key} }}}}"' in run, key
+            assert f"{flag})" in sft_sh and f'{flag} "$TRK_' in sft_sh, key
 
     def test_step_type_is_a_real_enum_member(self, step):
         from gbcommon.types.stepconfig import StepType

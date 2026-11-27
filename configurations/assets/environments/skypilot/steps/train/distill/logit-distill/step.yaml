@@ -343,6 +343,24 @@ config:
     # request.
     min_completion_length: 0
 
+  # ─── Experiment tracking ──────────────────────────────────────────────────────
+  # One tool per run: `tool` is wandb, clearml, or none (empty, the default: off). Only
+  # the chosen tool's keys may be set; any other combination aborts the run before the
+  # trainer is built, and so does a partial config (W&B needs entity and project,
+  # ClearML a project). The run names are derived from the build when left empty.
+  # Each tool talks to its public server unless the job's environment or the tool's
+  # own config file names another: W&B to https://api.wandb.ai, ClearML to
+  # https://api.clear.ml (app.clear.ml, files.clear.ml). The credentials are looked
+  # up the way the tool does, for that server; none found means off, said loudly.
+  # tracking.py (steps/train/distill/src) holds the rules; USAGE.md documents them.
+  tracking:
+    tool: ""
+    clearml_project: ""
+    clearml_run_name: ""
+    wandb_entity: ""
+    wandb_project: ""
+    wandb_run_name: ""
+
 # I/O schema, validated against the build.yaml target at build time: a target that
 # does not bind a required input fails validation before anything is queued. The
 # run script reads path inputs as {{ bindings.<name>.binding.path }} and the
@@ -1048,7 +1066,13 @@ environment_configs:
               --last-message-only {{ config.gold_config.last_message_only }} \
               --clip-alpha {{ config.gold_config.clip_alpha }} \
               --opd-importance-sampling {{ config.gold_config.opd_importance_sampling }} \
-              --vllm-server-url "{{ vllm_server_url }}"
+              --vllm-server-url "{{ vllm_server_url }}"{% set _trk = config.tracking | default({}) %}{% if _trk.values() | map('string') | map('trim') | select | list %} \
+              --tracking-tool "{{ _trk.tool | default('') }}" \
+              --clearml-project "{{ _trk.clearml_project | default('') }}" \
+              --clearml-run-name "{{ _trk.clearml_run_name | default('') }}" \
+              --wandb-entity "{{ _trk.wandb_entity | default('') }}" \
+              --wandb-project "{{ _trk.wandb_project | default('') }}" \
+              --wandb-run-name "{{ _trk.wandb_run_name | default('') }}"{% endif %}
 
             if [ "$NODE_RANK" = "0" ]; then
               echo "--- rendered gold config ($CFG) ---"

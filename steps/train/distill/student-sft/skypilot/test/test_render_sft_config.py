@@ -381,6 +381,7 @@ def test_student_and_corpus_land_on_the_keys_the_trainer_reads():
 def test_tracking_keys_are_omitted_when_empty():
     cfg = render(parse())
     for key in (
+        "tracking_tool",
         "clearml_project",
         "clearml_run_name",
         "wandb_entity",
@@ -391,7 +392,17 @@ def test_tracking_keys_are_omitted_when_empty():
 
 
 def test_tracking_keys_are_emitted_stripped_when_set():
-    cfg = render(parse("--clearml-project", " distill ", "--wandb-project", "kd"))
+    cfg = render(
+        parse(
+            "--tracking-tool",
+            " clearml ",
+            "--clearml-project",
+            " distill ",
+            "--wandb-project",
+            "kd",
+        )
+    )
+    assert cfg["tracking_tool"] == "clearml"
     assert cfg["clearml_project"] == "distill"
     assert cfg["wandb_project"] == "kd"
     assert "wandb_entity" not in cfg
@@ -931,9 +942,10 @@ def test_the_keys_both_steps_take_include_the_batch_shape():
 
 
 def test_this_steps_tracking_keys_default_to_off():
-    """logit-distill renders no tracking keys, so there is no surface to compare. This step's
-    five default to empty, so a run tracks nothing unless the recipe says where."""
+    """Both steps pass the same six tracking keys (tracking.py's ALL_CONFIG_FIELDS), all
+    empty by default, so a run tracks nothing unless the recipe says where."""
     keys = {
+        "tracking_tool",
         "clearml_project",
         "clearml_run_name",
         "wandb_entity",

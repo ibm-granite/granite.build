@@ -354,6 +354,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     # hint unless precomputed_logits_dir is set, names the control `<student>_<corpus>_sft`
     # rather than as a distillation arm.
     for _key, _val in (
+        ("tracking_tool", args.tracking_tool),
         ("clearml_project", args.clearml_project),
         ("clearml_run_name", args.clearml_run_name),
         ("wandb_entity", args.wandb_entity),
@@ -424,6 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--nodes", type=int, default=1)
     # Tracking. Default "" rather than None so an unset step config key round-trips as "unset"
     # instead of the literal string "None".
+    p.add_argument("--tracking-tool", default="")
     p.add_argument("--clearml-project", default="")
     p.add_argument("--clearml-run-name", default="")
     p.add_argument("--wandb-entity", default="")

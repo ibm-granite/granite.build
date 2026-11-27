@@ -108,6 +108,28 @@ $${ LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld }
 <%- if SOPD and not LMO %>
 $${ LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss }
 <%- endif %>
+# ── Experiment tracking, checked once ──────────────────────────────────────
+# One tool per run, or none. The steps (tracking.py) refuse the same combinations,
+# but only once the allocation is up; refused here before submission.
+<%- set TRACK = TRACKING_TOOL | string | trim | lower %>
+<%- set TRACK = "none" if TRACK == "" else TRACK %>
+<%- set T_WB = (TRACKING_WANDB_ENTITY | string | trim, TRACKING_WANDB_PROJECT | string | trim) %>
+<%- set T_CL = TRACKING_CLEARML_PROJECT | string | trim %>
+<%- if TRACK not in ("none", "wandb", "clearml") %>
+$${ TRACKING_TOOL_must_be_none_wandb_or_clearml }
+<%- endif %>
+<%- if TRACK == "wandb" and not (T_WB[0] and T_WB[1]) %>
+$${ TRACKING_TOOL_wandb_needs_TRACKING_WANDB_ENTITY_and_TRACKING_WANDB_PROJECT }
+<%- endif %>
+<%- if TRACK == "clearml" and not T_CL %>
+$${ TRACKING_TOOL_clearml_needs_TRACKING_CLEARML_PROJECT }
+<%- endif %>
+<%- if TRACK != "wandb" and (T_WB[0] or T_WB[1]) %>
+$${ TRACKING_WANDB_parameters_must_be_empty_unless_TRACKING_TOOL_is_wandb }
+<%- endif %>
+<%- if TRACK != "clearml" and T_CL %>
+$${ TRACKING_CLEARML_PROJECT_must_be_empty_unless_TRACKING_TOOL_is_clearml }
+<%- endif %>
 # ── CKPT_LADDER, checked once ──────────────────────────────────────────────
 # Every rung binds a checkpoint the trainer emits MID-RUN. A rung it never
 # writes is not a late error but a target that never dispatches, so the ladder
@@ -487,6 +509,18 @@ $${ corpus_inputs() }
               # batch than the config says. More than one node is refused.
               gpus_per_node: $${SFT_NUM_GPUS}
               nodes: 1
+<%- if TRACK != "none" %>
+            tracking:
+              tool: "$${TRACK}"
+<%- if TRACK == "wandb" %>
+              wandb_entity: "$${TRACKING_WANDB_ENTITY}"
+              wandb_project: "$${TRACKING_WANDB_PROJECT}"
+              wandb_run_name: "$${RUN_NAME}-sft"
+<%- else %>
+              clearml_project: "$${TRACKING_CLEARML_PROJECT}"
+              clearml_run_name: "$${RUN_NAME}-sft"
+<%- endif %>
+<%- endif %>
             sft_config:
               output_dir: "$${RUN_DIR}/train-sft"
               response_template: "$${RESPONSE_TEMPLATE}"
@@ -630,6 +664,18 @@ $${ corpus_inputs() }
 <%- if ONLINE %>
             # The rollout server's stop_file, the same path; see STOP_FILE above.
             rollout_stop_file: "$${STOP_FILE}"
+<%- endif %>
+<%- if TRACK != "none" %>
+            tracking:
+              tool: "$${TRACK}"
+<%- if TRACK == "wandb" %>
+              wandb_entity: "$${TRACKING_WANDB_ENTITY}"
+              wandb_project: "$${TRACKING_WANDB_PROJECT}"
+              wandb_run_name: "$${RUN_NAME}-distill"
+<%- else %>
+              clearml_project: "$${TRACKING_CLEARML_PROJECT}"
+              clearml_run_name: "$${RUN_NAME}-distill"
+<%- endif %>
 <%- endif %>
             compute_config:
               num_nodes: $${GOLD_NUM_NODES}
