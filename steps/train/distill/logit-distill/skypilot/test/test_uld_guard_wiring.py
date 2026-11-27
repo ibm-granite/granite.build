@@ -82,12 +82,13 @@ _MULTI_TURN_ROWS = [
 ]
 
 
-def _model_dir(path, assistant_prefix):
+def _model_dir(path, assistant_prefix, chars=_CHARS):
     """A tokenizer + tiny Llama saved at `path`. `assistant_prefix` is rendered before every
-    assistant turn's content, which is how the teacher is made to disagree."""
+    assistant turn's content, which is how the teacher is made to disagree. `chars` in
+    another order gives the same tokens other ids."""
     from tokenizers import Regex, Tokenizer, decoders, models, pre_tokenizers
 
-    vocab = {t: i for i, t in enumerate(_SPECIALS + list(_CHARS))}
+    vocab = {t: i for i, t in enumerate(_SPECIALS + list(chars))}
     raw = Tokenizer(models.WordLevel(vocab, unk_token="<unk>"))
     raw.pre_tokenizer = pre_tokenizers.Split(Regex("[\\s\\S]"), behavior="isolated")
     raw.decoder = decoders.Fuse()
@@ -126,13 +127,14 @@ def _trainer(
     logging_steps=1,
     rows=_ROWS,
     collator_lmo=None,
+    teacher_chars=_CHARS,
     **config,
 ):
     """`config` overrides the CustomGOLDConfig fields below. `collator_lmo` gives the
     collator a last_message_only other than the config's, i.e. a config that bypassed
     CustomGOLDConfig's check."""
     student, tok = _model_dir(tmp_path / "student", "")
-    teacher, _ = _model_dir(tmp_path / "teacher", teacher_prefix)
+    teacher, _ = _model_dir(tmp_path / "teacher", teacher_prefix, chars=teacher_chars)
     kw = dict(
         output_dir=str(tmp_path / "out"),
         use_uld_loss=True,
@@ -357,16 +359,23 @@ def test_rebuilding_the_student_aligns_multi_turn_rows_without_last_message_only
     assert line["train/alignment_unaligned_rows"] == 0
 
 
-def test_reusing_the_student_input_keeps_every_rows_completion(tmp_path, monkeypatch):
+_HYBRID = pytest.mark.parametrize("hybrid", [False, True], ids=["base", "hybrid"])
+
+
+@_HYBRID
+def test_reusing_the_student_input_keeps_every_rows_completion(
+    tmp_path, monkeypatch, hybrid
+):
     """uld_reuse_student_input at batch 2. The collator left-pads, so the rows end
     together; row 1's prompt is shorter and its completion longer, so its completion
     starts before the batch's longest prompt ends. Cropped at that prompt, the teacher
     lost row 1's first tokens and its labels started at position 0. Cropped at the
     earliest completion, the teacher scores exactly the student's completion on every
-    row, from position 1 or later, and both rows align. (With the hybrid loss: the
-    mode's tokenizer check reads `jaccard`, which only the hybrid loss's vocabulary
-    mapping sets.)"""
-    trainer = _trainer(tmp_path, uld_reuse_student_input=True, uld_use_hybrid_loss=True)
+    row, from position 1 or later, and both rows align. On both ULD paths: the mode's
+    tokenizer check once read a `jaccard` only the hybrid loss set (#785)."""
+    trainer = _trainer(
+        tmp_path, uld_reuse_student_input=True, uld_use_hybrid_loss=hybrid
+    )
     inputs = trainer.data_collator([trainer.train_dataset[i] for i in (0, 1)])
     first = [int((row != -100).nonzero()[0]) for row in inputs["labels"]]
     assert min(first) < inputs["prompts"].shape[1]  # the layout this is about
@@ -376,7 +385,10 @@ def test_reusing_the_student_input_keeps_every_rows_completion(tmp_path, monkeyp
     assert (loss_fn._alignment_rows, loss_fn._alignment_unaligned) == (2, 0)
 
 
-def test_reusing_the_student_input_keeps_every_turn_at_batch_1(tmp_path, monkeypatch):
+@_HYBRID
+def test_reusing_the_student_input_keeps_every_turn_at_batch_1(
+    tmp_path, monkeypatch, hybrid
+):
     """The same crop at batch 1, with two assistant turns and last_message_only false:
     the collator labels both turns, but `prompts` is everything before the LAST turn.
     Cropped at it, the teacher lost the first turn; cropped at the first labelled
@@ -386,12 +398,29 @@ def test_reusing_the_student_input_keeps_every_turn_at_batch_1(tmp_path, monkeyp
         rows=_MULTI_TURN_ROWS,
         last_message_only=False,
         uld_reuse_student_input=True,
-        uld_use_hybrid_loss=True,
+        uld_use_hybrid_loss=hybrid,
     )
     inputs = trainer.data_collator([trainer.train_dataset[0]])
     first = int((inputs["labels"][0] != -100).nonzero()[0])
     assert first < inputs["prompts"].shape[1]  # the layout this is about
     _assert_the_teacher_scores_the_students_completion(trainer, inputs, monkeypatch)
+
+
+@_HYBRID
+def test_reusing_the_student_input_refuses_a_teacher_with_other_token_ids(
+    tmp_path, hybrid
+):
+    """The teacher reads the student's token ids as its own, so the two vocabularies
+    must map every token to the same id. This teacher has the same tokens in another
+    order: the Jaccard index over token strings is 1.0, and every id means something
+    else to it."""
+    with pytest.raises(ValueError, match="uld_reuse_student_input requires identical"):
+        _trainer(
+            tmp_path,
+            teacher_chars=_CHARS[::-1],
+            uld_reuse_student_input=True,
+            uld_use_hybrid_loss=hybrid,
+        )
 
 
 def _assert_the_teacher_scores_the_students_completion(trainer, inputs, monkeypatch):

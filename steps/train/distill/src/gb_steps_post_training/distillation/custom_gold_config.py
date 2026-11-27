@@ -257,7 +257,7 @@ class CustomGOLDConfig(GOLDConfig):
     uld_reuse_student_input: bool = field(
         default=False,
         metadata={
-            "help": "Reuse student input_ids for teacher in ULD loss (requires identical tokenizers, jaccard=1.0). For debugging."
+            "help": "Reuse student input_ids for teacher in ULD loss (requires identical tokenizers: the same id for every token). For debugging."
         },
     )
     uld_rebuild_student_input: bool = field(

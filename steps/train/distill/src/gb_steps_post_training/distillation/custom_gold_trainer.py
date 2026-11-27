@@ -288,6 +288,18 @@ def build_teacher_inputs_from_texts_with_eos_control(
     )
 
 
+def vocab_jaccard(student_vocab: dict, teacher_vocab: dict) -> float:
+    """The Jaccard index of two vocabularies' token strings, |S & T| / |S | T|.
+
+    The same number CustomULDLoss._initialize_vocabulary_mapping reported from trl's
+    mapping, which pairs the teacher and student ids of every token string the two share
+    (trl's ULDLoss._initialize_vocabulary_mapping), so its size is |S & T|.
+    """
+    matched = len(student_vocab.keys() & teacher_vocab.keys())
+    union = len(student_vocab) + len(teacher_vocab) - matched
+    return matched / union if union > 0 else 0.0
+
+
 def earliest_completion_column(labels: torch.Tensor, ignore_index: int = -100) -> int:
     """`teacher_prompt_length` for a teacher that reuses the student's input
     (uld_reuse_student_input): the first column any row labels, and at least 1.
@@ -833,11 +845,7 @@ class CustomULDLoss(ULDLoss):
         student_vocab = self.student_tokenizer.get_vocab()
         teacher_vocab = self.teacher_tokenizer.get_vocab()
         matched = len(self._vocab_mapping)
-        self.jaccard = (
-            matched / (len(student_vocab) + len(teacher_vocab) - matched)
-            if (len(student_vocab) + len(teacher_vocab) - matched) > 0
-            else 0.0
-        )
+        self.jaccard = vocab_jaccard(student_vocab, teacher_vocab)
         print(f"Student Vocab: {len(student_vocab)}")
         print(f"Teacher Vocab: {len(teacher_vocab)}")
         print(f"Matched Vocab: {matched}")
@@ -3340,11 +3348,26 @@ class CustomGOLDTrainer(GOLDTrainer):
                 teacher_tokenizer=self.teacher_tokenizer,
                 trainer=self,
             )
-            if self.args.uld_reuse_student_input and self.uld_loss_fn.jaccard != 1.0:
-                raise ValueError(
-                    f"uld_reuse_student_input requires identical tokenizers (jaccard=1.0), "
-                    f"but got jaccard={self.uld_loss_fn.jaccard}"
-                )
+            # Computed here, not read from the loss: CustomULDLoss sets `jaccard` only when it
+            # builds the hybrid loss's vocabulary mapping, so without uld_use_hybrid_loss the
+            # check raised AttributeError (#785). And the teacher reads the student's token
+            # ids as its own, so it needs the same id for every token, which a Jaccard index
+            # of 1.0 over the token strings does not imply.
+            if self.args.uld_reuse_student_input:
+                student_vocab = self.processing_class.get_vocab()
+                teacher_vocab = self.teacher_tokenizer.get_vocab()
+                if student_vocab != teacher_vocab:
+                    moved = sum(
+                        1
+                        for tok, i in student_vocab.items()
+                        if tok in teacher_vocab and teacher_vocab[tok] != i
+                    )
+                    raise ValueError(
+                        "uld_reuse_student_input requires identical tokenizers: the teacher "
+                        "reads the student's token ids as its own. Got jaccard="
+                        f"{vocab_jaccard(student_vocab, teacher_vocab):.4f} over the token "
+                        f"strings, and {moved} shared tokens with a different id."
+                    )
 
         # Gated on configuration alone (the loss class), so every rank registers it and the
         # guard's per-step all-reduce runs on every rank alike.

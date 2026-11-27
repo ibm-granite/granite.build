@@ -789,6 +789,17 @@ class TestULDCompletionAtPositionZero:
             assert (tmp_path / f"rank{rank}.txt").read_text() == "raised"
 
 
+def test_vocab_jaccard_is_the_hybrid_losss_number():
+    """vocab_jaccard is what CustomULDLoss reports from trl's vocabulary mapping, which
+    only the hybrid loss builds: here 4 shared tokens (a, b, c, <pad>) of 12 distinct.
+    """
+    loss_fn = _custom_uld(uld_use_hybrid_loss=True)
+    s_vocab = _PieceTokenizer(S_PIECES, S_EOS).get_vocab()
+    t_vocab = _PieceTokenizer(T_PIECES, T_EOS).get_vocab()
+    assert cgt.vocab_jaccard(s_vocab, t_vocab) == loss_fn.jaccard == 4 / 12
+    assert cgt.vocab_jaccard(s_vocab, dict(s_vocab)) == 1.0
+
+
 class TestEarliestCompletionColumn:
     """The crop column for a teacher that reuses the student's input. The rows are
     left-padded, so they end together and their completions start at different columns;

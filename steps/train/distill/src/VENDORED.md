@@ -146,8 +146,16 @@ before the last one, so even a batch of 1 lost the earlier turns from the teache
 came with the import.
 `teacher_prompt_length` is now the first column any row labels, and at least 1
 (`earliest_completion_column`), so every row's completion is kept whole with the logit
-before it. The crop is exactly as wide as a per-row crop padded to one width: for rows that
-end together, both are the longest completion plus one.
+before it. The crop is exactly as wide as a contiguous per-row crop padded to one width: for
+rows that end together, both are the longest completion plus one.
+
+The mode's tokenizer check read `CustomULDLoss.jaccard`. That attribute is set only when the
+hybrid loss builds trl's vocabulary mapping, so without `uld_use_hybrid_loss` the trainer
+raised `AttributeError` at init (#785). The check now compares the two vocabularies itself.
+It requires them to be equal, the same id for every token, because the teacher reads the
+student's token ids as its own. A Jaccard index of 1.0 over the token strings, the old
+check, also passed a teacher whose ids differ. `vocab_jaccard` computes the index, for the
+message and for the hybrid loss's report, from the two vocabularies.
 
 ## Local addition: refusing a ULD run that trains on nothing
 
