@@ -26,15 +26,28 @@ multi-turn data and changed the formula. v3 runs from its own venv in the image
 Both send requests in function-calling mode by default: BFCL's
 `OpenAICompletionsHandler`, with the checkpoint's own chat template and vLLM's tool
 parser doing the formatting, and sampling sent only when set (the checkpoint's
-generation_config applies otherwise). The one default is the output budget: the step
-serves vLLM with `--override-generation-config '{"max_new_tokens":16384}'`, so an FC
-request that sends no `max_tokens` is capped at 16,384 tokens or the context left after
-the prompt, whichever is smaller. That ends a checkpoint that loops instead of answering
-(scored as its answer, not a timeout), and binds no request of the calibration runs (the
-largest FC output there was 8,697 tokens). It is a served default, not a request field,
-because vLLM rejects a request whose prompt plus `max_tokens` exceeds the context; an
-explicit `max_tokens` option is sent with every request and wins. The step's run script adds it
-(not the benchmark), so `granite-evals run` outside the step needs it as a `--vllm-arg`.
+generation_config applies otherwise). The one default is the output budget: when it serves
+the model, the step starts vLLM with `--override-generation-config '{"max_new_tokens":16384}'`,
+so an FC request that sends no `max_tokens` is capped at 16,384 tokens or the context left
+after the prompt, whichever is smaller. That ends a checkpoint that loops instead of
+answering (scored as its answer, not a timeout). It is a served default, not a request field,
+because vLLM rejects a request whose prompt plus `max_tokens` exceeds the context. The step
+applies it only when nothing else sets the output length, and `results.json` records the
+effective cap and its source under `max_tokens`:
+
+- not with `base_url` (an endpoint the step does not start: no budget applies);
+- not with `handler=legacy-granite`, which sends its own budget (below);
+- not with an explicit `max_tokens` option, which is sent with every request and wins;
+- not when the checkpoint's `generation_config.json` sets `max_new_tokens` (vLLM applies it;
+  the override would replace it, in either direction) or `max_length`, nor when that file
+  cannot be read (recorded as unknown).
+
+The evidence for 16,384 is v3 only: the largest per-request FC output in the four bfcl-v3
+calibration runs (granite-4.0-micro and -h-small) was 8,697 tokens. There is none for
+bfcl-v4 or other checkpoints; the v4 recipe's default, granite-4.2-3b, sets no output limit
+in its generation_config (only `temperature` 1.0 and `top_p` 0.95). The step's run script
+applies it (`granite_evals.benchmarks.bfcl_serving`), not the benchmark, so `granite-evals run`
+outside the step needs it as a `--vllm-arg`.
 `bfcl-v3` also has `--option
 handler=legacy-granite`: BFCL prompt mode with the Granite 4.0 chat template's prompt
 format rendered by the handler, sent as text to the completions endpoint, the format
@@ -84,11 +97,11 @@ steps:
 | `repeats` | `""` (1) | Both versions are a single run. |
 | `workers` | `8` | Concurrent test entries (BFCL `--num-threads`). |
 | `dataset` / `dataset_revision` | `""` | Unused: the data ships inside the pinned bfcl-eval package. |
-| `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups of that version; default `all_scoring` for v4, `all` for v3), `temperature`, `top_p`, `max_tokens` (default: 16,384 or the context left after the prompt, whichever is smaller, as the served vLLM's default; with `handler=legacy-granite`, min(4096, context length − prompt tokens − 2); an explicit value is sent with every request and wins), `max_failed_frac` (default `0.05`: infrastructure-failed entries above this fraction, overall or in any one category, fail the run; below it they are left out of the score and the run is marked incomplete), `include_input_log`; v4 only: `search_mcp_url`; v3 only: `handler` (`fc`, the default, or `legacy-granite`). |
+| `options` | `""` | Space-separated `key=value` options: `categories` (comma-separated BFCL categories or groups of that version; default `all_scoring` for v4, `all` for v3), `temperature`, `top_p`, `max_tokens` (default: 16,384 or the context left after the prompt, whichever is smaller, as the served vLLM's default, unless the checkpoint's generation_config sets an output limit or `base_url` is set; with `handler=legacy-granite`, min(4096, context length − prompt tokens − 2); an explicit value is sent with every request and wins), `max_failed_frac` (default `0.05`: infrastructure-failed entries above this fraction, overall or in any one category, fail the run; below it they are left out of the score and the run is marked incomplete), `include_input_log`; v4 only: `search_mcp_url`; v3 only: `handler` (`fc`, the default, or `legacy-granite`). |
 | `phase` | `"all"` | `all` generates and scores in one job. `generate` serves the model and writes `generation.json` (`granite_generation`); `score` grades that output dir without a GPU (same `output_dir`, `limit`, `repeats`) and writes `results.json` |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
-| `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
+| `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. The run script expands them unquoted, so bash word-splits them and applies brace expansion (`{a,b}`) and quote removal: a JSON value with commas or quotes does not arrive intact; use vLLM's dotted form (`--override-generation-config.temperature=0.5`). They come after the step's FC budget, and any `--override-generation-config` replaces the budget rather than merging with it (vLLM 0.27.1 keeps the last; dotted keys merge only with each other): add `max_new_tokens` to your own override to keep it. |
 | `base_url` | `""` | An existing OpenAI-compatible endpoint; skips starting vLLM (`served_model_name` must name the model there). |
 | `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Unused: this benchmark runs no sandbox. |

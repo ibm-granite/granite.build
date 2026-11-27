@@ -193,16 +193,20 @@ environment_configs:
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
             VLLM_ARGS=()
-            # FC's output budget, as the served vLLM's default (USAGE.md): an FC request
-            # that sends no max_tokens gets min(16384, the context left). A served default,
-            # not a request field: vLLM rejects a request whose prompt plus max_tokens
-            # exceeds the context. legacy-granite sends its own max_tokens with every
-            # request, so its serving stays as calibrated. A vllm_args value comes later
-            # and wins; an explicit max_tokens option is sent and wins.
-            case " {{ config.options }} " in
-              *" handler=legacy-granite "*) ;;
-              *) VLLM_ARGS+=('--vllm-arg=--override-generation-config={"max_new_tokens":16384}') ;;
-            esac
+            # FC's output budget (granite_evals.benchmarks.bfcl_serving, USAGE.md): the
+            # served vLLM's default max_new_tokens (16384) unless base_url, legacy-granite,
+            # an explicit max_tokens or the checkpoint's own generation_config sets the
+            # output length. Its first line is the fc_budget option results.json records;
+            # the rest are vllm serve arguments, ahead of vllm_args. The score phase serves
+            # nothing: it reports the budget its generate phase recorded.
+            if [ "{{ config.phase }}" != "score" ]; then
+              BUDGET_OUT=$(python -m granite_evals.benchmarks.bfcl_serving "{{ config.model_path }}" \
+                "{{ config.base_url }}" "{{ config.options }}") || { echo "granite: bfcl_serving failed" >&2; exit 1; }
+              BUDGET=()
+              while IFS= read -r line; do BUDGET+=("$line"); done <<< "$BUDGET_OUT"
+              OPTS+=(--option "${BUDGET[0]}")
+              for a in "${BUDGET[@]:1}"; do VLLM_ARGS+=(--vllm-arg="$a"); done
+            fi
             for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 
             granite-evals run "$BENCHMARK" \

@@ -167,13 +167,15 @@ class BFCLv4(Benchmark):
                   "entries_failed_by_category": {c: f for c, (f, _) in by_cat.items() if f}}
         stats_path = root / SEARCH_STATS
         search_stats = json.loads(stats_path.read_text()) if stats_path.exists() else {}
+        budget = budget_record(root, self.config.options, self.generating)
         if not self.scoring:
             missing = missing_results(root)
             generated = len(scored_ids(root)) - len(missing)
             log.info("%s: generated %d entries, %d without a result, %d with an infrastructure error",
                      self.id, generated, len(missing), len(failed))
             return {"n": generated, "missing": len(missing), "categories": categories, **policy,
-                    "sampling": child["sampling"] or "checkpoint generation_config", "web_search": search_stats}
+                    "sampling": child["sampling"] or "checkpoint generation_config", "max_tokens": budget,
+                    "web_search": search_stats}
 
         per_category = read_category_scores(root / "score" / REGISTRY_NAME)
         overall = read_overall(root / "score" / "data_overall.csv")
@@ -189,6 +191,7 @@ class BFCLv4(Benchmark):
             "harness": f"{HARNESS}=={HARNESS_VERSION}",
             "handler": "OpenAICompletionsHandler (FC) via vLLM tool parser",
             "sampling": child["sampling"] or "checkpoint generation_config",
+            "max_tokens": budget,
             "categories": categories,
             "partial": self.config.limit is not None,
             **policy,  # entries_failed / entries_total / incomplete: failed entries are left out of the score
@@ -308,6 +311,27 @@ def infra_error_ids(root: Path) -> list[str]:
 # infra-dependent family. Resume prunes and retries such entries. Generate fails
 # (INFRA_EXIT, so the target retry resumes it), and score refuses, only while the
 # failed fraction is above max_failed_frac, or when a category has nothing else left.
+
+
+FC_BUDGET_FILE = "fc_budget.json"
+
+
+def budget_record(root: Path, options: dict, generating: bool) -> dict:
+    """results.json's max_tokens: what bounded each request's output. An explicit
+    max_tokens option is sent with every request. Otherwise the bfcl step's decision
+    (the fc_budget option from bfcl_serving), which a generate phase keeps in the output
+    dir for its score phase (that phase serves nothing)."""
+    from granite_evals.benchmarks.bfcl_serving import describe
+
+    if options.get("max_tokens"):
+        return {"cap": int(options["max_tokens"]), "source": "the max_tokens option, sent with every request"}
+    path = root / FC_BUDGET_FILE
+    if generating:
+        record = options.get("fc_budget")
+        path.write_text(json.dumps({"fc_budget": record}))
+    else:
+        record = json.loads(path.read_text()).get("fc_budget") if path.exists() else None
+    return describe(record)
 
 
 def failed_entries(root: Path) -> tuple[list[str], int, dict[str, tuple[int, int]]]:
