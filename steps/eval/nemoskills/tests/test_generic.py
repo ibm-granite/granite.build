@@ -522,7 +522,7 @@ def test_every_local_builder_refuses_remote_data(builder):
         generic.guard["check_local_builder"](builder, (), {"data_files": "https://h/x"})
 
 
-def test_urlopen_is_guarded_before_datasets_is_imported(tmp_path, monkeypatch):
+def test_urlopen_is_guarded_before_datasets_is_imported(tmp_path, monkeypatch, request):
     """datasets may fetch at import time: the urlopen guard is in place
     before install_guards imports it."""
     pkg = tmp_path / "site" / "datasets"
@@ -533,7 +533,13 @@ def test_urlopen_is_guarded_before_datasets_is_imported(tmp_path, monkeypatch):
         "def load_dataset(path, *a, **k):\n"
         "    return 'ok'\n"
     )
-    monkeypatch.delitem(sys.modules, "datasets", raising=False)
+    # the fake must not outlive the test (a later importorskip would find it)
+    before = sys.modules.pop("datasets", None)
+    request.addfinalizer(
+        lambda: sys.modules.pop("datasets", None)
+        if before is None
+        else sys.modules.__setitem__("datasets", before)
+    )
     monkeypatch.syspath_prepend(str(tmp_path / "site"))
     monkeypatch.setenv("GRANITE_NS_READS", "/dev/null")
     import runpy
