@@ -3,6 +3,10 @@
 # One advisory id per line (CVE, GHSA or PYSEC; list every alias, because osv-scanner
 # and trivy name the same advisory differently); `#` starts a comment. The same file
 # goes to images/osv-gate.py and to trivy as --ignorefile, so keep it in that format.
+# Do not add osv-gate.py's `pkg:` scope field here: trivy reads this file in its plain
+# format, which ignores `pkg:`, so a scope would narrow only the osv-scanner gate and
+# leave trivy accepting the id in every package (steps/eval scopes through a generated
+# YAML file instead).
 # Every entry names the issue that removes it. Delete the entry when that issue lands.
 # An acceptance is temporary by construction: give it an expiry ("until YYYY-MM-DD")
 # and re-review it when the date passes -- an entry with no removal issue and no

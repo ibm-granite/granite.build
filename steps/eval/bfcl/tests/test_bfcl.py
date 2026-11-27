@@ -343,7 +343,17 @@ def test_child_score_phase_evaluates_saved_results_only(tmp_path, harness_env):
     _write_results(root, ["simple_python_0"])
     subprocess.run(child, check=True)
     assert bfcl.read_category_scores(root / "score" / bfcl.REGISTRY_NAME)["simple_python"]["total_count"] == 1
-    assert (root / "score" / "data_overall.csv").exists()
+    # The groups parse at their own columns: no category of the live group ran, which
+    # BFCL reports as 0.00%, not N/A (a shifted row would read the previous column's N/A).
+    assert bfcl.read_overall(root / "score" / "data_overall.csv")["groups"]["live"] == 0.0
+
+
+def test_read_overall_refuses_a_shifted_row(tmp_path):
+    cols = ["Rank", "Overall Acc", "Model", *bfcl.OVERALL_GROUPS.values()]
+    path = tmp_path / "data_overall.csv"
+    path.write_text(",".join(cols) + "\n" + ",".join(["1", "5.00%", "m (FC, x)"] + ["N/A"] * 7) + "\n")
+    with pytest.raises(RuntimeError, match="more cells than columns"):
+        bfcl.read_overall(path)
 
 
 def test_repeats_unsupported(tmp_path):
