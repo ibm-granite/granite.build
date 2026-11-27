@@ -696,6 +696,36 @@ def test_real_child_infra_errors_fail_generate_and_score_until_retried(tmp_path,
     assert out["per_category"]["simple"] == {"accuracy": 0.0, "correct_count": 0, "total_count": 2}  # refusals
 
 
+def _v3_irrelevance(tmp_path, recs, limit):
+    d = tmp_path / "out" / "bfcl" / "result" / bfcl_v3_child.REGISTRY_NAMES["fc"]
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "BFCL_v3_irrelevance_result.json").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    cfg = RunConfig(model="m", output_dir=tmp_path / "out", limit=limit, phase="score",
+                    options={"categories": "irrelevance"})
+    return bfcl_v3.BFCLv3(cfg).run("", "m")
+
+
+@needs_v3_venv
+def test_real_child_without_limit_leaves_a_failed_entry_out(tmp_path, monkeypatch):
+    """The production shape (no --limit): v3's full evaluation would score the one
+    failed irrelevance entry as correct (240/240); it must count nowhere instead."""
+    monkeypatch.setenv(bfcl_v3.PYTHON_ENV, V3_PYTHON)
+    recs = [{"id": f"irrelevance_{i}", "result": INFRA if i == 0 else "I cannot help with that."} for i in range(240)]
+    out = _v3_irrelevance(tmp_path, recs, None)
+    assert out["per_category"]["irrelevance"] == {"accuracy": 1.0, "correct_count": 239, "total_count": 239}
+    assert (out["entries_failed"], out["entries_total"]) == (1, 240)
+
+
+@needs_v3_venv
+def test_real_child_smaller_limit_evaluates_only_its_selection(tmp_path, monkeypatch):
+    """Generated at a larger scope, scored with a smaller --limit: results outside the
+    selection (an infrastructure error among them) are not evaluated."""
+    monkeypatch.setenv(bfcl_v3.PYTHON_ENV, V3_PYTHON)
+    recs = [{"id": f"irrelevance_{i}", "result": INFRA if i == 10 else "I cannot help with that."} for i in range(20)]
+    out = _v3_irrelevance(tmp_path, recs, 5)
+    assert out["per_category"]["irrelevance"] == {"accuracy": 1.0, "correct_count": 5, "total_count": 5}
+
+
 @needs_v3_venv
 def test_real_child_leaves_failed_entries_out_below_the_limit(tmp_path, monkeypatch):
     """BFCL v3's own evaluator through the parent: at max_failed_frac (1/20 = 0.05) the

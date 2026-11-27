@@ -544,23 +544,29 @@ def child_main(config_path: str) -> None:
 
 
 def evaluate_without(root: Path, cfg: dict, failed: set[str], evaluation_main) -> None:
-    """BFCL's evaluation with the failed entries' results left out. Only the result
-    files are filtered (BFCL aligns prompts and ground truth by position, and some
-    ground-truth ids differ from the prompt ids); partial evaluation then scores the
-    entries present, so a failed entry counts nowhere, irrelevance included."""
-    if failed:
+    """BFCL's evaluation of this run's selection, the failed entries left out. With a
+    --limit or a failure, only the selected, unfailed results are loaded: a result
+    file can also hold entries outside the selection (generated earlier at a larger
+    scope), which partial evaluation would otherwise score, an infrastructure error
+    among them as correct in irrelevance. Only the result files are filtered (BFCL
+    aligns prompts and ground truth by position, and some ground-truth ids differ
+    from the prompt ids); partial evaluation then scores exactly the entries kept."""
+    partial = cfg["limit"] is not None or bool(failed)
+    if partial:
         from bfcl_eval.eval_checker import eval_runner
 
+        ids = json.loads((root / TEST_IDS_FILE).read_text())
+        keep = {i for cat_ids in ids.values() for i in cat_ids} - set(failed)
         load, results = eval_runner.load_file, (root / "result").resolve()
 
-        def load_without_failed(path, *args, **kwargs):
+        def load_selection(path, *args, **kwargs):
             entries = load(path, *args, **kwargs)
             if Path(path).resolve().is_relative_to(results):
-                entries = [e for e in entries if not (isinstance(e, dict) and e.get("id") in failed)]
+                entries = [e for e in entries if not isinstance(e, dict) or e.get("id") in keep]
             return entries
 
-        eval_runner.load_file = load_without_failed
-    evaluation_main([REGISTRY_NAME], cfg["categories"], None, None, cfg["limit"] is not None or bool(failed))
+        eval_runner.load_file = load_selection
+    evaluation_main([REGISTRY_NAME], cfg["categories"], None, None, partial)
 
 
 def sampling_temperature(cfg: dict) -> float:

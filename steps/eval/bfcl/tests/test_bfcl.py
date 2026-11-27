@@ -75,6 +75,17 @@ def test_prune_infra_errors_keeps_model_failures(tmp_path):
     assert bfcl.prune_infra_errors(tmp_path / "missing.json") == 0
 
 
+def test_an_over_length_prompt_is_a_model_failure_not_infra():
+    """vLLM 0.27.1 rejects a prompt longer than the context with a 400 (its /tokenize
+    does not: TokenizeParams has no max_total_tokens). That rejection is scored as the
+    entry's (wrong) answer, as BFCL's prompt mode does, not retried forever."""
+    err = ("Error during inference: Error code: 400 - {'object': 'error', 'message': \"This model's maximum "
+           "context length is 32768 tokens. However, you requested 4096 output tokens and your prompt contains "
+           "31000 input tokens\", 'type': 'BadRequestError', 'code': 400}")
+    assert not bfcl.is_infra_error({"id": "x", "result": err})
+    assert bfcl.is_infra_error({"id": "x", "result": "Error during inference: Error code: 503 - overloaded"})
+
+
 def test_read_overall_and_category_scores(tmp_path):
     csv_path = tmp_path / "data_overall.csv"
     cols = ["Rank", "Overall Acc", "Model", *bfcl.OVERALL_GROUPS.values()]
@@ -490,6 +501,47 @@ def test_child_infra_errors_fail_generate_and_score(tmp_path, harness_env):
     assert bfcl.infra_error_ids(root) == ["simple_python_0"]
     assert _child(root, "score", ["simple_python"]).returncode == bfcl.INFRA_EXIT
     assert not list((root / "score").rglob("*_score.json"))
+
+
+def _irrelevance_dir(tmp_path):
+    from bfcl_eval.utils import get_directory_structure_by_category
+
+    d = tmp_path / "out" / "bfcl" / "result" / bfcl.REGISTRY_NAME / get_directory_structure_by_category("irrelevance")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _score_irrelevance(tmp_path, limit):
+    from granite_evals.registry import RunConfig
+
+    cfg = RunConfig(model="m", output_dir=tmp_path / "out", limit=limit, phase="score", options={"categories": "irrelevance"})
+    return bfcl.BFCLv4(cfg).run("", "m")
+
+
+def test_score_without_limit_leaves_a_failed_entry_out(tmp_path, harness_env):
+    """The production shape (no --limit): BFCL's full evaluation would score the one
+    failed irrelevance entry as correct; it must count nowhere instead."""
+    from bfcl_eval.utils import load_dataset_entry
+
+    ids = [e["id"] for e in load_dataset_entry("irrelevance")]
+    recs = [{"id": i, "result": INFRA if n == 0 else "I cannot help with that."} for n, i in enumerate(ids)]
+    (_irrelevance_dir(tmp_path) / "BFCL_v4_irrelevance_result.json").write_text(
+        "".join(json.dumps(r) + "\n" for r in recs))
+    out = _score_irrelevance(tmp_path, None)
+    assert out["per_category"]["irrelevance"]["total_count"] == len(ids) - 1
+    assert (out["entries_failed"], out["entries_total"]) == (1, len(ids))
+
+
+def test_a_smaller_limit_evaluates_only_its_selection(tmp_path, harness_env):
+    """An output dir generated at a larger scope, scored with a smaller --limit: the
+    results outside the selection (an infrastructure error among them, which
+    irrelevance would count as correct) are not evaluated at all."""
+    recs = [{"id": f"irrelevance_{i}", "result": INFRA if i == 10 else "I cannot help with that."} for i in range(20)]
+    (_irrelevance_dir(tmp_path) / "BFCL_v4_irrelevance_result.json").write_text(
+        "".join(json.dumps(r) + "\n" for r in recs))
+    out = _score_irrelevance(tmp_path, 5)
+    assert out["per_category"]["irrelevance"] == {"accuracy": 1.0, "correct_count": 5, "total_count": 5}
+    assert (out["entries_failed"], out["entries_total"]) == (0, 5)
 
 
 def test_score_leaves_failed_entries_out_below_the_limit(tmp_path, harness_env):
