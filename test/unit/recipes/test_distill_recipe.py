@@ -15,6 +15,7 @@ and the steps' schemas.
 
 import pathlib
 import re
+import sys
 
 import jinja2
 import pytest
@@ -408,6 +409,19 @@ def test_sampled_opd_with_the_fused_liger_jsd_fails_to_render(tmp_path, sopd):
             "USE_SAMPLED_OPD_LOSS": "true",
             "LAST_MESSAGE_ONLY": "true",
         },
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "jsd"},
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "kl_interpolation"},
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "liger_fused_jsd"},
+        {"LMBDA_MODE": "on-policy", "LOSS_ARM": "liger_fused_kl_interpolation"},
+        {"LMBDA_MODE": "ramp", "LOSS_ARM": "distillm2"},
+        {"LMBDA_MODE": "ramp", "LOSS_ARM": "distillm2_like"},
+        {
+            "LMBDA_MODE": "on-policy",
+            "LMBDA": "0.5",
+            "LOSS_ARM": "reversed_distillm2_like",
+        },
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "ce"},
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": " ULD ", "LAST_MESSAGE_ONLY": "true"},
     ],
     ids=lambda p: ",".join(
         f"{k}={v}" for k, v in p.items() if k != "LAST_MESSAGE_ONLY"
@@ -415,12 +429,129 @@ def test_sampled_opd_with_the_fused_liger_jsd_fails_to_render(tmp_path, sopd):
 )
 def test_what_the_recipe_renders_the_step_renderer_accepts(tmp_path, params):
     """End to end: the recipe's train target, through the logit-distill step's own
-    template and render_gold_config.py, renders a gold config. A config the recipe
-    accepts must not die at the step's launch. LOSS_ARM=sampled_opd once did: the
-    recipe passed use_sampled_opd_loss false beside it, which the renderer refuses."""
+    template and render_gold_config.py, renders a gold config. One config every arm
+    runs with, so the grid below cannot pass by the recipe refusing an arm outright.
+    LOSS_ARM=sampled_opd once died at launch: the recipe passed use_sampled_opd_loss
+    false beside it, which the renderer refuses."""
     cfg = _logit_distill_renders(tmp_path, _render(tmp_path, **params))
     if params.get("LOSS_ARM") == "sampled_opd" or "USE_SAMPLED_OPD_LOSS" in params:
         assert cfg["use_sampled_opd_loss"] is True
+
+
+@pytest.mark.parametrize(
+    "params, refusal",
+    [
+        (
+            dict(LOSS_ARM="uld", USE_SAMPLED_OPD_LOSS="true", LMBDA_MODE="on-policy"),
+            "USE_SAMPLED_OPD_LOSS_must_be_false_beside_a_LOSS_ARM_other_than_sampled_opd",
+        ),
+        (
+            dict(LOSS_ARM="jsd", USE_SAMPLED_OPD_LOSS="true", LMBDA_MODE="on-policy"),
+            "USE_SAMPLED_OPD_LOSS_must_be_false_beside_a_LOSS_ARM_other_than_sampled_opd",
+        ),
+        (
+            dict(LOSS_ARM="uld", USE_LIGER_FUSED_JSD="true", LMBDA_MODE="off-policy"),
+            "USE_LIGER_FUSED_JSD_must_be_false_beside_a_LOSS_ARM_that_does_not_imply_it",
+        ),
+        (
+            dict(LOSS_ARM="adaptive_kld", LMBDA_MODE="off-policy"),
+            "LOSS_ARM_must_be_empty_or_one_of_the_logit_distill_steps_arms",
+        ),
+        (
+            dict(LOSS_ARM="ce", LMBDA_MODE="on-policy"),
+            "LMBDA_MODE_must_be_off_policy_for_LOSS_ARM_ce",
+        ),
+        (
+            dict(LOSS_ARM="distillm2", LMBDA_MODE="off-policy"),
+            "LOSS_ARM_distillm2_needs_LMBDA_MODE_ramp_or_an_LMBDA_strictly_between_0_and_1",
+        ),
+        (
+            dict(LOSS_ARM="kl_interpolation", BETA="1.0", LMBDA_MODE="off-policy"),
+            "BETA_must_be_strictly_between_0_and_1_for_the_kl_interpolation_arms",
+        ),
+    ],
+    ids=["uld+sopd", "jsd+sopd", "uld+liger", "rejected", "ce", "distillm2", "beta"],
+)
+def test_an_arm_the_step_would_refuse_fails_to_render(tmp_path, params, refusal):
+    params = {"LAST_MESSAGE_ONLY": "true", **params}
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert refusal in str(err.value)
+
+
+@pytest.mark.parametrize("arm", ["liger_fused_jsd", "liger_fused_kl_interpolation"])
+def test_a_liger_arm_passes_the_switch_it_implies(tmp_path, arm):
+    """USE_LIGER_FUSED_JSD defaults to false, which the step's renderer refuses beside a
+    liger arm; the recipe passes true."""
+    gold = _gold(_render(tmp_path, LMBDA_MODE="off-policy", LOSS_ARM=arm))
+    assert gold["use_liger_fused_jsd"] is True and gold["loss_arm"] == arm
+
+
+def test_the_arm_is_passed_on_as_the_recipe_reads_it(tmp_path):
+    """Trimmed and lowercased: the recipe reads it so, and the renderer would refuse
+    the raw value."""
+    gold = _gold(
+        _render(
+            tmp_path,
+            LMBDA_MODE="on-policy",
+            LOSS_ARM=" Sampled_OPD ",
+            LAST_MESSAGE_ONLY="true",
+        )
+    )
+    assert gold["loss_arm"] == "sampled_opd"
+
+
+def _renderer_arms():
+    sys.path.insert(0, str(_STEPS / "train/distill/logit-distill/skypilot/src"))
+    import render_gold_config as rgc
+
+    return rgc
+
+
+_RGC = _renderer_arms()
+# Every arm the step's renderer knows or rejects, none, and one in mixed case, which the
+# recipe normalises. Arms with a beta requirement also get the two ends of BETA.
+_GRID = [
+    dict(
+        LOSS_ARM=arm,
+        LMBDA_MODE=mode,
+        USE_LIGER_FUSED_JSD=liger,
+        USE_SAMPLED_OPD_LOSS=sopd,
+        LAST_MESSAGE_ONLY=lmo,
+        **({"BETA": beta} if beta is not None else {}),
+    )
+    for arm in [
+        "",
+        *sorted(_RGC.LOSS_ARMS),
+        *sorted(_RGC.REJECTED_LOSS_ARMS),
+        "Sampled_OPD",
+    ]
+    for mode in _MODES
+    for liger in ("false", "true")
+    for sopd in ("false", "true")
+    for lmo in ("false", "true")
+    for beta in (
+        (None, "0.0", "1.0")
+        if "beta_strictly_between" in _RGC.LOSS_ARMS.get(arm, {}).get("requires", {})
+        else (None,)
+    )
+]
+
+
+@pytest.mark.parametrize(
+    "params", _GRID, ids=lambda p: ",".join(f"{k}={v}" for k, v in p.items())
+)
+def test_every_config_the_recipe_accepts_the_step_renderer_accepts(tmp_path, params):
+    """Every LOSS_ARMS arm x LMBDA_MODE x USE_LIGER_FUSED_JSD x USE_SAMPLED_OPD_LOSS x
+    LAST_MESSAGE_ONLY (and BETA for the arms that need it in range): either the recipe
+    refuses it before submission, or the step's renderer accepts what it renders. The
+    grid comes from the renderer's own arm table, so a new arm or requirement is
+    checked without editing this test."""
+    try:
+        rendered = _render(tmp_path, **params)
+    except jinja2.exceptions.UndefinedError:
+        return  # refused before submission
+    _logit_distill_renders(tmp_path, rendered)
 
 
 def _logit_distill_renders(tmp_path, rendered):

@@ -123,6 +123,40 @@ $${ USE_LIGER_FUSED_JSD_must_be_false_for_the_sampled_OPD_loss }
 <%- if SOPD and not LMO %>
 $${ LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss }
 <%- endif %>
+# ── LOSS_ARM against the step's arm table ──────────────────────────────────
+# The step's renderer (LOSS_ARMS in render_gold_config.py) refuses an arm it does not
+# know, an arm whose requirements the run does not meet, and an arm beside a standalone
+# switch that contradicts it, but only once the allocation is up. Refused here by the
+# same rules; test_distill_recipe.py renders every arm x mode x switch through both and
+# checks that the renderer takes every config this file takes. The arm is passed on
+# trimmed and lowercased, as it is read here.
+<%- set ARM = LOSS_ARM | string | trim | lower %>
+<%- if ARM not in ("", "jsd", "kl_interpolation", "liger_fused_jsd", "liger_fused_kl_interpolation", "distillm2", "distillm2_like", "reversed_distillm2_like", "sampled_opd", "uld", "ce") %>
+$${ LOSS_ARM_must_be_empty_or_one_of_the_logit_distill_steps_arms }
+<%- endif %>
+# A named arm implies both switches (USE_LIGER_FUSED_JSD true for the two liger arms,
+# USE_SAMPLED_OPD_LOSS true for sampled_opd, both false otherwise), so a switch set true
+# against it is refused, and the implied value is what reaches the step.
+<%- set LIGER_ARM = ARM in ("liger_fused_jsd", "liger_fused_kl_interpolation") %>
+<%- set LIGER = LIGER_ARM or (USE_LIGER_FUSED_JSD | string | trim | lower) in YES %>
+<%- if ARM and not LIGER_ARM and LIGER %>
+$${ USE_LIGER_FUSED_JSD_must_be_false_beside_a_LOSS_ARM_that_does_not_imply_it }
+<%- endif %>
+<%- if ARM and ARM != "sampled_opd" and (USE_SAMPLED_OPD_LOSS | string | trim | lower) in YES %>
+$${ USE_SAMPLED_OPD_LOSS_must_be_false_beside_a_LOSS_ARM_other_than_sampled_opd }
+<%- endif %>
+# The arms' lmbda and beta requirements. ce trains on the corpus alone (lmbda 0); the
+# distillm2 arms need both policy classes, which a ramp has and a constant lmbda has
+# only strictly between 0 and 1; the kl_interpolation arms need 0 < BETA < 1.
+<%- if ARM == "ce" and L != 0.0 %>
+$${ LMBDA_MODE_must_be_off_policy_for_LOSS_ARM_ce }
+<%- endif %>
+<%- if ARM in ("distillm2", "distillm2_like", "reversed_distillm2_like") and not ((SCHEDULE == "linear" and L > 0.0) or 0.0 < L < 1.0) %>
+$${ LOSS_ARM_distillm2_needs_LMBDA_MODE_ramp_or_an_LMBDA_strictly_between_0_and_1 }
+<%- endif %>
+<%- if ARM in ("kl_interpolation", "liger_fused_kl_interpolation") and not (0.0 < BETA | float < 1.0) %>
+$${ BETA_must_be_strictly_between_0_and_1_for_the_kl_interpolation_arms }
+<%- endif %>
 # ── Experiment tracking, checked once ──────────────────────────────────────
 # One tool per run, or none. The steps (tracking.py) refuse the same combinations,
 # but only once the allocation is up; refused here before submission.
@@ -758,8 +792,8 @@ $${ corpus_inputs() }
               temperature: $${TEMPERATURE}
               lmbda: $${L}
               beta: $${BETA}
-              use_liger_fused_jsd: $${USE_LIGER_FUSED_JSD}
-              loss_arm: "$${LOSS_ARM}"
+              use_liger_fused_jsd: <% if LIGER_ARM %>true<% else %>$${USE_LIGER_FUSED_JSD}<% endif %>
+              loss_arm: "$${ARM}"
 <%- if ULD and not ONLINE %>
               # The step emits this off-policy for the uld arm alone, and the on-policy
               # block below, which carries it otherwise, is not rendered here.
