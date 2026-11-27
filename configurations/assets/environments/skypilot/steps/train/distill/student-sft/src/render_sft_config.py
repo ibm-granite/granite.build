@@ -13,10 +13,10 @@
 # as a two-character escape. That is a property of granite.build's transport, so the
 # compensation lives on granite.build's side rather than in this ported file.
 #
-"""Validate distill-sft's step config and render it as an SFT YAML file.
+"""Validate student-sft's step config and render it as an SFT YAML file.
 
 WHY THIS IS A MODULE AND NOT INLINE IN run-sft.sh, and why it is a near-twin of
-distill-gold-train's render_gold_config.py rather than a copy of it: this step is the CONTROL
+logit-distill's render_gold_config.py rather than a copy of it: this step is the CONTROL
 the distillation arms are measured against, so every way it can silently differ from them is a
 way the comparison stops meaning anything. The rules that must be IDENTICAL on both sides
 (resume, the tokenizer agreement, the topology bounds) are imported from
@@ -214,7 +214,7 @@ def validate(args: argparse.Namespace, *, check_paths: bool = True) -> None:
                 f"{', '.join(changed)} was set, but precomputed_logits_dir is empty -- so this "
                 "is the plain-SFT control arm and every kd_* key is silently ignored (they are "
                 "read only on the precomputed-logits path). Point precomputed_logits_dir at a "
-                "distill-logit-precompute output to make them take effect, or return them to "
+                "teacher-logits output to make them take effect, or return them to "
                 "their defaults to keep this a control."
             )
 
@@ -245,7 +245,7 @@ def validate(args: argparse.Namespace, *, check_paths: bool = True) -> None:
     if missing:
         raise ConfigError("input validation failed:\n  - " + "\n  - ".join(missing))
 
-    # Shared with distill-gold-train: the student must carry a chat template, and must be the
+    # Shared with logit-distill: the student must carry a chat template, and must be the
     # tokenizer the corpus was built for. See render_common for why each is an assertion.
     render_common.validate_student_against_corpus(
         args.student_model_path, args.corpus_path
@@ -265,7 +265,7 @@ def validate(args: argparse.Namespace, *, check_paths: bool = True) -> None:
             "response_template is empty, so there is no way to locate the assistant spans: "
             "apply_chat_template's assistant mask will be all zeros and sft.py raises on it. "
             "Either install patches/granite-chat-template-generation-markers/ (which "
-            "distill-tokenizer-align does) or set response_template to the literal that "
+            "tokenizer-align does) or set response_template to the literal that "
             "precedes each assistant turn."
         )
 
@@ -444,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         validate(args, check_paths=not args.no_check_paths)
         cfg = render(args)
     except ConfigError as exc:
-        print(f"FATAL [distill-sft config]: {exc}", file=sys.stderr)
+        print(f"FATAL [student-sft config]: {exc}", file=sys.stderr)
         return 2
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

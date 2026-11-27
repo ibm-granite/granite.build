@@ -1,4 +1,4 @@
-# distill-sft step for the SkyPilot environment (LSF / BlueVela).
+# student-sft step for the SkyPilot environment (LSF / BlueVela).
 #
 # Plain SFT on the distillation corpus, with NO teacher. Runs in the shared
 # distillation GPU image (built by steps/train/distill/Makefile). No Dockerfile

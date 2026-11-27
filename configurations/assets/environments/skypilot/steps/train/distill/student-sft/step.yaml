@@ -4,7 +4,7 @@ version: 1.0.0
 #
 # PRIMARY ROLE: the chat-template WARM-UP stage that runs before distillation. A raw base
 # student has never seen the teacher's chat template or turn markers; this step's checkpoint
-# is what distill-gold-train actually distills from. Skipping straight to distillation on a
+# is what logit-distill actually distills from. Skipping straight to distillation on a
 # base model conflates "did not learn the template" with "did not learn from the teacher" in
 # every metric the later steps report.
 #
@@ -25,11 +25,11 @@ config:
     # mismatch between what the recipe asked for and what LSF granted is a run that
     # trains at a different effective batch size than the config says.
     gpus_per_node: 8
-    # 1, unlike distill-gold's 2. There is no vLLM server here and no student rollout, so
+    # 1, unlike logit-distill's 2. There is no vLLM server here and no student rollout, so
     # there is no split-role allocation to size. run-sft.sh REFUSES nodes > 1, because it
     # gets no host list and a multi-node accelerate launch would have no main_process_ip,
     # port or machine_rank per node. Lifting that needs the provisioner's RANK/TOTAL_NODES/
-    # MASTER_ADDR fed in exactly as distill-gold does — a deliberate follow-up, not a
+    # MASTER_ADDR fed in exactly as logit-distill does — a deliberate follow-up, not a
     # default.
     nodes: 1
 
@@ -53,7 +53,7 @@ config:
     #
     # sft.py builds assistant_masks from apply_chat_template's {% generation %} markers and
     # raises if the resulting mask is all zeros. This is its FALLBACK: a literal string
-    # searched for in the rendered token ids. With distill-tokenizer-align in the pipeline
+    # searched for in the rendered token ids. With tokenizer-align in the pipeline
     # the markers are present, so the fallback should never be reached — it is here for a
     # student that arrives without them.
     #
@@ -65,7 +65,7 @@ config:
     #     '<|im_start|>assistant\n'  ->  '<|im_start|>assistant'
     #
     # which masks a span one token off, trains, and reports success — measured on
-    # distill-gold (build d8470f14) and fixed there the same way. So this is SINGLE-quoted
+    # logit-distill (build d8470f14) and fixed there the same way. So this is SINGLE-quoted
     # YAML holding a literal backslash-n, which has no trailing whitespace for anything to
     # strip, and the launcher decodes it once inside the container.
     response_template: '<|im_start|>assistant\n'
@@ -73,7 +73,8 @@ config:
     max_length: 4096
 
     # ── Optimization. Same keys as logit-distill, but not all the same defaults: see
-    # USAGE.md, "Using this step as a control", before running this step as a control.
+    # USAGE.md (published as README.md), "Using this step as a control", before running
+    # this step as a control.
     per_device_train_batch_size: 1
     gradient_accumulation_steps: 8
     learning_rate: "1e-6"
@@ -85,7 +86,7 @@ config:
     resume: auto
     # Relative resolves against $DISTILL_HOME (/opt/distill). The distill steps share
     # exactly one deepspeed config, baked into the GPU image at
-    # $DISTILL_HOME/configs/deepspeed/ -- distill-sft has
+    # $DISTILL_HOME/configs/deepspeed/ -- student-sft has
     # no config of its own and reuses that one. configs/distillation/deepspeed/
     # was the pre-port path (an in-image /opt copy that does not exist in this
     # image), and stayed here as a stale default through the port -- confirmed
@@ -111,7 +112,7 @@ config:
 
     # ── Off-policy KD from precomputed logits. SETTING THIS STOPS THIS BEING A CONTROL.
     # It becomes forward-KL distillation against a frozen teacher — the
-    # distill-logit-precompute arm. Empty on purpose.
+    # teacher-logits arm. Empty on purpose.
     precomputed_logits_dir: ""
     kd_top_k: 256
     kd_weight: 1.0
@@ -159,7 +160,7 @@ inputs:
     student:
       type: model
       accept: [uri, binding]
-    # distill-corpus-prep's `corpus`. Text, not tokens — sft.py tokenizes at train time —
+    # data-prep's `corpus`. Text, not tokens — sft.py tokenizes at train time —
     # but tokenizer-specific anyway, because prep measured its length filter and its
     # assistant-mask check in tokens.
     corpus:
@@ -186,7 +187,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5"
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:a6a41e9a"
           resources: {}
           envs:
             # The SLURM executor runs the task under `env -u PYTHONPATH` and without
@@ -196,7 +197,7 @@ environment_configs:
             # NO HF_HUB_OFFLINE: this step LOADS A MODEL, and the `kernels` package resolves
             # kernels-community/causal-conv1d through the Hub API at load time, which offline
             # mode turns into OfflineModeIsEnabled after the load has begun (measured on
-            # distill-eval, build 15267e81). distill-gold, which trains on this same image,
+            # teacher-divergence, build 15267e81). logit-distill, which trains on this same image,
             # sets HF_HOME and leaves the Hub reachable.
             # Fetch any required hub kernel that is not already in the image's cache,
             # inside the job. run-sft.sh PREFLIGHTS the kernel list and refuses without
@@ -305,7 +306,7 @@ environment_configs:
             # trainer through a BARE `accelerate` (ACCELERATE="${ACCELERATE:-accelerate}").
             # Without this the run reaches the launch and dies with
             # `accelerate: command not found`, rc=127, after the model has been resolved
-            # and the kernels fetched (build 75fa47d2). distill-gold exports the same line
+            # and the kernels fetched (build 75fa47d2). logit-distill exports the same line
             # for the same reason; the dispatcher runs this with `bash <file>` (non-login),
             # so the export sticks — a login shell would re-run /etc/profile and drop it.
             # And name it explicitly too, via the script's own guarded knob, so the launch
@@ -378,7 +379,7 @@ environment_configs:
             echo "GB_ARTIFACT_ID:checkpoint GB_ARTIFACT_PATH:${OUT_DIR}"
     monitors:
       skypilot_monitor:
-        # `periodic` retrieval, like distill-gold: a training run lasts far longer than the
+        # `periodic` retrieval, like logit-distill: a training run lasts far longer than the
         # library default on_completion mode surfaces anything for, so a stalled run would
         # look identical to a slow one.
         ref: space://monitors/skypilot
@@ -388,7 +389,7 @@ environment_configs:
             mode: "{{ config.log_retrieval_mode | default('periodic') }}"
             interval_seconds: "{{ config.log_retrieval_interval_seconds | default(900) }}"
           extra_event_configs:
-          # TRL logs a metrics dict, the same shape distill-gold pins against.
+          # TRL logs a metrics dict, the same shape logit-distill pins against.
           - event_type: WORKLOAD_STATUS_EVENT
             line_regex: "'loss':"
             event_fields:

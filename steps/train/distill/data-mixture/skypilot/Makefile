@@ -1,4 +1,4 @@
-# corpus-sources step for the SkyPilot environment (LSF / BlueVela).
+# data-mixture step for the SkyPilot environment (LSF / BlueVela).
 #
 # Builds ONE prep-ready corpus file from several raw SFT splits: renames
 # `conversations` to `messages`, reservoir-samples each split in proportion to its

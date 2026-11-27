@@ -6,7 +6,7 @@
 
 WHY THIS IS A SEPARATE QUESTION FROM THE CORPUS MANIFEST.
 
-`distill-corpus-prep` writes `corpus_manifest.json` plus a per-row `corpus_rows.jsonl`, so
+`data-prep` writes `corpus_manifest.json` plus a per-row `corpus_rows.jsonl`, so
 the corpus can say exactly which source records it kept, which it dropped, and why. That is
 necessary and it is not sufficient, because the TRAINER filters again -- and it filters
 differently depending on the arm:
@@ -158,7 +158,7 @@ def collect_ids(dataset) -> tuple[list[str] | None, str]:
     if ROW_ID_FIELD not in cols:
         return None, (
             f"the corpus carries no {ROW_ID_FIELD!r} column, so rows have no "
-            "identity to report -- re-run distill-corpus-prep with --emit-row-id"
+            "identity to report -- re-run data-prep with --emit-row-id"
         )
     ids = list(dataset[ROW_ID_FIELD])
     if any(not isinstance(i, str) or not i for i in ids):

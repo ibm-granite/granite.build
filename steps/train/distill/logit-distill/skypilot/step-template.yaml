@@ -243,7 +243,7 @@ config:
     # detect. See LOSS_ARMS in src/render_gold_config.py, which lists each arm and why.
     loss_arm: ""
     # Verify the student's tokenizer is the one the corpus was built with. Off by default;
-    # ON is worth it for any build that chains distill-corpus-prep into this step, because
+    # ON is worth it for any build that chains data-prep into this step, because
     # a mismatch does not error -- it trains on mis-segmented text at full speed with a
     # falling loss.
     check_corpus_tokenizer: false
@@ -316,6 +316,8 @@ config:
     vllm_sync_frequency: 1
     top_p: 0.95
     use_sampled_opd_loss: false
+    # Supervise only the final assistant turn. Emitted on-policy, and off-policy for
+    # loss_arm uld alone, which requires it true (ULD's teacher is the last turn only).
     last_message_only: false
     clip_alpha: 0.1
     opd_importance_sampling: false
@@ -357,7 +359,7 @@ inputs:
     teacher:
       type: model
       accept: [uri, binding]
-    # distill-corpus-prep's `corpus`. Must be think-filtered ("nothink"): an
+    # data-prep's `corpus`. Must be think-filtered ("nothink"): an
     # assistant completion containing an inline <think>...</think> breaks gold's
     # completion extraction.
     corpus:
@@ -365,7 +367,7 @@ inputs:
       accept: [uri, binding]
   optional:
     # An EXTERNAL vLLM server, reached by URL, instead of carving nodes out of
-    # this allocation: bind distill-vllm-server's mem:// `vllm_url`. When
+    # this allocation: bind student-rollout-generator's mem:// `vllm_url`. When
     # bound, EVERY node here trains and the role split below does not happen; the
     # trainer is given the address on gold.py's command line. Unbound keeps the
     # in-allocation split that gold_config.vllm_num_servers alone selects.
@@ -400,7 +402,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5"
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:a6a41e9a"
           # Node count and accelerators come from the build.yaml
           # (compute_config.num_nodes and launcher_config.resources) so one step
           # serves the smoke and reference runs.
@@ -920,10 +922,27 @@ environment_configs:
               done
             }
 
+            # cleanup_watcher's kill reaches this subshell, not its children, so a sleep left
+            # running could outlive the script and hold its stdout and stderr open for up to
+            # CKPT_WATCH_INTERVAL after it exits. Two things prevent that:
+            #   - the sleep runs in the background under a TERM trap that kills every job of
+            #     this subshell (`jobs -p`), not a remembered PID, so a TERM that lands between
+            #     `&` and `$!` still finds it; `wait` returns at once on a trapped signal;
+            #   - the sleep inherits no stdout or stderr, so even one that survived would hold
+            #     nothing. Nothing is lost: sleep prints only an error for an invalid
+            #     interval, and the status check below reports that instead.
             watch_checkpoints() {
+              trap 'kill $(jobs -p) 2>/dev/null || true; exit 0' TERM
               while true; do
                 emit_new_checkpoints
-                sleep "$CKPT_WATCH_INTERVAL"
+                sleep "$CKPT_WATCH_INTERVAL" </dev/null >/dev/null 2>&1 &
+                _watch_sleep=$!
+                _watch_rc=0
+                wait "$_watch_sleep" || _watch_rc=$?
+                if [ "$_watch_rc" -ne 0 ] && [ "$_watch_rc" -le 128 ]; then
+                  echo "logit-distill: checkpoint watcher: 'sleep $CKPT_WATCH_INTERVAL' failed (status $_watch_rc); no more mid-run checkpoint artifacts, the final sweep still emits them" >&2
+                  return 0
+                fi
               done
             }
 

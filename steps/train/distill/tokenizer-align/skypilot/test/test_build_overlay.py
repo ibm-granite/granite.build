@@ -400,7 +400,7 @@ def test_require_chatml_flag_is_exposed_and_defaults_to_true(tmp_path):
 #
 # These live in this step's suite because THIS step is what writes the identity:
 # build_overlay records the source tokenizer's name and retag_student records the teacher's.
-# distill-gold-train reads the same value through the same module and refuses a mismatch.
+# logit-distill reads the same value through the same module and refuses a mismatch.
 #
 # The module exists at all because that guard was INERT: render_gold_config read
 # `<model>/tokenizer_identity.json`, and nothing in the repo wrote it, so the read returned

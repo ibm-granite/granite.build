@@ -3,7 +3,7 @@
 """Contract tests for step-template.yaml.
 
 Scope note: the source-delivery half of this template is spliced VERBATIM from
-distill-tokenizer-align, and that step's test_source_contract.py asserts every ported
+tokenizer-align, and that step's test_source_contract.py asserts every ported
 step's copy is byte-identical to it. So this file asserts only what is specific to THIS
 step — most importantly the response template's trailing newline, which is data and which
 cannot cross gbserver's config fill as a real character.
@@ -88,7 +88,7 @@ class TestResponseTemplateNewline:
     built without keep_trailing_newline, so Jinja strips exactly one trailing newline from
     each VALUE. A real newline in the config would therefore never reach the container, and
     the run would mask a span one token off, train, and report success — measured on
-    distill-gold (build d8470f14). So it travels as a two-character escape and is decoded
+    logit-distill (build d8470f14). So it travels as a two-character escape and is decoded
     inside the container.
     """
 
@@ -193,9 +193,9 @@ class TestLauncher:
         assert launcher["envs"]["GOLD_PREFETCH_KERNELS"] == "1"
 
     def test_the_hub_is_reachable_because_this_step_loads_models(self, launcher):
-        """Same reason as distill-eval: granite loading resolves
+        """Same reason as teacher-divergence: granite loading resolves
         kernels-community/causal-conv1d through the Hub API, and HF_HUB_OFFLINE turns that
-        into OfflineModeIsEnabled after the load has begun. distill-gold, which trains on
+        into OfflineModeIsEnabled after the load has begun. logit-distill, which trains on
         this same image, sets HF_HOME and leaves the Hub reachable."""
         assert "HF_HUB_OFFLINE" not in launcher["envs"]
         # HF_HOME is the image's ENV (a fixed in-container mount point), never a step setting.
@@ -292,8 +292,8 @@ class TestFlagSurface:
     # Consumed by the run block's own Jinja guard and deliberately never reaching
     # run-sft.sh: the residency preflight runs BEFORE the trainer is launched, in the
     # template, so a `--check-weight-residency` flag on run-sft.sh would be one nothing
-    # reads. Named after distill-gold's set of the same name. That both keys are actually
-    # wired, switchable and overridable is asserted in distill-gold's
+    # reads. Named after logit-distill's set of the same name. That both keys are actually
+    # wired, switchable and overridable is asserted in logit-distill's
     # test_weight_residency_contract.py, which owns them across the three steps that carry
     # the preflight -- so the exemption cannot hide a key that goes nowhere.
     STEP_ONLY = ("check_weight_residency", "allow_offline_weights")

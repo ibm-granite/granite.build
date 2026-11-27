@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the corpus-pin-check step-template.yaml.
+"""Contract tests for the data-validate step-template.yaml.
 
 The run script is rendered with gbserver's own template filler and executed against a
 fixture corpus, so an argument that reaches the script in the wrong position fails here.

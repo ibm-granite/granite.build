@@ -264,6 +264,70 @@ def test_zero_and_empty_drop_settings_render(tmp_path, mode):
     _render(tmp_path, LMBDA_MODE=mode, MIN_COMPLETION_LENGTH="")
 
 
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("lmo", [None, "false"], ids=["unset", "false"])
+def test_uld_without_last_message_only_fails_to_render(tmp_path, mode, lmo):
+    """ULD's teacher is the last assistant turn alone, so with LAST_MESSAGE_ONLY false no
+    multi-turn row aligns and the run trains at zero gradient. Refused before
+    submission, naming the parameter, rather than at launch on a held allocation."""
+    params = {"LMBDA_MODE": mode, "LOSS_ARM": "uld"}
+    if lmo is not None:
+        params["LAST_MESSAGE_ONLY"] = lmo
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld" in str(err.value)
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_uld_with_last_message_only_reaches_the_step(tmp_path, mode):
+    """Off-policy the recipe passes the key only for uld, since the step emits it
+    off-policy for that arm alone; on-policy its usual block carries it. Once either way.
+    """
+    text = _render_text(
+        tmp_path, LMBDA_MODE=mode, LOSS_ARM="uld", LAST_MESSAGE_ONLY="true"
+    )
+    gold = _gold(yaml.safe_load(text))
+    assert gold["loss_arm"] == "uld"
+    assert gold["last_message_only"] is True
+    assert text.count("last_message_only:") == 1
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+@pytest.mark.parametrize("lmo", [None, "false"], ids=["unset", "false"])
+def test_sampled_opd_without_last_message_only_fails_to_render(tmp_path, sopd, lmo):
+    """The same requirement, with the same render-time refusal, as uld: the step's
+    renderer and CustomGOLDConfig both refuse the sampled-OPD loss without it."""
+    params = {"LMBDA_MODE": "on-policy", **sopd}
+    if lmo is not None:
+        params["LAST_MESSAGE_ONLY"] = lmo
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss" in str(err.value)
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+def test_sampled_opd_with_last_message_only_renders(tmp_path, sopd):
+    gold = _gold(
+        _render(tmp_path, LMBDA_MODE="on-policy", LAST_MESSAGE_ONLY="true", **sopd)
+    )
+    assert gold["last_message_only"] is True
+
+
+def test_other_arms_pass_no_last_message_only_off_policy(tmp_path):
+    for arm in ("", "jsd", "ce"):
+        assert "last_message_only" not in _gold(
+            _render(tmp_path, LMBDA_MODE="off-policy", LOSS_ARM=arm)
+        )
+
+
 @pytest.mark.parametrize("mode", ["ramp", "on-policy"])
 def test_generation_floor_defaults_to_16_online(tmp_path, mode):
     assert _gold(_render(tmp_path, LMBDA_MODE=mode))["min_completion_length"] == 16

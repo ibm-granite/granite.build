@@ -1,0 +1,290 @@
+{
+ "arm=<none> policy=off last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\n"
+ },
+ "arm=<none> policy=off last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\n"
+ },
+ "arm=<none> policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=<none> policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=<none> policy=on-lmbda1 last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=<none> policy=on-lmbda1 last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=adaptive_kld policy=off last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=adaptive_kld policy=off last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=adaptive_kld policy=on last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=adaptive_kld policy=on last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=adaptive_kld policy=on-lmbda1 last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=adaptive_kld policy=on-lmbda1 last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=ce policy=off last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_ce_loss: true\n"
+ },
+ "arm=ce policy=off last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_ce_loss: true\n"
+ },
+ "arm=ce policy=on last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=ce policy=on last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=ce policy=on-lmbda1 last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=ce policy=on-lmbda1 last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=distillm2 policy=off last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=distillm2 policy=off last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=distillm2 policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_distillm2: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=distillm2 policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_distillm2: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=distillm2 policy=on-lmbda1 last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=distillm2 policy=on-lmbda1 last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=distillm2_like policy=off last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=distillm2_like policy=off last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=distillm2_like policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_distillm2_like: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=distillm2_like policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_distillm2_like: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=distillm2_like policy=on-lmbda1 last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=distillm2_like policy=on-lmbda1 last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=jsd policy=off last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\n"
+ },
+ "arm=jsd policy=off last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\n"
+ },
+ "arm=jsd policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=jsd policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=jsd policy=on-lmbda1 last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=jsd policy=on-lmbda1 last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=kl_interpolation policy=off last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.5\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\n"
+ },
+ "arm=kl_interpolation policy=off last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.5\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\n"
+ },
+ "arm=kl_interpolation policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.5\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=kl_interpolation policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.5\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=kl_interpolation policy=on-lmbda1 last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.5\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=kl_interpolation policy=on-lmbda1 last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.5\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=liger_fused_jsd policy=off last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\n"
+ },
+ "arm=liger_fused_jsd policy=off last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\n"
+ },
+ "arm=liger_fused_jsd policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=liger_fused_jsd policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=liger_fused_jsd policy=on-lmbda1 last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=liger_fused_jsd policy=on-lmbda1 last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=liger_fused_kl_interpolation policy=off last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.5\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\n"
+ },
+ "arm=liger_fused_kl_interpolation policy=off last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.5\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\n"
+ },
+ "arm=liger_fused_kl_interpolation policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.5\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=liger_fused_kl_interpolation policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.5\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=liger_fused_kl_interpolation policy=on-lmbda1 last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.5\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=liger_fused_kl_interpolation policy=on-lmbda1 last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.5\nuse_liger_fused_jsd: true\nresponse_template: <|im_start|>assistant\nuse_kl_interpolation: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=reversed_distillm2_like policy=off last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=reversed_distillm2_like policy=off last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=reversed_distillm2_like policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_reversed_distillm2_like: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=reversed_distillm2_like policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_reversed_distillm2_like: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=reversed_distillm2_like policy=on-lmbda1 last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=reversed_distillm2_like policy=on-lmbda1 last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=sampled_opd policy=off last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=sampled_opd policy=off last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=sampled_opd policy=on last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=sampled_opd policy=on last_message_only=true": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=sampled_opd policy=on-lmbda1 last_message_only=false": {
+  "rc": 2,
+  "yaml": null
+ },
+ "arm=sampled_opd policy=on-lmbda1 last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: true\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=uld policy=off last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_uld_loss: true\n"
+ },
+ "arm=uld policy=off last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_uld_loss: true\n"
+ },
+ "arm=uld policy=on last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_uld_loss: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=uld policy=on last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 0.5\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_uld_loss: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=uld policy=on-lmbda1 last_message_only=false": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_uld_loss: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: false\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ },
+ "arm=uld policy=on-lmbda1 last_message_only=true": {
+  "rc": 0,
+  "yaml": "model_name_or_path: /proj/kd/student_overlays/granite-4.1-3b-base-hub\ndtype: bfloat16\nteacher_model_name_or_path: /proj/kd/teacher_overlays/granite-4.2-30b\ndataset_name: /proj/kd/data/subsampled_0.4_shuffled_nothink.jsonl\nnum_train_epochs: 1.0\nlearning_rate: 1.0e-05\nwarmup_steps: 0.05\nlr_scheduler_type: cosine_with_min_lr\nlr_scheduler_kwargs:\n  min_lr: 1.0e-06\nper_device_train_batch_size: 1\ngradient_accumulation_steps: 6\nmax_completion_length: 4096\nmax_length: 16384\ngradient_checkpointing: true\nsave_strategy: steps\nsave_steps: 500\nsave_total_limit: 20\nlogging_steps: 5\ndataset_num_proc: 64\ntemperature: 1.0\nlmbda: 1.0\nbeta: 0.0\nuse_liger_fused_jsd: false\nresponse_template: <|im_start|>assistant\nuse_uld_loss: true\nvllm_num_servers: 1\nvllm_mode: server\ntop_p: 0.95\nuse_sampled_opd_loss: false\nlast_message_only: true\nclip_alpha: 0.1\nopd_importance_sampling: false\n"
+ }
+}

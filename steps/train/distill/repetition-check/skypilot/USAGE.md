@@ -153,7 +153,7 @@ all of them.
 - The step runs with `HF_HUB_OFFLINE=1`. Each `<hf_model_dir>` must be a complete local
   export.
 - Needs one GPU, which the build supplies, and no trainer source. It runs in
-  `docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5` (whose venv carries
+  `docker:quay.io/granitebuild/steps/train/distill/images/gpu:a6a41e9a` (whose venv carries
   torch and transformers), on SkyPilot's LSF and SLURM backends (`subtypes: [lsf, slurm]`).
 - One run covers the whole ladder rather than one per rung: for a 350m model, loading
   several checkpoints serially on one GPU is still minutes.

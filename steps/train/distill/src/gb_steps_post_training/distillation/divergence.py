@@ -53,7 +53,7 @@ def load_jsonl(path) -> list[dict]:
     path = Path(path)
     if not path.is_file():
         raise MetricError(
-            f"{path} does not exist. Pass distill-corpus-prep's corpus "
+            f"{path} does not exist. Pass data-prep's corpus "
             "(train.jsonl or eval.jsonl)."
         )
     out = []
@@ -233,14 +233,14 @@ def check_tokenizers(model_a, model_b, *, allow_mismatch: bool = False) -> dict:
     the run costs GPU hours and looks successful.
 
     WHAT IS COMPARED, AND WHY NOT tokenizer_identity.read(). The obvious move is to reuse the
-    shared identity that distill-gold-train compares, and it is WRONG here -- measured, not
+    shared identity that logit-distill compares, and it is WRONG here -- measured, not
     reasoned: on the smoke pairing read() returns "ibm-granite/granite-4.2-3b" for the
     retagged student (the retag records a name) and "sha256:883975314d587437" for the teacher
     (an HF-cache directory has no identity file, so read() falls back to a hash). Those are
     never equal, so this guard would have refused every correctly retagged pairing. read() is
     built to compare ONE LINEAGE -- a corpus manifest against the student it was built from,
     where both sides are name-form -- and teacher-vs-student is not that comparison. Note the
-    failure mode: distill-gold-train's original guard was INERT (it read a file nothing wrote,
+    failure mode: logit-distill's original guard was INERT (it read a file nothing wrote,
     so it never fired), and this one would have been its mirror image, firing always. Both
     shapes report a tokenizer verdict that owes nothing to the tokenizers.
 
@@ -306,7 +306,7 @@ def check_tokenizers(model_a, model_b, *, allow_mismatch: bool = False) -> dict:
         f"    text : {first['text']!r}\n"
         f"    {name_a[:24]:>24} -> {first['ids_a']}\n"
         f"    {name_b[:24]:>24} -> {first['ids_b']}\n"
-        f"  Pass distill-tokenizer-align's retagged_student as the student. If you have a "
+        f"  Pass tokenizer-align's retagged_student as the student. If you have a "
         f"reason to want the number anyway, --allow-tokenizer-mismatch."
     )
     if not allow_mismatch:

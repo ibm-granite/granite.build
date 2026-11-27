@@ -16,7 +16,7 @@
 #
 # Keep this a near-verbatim copy so re-syncing upstream stays a three-way merge.
 #
-# distill-eval: measure how far the student's distribution sits from the teacher's on a
+# teacher-divergence: measure how far the student's distribution sits from the teacher's on a
 # held-out corpus, and how peaked the student's own predictions are.
 #
 # WHY THIS STEP EXISTS ALONGSIDE steps/bfcl-eval, WHICH ALREADY EVALUATES MODELS.
@@ -75,7 +75,7 @@ for name in STUDENT_MODEL CORPUS OUT_DIR; do
 done
 
 # PYBIN is not hardcoded to `python`, and that is not defensive style -- it is the fix for
-# a defect that executing the rendered command caught in distill-corpus-prep (LSF job
+# a defect that executing the rendered command caught in data-prep (LSF job
 # 1137785): a launcher that says `python` works in the image and fails everywhere the step
 # is verified outside it, which is where these steps are actually exercised first.
 PYBIN="${PYBIN:-python}"

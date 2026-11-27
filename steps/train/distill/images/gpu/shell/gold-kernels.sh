@@ -32,7 +32,7 @@
 # would make every run depend on fetching a kernel it never calls.
 #
 # EXTRA REPOS, per entrypoint. The two Mamba2 kernels above are required by every
-# entrypoint in this collection, so they are the defaults. distill-sft-baseline adds a third,
+# entrypoint in this collection, so they are the defaults. student-sft adds a third,
 # and the reason is worth stating because it is invisible from the config: sft.py's
 # verify_optimization_stack REQUIRES flash_attention_2 on a non-SWA student and aborts every
 # rank otherwise -- and transformers 5.x, when the `flash_attn` PACKAGE is absent, serves FA2

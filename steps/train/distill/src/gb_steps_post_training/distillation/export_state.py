@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resume state for distill-hf-export: is `dest` already this checkpoint, exported this way?
+"""Resume state for hf-export: is `dest` already this checkpoint, exported this way?
 
 The general contract lives in step_state.py (RUN / SKIP / REFUSE, a `.step-done.json` written
 last and atomically). This module supplies the two step-specific halves: what the EXPECTATION is,
 and what the declared OUTPUTS are.
 
 WHY THIS MODULE HOLDS NO `check`/`mark` CLI, unlike align_state.py.
-distill-tokenizer-align is driven by run-align.sh, so its gate has to be reachable from shell and
+tokenizer-align is driven by run-align.sh, so its gate has to be reachable from shell and
 that means a subprocess entrypoint. This step has no wrapper at all -- both launchers in
 step-template.yaml invoke export_hf_model.py directly -- so the gate belongs inside its main(),
 where it is a function call and cannot drift out of step with the export it guards. A CLI here

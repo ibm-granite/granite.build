@@ -508,7 +508,7 @@ def auto_run_name(
         corpus = re.sub(r"\.(jsonl|json|parquet)$", "", corpus)
         lmbda = hints.get("lmbda")
         if teacher is None and lmbda is None:
-            # NEITHER a teacher NOR an lmbda: a plain SFT run -- distill-sft-baseline's control,
+            # NEITHER a teacher NOR an lmbda: a plain SFT run -- student-sft's control,
             # whose config has no such keys because there is no second model and no mixing
             # coefficient. Falling through to the branch below would name it
             # `student_from-teacher_corpus_offpolicy`, which asserts two things that are not
@@ -869,7 +869,7 @@ def self_test() -> int:
 
     # 10b. ...and a run with NEITHER a teacher NOR an lmbda is a plain SFT control, which must
     #      not be named as if it had either. Sits beside 10 because both are the same class of
-    #      bug: a run name that misreports which arm produced the numbers. distill-sft-baseline
+    #      bug: a run name that misreports which arm produced the numbers. student-sft
     #      renders to `sft-config.rendered.yaml`, a generic stem, so this branch is what its
     #      auto-generated names actually come from.
     sft = auto_run_name(

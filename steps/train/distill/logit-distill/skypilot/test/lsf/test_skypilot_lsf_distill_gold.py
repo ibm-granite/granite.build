@@ -2,9 +2,9 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-"""Integration test: distill-gold runs multi-node end to end on Skypilot/LSF.
+"""Integration test: logit-distill runs multi-node end to end on Skypilot/LSF.
 
-A **step-level** test, living beside the distill-gold step's Makefile in a
+A **step-level** test, living beside the logit-distill step's Makefile in a
 per-cluster subdir (``steps/train/distill/logit-distill/skypilot/test/lsf/``) with its fixtures
 in the matching ``test-data/lsf/``. Run it from the step directory::
 
