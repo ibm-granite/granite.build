@@ -73,7 +73,8 @@ config:
     max_length: 4096
 
     # ── Optimization. Same keys as logit-distill, but not all the same defaults: see
-    # README.md, "Using this step as a control", before running this step as a control.
+    # USAGE.md (published as README.md), "Using this step as a control", before running
+    # this step as a control.
     per_device_train_batch_size: 1
     gradient_accumulation_steps: 8
     learning_rate: "1e-6"
