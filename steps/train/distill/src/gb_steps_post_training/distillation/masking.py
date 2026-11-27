@@ -473,32 +473,59 @@ def check_config(doc: dict, cfg: dict) -> list[str]:
             "will train against."
         )
     arm, named, required = _arm_requiring_last_message_only(cfg)
-    lmo = cfg.get("last_message_only")
-    if arm is not None:
-        # The positional split IS this arm's masking policy, so true is the contract and
-        # anything else -- false, unset, or a non-boolean like the string "true", which the
-        # trainer's parser would not read as the boolean -- is the problem: the rule
-        # render_gold_config.py and CustomGOLDConfig.__post_init__ both enforce. A ULD mode
-        # that does not need it (`_uld_exempt`) takes either value, and true is not the
-        # scan bypass below either: CustomGOLDConfig accepts it.
-        if required and lmo is not True:
-            given = "unset (the trainer's default, false)" if lmo is None else repr(lmo)
-            if not named:
-                refused_by = "CustomGOLDConfig refuses it at startup"
-            elif arm == "uld" and _uld_exempt(cfg):
-                # CustomGOLDConfig would take the mode's exemption; the renderer would not.
-                refused_by = "render_gold_config.py refuses it at render"
-            else:
-                refused_by = (
-                    "render_gold_config.py refuses it at render and CustomGOLDConfig at "
-                    "startup"
+    # A step's gold_config block (the only kind with a `loss_arm` key) reaches the trainer
+    # through the step's template and render_gold_config.py, whose _bool reads each boolean;
+    # a rendered or hand-written gold config reaches it through gold.py's TrlParser. Both
+    # read "true", "True" and 1 as true, so the boolean true is not the only value that
+    # satisfies a rule; a value the reader refuses is a problem of its own.
+    via_renderer = "loss_arm" in cfg
+    read = _renderer_reads if via_renderer else _trainer_reads
+    lmo_value = cfg.get("last_message_only")
+    lmo = read(lmo_value)
+    if named and arm == "uld":
+        # The step passes no uld_* key to its renderer, which has no uld_* option, so a
+        # mode set beside a named arm is dropped and the run starts without it.
+        for mode in _ULD_MODES:
+            if cfg.get(mode) is not None and _trainer_reads(cfg[mode]) is not False:
+                problems.append(
+                    f"loss_arm uld with {mode}: the logit-distill step passes no uld_* key "
+                    "to render_gold_config.py, which has no uld_* option, so the run would "
+                    f"start without {mode}. Set it in a gold config given to gold.py, with "
+                    "use_uld_loss instead of loss_arm."
                 )
+    if lmo is None:
+        refuser = (
+            "render_gold_config.py does not read it as a boolean and refuses it at render"
+            if via_renderer
+            else "gold.py's TrlParser does not read it as a boolean and refuses it at "
+            "startup"
+        )
+        problems.append(f"last_message_only is {lmo_value!r}: {refuser}.")
+    elif arm is not None:
+        # The positional split IS this arm's masking policy, so true is the contract and
+        # false or unset is the problem: the rule render_gold_config.py and
+        # CustomGOLDConfig.__post_init__ both enforce. A ULD mode that does not need it
+        # (`_uld_exempt`) takes either value, and true is not the scan bypass below
+        # either: CustomGOLDConfig accepts it.
+        if required and lmo is not True:
+            given = (
+                "unset (the trainer's default, false)"
+                if lmo_value is None
+                else repr(lmo_value)
+            )
+            refused_by = (
+                "render_gold_config.py refuses it at render and CustomGOLDConfig at "
+                "startup"
+                if named
+                else "CustomGOLDConfig refuses it at startup"
+            )
             problems.append(
                 f"loss_arm {arm} requires last_message_only: true, and it is {given}. "
                 "Without it the collator labels every assistant turn while the arm "
                 f"supervises only the last; {refused_by}."
             )
-        if arm == "uld" and lmo is True and cfg.get("uld_per_turn_regions") is True:
+        per_turn = _trainer_reads(cfg.get("uld_per_turn_regions")) is True
+        if not named and arm == "uld" and lmo is True and per_turn:
             problems.append(
                 "uld_per_turn_regions is incompatible with last_message_only: true: the "
                 "per-turn teacher has one region per assistant turn, and the collator would "
@@ -525,34 +552,65 @@ def _arm_requiring_last_message_only(cfg: dict) -> tuple[str | None, bool, bool]
 
     The switch form of ULD (`use_uld_loss`, what reaches CustomGOLDConfig) is exempt in the
     modes `_uld_exempt` names, the same exemptions CustomGOLDConfig makes. A named
-    `loss_arm: uld` is not: the renderer renders none of those modes and refuses the arm
-    without last_message_only: true in every case.
+    `loss_arm: uld` is not: the step drops those modes (check_config reports them), and
+    the renderer refuses the arm without last_message_only: true in every case.
     """
     arm = cfg.get("loss_arm")
     if arm in ("sampled_opd", "uld"):
         return arm, True, True
-    if cfg.get("use_uld_loss") is True:
+    if _trainer_reads(cfg.get("use_uld_loss")) is True:
         return "uld", False, not _uld_exempt(cfg)
-    if cfg.get("use_sampled_opd_loss") is True:
+    if _trainer_reads(cfg.get("use_sampled_opd_loss")) is True:
         return "sampled_opd", False, True
     return None, False, False
 
 
+# The ULD modes that do not pair the collator's labels with the last-turn teacher: per-turn
+# teacher regions (which require last_message_only false), the student's own input reused
+# as the teacher's, and the student rebuilt from the teacher's texts. None is reachable
+# through the logit-distill step, whose renderer exposes no uld_* option.
+_ULD_MODES = (
+    "uld_per_turn_regions",
+    "uld_reuse_student_input",
+    "uld_rebuild_student_input_with_teacher_template",
+)
+
+
 def _uld_exempt(cfg: dict) -> bool:
-    """Whether `cfg` sets a ULD mode that does not pair the collator's labels with the
-    last-turn teacher: per-turn teacher regions (uld_per_turn_regions, which require
-    last_message_only false), the student's own input reused as the teacher's
-    (uld_reuse_student_input), or the student rebuilt from the teacher's texts
-    (uld_rebuild_student_input_with_teacher_template). None is reachable through the
-    logit-distill step, whose renderer exposes no uld_* option."""
-    return any(
-        cfg.get(mode) is True
-        for mode in (
-            "uld_per_turn_regions",
-            "uld_reuse_student_input",
-            "uld_rebuild_student_input_with_teacher_template",
-        )
-    )
+    """Whether `cfg`, a gold config given to gold.py, sets one of `_ULD_MODES`."""
+    return any(_trainer_reads(cfg.get(mode)) is True for mode in _ULD_MODES)
+
+
+def _trainer_reads(value):
+    """A boolean field's value as gold.py's TrlParser reads it from a YAML config: unset is
+    the field's default, false. TrlParser makes the value the argparse default, which
+    argparse passes through the field's type only when it is a string: transformers'
+    string_to_bool, case-insensitive, which refuses anything else (None here). Any other
+    value is kept as it is, and the trainer tests its truth (1 is true)."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in ("yes", "true", "t", "y", "1"):
+            return True
+        if lowered in ("no", "false", "f", "n", "0"):
+            return False
+        return None
+    return bool(value)
+
+
+def _renderer_reads(value):
+    """A boolean as render_gold_config.py's _bool reads it, once the step's template has
+    rendered a gold_config value onto its command line (`{{ value }}`, i.e. str(value)):
+    unset is the template's default, false; anything else _bool refuses is None here."""
+    if value is None:
+        return False
+    lowered = str(value).strip().lower()
+    if lowered in ("true", "1", "yes", "on"):
+        return True
+    if lowered in ("false", "0", "no", "off", ""):
+        return False
+    return None
 
 
 def _self_test() -> int:

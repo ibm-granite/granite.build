@@ -193,15 +193,21 @@ requires it, `uld` and `sampled_opd`, that inverted the renderer's rule. It now 
 rule: for those arms, true is the contract and false or unset is the problem. The arms are
 recognised from `loss_arm` or from the switch they render (`use_uld_loss`,
 `use_sampled_opd_loss`). The `use_uld_loss` switch, which is what reaches `CustomGOLDConfig`,
-takes the same three ULD exemptions; a named `loss_arm: uld` takes none, because the renderer
-renders none of those modes and refuses the arm without `true` in every case. In an exempt
-mode either value is sound, and `true` is not reported as the scan bypass, since
-`CustomGOLDConfig` accepts it; `uld_per_turn_regions` with `true` is a problem in either
-form, since `CustomGOLDConfig` refuses it. Only the boolean `true` satisfies the rule. Every
-other arm keeps the old report.
+takes the same three ULD exemptions: in an exempt mode either value is sound, and `true` is
+not reported as the scan bypass, since `CustomGOLDConfig` accepts it; `uld_per_turn_regions`
+with `true` is a problem, since `CustomGOLDConfig` refuses it. A named `loss_arm: uld` takes
+none: the logit-distill step passes no `uld_*` key to its renderer, which has no `uld_*`
+option, so such a mode is dropped and reported as a problem, and the renderer refuses the arm
+without `true` in every case. A value is read the way its parser reads it: a step's
+gold_config block (the kind with a `loss_arm` key) as `render_gold_config.py`'s `_bool`
+reads its rendered command line, any other config as gold.py's `TrlParser` reads a YAML
+config (a string through transformers' `string_to_bool`, any other value by its truth). So
+`"true"` and `1` satisfy the rule, and a value the parser refuses is a problem of its own.
+Every other arm keeps the old report.
 `steps/train/distill/logit-distill/skypilot/test/test_masking_check_config.py` pins both
-directions against the renderer's table, and every ULD form, mode and `last_message_only`
-value against the renderer's rule and `CustomGOLDConfig`'s verdict.
+directions against the renderer's table, both readers against the real parsers, and every
+ULD form, mode and `last_message_only` value (booleans, `"true"`, `"false"`, 1, 0) against
+what the step, the renderer, `TrlParser` and `CustomGOLDConfig` do with it.
 
 ## A second copy elsewhere
 
