@@ -27,7 +27,7 @@ target_expectations:
   - config:
       benchmark: bfcl-v3
       phase: score
-      image: quay.io/granitebuild/steps/eval/bfcl/images/cpu:7676aba6
+      image: quay.io/granitebuild/steps/eval/bfcl/images/cpu:c914fb57
     step_uri: space://steps/eval/bfcl
 - target_name: bfcl-legacy-generate
   step_count: 2

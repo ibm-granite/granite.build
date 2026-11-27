@@ -23,8 +23,8 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:7676aba6"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:7676aba6"
+IMAGE: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:c914fb57"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:c914fb57"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
