@@ -25,7 +25,7 @@ target_expectations:
   - config:
       benchmark: officeqa-pro
       phase: score
-      image: quay.io/granitebuild/steps/eval/officeqa/images/cpu:ea0bc96d
+      image: quay.io/granitebuild/steps/eval/officeqa/images/cpu:136b0f80
     step_uri: space://steps/eval/officeqa
 space_uri: ../../space
 tests:

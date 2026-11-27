@@ -30,4 +30,7 @@ for pkg in tokenizers/punkt tokenizers/punkt_tab corpora/stopwords taggers/avera
     python3 -m zipfile -e /tmp/nltk.zip "$nltk/$(dirname "$pkg")"
     rm /tmp/nltk.zip
 done
-chmod -R a+rX /opt/benchmarks "$nltk"
+# go-w on the nltk data: nltk (3.10.4 on) reads no data from a directory or file that
+# is group- or world-writable.
+chmod -R a+rX /opt/benchmarks
+chmod -R a+rX,go-w "$nltk"
