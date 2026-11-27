@@ -235,9 +235,10 @@ def test_child_check_failures_fails_a_category_left_empty(tmp_path):
     (root / bfcl_v3_child.TEST_IDS_FILE).write_text(json.dumps(
         {"simple": [f"simple_{i}" for i in range(50)], "java": ["java_0"]}))
     (d / "BFCL_v3_java_result.json").write_text(json.dumps({"id": "java_0", "result": INFRA}) + "\n")
-    with pytest.raises(SystemExit) as err:  # 1/51 is under 0.05, but java has nothing left to score
-        bfcl_v3_child.check_failures(root, "fc", 0.05)
-    assert err.value.code == bfcl_v3_child.INFRA_EXIT
+    for frac in (0.05, 1.0):  # 1/51 is under either fraction, but java has nothing left to score
+        with pytest.raises(SystemExit) as err:
+            bfcl_v3_child.check_failures(root, "fc", frac)
+        assert err.value.code == bfcl_v3_child.INFRA_EXIT
     (d / "BFCL_v3_java_result.json").unlink()
     (d / "BFCL_v3_simple_result.json").write_text(json.dumps({"id": "simple_0", "result": INFRA}) + "\n")
     assert bfcl_v3_child.check_failures(root, "fc", 0.05) == {"simple_0"}
