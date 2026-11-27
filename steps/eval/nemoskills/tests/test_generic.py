@@ -90,6 +90,40 @@ def test_a_local_dataset_revision_is_checked_or_refused(tmp_path):
         generic.dataset_form(str(tmp_path), sha)
 
 
+@pytest.mark.parametrize(
+    ("statuses", "options", "fails"),
+    [
+        ({"stop": 97, "error": 3}, {}, False),
+        ({"stop": 95, "error": 5}, {}, False),  # exactly 0.05 is allowed
+        ({"stop": 94, "error": 6}, {}, True),
+        ({"stop": 90, "error": 10}, {"max_failed_frac": "0.2"}, False),
+        ({"stop": 99, "error": 1}, {"max_failed_frac": "0"}, True),
+        ({"stop": 10}, {"max_failed_frac": "0"}, False),
+        ({"error": 2}, {}, True),
+    ],
+)
+def test_the_generation_failure_threshold(tmp_path, monkeypatch, statuses, options, fails):
+    """ns scores a soft-failed request as an empty, wrong answer: over
+    max_failed_frac of all generations the run fails instead."""
+    monkeypatch.setattr(NemoSkillsBenchmark, "run", lambda self, b, s: {"value": 0.5, "statuses": dict(statuses)})
+    bench = _bench(tmp_path, **options)
+    if fails:
+        with pytest.raises(SystemExit, match="generations_failed .* above the allowed fraction"):
+            bench.run("http://s/v1", "m")
+        return
+    outcome = bench.run("http://s/v1", "m")
+    assert outcome["generations_failed"] == statuses.get("error", 0)
+    assert outcome["generations_total"] == sum(statuses.values())
+
+
+@pytest.mark.parametrize(("value", "match"), [("lots", "a number in"), ("1.5", r"in \[0, 1\]"), ("-1", r"in \[0, 1\]")])
+def test_a_bad_max_failed_frac_is_refused_at_startup(tmp_path, value, match):
+    with pytest.raises(SystemExit, match=match):
+        _bench(tmp_path, max_failed_frac=value)
+    assert generic.MAX_FAILED_FRAC == 0.05
+    assert _bench(tmp_path).max_failed_frac == 0.05
+
+
 def test_url_form_pins_urlretrieve(tmp_path):
     """The URL form feeds the base class's pinned_urls (prepare.py's
     urlretrieve) with the content pin."""

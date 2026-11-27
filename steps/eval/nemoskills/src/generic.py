@@ -58,6 +58,13 @@ still demands the pinned data was read too): give such a benchmark a local
 run's provenance records each checked read (``reads``) and the pin
 (``pinned_by``).
 
+Generation failures: a request that kept failing is an ns soft failure
+(``finish_reason: error``), which ns scores as an empty, wrong answer (ns
+computes the metrics, so the bridge cannot leave it out). Over
+``max_failed_frac`` (default 0.05, in [0, 1]) of all generations the run
+fails instead of reporting that score; ``generations_failed`` and
+``generations_total`` record the counts.
+
 ``metric=`` overrides the headline metric key (the class default, ns's
 ``symbolic_correct``). ``split=`` picks which prepared ``<split>.jsonl`` the
 run reads (default: the ns module's ``EVAL_SPLIT``, else ``test``) -- in a
@@ -393,6 +400,23 @@ def check_local_pin(path: Path, revision: str) -> None:
     )
 
 
+MAX_FAILED_FRAC = 0.05
+
+
+def max_failed_frac(value: Any) -> float:
+    """``max_failed_frac=`` (default 0.05), a fraction in [0, 1], or a
+    SystemExit naming it."""
+    if value is None:
+        return MAX_FAILED_FRAC
+    try:
+        frac = float(str(value))
+    except ValueError:
+        raise SystemExit(f"nemoskills: max_failed_frac must be a number in [0, 1], got {value!r}") from None
+    if not 0 <= frac <= 1:
+        raise SystemExit(f"nemoskills: max_failed_frac must be in [0, 1], got {frac}")
+    return frac
+
+
 def dataset_form(dataset: str, revision: str) -> str:
     """Which pinned form ``dataset=`` is (``local``, ``hub``, ``url``), or
     SystemExit naming what is missing."""
@@ -455,6 +479,25 @@ class Nemoskills(NemoSkillsBenchmark):
             sha = SHA256.match(config.dataset_revision).group(1)
             # The base class serves prepare.py's urlretrieve from this.
             self.pinned_urls = {config.dataset: (config.dataset, sha)}
+        self.max_failed_frac = max_failed_frac(config.options.get("max_failed_frac"))
+
+    def run(self, base_url: str, served_model_name: str) -> dict[str, Any]:
+        """The base class's run, then the generation-failure threshold: a
+        request that kept failing is an ns soft failure (``finish_reason:
+        error``), which ns scores as an empty, wrong answer. Over
+        ``max_failed_frac`` of all generations the run fails instead of
+        reporting that score."""
+        outcome = super().run(base_url, served_model_name)
+        statuses = outcome.get("statuses") or {}
+        failed, total = statuses.get("error", 0), sum(statuses.values())
+        outcome["generations_failed"], outcome["generations_total"] = failed, total
+        if failed and (not total or failed / total > self.max_failed_frac):
+            raise SystemExit(
+                f"nemoskills: generations_failed {failed}/{total} is above the allowed fraction "
+                f"{self.max_failed_frac}: ns scores a failed request as an empty, wrong answer, and "
+                "it resumes filled rows, so fix the server and rerun into a fresh run dir"
+            )
+        return outcome
 
     def split(self) -> str:
         return self.opt("split", "") or super().split()
