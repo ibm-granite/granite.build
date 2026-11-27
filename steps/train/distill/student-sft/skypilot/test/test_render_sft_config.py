@@ -424,6 +424,14 @@ def test_extra_yaml_can_add_a_key():
     assert cfg["bf16"] is True
 
 
+@pytest.mark.parametrize("value", ["all", "wandb", "[clearml, tensorboard]", "none"])
+def test_extra_yaml_cannot_set_report_to(value):
+    """The tracking block chooses the tool; `report_to: all` here would turn on every
+    installed integration, whatever tracking.tool says."""
+    with pytest.raises(ConfigError, match="tracking.tool"):
+        render(parse("--extra-config-yaml", f"report_to: {value}"))
+
+
 def test_extra_yaml_cannot_override_a_contract_key():
     with pytest.raises(ConfigError, match="collides"):
         render(parse("--extra-config-yaml", "learning_rate: 1.0e-4"))

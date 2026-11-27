@@ -1575,13 +1575,13 @@ if __name__ == "__main__":
     pprint(vars(custom_args))
 
     ################
-    # Experiment tracking (ClearML default, W&B optional).
+    # Experiment tracking: one tool per run, chosen by `tracking_tool` (wandb, clearml or none).
     #
     # HERE, and not later, for two reasons: `training_args.report_to` has to be final before the
     # trainer is constructed, and a tracking config that cannot be honoured should end the run
-    # while it has cost nothing. run-sft.sh runs the same resolution in its preflight, before the
-    # allocation -- this pass is the authoritative one because it sees the PARSED dataclass rather
-    # than the yaml, so a `--clearml_project` on the command line counts.
+    # while it has cost nothing but the allocation. This is the only check: no launcher runs one
+    # before the allocation. It reads the PARSED dataclass, so a `--clearml_project` on the
+    # command line counts.
     ################
     from gb_steps_post_training.distillation.tracking import (
         ALL_CONFIG_FIELDS as _TRACK_FIELDS,

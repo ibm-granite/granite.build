@@ -169,40 +169,53 @@ One tool per run. `tool` chooses it: `wandb`, `clearml`, or `none` (empty, the d
 none: tracking off). A step that invented a project name would log every recipe's runs into one
 bucket, so nothing is on unless the recipe says where.
 
-What is refused, before the trainer is built (the recipe refuses the same at render time):
+When the trainer starts, before it loads a model, it refuses (and the job fails):
 - another tool's keys beside the chosen one, or any tool's keys with no tool chosen. Nothing is
   inferred from which keys happen to be set;
 - a *partial* config: W&B needs `wandb_entity` and `wandb_project`, ClearML `clearml_project`.
   Neither tool fails on an incomplete config, they log to their own defaults, which is how a
   multi-day run ends up somewhere nobody looks;
-- a W&B server address wandb itself would reject.
+- a W&B server address wandb rejects, checked with wandb's own validator.
 
-The run name is optional; left empty, it is derived from the student, the corpus and the arm.
+The distill recipe refuses the first two at render time (`TRACKING_TOOL`), before anything is
+submitted; it cannot see the cluster's environment, so it does not check servers or credentials.
+
+The chosen tool is the only tracker the Trainer reports to: any other integration in
+`report_to` is dropped, with a message (local `tensorboard` stays). student-sft's
+`extra_config_yaml` may not set `report_to` at all. The run name is optional; left empty, it is
+derived from the student, the corpus and the arm.
 
 **Servers.** Each tool talks to its public server unless the user names another:
 - W&B: `https://api.wandb.ai`, unless the job's environment sets `WANDB_BASE_URL` or wandb's
   settings file (`~/.config/wandb/settings`, or `$WANDB_CONFIG_DIR/settings`) sets `base_url`.
   wandb 0.31 and later default to `https://api.forge.coreweave.com` (CoreWeave Forge; W&B and
-  CoreWeave say `api.wandb.ai` keeps working with the same keys). The step uses `api.wandb.ai`
-  when nothing is set, as wandb before 0.31 did.
-- ClearML: `https://api.clear.ml` (with `https://app.clear.ml` and `https://files.clear.ml`),
-  unless the job's environment sets `CLEARML_API_HOST` or `clearml.conf` sets `api_server`.
+  CoreWeave say `api.wandb.ai` keeps working with the same keys). The step sets
+  `WANDB_BASE_URL=https://api.wandb.ai` when nothing is set, as wandb before 0.31 defaulted.
+- ClearML: the step sets nothing. clearml reads its server from its environment
+  (`CLEARML_API_HOST`) and its config file (`api.api_server`), and falls back to
+  `https://api.clear.ml` (with `https://app.clear.ml` and `https://files.clear.ml`) on its own.
+  A self-hosted server named in `clearml.conf` is therefore kept, and its keys go to it.
 
 **Credentials** are looked up on the node, the way each tool looks them up, for that server:
 - W&B: `WANDB_API_KEY`, or `WANDB_IDENTITY_TOKEN_FILE` (not both); else the netrc entry for the
-  server's host (`$NETRC`, else `~/.netrc`), which `wandb login` writes. For a Forge server the
-  entry for `api.wandb.ai` also counts, as wandb accepts it.
-- ClearML: `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY`; else the key pair in
-  `clearml.conf` (`$CLEARML_CONFIG_FILE`, else `~/clearml.conf` or `~/trains.conf`).
+  server's host (`$NETRC`, else `~/.netrc`, else `~/_netrc`), which `wandb login` writes. For a
+  Forge server the entry for `api.wandb.ai` also counts, as wandb accepts it.
+- ClearML: clearml's own config loader decides, in a subprocess: `CLEARML_AUTH_TOKEN`, or an
+  access/secret key pair from `CLEARML_API_ACCESS_KEY`/`CLEARML_API_SECRET_KEY` or from
+  clearml's config (`$CLEARML_CONFIG_FILE`, `$CLEARML_CONFIG_PATH`, else `~/clearml.conf` or
+  `~/trains.conf`, in any HOCON form). One key without the other is not enough to log in.
 
-None found means the run trains untracked, and its log says `NO CREDENTIALS` and where it looked.
-`WANDB_MODE=offline` or `CLEARML_OFFLINE_MODE=1` needs no credentials. ClearML's checkpoint upload
-is off (`CLEARML_LOG_MODEL=FALSE`) unless the environment sets it.
+The distill recipe can pass these from space secrets (`TRACKING_SECRETS`). None found means the
+run trains untracked, and its log says `NO CREDENTIALS` and where it looked.
+`WANDB_MODE=offline` or `CLEARML_OFFLINE_MODE=1` needs no credentials; `WANDB_MODE=disabled`
+turns W&B off and says so. ClearML's checkpoint upload is off (`CLEARML_LOG_MODEL=FALSE`) unless
+the environment sets it. If ClearML cannot create a task, the run continues untracked rather
+than fail.
 
 The shared GPU image carries both tools: clearml 2.1.12 and wandb 0.31.2
 (`steps/train/distill/images/gpu/pyproject.toml`). The rules live in
-`steps/train/distill/src/gb_steps_post_training/distillation/tracking.py`, whose self-test runs
-in logit-distill's suite.
+`steps/train/distill/src/gb_steps_post_training/distillation/tracking.py`; its self-test runs in
+logit-distill's suite and in `make test-in-image`, not in CI.
 
 ### Source delivery
 

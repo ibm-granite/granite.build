@@ -374,6 +374,13 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         # Merged UNDER the contract keys: a collision is an error, not a silent winner. An
         # escape hatch that can override an explicit contract key is not an escape hatch, it is
         # a second config system with undefined precedence.
+        # report_to chooses the tracking integrations, and the tracking block owns that: one tool
+        # per run, or none. Through here, `report_to: all` would turn on every installed one.
+        if "report_to" in extra:
+            raise ConfigError(
+                "extra_config_yaml sets report_to, which the step's tracking block owns: choose "
+                "the tool with tracking.tool (wandb, clearml or none) instead."
+            )
         collisions = sorted(set(extra) & set(cfg))
         if collisions:
             raise ConfigError(
