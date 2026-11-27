@@ -524,10 +524,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `sampled_opd` instead of reporting it.
   - Separately, the checkpoint watcher's `sleep` no longer holds rank 0's output open for
     up to 60 s after the script exits.
-- **distill: ULD edge cases off the logit-distill step's path (#781).** None of the trainer
-  changes is reachable through that step, whose renderer exposes no `uld_*` option; they
-  matter for `gold.py` run with a hand-written config. The two sampled-OPD refusals at the
-  end are on the step's and the recipe's path.
+- **distill: ULD edge cases off the logit-distill step's path (#781).** The trainer's new
+  refusals cannot be reached through that step, whose renderer exposes no `uld_*` option
+  and builds no layout with a completion at position 0. They matter for `gold.py` run with
+  a hand-written config. The guard's bookkeeping does run on every `loss_arm: uld` run
+  through the step: its per-step all-reduce carries one more count, and train end adds one
+  more all-reduce. The two sampled-OPD refusals at the end are on the step's and the
+  recipe's path.
   - A ULD completion at position 0 no longer raises `ValueError` in the loss, on the one
     rank whose row it is, which left the other ranks waiting in backward's collective until
     the NCCL timeout. The loss skips the row and counts it, and the alignment guard raises
@@ -539,13 +542,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     at the earliest completion, so every row's completion is kept whole.
   - `CustomGOLDConfig` and `masking.py check-config` no longer refuse
     `uld_rebuild_student_input_with_teacher_template` without `last_message_only: true`:
-    that mode rebuilds the student's labels from the teacher's last-turn texts. And
-    check-config now passes exactly the ULD configs the renderer and `CustomGOLDConfig`
-    accept. Its ULD exemptions apply to `use_uld_loss` only, not to a named `loss_arm: uld`,
-    which the step's renderer refuses without `last_message_only: true` in every case. In
-    an exempt mode `last_message_only: true` is no longer reported as the
-    response_template scan bypass. `uld_per_turn_regions` with `last_message_only: true`
-    is reported in either form.
+    that mode rebuilds the student's labels from the teacher's last-turn texts.
+  - `masking.py check-config` now passes exactly the ULD configs that start as configured,
+    checked by a table against the step, the renderer, gold.py's `TrlParser` and
+    `CustomGOLDConfig`. The table covers {`use_uld_loss`, `loss_arm: uld`} × {no mode,
+    rebuild, reuse, per-turn regions} × `last_message_only` {unset, false, true, `"true"`,
+    `"false"`, 1, 0}.
+    - The ULD exemptions apply to `use_uld_loss` only. A named `loss_arm: uld` with one of
+      those modes is reported, because the step passes no `uld_*` key to its renderer, so
+      the mode is dropped.
+    - In an exempt mode, `last_message_only: true` is no longer reported as the
+      response_template scan bypass. `uld_per_turn_regions` with true is reported as
+      `CustomGOLDConfig`'s refusal, where before it was reported as the bypass.
+    - `last_message_only` is read the way its parser reads it, so `"true"` and 1 now
+      satisfy the uld and sampled_opd rule (they were reported), and `"true"` is reported
+      as the scan bypass for every other arm (it was not).
   - The distill recipe refuses `USE_SAMPLED_OPD_LOSS=true` and `LOSS_ARM=sampled_opd` with
     `LMBDA_MODE=off-policy` before submission, and the logit-distill step's renderer
     refuses `use_sampled_opd_loss: true` off-policy. Off-policy the switch was dropped, and
