@@ -8,7 +8,11 @@
 #   calls it; the job venv's override in ../src/core/pyproject.toml says more). So the file
 #   installs with --no-deps (extras.sh): bfcl-eval still declares ==0.25.7.
 #   UV_NO_CONFIG=1 uv pip compile bfcl-v3.in --overrides bfcl-v3-overrides.txt --python-version 3.12 \
-#     --python-platform x86_64-manylinux_2_28 --generate-hashes --no-header
+#     --python-platform x86_64-manylinux_2_28 --generate-hashes --no-header -o bfcl-v3-requirements.txt
+#   -o seeds the compile with this file's pins (its body without these header lines): rerun so,
+#   it reproduces the body byte for byte (it writes no header: keep these lines). No
+#   --exclude-newer, so a fresh compile without the
+#   seed resolves newer releases (on 2026-11-26: 9 versions change and 3 packages are added).
 aiohappyeyeballs==2.7.1 \
     --hash=sha256:065665c041c42a5938ed220bdcd7230f22527fbec085e1853d2402c8a3615d9d \
     --hash=sha256:9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472
