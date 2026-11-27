@@ -116,8 +116,10 @@ unseeded bridge run keeps that run's order. Use a fresh ``hf_home``, or
 delete the dataset's ``cache-*.arrow`` files under ``$HF_HOME/datasets``,
 to get the seeded order.
 
-Resume: the harness response cache (``repeat-<k>/lm_cache``) keeps every
-finished request, so a restarted run only sends the missing ones; requests
+Resume: the harness response cache (``repeat-<k>/lm_cache/<key>``, the key a
+hash of the model, its served name and the repeat's LM seed, so another
+model or seed never replays these answers) keeps every finished request, so a
+restarted run only sends the missing ones; requests
 that keep failing are answered with an error marker and dropped from the
 cache for the next run (the curated modules' adapters and cache care --
 ``chat_if``/``include`` -- reused as is).
@@ -138,6 +140,7 @@ stop strings, thinking mode -- are the tasks' own here unless
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import re
@@ -536,6 +539,15 @@ def load_tasks(tasks: list[str]) -> tuple[dict, dict]:
     return dict(loaded["tasks"]), dict(loaded["groups"])
 
 
+def cache_key(model: str, served: str, seed: int) -> str:
+    """The response cache's subdirectory for one model and LM seed: the
+    harness keys cached responses by request (prompt and generation kwargs)
+    only, so without it a run over another model, or a repeat with another
+    seed, in the same dir would replay the first one's answers."""
+    blob = json.dumps({"model": model, "served": served, "seed": seed}, sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
 def drop_failed_requests(cache_dir: Path) -> int:
     """Drop both adapters' failed-request answers from the response cache, so
     a rerun retries them instead of scoring them: chat_if's ERROR_MARKER
@@ -917,7 +929,8 @@ class LMEval(Benchmark):
         chat_tasks: set[str] = frozenset(),
     ) -> dict[str, Any]:
         repeat_dir = self.config.output_dir / f"repeat-{k}"
-        cache_dir = repeat_dir / "lm_cache"
+        lm_seed = self.config.seed + 1234 + k
+        cache_dir = repeat_dir / "lm_cache" / cache_key(self.config.model, served, lm_seed)
         cache_dir.mkdir(parents=True, exist_ok=True)
         started = time.time()
 
@@ -929,9 +942,7 @@ class LMEval(Benchmark):
         merged: dict[str, Any] = {}
         for mode, items in passes.items():
             results = run_simple_evaluate(
-                model=self.make_lm(
-                    mode, base_url, served, seed=self.config.seed + 1234 + k
-                ),
+                model=self.make_lm(mode, base_url, served, seed=lm_seed),
                 tasks=items,
                 task_manager=None,
                 use_cache=str(cache_dir / "cache"),

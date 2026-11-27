@@ -1070,7 +1070,10 @@ def test_failed_requests_are_dropped_in_both_modes(tmp_path, monkeypatch):
     recorder._recorder = True
     monkeypatch.setattr(generic, "drop_failed_requests", recorder)
     _mixed_run(tmp_path / "run", monkeypatch, [_gsm8k()], repeats=2)
-    assert cleaned == [tmp_path / "run" / f"repeat-{k}" / "lm_cache" for k in range(2)]
+    assert cleaned == [
+        tmp_path / "run" / f"repeat-{k}" / "lm_cache" / generic.cache_key("m", "m", 1234 + k)
+        for k in range(2)
+    ]
 
 
 def test_drop_failed_requests_on_a_real_cache(tmp_path):
@@ -1116,7 +1119,7 @@ def _repeated_run(tmp_path, monkeypatch, values, **config):
     )
     monkeypatch.setattr(generic, "drop_failed_requests", lambda cache_dir: 0)
     run_config = RunConfig(
-        model="m",
+        model=config.pop("model", "m"),
         output_dir=tmp_path,
         options={"tasks": "hellaswag", **config.pop("options", {})},
         **config,
@@ -1135,8 +1138,35 @@ def test_repeats_average_and_reseed(tmp_path, monkeypatch):
     assert [c["model"].seed for c in calls] == [5 + 1234, 5 + 1234 + 1, 5 + 1234 + 2]
     assert {c["random_seed"] for c in calls} == {5}
     assert [c["use_cache"] for c in calls] == [
-        str(tmp_path / f"repeat-{k}" / "lm_cache" / "cache") for k in range(3)
+        str(
+            tmp_path
+            / f"repeat-{k}"
+            / "lm_cache"
+            / generic.cache_key("m", "m", 5 + 1234 + k)
+            / "cache"
+        )
+        for k in range(3)
     ]
+
+
+def test_the_response_cache_is_keyed_on_model_and_seed(tmp_path, monkeypatch):
+    """The harness keys cached responses by request only: a second model, or
+    another seed, in the same run dir must not replay the first one's."""
+    dirs = []
+
+    def run(model, seed, served="m"):
+        _, calls = _repeated_run(tmp_path, monkeypatch, [0.5], model=model, seed=seed)
+        (call,) = calls
+        dirs.append(Path(call["use_cache"]).parent)
+        return dirs[-1]
+
+    a = run("org/model-a", 0)
+    assert run("org/model-a", 0) == a  # a resume finds its cache
+    b = run("org/model-b", 0)
+    c = run("org/model-a", 1)
+    assert len({a, b, c}) == 3
+    assert all(d.parent == tmp_path / "repeat-0" / "lm_cache" for d in (a, b, c))
+    assert a.name == generic.cache_key("org/model-a", "m", 0 + 1234)
 
 
 def test_limit_and_num_fewshot_reach_the_harness(tmp_path, monkeypatch):

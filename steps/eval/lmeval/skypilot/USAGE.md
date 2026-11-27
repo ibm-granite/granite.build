@@ -147,9 +147,11 @@ run. `datasets` caches the mapped dataset under `hf_home`, keyed by the map func
 not the seed, so a cache an older, unseeded run wrote keeps its order: use a fresh
 `hf_home` or delete that dataset's `cache-*.arrow` files.
 
-Resume is the curated benchmarks' care: the harness response cache
-(`repeat-<k>/lm_cache`) keeps every finished request, so a restarted run only sends
-the missing ones.
+Resume is the curated benchmarks' care: the harness response cache keeps every
+finished request, so a restarted run only sends the missing ones. The bridge keeps it
+under `repeat-<k>/lm_cache/<key>`, the key a hash of the model, its served name and the
+repeat's LM seed: the harness keys cached answers by request only, so another model or
+seed in the same dir starts a fresh cache instead of replaying these.
 
 ## Config
 
