@@ -65,7 +65,12 @@ defaults to `aws/claude-sonnet-5` on the IBM LiteLLM gateway. The job needs
 environment, and every call is metered against `GRANITE_EVALS_SPEND_LEDGER` /
 `GRANITE_EVALS_SPEND_BUDGET_USD`; at the budget the meter answers HTTP 402 and the run
 stops scoring. `user_model=self judge_model=self` uses the served model instead (smoke
-runs, no key, not comparable with published numbers).
+runs, no key, not comparable with published numbers). With `judge_model=self`, the
+domains with NL assertions (`retail`, `banking_knowledge`) are graded by the served
+model, so scoring them needs it: run that shape as one GPU target with `phase: all`.
+Split into a GPU `generate` and a CPU `score` (as the recipes are), it is refused at the
+score phase, after the generate has run. The other domains (`airline`, `telecom`) split
+as usual.
 
 `agent=gold` replays each task's reference actions without a model (set
 `model_path: none`) and must score 1.0; use it to validate the data, the environments
