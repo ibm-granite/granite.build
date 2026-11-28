@@ -10,8 +10,10 @@
 # https://huggingface.co/ibm-granite/granite-4.2-3b (vLLM downloads a hub id into the HF cache).
 MODEL_PATH: "ibm-granite/granite-4.2-3b"
 SERVED_MODEL_NAME: ""
-# Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
-# artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
+# Unique per run: a new build with the same RUN_NAME emits the same artifact URIs (this run's
+# generation.json and results.json), which gbserver refuses to register for a second build
+# ("Same artifact URI found ... for another build"). Target reuse is within one build only:
+# a retry or `gb build restart` reuses that build's own SUCCESS targets.
 # Empty derives it from MODEL_PATH's basename (the step's own defaulting).
 RUN_NAME: ""
 # Runs land in $OUTPUT_ROOT/$RUN_NAME/<benchmark>. Required, no default: pass
@@ -21,14 +23,20 @@ OUTPUT_ROOT: ""
 HF_HOME: ""
 
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:ea0bc96d"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:ea0bc96d"
+IMAGE: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:029b8ada"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:029b8ada"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""
 REPEATS: ""
 WORKERS: 8
 OPTIONS: ""
+# Infrastructure-failed entries (an endpoint error that outlasted the retries) are left out
+# of the score up to this fraction, overall and in each category (each may lose one entry:
+# the smallest hold 16), and results.json marks the run incomplete; above it the run fails,
+# so the target retry resumes it. 0 = any failure is fatal. The step's max_failed_frac
+# option, the other families' name and default; an OPTIONS value wins.
+MAX_FAILED_FRAC: 0.05
 TENSOR_PARALLEL_SIZE: 1
 
 # ─── Web search ───────────────────────────────────────────────────────

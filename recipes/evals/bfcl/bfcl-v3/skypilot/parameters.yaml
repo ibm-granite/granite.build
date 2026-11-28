@@ -1,0 +1,60 @@
+# bfcl-v3 on SkyPilot/SLURM, bfcl family image.
+# Data: pinned inside the image (bfcl-eval 2025.8.6.2 in the image's /opt/bfcl-v3 venv), nothing to fetch.
+#
+# LIMIT is empty: the full benchmark (4,441 entries). For a quick functional check, score only
+# the first N entries of every category (3-10 is enough to prove the plumbing):
+#   gb build start -f recipes/evals/bfcl/bfcl-v3/skypilot/build.yaml --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
+# Override any value with --param KEY=VALUE.
+
+# ─── Model ────────────────────────────────────────────────────────────
+# https://huggingface.co/ibm-granite/granite-4.0-micro (vLLM downloads a hub id into the HF cache).
+MODEL_PATH: "ibm-granite/granite-4.0-micro"
+SERVED_MODEL_NAME: ""
+# Unique per run: a new build with the same RUN_NAME emits the same artifact URIs (this run's
+# generation.json and results.json), which gbserver refuses to register for a second build
+# ("Same artifact URI found ... for another build"). Target reuse is within one build only:
+# a retry or `gb build restart` reuses that build's own SUCCESS targets.
+# Empty derives it from MODEL_PATH's basename (the step's own defaulting).
+RUN_NAME: ""
+# Runs land in $OUTPUT_ROOT/$RUN_NAME/<benchmark>. Required, no default: pass
+# --param OUTPUT_ROOT=<root>, somewhere the dispatching user can write.
+OUTPUT_ROOT: ""
+# HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.
+HF_HOME: ""
+
+# ─── Images (GPU generate + CPU score) ────────────────────────────────────
+IMAGE: "quay.io/granitebuild/steps/eval/bfcl/images/gpu:029b8ada"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/bfcl/images/cpu:029b8ada"
+
+# ─── Request format ───────────────────────────────────────────────────
+# fc: function calling through the checkpoint's chat template and vLLM's tool parser
+# (as bfcl-v4). legacy-granite: BFCL prompt mode with the Granite 4.0 prompt format,
+# as earlier Granite 4.0 BFCL v3 numbers were produced; pair it with
+# OPTIONS="temperature=0.001" (BFCL's own default) to compare with those.
+HANDLER: "fc"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+LIMIT: ""
+REPEATS: ""
+WORKERS: 8
+# Extra space-separated key=value options, e.g. "temperature=0.001" or "categories=multi_turn".
+OPTIONS: ""
+# Infrastructure-failed entries (an endpoint error that outlasted the retries) are left out
+# of the score up to this fraction, overall and in each category (each may lose one entry:
+# the smallest hold 16), and results.json marks the run incomplete; above it the run fails,
+# so the target retry resumes it. 0 = any failure is fatal. The step's max_failed_frac
+# option, the other families' name and default; an OPTIONS value wins.
+MAX_FAILED_FRAC: 0.05
+TENSOR_PARALLEL_SIZE: 1
+
+# ─── Cluster ──────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
+CLUSTER: "bluevela"
+QUEUE: "gpu-mid"
+GPU_MEMORY: 256
+CPU_QUEUE: "cpu"
+SCORE_CPUS: 8
+SCORE_MEMORY: 64
+MAX_RETRIES: 2
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

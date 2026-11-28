@@ -8,7 +8,7 @@ benchmark runtime those images are built from, and the image recipes themselves.
 | Path | What it is |
 |---|---|
 | `<family>/skypilot/` | One step per benchmark family: `step-template.yaml` (the source of truth), `README.md` / `USAGE.md`, and the shared contract test. |
-| `<family>/Dockerfile.gpu`, `<family>/Dockerfile.cpu` | The family's image recipe(s). Every family has a GPU image; the families whose benchmarks split into GPU generate + CPU score (`--phase`) also have a `-cpu` image. Families needing extra system setup carry an `extras.sh` (and `nemoskills` a pinned `comet-requirements.txt` for its COMET judge). |
+| `<family>/Dockerfile.gpu`, `<family>/Dockerfile.cpu` | The family's image recipe(s). Every family has a GPU image; the families whose benchmarks split into GPU generate + CPU score (`--phase`) also have a CPU image. Both are tagged `<registry>/steps/eval/<family>/images/{gpu,cpu}:<version>`, the form the recipes pin. Families needing extra system setup carry an `extras.sh` (and `nemoskills` a pinned `comet-requirements.txt` for its COMET judge, `bfcl` a pinned `bfcl-v3-requirements.txt` for its BFCL v3 venv). |
 | `src/core/` | The shared granite-evals runtime: harness adapters, vLLM serving, scoring, results. |
 | `<family>/src/`, `<family>/tests/` | The family's benchmark modules and their unit tests. `src/` is overlaid onto the core's `granite_evals/benchmarks/` package dir at image-build time (what each family contains: [VENDORED.md](VENDORED.md)). |
 | `scripts/prefetch_datasets.py` | Pins and pre-fetches the HF datasets into a cache the (offline) jobs read. |
@@ -18,7 +18,9 @@ The eleven families — `bfcl`, `bird`, `ifbench`, `judged`, `lmeval`, `mcpmark`
 `nemoskills`, `officeqa`, `swebench`, `tau`, `tbench` — exist because
 the upstream harnesses' own dependencies conflict (see the `[tool.uv]` conflicts
 in `src/core/pyproject.toml`), so each ships as its own image. `benchmark`
-selects which benchmark in the family a target runs.
+selects which benchmark in the family a target runs: the `bfcl` step, for example,
+runs either BFCL version, `bfcl-v4` or `bfcl-v3`, from one image pair (its
+[USAGE](bfcl/skypilot/USAGE.md) says what differs).
 
 ## Images
 
@@ -36,7 +38,11 @@ its pinned image (`config.image`, set by the recipe — e.g. the `IMAGE` /
 
 Bumping a benchmark's behavior means editing `src/` or the family's
 `<family>/src/`, rebuilding the family image,
-pushing it, and re-pinning its tag in the recipe `parameters.yaml` — recipes under
+pushing it (`make publish-image-<family> REGISTRY=quay.io/granitebuild`, and
+`publish-image-cpu-<family>` for its CPU image; `IMAGE_VERSION` defaults to the short
+SHA of the commit you build from, each publish first runs the vulnerability gate, and
+publishing refuses a tag that already exists), and re-pinning its tag in the recipe
+`parameters.yaml` — recipes under
 `recipes/evals/<family>/<benchmark>/skypilot/` choose which benchmarks a model
 family is scored on and own the image pins.
 

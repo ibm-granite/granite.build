@@ -13,6 +13,7 @@ benchmarks:
   - {id: tau3-retail, group: agentic-general, name: "τ³-bench Retail", metric: pass@1}
   - {id: tau3-telecom, group: agentic-general, name: "τ³-bench Telecom", metric: pass@1}
   - {id: bfcl-v4, group: agentic-general, name: BFCL(v4), metric: overall_accuracy accuracy}
+  - {id: bfcl-v3, group: agentic-general, name: BFCL(v3), metric: overall_accuracy accuracy}
   - {id: gdpval, group: agentic-general, name: GDPval, metric: Elo}
   - {id: browsecomp, group: agentic-general, name: BrowseComp, metric: mean reward}
   - {id: browsecomp-plus, group: agentic-general, name: BrowseComp+, metric: mean reward}

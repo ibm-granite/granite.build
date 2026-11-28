@@ -5,7 +5,9 @@
 # advisory differently, and take them from the advisory record's aliases on osv.dev rather
 # than deriving one from another); `#` starts a comment. The same file goes to osv-gate.py
 # and to trivy as --ignorefile, so keep it in that format. Every entry names the issue that
-# removes it and an expiry ("until YYYY-MM-DD"); delete it when that issue lands.
+# removes it and an expiry ("until YYYY-MM-DD"); delete it when that issue lands. Do not
+# add osv-gate.py's `pkg:` scope field: trivy reads this file in its plain format, which
+# ignores `pkg:`, so a scope would narrow only the osv-scanner gate.
 #
 # No accepted advisories: the image passes the gate with this file empty. Keep the file
 # (with no ids) so both scanners always read the same, explicit list.

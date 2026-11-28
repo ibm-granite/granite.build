@@ -1,0 +1,56 @@
+# YAML-driven spec for test_skypilot_slurm_bluevela_eval_bfcl_v3.py (located by
+# the test/ <-> test-data/ helper; see steps/README.md). The recipes' shape:
+# bfcl-v3 generates on the family's GPU image and scores on its CPU image,
+# bound by the granite_generation artifact, once per request format (fc and
+# legacy-granite), so one build test covers both images, the BFCL v3 side venv
+# in each, and both handlers.
+targets:
+- bfcl-generate
+- bfcl-score
+- bfcl-legacy-generate
+- bfcl-legacy-score
+target_expectations:
+- target_name: bfcl-generate
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: bfcl-v3
+      phase: generate
+    step_uri: space://steps/eval/bfcl
+- target_name: bfcl-score
+  step_count: 2
+  input_artifact_count: 2
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: bfcl-v3
+      phase: score
+      image: quay.io/granitebuild/steps/eval/bfcl/images/cpu:029b8ada
+    step_uri: space://steps/eval/bfcl
+- target_name: bfcl-legacy-generate
+  step_count: 2
+  input_artifact_count: 1
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: bfcl-v3
+      phase: generate
+      options: handler=legacy-granite temperature=0.001
+    step_uri: space://steps/eval/bfcl
+- target_name: bfcl-legacy-score
+  step_count: 2
+  input_artifact_count: 2
+  output_artifact_count: 1
+  expected_steps:
+  - config:
+      benchmark: bfcl-v3
+      phase: score
+      options: handler=legacy-granite temperature=0.001
+    step_uri: space://steps/eval/bfcl
+space_uri: ../../../../../../configurations/spaces/local
+tests:
+- runner
+simulate_step_failure: false
+timeout_minutes: 75

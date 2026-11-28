@@ -5,7 +5,8 @@ description = "Runtime for a benchmark collection used to evaluate language mode
 authors = [
     { name = "The granite.build authors" }
 ]
-requires-python = ">=3.11"
+# 3.11.5, not 3.11: soupsieve 4, the release with its advisory fixes, needs it.
+requires-python = ">=3.11.5"
 dependencies = [
     "datasets>=3.0",
     "httpx>=0.27",
@@ -47,7 +48,7 @@ ifbench = [
     "granite-evals[nemoskills]",
     "absl-py==2.5.0",
     "langdetect==1.0.9",
-    "nltk==3.10.3",
+    "nltk==3.10.4",
     "immutabledict==4.3.1",
     "spacy==3.8.16",
     "emoji==2.16.0",
@@ -143,6 +144,40 @@ override-dependencies = [
     # outside requires-python drops them from the resolution.
     "nemo-run ; python_version < '3'",
     "nemo-evaluator-launcher ; python_version < '3'",
+    # NeMo-Skills also declares wandb (core/requirements.txt), for its optional
+    # experiment logging: nemo_skills.utils.init_wandb, which skips it on ImportError,
+    # and the NeMo-Run pipeline (pipeline/summarize_results.py, the
+    # inference/log_samples_wandb.py job it launches), which needs NeMo-Run, dropped
+    # above. None runs in granite-evals, and wandb brings wandb-core's Go toolchain and
+    # cwevals, a 0.0.1 beta, so it is dropped the same way.
+    "wandb ; python_version < '3'",
+    # bfcl-eval pins datamodel-code-generator==0.25.7, under fixable HIGH advisories
+    # (fixed by 0.81.0). bfcl-eval imports with a fixed release and its OpenAI-compatible
+    # FC handler, the one the bfcl step registers, never calls it; only the MiniCPM
+    # handler's jsonschema_to_code does, and fails on it (DataModelType.PydanticBaseModel
+    # is gone). The step never selects MiniCPM. 0.84.0: the newest release without a
+    # pydantic>=2.14 floor for Python 3.15, which would fork the shared pydantic 2.13.5.
+    # The bfcl-v3 side venv carries the same override (../../bfcl/bfcl-v3-overrides.txt).
+    "datamodel-code-generator==0.84.0",
+]
+# Floors at the fix for the fixable HIGH-and-above advisories the dependency and image
+# gates reported (scan-deps, scan-image-* in steps/eval/Makefile), so a later re-lock
+# cannot move a package back below its fix. Not floored, because a harness pins below
+# the fix in one family's fork: filelock (bfcl-eval ==3.20.0, which the advisory does
+# not affect) and litellm (tau2 <1.82.7, NeMo-Skills ==1.84.10); the accepted ones are
+# listed in ../../scan-ignore. datamodel-code-generator is overridden above instead.
+constraint-dependencies = [
+    "aiohttp>=3.14.4",
+    "black>=26.10.1",
+    "dnspython>=2.9.2",
+    "gitpython>=3.2.1",
+    "hydra-core>=1.3.8",
+    "nltk>=3.10.4",
+    "oauthlib>=4.0.1",
+    "pyasn1>=0.6.5",
+    "pypdf>=6.21.4",
+    "soupsieve>=4.0.0",
+    "virtualenv>=21.14.13",
 ]
 # Each image installs one family's extra (plus serve), so families whose pins
 # clash resolve apart. vllm pins torch, so every fork shares the serve layer.
@@ -151,6 +186,7 @@ conflicts = [
     [{ extra = "swebench" }, { extra = "tau" }],
     # bfcl-eval pins filelock==3.20.0 and more; keep it from downgrading other images.
     [{ extra = "bfcl" }, { extra = "swebench" }],
+    [{ extra = "bfcl" }, { extra = "tau" }],
     # tree-sitter: bfcl-eval pins 0.21.3, NeMo-Skills' compute-eval needs >=0.25.2.
     [{ extra = "bfcl" }, { extra = "bird" }],
     [{ extra = "bfcl" }, { extra = "nemoskills" }],

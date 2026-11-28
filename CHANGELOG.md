@@ -78,12 +78,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (which answers an anonymous check of a missing repository with 401) works after a plain
   `podman login`.
 
-- **granite-evals** — benchmark evaluation suite: 41 benchmarks across 9 harness families
-  (bfcl, bird, ifbench, judged, lmeval, nemoskills, swebench, tau, tbench), one image and
-  one sourced step per family under `steps/eval/`, with dispatch recipes under
-  `recipes/evals/` that split GPU generate from CPU score. No benchmark data is committed:
-  dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
-  time (#460).
+- **granite-evals** — benchmark evaluation suite: 58 benchmarks across 11 harness families
+  (bfcl, bird, ifbench, judged, lmeval, mcpmark, nemoskills, officeqa, swebench, tau,
+  tbench), one image and one sourced step per family under `steps/eval/`, with dispatch
+  recipes under `recipes/evals/` that split GPU generate from CPU score. No benchmark data
+  is committed: dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or
+  image-build time (#460).
+- **`bfcl-v3` benchmark (#237)** in the bfcl eval family (`space://steps/eval/bfcl`,
+  `benchmark: bfcl-v3`): the BFCL v3 leaderboard's own harness, data and Overall formula,
+  `bfcl-eval==2025.8.6.2` (the last v3 release: 17 categories, 4,441 entries). It runs from a
+  hash-locked side venv, `/opt/bfcl-v3`, in both bfcl images, because v3 and v4 are one
+  distribution at conflicting pins, with the same GPU generate / CPU score split as `bfcl-v4`.
+  `--option handler=` picks the request format: `fc` (the default: the checkpoint's chat
+  template and vLLM's tool parser, as `bfcl-v4`) or `legacy-granite` (BFCL prompt mode with
+  the Granite 4.0 prompt format; with `temperature=0.001` it reproduces the granite-4.0-micro
+  and granite-4.0-h-small model cards' BFCL v3 numbers within 0.4 points). Recipe
+  `recipes/evals/bfcl/bfcl-v3`; the SLURM build test covers both handlers.
 
 - **`single_node` step flag (#651)** — `environment_configs.Skypilot.single_node: true` makes
   gbserver resolve `num_nodes` from every layer the launch reads (`compute_config`, the step's
@@ -112,6 +122,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **bfcl-v4 no longer scores infrastructure errors (#237).** An entry whose inference failed
+  for an infrastructure reason (a vLLM 5xx, a refused connection, a timeout) used to be graded
+  as an answer: wrong in AST categories, correct in irrelevance. It now follows
+  `granite_evals.registry.failure_policy`, as the other infra-dependent families do: resume
+  retries it (a memory category is regenerated whole), and one that still fails is left out of
+  the score, with `entries_failed`, `entries_total`, `entries_failed_by_category` and
+  `incomplete` in `results.json`. Above `--option max_failed_frac` (default 0.05; recipes:
+  `MAX_FAILED_FRAC`), overall or in any one category, generate fails and score refuses. A
+  smaller `--limit` on an output dir generated at a larger scope now scores only its
+  selection. bfcl-v3 does the same.
+- **bfcl FC requests get an output budget (#237).** When the bfcl step serves the model, an FC
+  request that sends no `max_tokens` is capped at 16,384 tokens or the context left, as vLLM's
+  served default (`--override-generation-config`), so a checkpoint that loops ends in a scored
+  answer instead of a timeout. Not applied with `base_url`, `handler=legacy-granite`, an
+  explicit `max_tokens`, or a checkpoint whose generation_config sets an output limit;
+  `results.json` records the cap and its source under `max_tokens`.
 - **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
   site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
   moved to `recipes/granite-switch/skypilot/slurm-bluevela/answerability-lora` in #639 (the
@@ -559,5 +585,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **datamodel-code-generator 0.25.7 → 0.84.0 in both bfcl venvs (#237).** bfcl-eval pins 0.25.7,
+  under 8 fixable HIGH advisories (fixed by 0.81.0); the job venv overrides it
+  (`steps/eval/src/core/pyproject.toml`) and the bfcl-v3 side venv compiles it in
+  (`bfcl-v3-overrides.txt`). The handlers the step uses never call it; only BFCL's MiniCPM
+  handler does, which the step never selects. The 24 accepted ids leave `steps/eval/scan-ignore`;
+  the other 17 eval images' install sets are unchanged.
 - **Reflected XSS on the legacy SSO `/api/v1/auth/callback` page (#723).** The provider's
   `error_description` was put into the HTML unescaped; it is now escaped.
+- **Eval step images: security baseline and a publish gate (#764).** All 19 images
+  under `quay.io/granitebuild/steps/eval/<family>/images/{gpu,cpu}` were rebuilt, and the
+  recipes now pin `136b0f80` (bird, ifbench and nemoskills: `a3e62a3b`). The images:
+  - start from a base pinned by digest and take Debian security updates;
+  - ship no compiler in the CPU images, and no pip or uv cache in any;
+  - raise the shared lock's vulnerable packages to their fixes, and drop wandb, which
+    NeMo-Skills declares only for optional logging.
+
+  `make -C steps/eval scan-deps` and `scan-image-*` now gate every publish target (no
+  fixable HIGH or above), unless `SKIP_SCAN=true` is given, which each push then says.
+  `publish-images` scans every image and checks every tag before the first push. The
+  bare push targets it uses refuse on their own. The scanners are pinned:
+  - trivy, which rates by GHSA, on the lock and the image;
+  - osv-scanner with distill's `osv-gate.py`, which rates by CVSS, on the lock and on
+    the environments an image resolves at build time (its `granite-freeze.txt` files).
+
+  Accepted advisories in `steps/eval/scan-ignore` carry an expiry and a package scope
+  (`pkg:` purls). Both gates enforce the scope, so an accepted id still fails in any
+  other package or version. `osv-gate.py` reads the same optional `exp:` / `pkg:`
+  fields, and bare ids keep their old meaning. It also counts an OSV range that ends
+  in `last_affected` as fixable when a later release exists.

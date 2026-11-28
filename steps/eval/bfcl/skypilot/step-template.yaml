@@ -1,6 +1,7 @@
 name: bfcl
 version: 0.1.0
-# Granite benchmark: BFCL v4, overall_accuracy (BFCL's own "Overall Acc").
+# Granite benchmarks: BFCL v4 and BFCL v3, overall_accuracy (BFCL's own "Overall Acc"
+# of that version). One step for both; `benchmark` chooses (bfcl-v4 | bfcl-v3).
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. `benchmark` selects which
 # benchmark in this family to run; every steps/eval/*/ template has the same shape
@@ -15,11 +16,17 @@ version: 0.1.0
 # steps/eval/Makefile). The image is chosen at run time from config.image.
 # Nothing is cloned or mounted at launch.
 #
-# WHAT RUNS. `granite-evals run bfcl-v4` serves model_path with vLLM inside the job and
-# runs the pinned bfcl-eval package against it in function-calling mode over all 22
-# BFCL v4 scoring categories (web search through IBM's search MCP server instead of
-# SerpAPI), scores with bfcl-eval's checkers, and writes one results.json (schema:
-# granite_evals/results.py). No sandboxes; sandbox_cache is unused.
+# WHAT RUNS. `granite-evals run <benchmark>` serves model_path with vLLM inside the job,
+# runs the pinned bfcl-eval release of that version against it, scores with its
+# checkers and writes one results.json (schema: granite_evals/results.py).
+# bfcl-v4: bfcl-eval 2026.3.23, 22 scoring categories, web search through IBM's search
+# MCP server instead of SerpAPI, Overall weighted 10/10/10/30/40. bfcl-v3: bfcl-eval
+# 2025.8.6.2 (the last v3 release, run from its own venv /opt/bfcl-v3 in the image),
+# 17 categories, Overall the mean of live, non-live and multi-turn, no web search.
+# Requests: function-calling mode (the checkpoint's chat template and vLLM tool
+# parser); bfcl-v3 also offers options="handler=legacy-granite", BFCL prompt mode with
+# the Granite 4.0 prompt format, as earlier Granite 4.0 BFCL v3 numbers were produced.
+# No sandboxes; sandbox_cache is unused.
 #
 # PHASES. So that no job holds an idle GPU, recipes run this step twice on one
 # output_dir: phase generate on a GPU (vLLM + the model's work only) and phase score
@@ -28,7 +35,7 @@ version: 0.1.0
 # CUSTOM, not EVAL: gbcommon's StepType has no EVAL member.
 type: custom
 config:
-  # The benchmark id passed to `granite-evals run`. Required, e.g. "bfcl-v4".
+  # The benchmark id passed to `granite-evals run`. Required: "bfcl-v4" or "bfcl-v3".
   # See `granite-evals list` for this family's benchmark ids.
   benchmark: ""
   # The granite-evals image for this benchmark family (`make image-bfcl` in
@@ -49,9 +56,10 @@ config:
   output_root: ""
   run_name: ""
   # SMOKE KNOB: score only the first N entries of EVERY category (in BFCL's order;
-  # memory entries bring their prerequisite conversations). Empty = all 4,441.
+  # memory entries bring their prerequisite conversations). Empty = all (bfcl-v4:
+  # 4,951 in the default 21 categories; bfcl-v3: 4,441).
   limit: ""
-  # BFCL v4 is a single run. Empty = benchmark default (1).
+  # Both BFCL versions are a single run. Empty = benchmark default (1).
   repeats: ""
   # Concurrent BFCL test entries (BFCL's --num-threads).
   workers: "8"
@@ -60,7 +68,8 @@ config:
   dataset: ""
   dataset_revision: ""
   # Space-separated key=value benchmark options passed as --option, e.g.
-  # "categories=simple_python,web_search temperature=0.6 search_mcp_url=https://...".
+  # "categories=simple_python,web_search temperature=0.6 search_mcp_url=https://..."
+  # (bfcl-v4) or "handler=legacy-granite temperature=0.001" (bfcl-v3).
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""
@@ -77,9 +86,11 @@ config:
   # checkpoint (its chat template / shipped *_parser.py), "" disables one.
   tool_call_parser: "auto"
   reasoning_parser: "auto"
-  # Space-separated extra `vllm serve` arguments, each passed as --vllm-arg
-  # (e.g. "--enable-prefix-caching --max-num-seqs=64"). Values containing
-  # spaces are not supported, as in `options`.
+  # Extra `vllm serve` arguments, each passed as --vllm-arg (e.g.
+  # "--enable-prefix-caching --max-num-seqs=64"). The run script reads them as
+  # shell words: quote a value to keep it one word, spaces included
+  # (--override-generation-config '{"temperature": 0.5}'); unquoted JSON is
+  # split on spaces and brace-expanded ({"a":1,"b":2} becomes two arguments).
   vllm_args: ""
   # An existing OpenAI-compatible endpoint (e.g. http://host:8000/v1): skips
   # starting vLLM in the job; served_model_name must name the model there.
@@ -183,8 +194,25 @@ environment_configs:
 
             OPTS=()
             for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+            USER_VLLM_ARGS=()
+            for a in {{ config.vllm_args }}; do USER_VLLM_ARGS+=("$a"); done
             VLLM_ARGS=()
-            for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
+            # FC's output budget (granite_evals.benchmarks.bfcl_serving, USAGE.md): the
+            # served vLLM's default max_new_tokens (16384) unless base_url, legacy-granite (v3),
+            # an explicit max_tokens, a generation config in vllm_args (the words vLLM
+            # gets) or the checkpoint's own generation_config sets the output length. The
+            # helper records its decision in the output dir's fc_budget.json (results.json
+            # reports it, in either phase) and prints the vllm serve arguments, ahead of
+            # vllm_args. The score phase serves nothing.
+            if [ "{{ config.phase }}" != "score" ]; then
+              BUDGET_OUT=$(python -m granite_evals.benchmarks.bfcl_serving "$OUTPUT_DIR/fc_budget.json" "$BENCHMARK" \
+                "{{ config.model_path }}" "{{ config.base_url }}" "{{ config.options }}" "${USER_VLLM_ARGS[@]}") \
+                || { echo "granite: bfcl_serving failed" >&2; exit 1; }
+              while IFS= read -r a; do
+                if [ -n "$a" ]; then VLLM_ARGS+=(--vllm-arg="$a"); fi
+              done <<< "$BUDGET_OUT"
+            fi
+            for a in "${USER_VLLM_ARGS[@]}"; do VLLM_ARGS+=(--vllm-arg="$a"); done
 
             granite-evals run "$BENCHMARK" \
               --model "{{ config.model_path }}" \
