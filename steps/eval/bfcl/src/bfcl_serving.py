@@ -91,7 +91,7 @@ def read_generation_config(model_path: str) -> dict:
     try:
         return json.loads(Path(hf_hub_download(model_path, "generation_config.json")).read_text())
     except RemoteEntryNotFoundError:  # the Hub's 404: the repo has none. Not its parent,
-        return {}  # EntryNotFoundError: LocalEntryNotFoundError (Hub unreachable) is one too.
+        return {}  # EntryNotFoundError: LocalEntryNotFoundError (network disabled or unavailable) is one too.
 
 
 def plan(benchmark: str, model_path: str, base_url: str, options: str,

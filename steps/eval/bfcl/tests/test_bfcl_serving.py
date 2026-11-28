@@ -147,9 +147,9 @@ def test_a_hub_id_is_read_through_the_hub_cache(tmp_path, monkeypatch):
 
 def test_only_a_file_the_hub_says_is_absent_means_no_config(monkeypatch):
     # The real classes: RemoteEntryNotFoundError is the Hub's 404 for the file (the repo has
-    # none); LocalEntryNotFoundError, also an EntryNotFoundError, is raised when the Hub could
-    # not be asked (offline, a timeout, HF_HUB_OFFLINE without the file cached), so the
-    # checkpoint may well set a limit: unknown, never the budget.
+    # none); LocalEntryNotFoundError, also an EntryNotFoundError, is raised for a file not in
+    # the cache when the "network is disabled or unavailable" (the library's docstring; checked
+    # with HF_HUB_OFFLINE=1), so the checkpoint may well set a limit: unknown, never the budget.
     from types import SimpleNamespace
 
     from huggingface_hub.errors import LocalEntryNotFoundError, RemoteEntryNotFoundError
@@ -157,7 +157,7 @@ def test_only_a_file_the_hub_says_is_absent_means_no_config(monkeypatch):
     response = SimpleNamespace(headers={}, request=None)  # all the constructor reads
     _hub_raises(monkeypatch, RemoteEntryNotFoundError("404 generation_config.json", response=response))
     assert bfcl_serving.plan("bfcl-v3", "ibm-granite/some-model", "", "") == ("16384:step-default", [BUDGET])
-    _hub_raises(monkeypatch, LocalEntryNotFoundError("cannot reach the Hub, file not in the cache"))
+    _hub_raises(monkeypatch, LocalEntryNotFoundError("network disabled or unavailable, file not in the cache"))
     assert bfcl_serving.plan("bfcl-v3", "ibm-granite/some-model", "", "") == (
         "unknown:generation_config-unreadable-LocalEntryNotFoundError", [])
     _hub_raises(monkeypatch, OSError("offline"))
