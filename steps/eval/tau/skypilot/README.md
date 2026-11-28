@@ -26,6 +26,7 @@ steps:
 | `tau3-bench` | pass@1 (avg of 3) | the mean of per-domain pass@1 over airline, retail and telecom, as the τ²-bench leaderboard's Overall |
 | `tau3-retail` | pass@1 | 114 retail tasks |
 | `tau3-telecom` | pass@1 | 114 telecom tasks |
+  | `tau3` | pass@1 (mean over the chosen domains) | The generic bridge: `domains=` (required) runs any combination of the pinned tau2-bench data (a domain the data does not ship is refused at startup, before vLLM, naming the ones it ships); `task_split=`/`tasks=` select within a domain. |
 
 See `granite-evals list` for the current, authoritative set and sizes.
 
@@ -53,6 +54,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Unused by this family (no sandboxes); kept for the shared config contract. |
 | `hf_home` | Overrides `HF_HOME`. |
+| `hf_offline` | `1`/`true`/`yes`/`on` (empty/`0`/`false`/`no`/`off`: off; anything else fails the run). Warm-cache mode: `HF_HUB_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`, which also prepares the `datasets.load_dataset` configs the benchmarks request; gated datasets need a token with access) and share it across runs; data the cache lacks fails fast. What runs offline (not terminal-bench; lm-eval bridge tasks only once prepared): steps/eval/README.md, "The warm HF cache". |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none.
@@ -63,7 +65,12 @@ defaults to `aws/claude-sonnet-5` on the IBM LiteLLM gateway. The job needs
 environment, and every call is metered against `GRANITE_EVALS_SPEND_LEDGER` /
 `GRANITE_EVALS_SPEND_BUDGET_USD`; at the budget the meter answers HTTP 402 and the run
 stops scoring. `user_model=self judge_model=self` uses the served model instead (smoke
-runs, no key, not comparable with published numbers).
+runs, no key, not comparable with published numbers). With `judge_model=self`, the
+domains with NL assertions (`retail`, `banking_knowledge`) are graded by the served
+model, so scoring them needs it: run that shape as one GPU target with `phase: all`.
+Split into a GPU `generate` and a CPU `score` (as the recipes are), it is refused at the
+score phase, after the generate has run. The other domains (`airline`, `telecom`) split
+as usual.
 
 `agent=gold` replays each task's reference actions without a model (set
 `model_path: none`) and must score 1.0; use it to validate the data, the environments

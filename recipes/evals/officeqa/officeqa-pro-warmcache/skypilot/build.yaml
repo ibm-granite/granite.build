@@ -1,0 +1,93 @@
+granite.build:
+  name: eval-officeqa-pro-warmcache
+  # officeqa-pro (officeqa family) from a warm HF cache. Two targets on one
+  # output dir: `officeqa-pro-warmcache-generate` holds a GPU only while the
+  # model generates, and `officeqa-pro-warmcache` grades that output on a CPU
+  # node (no vLLM), binding the generate target, so selecting
+  # `officeqa-pro-warmcache` runs both.
+  #
+  # LICENSE NOTE: the questions and the parsed corpus are CC-BY-SA-4.0 behind the
+  # Hub's click-through gate, so nothing is baked into the image or mirrored.
+  # Both phases run offline (hf_offline) against a cache warmed beforehand with
+  # a token that has accepted the dataset's terms (the runbook is in
+  # parameters.yaml); the job itself carries no token, and the adapter verifies
+  # the cached snapshot against the pins before running.
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+    officeqa-pro-warmcache-generate:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        # The model as a real HF artifact: the launcher queues an hfpull step
+        # (public model, no token) and stages the download -- offline mode
+        # inside the job must not need the Hub for the model either.
+        model:
+          uri: "hf:///$${MODEL}"
+          type: model
+      outputs:
+        granite_generation:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/officeqa
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            benchmark: "officeqa-pro"
+            image: "$${IMAGE}"
+            # The staged HF artifact path (its basename is not the model name,
+            # so served_model_name pins the name vLLM advertises).
+            model_path: "{{ bindings.model.binding.path }}"
+            served_model_name: "$${SERVED_MODEL_NAME}"
+            output_root: "$${OUTPUT_ROOT}"
+            run_name: "$${RUN_NAME}"
+            limit: "$${LIMIT}"
+            repeats: "$${REPEATS}"
+            workers: "$${WORKERS}"
+            options: "$${OPTIONS}"
+            phase: "generate"
+            tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+            hf_home: "$${HF_HOME if HF_HOME else OUTPUT_ROOT ~ '/hf-cache'}"
+            hf_offline: "$${HF_OFFLINE}"
+            launcher_config:
+              resources:
+                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}
+    officeqa-pro-warmcache:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      inputs:
+        generation:
+          binding: officeqa-pro-warmcache-generate.granite_generation
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/officeqa
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            benchmark: "officeqa-pro"
+            image: "$${IMAGE_CPU}"
+            # Scoring loads no model; the name only labels the run.
+            model_path: "$${MODEL}"
+            served_model_name: "$${SERVED_MODEL_NAME}"
+            output_root: "$${OUTPUT_ROOT}"
+            run_name: "$${RUN_NAME}"
+            limit: "$${LIMIT}"
+            repeats: "$${REPEATS}"
+            workers: "$${WORKERS}"
+            options: "$${OPTIONS}"
+            phase: "score"
+            tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+            hf_home: "$${HF_HOME if HF_HOME else OUTPUT_ROOT ~ '/hf-cache'}"
+            hf_offline: "$${HF_OFFLINE}"
+            launcher_config:
+              resources:
+                cluster: "$${CLUSTER}"
+                zone: "$${CPU_QUEUE}"
+                memory: $${SCORE_MEMORY}
+                cpus: "$${SCORE_CPUS}"

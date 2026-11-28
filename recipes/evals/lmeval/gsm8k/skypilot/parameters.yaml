@@ -1,0 +1,58 @@
+# gsm8k on BlueVela (SkyPilot / SLURM), lmeval family image -- the generic
+# lm-eval bridge: lm-eval's own `gsm8k` task, 5-shot generation in chat mode
+# (mode=auto picks chat for it), graded exact_match on the strict-match
+# extraction (the `#### <answer>` regex), the harness's own protocol. The task
+# reports one exact_match per filter (strict-match, flexible-extract), so
+# OPTIONS names the one this recipe reports: metric=exact_match,strict-match;
+# build.yaml fixes the selection, tasks=gsm8k. Thinking is off (the bridge's
+# default, chat_template_kwargs.enable_thinking=false for a Granite 4.x
+# template): lm-eval's own protocol for this task. thinking=on is refused for
+# it at startup: gsm8k stops on "Question:", and vLLM matches stop strings
+# against the thought too, so a thought that writes one ends the response
+# with no answer.
+# Data: https://huggingface.co/datasets/openai/gsm8k (public, config `main`;
+# the job downloads it into the HF cache at run start).
+#
+# LIMIT is empty: the full benchmark (1,319 test questions). For a quick
+# functional check, score only the first N questions (lm-eval's own per-task
+# first N):
+#   gb build start -f recipes/evals/lmeval/gsm8k/skypilot/build.yaml --space <space> --param OUTPUT_ROOT=<root> --param LIMIT=5
+# Override any value with --param KEY=VALUE. More bridge options (mode=,
+# num_fewshot=, gen_kwargs=) in steps/eval/lmeval/skypilot/USAGE.md.
+
+# ─── Model ────────────────────────────────────────────────────────────
+# https://huggingface.co/ibm-granite/granite-4.2-3b (vLLM downloads a hub id into the HF cache).
+MODEL_PATH: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: ""
+# Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
+# artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
+# Empty derives it from MODEL_PATH's basename (the step's own defaulting).
+RUN_NAME: ""
+# Runs land in $OUTPUT_ROOT/$RUN_NAME/lm-eval@tasks-gsm8k@metric-exact_match+2Cstrict-match. Required, no default: pass
+# --param OUTPUT_ROOT=<root>, somewhere the dispatching user can write.
+OUTPUT_ROOT: ""
+# HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.
+HF_HOME: ""
+
+# ─── Images (GPU only) ────────────────────────────────────
+# The lmeval image built from the commit this tag names (it carries the generic bridge).
+IMAGE: "quay.io/granitebuild/steps/eval/lmeval/images/gpu:5c33354b"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+LIMIT: ""
+REPEATS: ""
+WORKERS: 128
+OPTIONS: "metric=exact_match,strict-match"
+TENSOR_PARALLEL_SIZE: 1
+
+# ─── Cluster ──────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
+CLUSTER: "bluevela"
+QUEUE: "gpu-mid"
+GPU_MEMORY: 256
+CPU_QUEUE: "cpu"
+SCORE_CPUS: 8
+SCORE_MEMORY: 64
+MAX_RETRIES: 2
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300

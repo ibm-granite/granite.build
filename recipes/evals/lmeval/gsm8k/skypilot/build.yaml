@@ -1,0 +1,38 @@
+granite.build:
+  name: eval-gsm8k
+  # gsm8k through the generic lm-eval bridge (lmeval family). One GPU
+  # target: the bridge scores inside generation (--phase all).
+  retries:
+    max_retries: $${MAX_RETRIES}
+    target_reuse_enabled: true
+  targets:
+    gsm8k:
+      environment_uri: "$${ENVIRONMENT_URI}"
+      outputs:
+        granite_results:
+          uri: "env://{{ binding.path }}"
+          type: dataset
+      steps:
+        - step_uri: space://steps/eval/lmeval
+          config:
+            poll_interval_seconds: $${POLL_INTERVAL_SECONDS}
+            log_retrieval_interval_seconds: $${LOG_RETRIEVAL_INTERVAL_SECONDS}
+            benchmark: "lm-eval"
+            image: "$${IMAGE}"
+            model_path: "$${MODEL_PATH}"
+            served_model_name: "$${SERVED_MODEL_NAME}"
+            output_root: "$${OUTPUT_ROOT}"
+            run_name: "$${RUN_NAME}"
+            limit: "$${LIMIT}"
+            repeats: "$${REPEATS}"
+            workers: "$${WORKERS}"
+            options: "$${OPTIONS} tasks=gsm8k"
+            phase: "all"
+            tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
+            hf_home: "$${HF_HOME}"
+            launcher_config:
+              resources:
+                accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
+                cluster: "$${CLUSTER}"
+                zone: "$${QUEUE}"
+                memory: $${GPU_MEMORY}

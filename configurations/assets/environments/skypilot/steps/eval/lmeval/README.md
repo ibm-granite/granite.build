@@ -19,6 +19,7 @@ steps:
 |---|---|---|
 | `include-44` | accuracy | Cohere Labs' INCLUDE-base-44 (`CohereLabs/include-base-44`, pinned commit): lm-eval's `include_base_44_<lang>_<domain>` tasks, 44 languages x 11 domains (178 tasks, ~500-550 test questions per language) |
 | `mmlu-prox-lite` | exact match (custom-extract) | `li-lab/MMLU-ProX-Lite` (pinned commit): lm-eval's `mmlu_prox_lite_<lang>_<subject>` tasks, 5-shot CoT, over the 11 Granite 4.x languages MMLU-ProX has |
+| `lm-eval` | macro mean of the tasks' primary metrics | The generic bridge: any task or group in the pinned lm-evaluation-harness (14k+ names), chosen by `options` (`tasks=hellaswag,arc_easy`). No fixed protocol — see below. |
 
 ### mmlu-prox-lite
 
@@ -54,6 +55,115 @@ breaks the same questions down by domain. With `repeats: k` the headline is
 pass@1[avg-of-k] and `details.pass_at_k` adds pass@k (an example correct in any
 repeat), both averaged over languages the same way.
 
+### lm-eval (generic bridge)
+
+`benchmark: lm-eval` runs any task or group the pinned lm-evaluation-harness knows,
+chosen by the recipe's `options` — a new task is config, not code:
+
+```yaml
+benchmark: "lm-eval"
+options: "tasks=hellaswag,arc_easy mode=auto metric=acc_norm"
+```
+
+Options: `tasks` (required, comma-separated task/group ids; unknown names fail fast
+before vLLM starts, with near-miss suggestions), `mode` (`auto` — the default —
+`chat` or `base`), `num_fewshot`, `gen_kwargs` (comma-separated `key=value` overrides
+of the tasks' generation kwargs, values percent-decoded like `stop=`, `do_sample` as
+`true`/`false`; `model`, `messages`, `prompt` and `stop` are refused, since the request
+sets them itself: stop strings are `until=`), and `metric`
+(the primary metric for every task, or one exact results key `<metric>,<filter>` such
+as `exact_match,strict-match`; default: each task's own, its config's first
+`metric_list` entry), `thinking` (`off`, the default, or `on`) and `max_failed_frac`
+(default 0.05, in [0, 1]). A bad number (`num_fewshot` not a whole number of 0 or more,
+`max_failed_frac` outside [0, 1]) fails at startup. With the thinking budget applied, a
+served `max_model_len` that cannot hold it is refused before any request, and one that
+leaves under 8192 tokens for the prompt is warned about.
+
+`thinking` applies to chat-mode tasks. Before vLLM starts, the bridge renders the
+checkpoint's chat template on a fixed message with each known switch
+(`enable_thinking`, Granite 3.x's `thinking`) set true and false: a switch is a kwarg
+whose two renders differ (the tokenizer's think tokens are only a hint). It prints one
+status line, e.g. `thinking=off (default); this checkpoint's chat template has a
+thinking switch (enable_thinking), pass thinking=on to use it`, or `... has no thinking
+switch`, and records the probe in `details.thinking_switch`. Requests set that switch
+(`chat_template_kwargs.<switch>=false`, `true` with `thinking=on`); a template without
+one gets no kwarg and refuses `thinking=on`. With thinking on, a chat task that sets no
+`max_gen_toks` or `max_tokens` (and none in `gen_kwargs`) gets a 32768-token budget:
+lm-eval's 256-token default ends the thought before `</think>`, and the server's
+reasoning parser returns no content. `thinking=on` with a task that stops on text (any
+stop but a special token such as `</s>` or `<|im_end|>`) is refused at startup, naming
+the stops: vLLM applies stop strings to the whole generation, thought included, so a
+thought that writes one (gsm8k's `Question:`) ends the response with no answer.
+`thinking=off` is the lm-eval generation tasks' own protocol. Per task the run counts docs with an empty response and docs whose request failed
+(`details.responses`), in chat and base mode alike. They are left out of the score, as
+the shared failure policy has it (a failed item is never scored as a model loss): a
+mean metric is recomputed from the per-doc sample rows over the docs left
+(`details.per_task` keeps `value`, `n`, `left_out` and the harness's own
+`harness_value`); a metric that does not average over docs cannot drop any, so a task
+of that kind with a failed doc fails the run. The run fails when they exceed
+`max_failed_frac` of all docs.
+
+A task's metric is read as `<metric>,none`, then bare `<metric>`, then
+`<metric>,<filter>` for each of the task's `filter_list` names in yaml order (gsm8k's
+`exact_match` reads `exact_match,strict-match`); `per_task` records the `key` read. A
+task whose results row has none of these fails the run, naming the keys it has — a
+missing metric is never written as a null score.
+
+`auto` picks each task's protocol from its `output_type`: generation tasks run in
+chat mode (`local-chat-completions`, `apply_chat_template`, `fewshot_as_multiturn`,
+the adapter mmlu-prox-lite uses), multiple-choice and loglikelihood tasks in base mode
+(include-44's adapter). Unlike mmlu-prox-lite, chat mode keeps each task's own
+generation kwargs (sampling, stop strings, `max_gen_toks`) instead of Granite's card
+sampling (temperature 1.0, top_p 0.95, 32768 tokens), and has no answer extraction of
+its own: the task's filters grade. Only the thinking budget (below) is added, and only
+where a task sets no `max_gen_toks`. A task list that mixes them runs as two passes over the same output dir
+and cache.
+
+The headline is the macro mean over the resolved tasks of each task's primary
+metric; `n` sums their sizes, `per_task` keeps each task's numbers, and
+`repeat-<k>/lm_eval_results.json` preserves the harness's full output. A group in
+`tasks` reaches the harness as the group it loaded, so its per-task overrides apply
+(openllm's 25-shot arc_challenge, 10-shot hellaswag) and the harness computes its
+aggregate (where the group's yaml declares one) into `lm_eval_results.json`; only leaf
+tasks are averaged into the headline. Under `mode=auto` a group whose tasks span both
+modes (openllm: gsm8k generates) runs in parts — its single-mode subgroups and tasks,
+overrides kept — and gets no aggregate of its own (`details.split_groups` names it);
+`mode=base` runs it whole (its generation tasks then go through the completions endpoint, without the chat template); `mode=chat` cannot, since the chat endpoint returns no loglikelihoods and a multiple-choice task is refused at startup. `limit` is
+lm-eval's own (the first N docs per task), and `repeats` runs the whole set k times
+and averages — no pass@k here, since per-example scores have no meaning for every
+metric family. `dataset`/`dataset_revision` do not apply (every task names its own
+dataset; the class pin is the harness repo at the release the image pins). One
+caveat the curated benchmarks do not have: the harness's task yamls name their
+datasets but pin no revisions, so a bridge run reads each dataset at the hub's
+current snapshot.
+
+The composed run dir is `$output_root/$run_name/lm-eval@tasks-<tasks>[@<key>-<value>...]`:
+the selection, then every protocol option given (`gen_kwargs=`, `metric=`, `mode=`,
+`num_fewshot=`, `thinking=`, sorted by key), each value escaped into one path
+segment, so two runs that differ in any of them never share an output dir.
+
+Two recipes ship as templates: `recipes/evals/lmeval/hellaswag` (base mode —
+multiple-choice loglikelihood, the leaderboard-standard `metric=acc_norm`) and
+`recipes/evals/lmeval/gsm8k` (chat mode — 5-shot generation,
+`metric=exact_match,strict-match`).
+A third, `recipes/evals/lmeval/gpqa-diamond`, is the warm-cache example: the
+dataset is Hub-gated, so the recipe runs `hf_offline` against a cache warmed by
+`make -C steps/eval prefetch` (see steps/eval/README.md, "The warm HF cache").
+
+The bridge builds the tasks before `simple_evaluate` does, so it seeds them first, as
+`simple_evaluate` would (`random` with the run's `seed`, numpy and torch with 1234): a
+task whose `process_docs` shuffles (gpqa's answer order) gets the same order on every
+run. It builds them with the `datasets` map cache off and computes each task's eval
+docs once, there: that cache is keyed by the map function, not the seed, so otherwise
+whichever run first wrote it under `hf_home` would fix the order for every later run
+there, whatever its seed. The downloaded and prepared data are still reused.
+
+Resume is the curated benchmarks' care: the harness response cache keeps every
+finished request, so a restarted run only sends the missing ones. The bridge keeps it
+under `repeat-<k>/lm_cache/<key>`, the key a hash of the model, its served name and the
+repeat's LM seed: the harness keys cached answers by request only, so another model or
+seed in the same dir starts a fresh cache instead of replaying these.
+
 ## Config
 
 | Field | Default | Purpose |
@@ -63,13 +173,13 @@ repeat), both averaged over languages the same way.
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a run with options that can change its results (a selection such as `tasks=`, `domains=` or `instances=`, a protocol option such as `thinking=` or `num_fewshot=`, a `dataset` / `dataset_revision`, or a `seed` other than 0) writes `…/<benchmark>@<key>-<value>…` instead, every value escaped into one Hydra-safe path segment, e.g. `…/lm-eval@tasks-hellaswag@thinking-on`; operational options (worker counts, retries and timeouts of a call whose failure is left out of the score, failure thresholds such as `max_failed_frac`, endpoint addresses) do not count (see steps/eval/README.md, Run dirs). |
 | `run_name` | basename of `model_path` | Run directory under `output_root`. |
-| `limit` | `""` (full set) | **Smoke knob:** first N examples. mmlu-prox-lite orders by (question_id, language), so a small N covers every language; include-44 orders by (in-task index, language), so a small N covers the first languages' tasks (LIMIT=5 sees Albanian's five). |
-| `repeats` | `""` (1) | Repeats of the whole run. mmlu-prox-lite samples afresh at temperature 1.0; include-44 reports pass@1[avg-of-k] with `details.pass_at_k`. |
+| `limit` | `""` (full set) | **Smoke knob:** first N examples. mmlu-prox-lite orders by (question_id, language), so a small N covers every language; include-44 orders by (in-task index, language), so a small N covers the first languages' tasks (LIMIT=5 sees Albanian's five); lm-eval uses the harness's own per-task first N. |
+| `repeats` | `""` (1) | Repeats of the whole run. mmlu-prox-lite samples afresh at temperature 1.0; include-44 reports pass@1[avg-of-k] with `details.pass_at_k`; lm-eval reports the mean over repeats (no pass@k). |
 | `workers` | `64` | Concurrent requests to vLLM. |
-| `dataset` / `dataset_revision` | `""` | Override the data pinned in granite-evals for the selected benchmark (`li-lab/MMLU-ProX-Lite` or `CohereLabs/include-base-44`). |
-| `options` | `""` | Space-separated `key=value` benchmark options. Both: `answers=gold`, `max_retries`, `request_timeout`, `languages`. mmlu-prox-lite: `languages` takes `ibm`, `all` or a comma list; `temperature`, `top_p`, `max_tokens`, `stop` (`task`, `none` or a comma list of up to 4 percent-encoded strings, e.g. `stop=%3C/s%3E,Q:`), `thinking=off`. include-44: `languages` takes a comma list of the language slugs. |
+| `dataset` / `dataset_revision` | `""` | Override the data pinned in granite-evals for the selected benchmark (`li-lab/MMLU-ProX-Lite` or `CohereLabs/include-base-44`); `lm-eval` rejects them — its tasks pin their own. |
+| `options` | `""` | Space-separated `key=value` benchmark options. Both: `answers=gold`, `max_retries`, `request_timeout`, `languages`. mmlu-prox-lite: `languages` takes `ibm`, `all` or a comma list; `temperature`, `top_p`, `max_tokens`, `stop` (`task`, `none` or a comma list of up to 4 percent-encoded strings, e.g. `stop=%3C/s%3E,Q:`), `thinking=off`. include-44: `languages` takes a comma list of the language slugs. lm-eval: `tasks` (required), `mode`, `num_fewshot`, `gen_kwargs`, `metric`, `thinking`, `max_failed_frac` (see above). |
 | `tensor_parallel_size` / `gpu_memory_utilization` / `max_model_len` | `1` / `0.9` / `""` | vLLM. |
 | `tool_call_parser` / `reasoning_parser` | `auto` / `auto` | vLLM parsers; `auto` detects them from the checkpoint, `""` disables one. |
 | `vllm_args` | `""` | Space-separated extra `vllm serve` arguments, each passed as `--vllm-arg`. |
@@ -77,6 +187,7 @@ repeat), both averaged over languages the same way.
 | `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Unused: these benchmarks run no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
+| `hf_offline` | `""` | `1`/`true`/`yes`/`on` (empty/`0`/`false`/`no`/`off`: off; anything else fails the run). Warm-cache mode: `HF_HUB_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`, which also prepares the `datasets.load_dataset` configs the benchmarks request; gated datasets need a token with access) and share it across runs; data the cache lacks fails fast. What runs offline (not terminal-bench; lm-eval bridge tasks only once prepared): steps/eval/README.md, "The warm HF cache". |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none. The data is public; no token is needed.

@@ -20,9 +20,16 @@ OUTPUT_ROOT: ""
 # HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.
 HF_HOME: ""
 
+# ─── Dataset swap ─────────────────────────────────────────────────────
+# Empty = the module's pinned dataset. Set both to score a different set in
+# the same format (DATASET: a hub id or path; DATASET_REVISION: its commit,
+# for reproducibility -- an unpinned swap floats with the source).
+DATASET: ""
+DATASET_REVISION: ""
+
 # ─── Images (GPU generate + CPU score) ────────────────────────────────────
-IMAGE: "quay.io/granitebuild/steps/eval/bird/images/gpu:ea0bc96d"
-IMAGE_CPU: "quay.io/granitebuild/steps/eval/bird/images/cpu:ea0bc96d"
+IMAGE: "quay.io/granitebuild/steps/eval/bird/images/gpu:a3e62a3b"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/bird/images/cpu:a3e62a3b"
 
 # ─── Scale ────────────────────────────────────────────────────────────
 LIMIT: ""

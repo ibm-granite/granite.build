@@ -18,7 +18,7 @@
 # One image per benchmark family, because the upstream harnesses' own dependencies
 # conflict with one another (see [tool.uv] conflicts in src/core/pyproject.toml).
 # Build context is steps/eval/ (see the Makefile):
-#   podman build --platform linux/amd64 -f officeqa/Dockerfile.gpu . -t <registry>/gb-step-eval-officeqa:<tag>
+#   podman build --platform linux/amd64 -f officeqa/Dockerfile.gpu . -t <registry>/steps/eval/officeqa/images/gpu:<tag>
 #
 # LICENSE / DATA: upstream's scorer and page extraction are Apache-2.0 (ported into
 # this repo with attribution). The question CSVs and the parsed corpus are
@@ -52,17 +52,46 @@
 # in place would replace files the base ships (e.g. the /etc/alternatives awk
 # links), leaving overlay whiteouts. An unprivileged unsquashfs (Pyxis) cannot
 # create those, so the container would not start on SLURM.
-FROM python:3.12-slim-bookworm AS sysdeps
+# Tag AND digest: the tag says which Python and Debian release, the digest makes a
+# rebuild start from the base the published image was built on (Python 3.12.16 on
+# bookworm, resolved 2026-11-24). Bump both together.
+FROM python:3.12-slim-bookworm@sha256:b1233897230b2046795042a642dc2a1849774c60469bb57d1a90622b501443a0 AS sysdeps
 
 ARG ENROOT_VERSION=4.2.1
 
+# gcc, g++ and libc6-dev are run-time packages here, not build tools: when the model is
+# served, Triton (vLLM's kernels) compiles its launchers with the system C compiler and
+# torch.compile's Inductor any host-side code with the C++ one. libc6-dev brings the
+# kernel headers (linux-libc-dev) with it; the security upgrade below keeps them
+# current. The rest of build-essential (make, dpkg-dev, perl) is left out: no build
+# step compiles anything, as every sdist the image installs is pure Python.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash ca-certificates curl git jq gawk parallel pigz squashfs-tools zstd \
-        libcap2-bin procps build-essential \
+        libcap2-bin procps gcc g++ libc6-dev \
     && arch=$(dpkg --print-architecture) \
     && curl -fsSLO "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${arch}.deb" \
     && apt-get install -y --no-install-recommends ./enroot_${ENROOT_VERSION}-1_${arch}.deb \
     && rm -f ./enroot_*.deb && rm -rf /var/lib/apt/lists/*
+
+# Security updates from Debian's security archive: the base is a snapshot, and its
+# packages fall behind the archive's fixes. The upgrade reads a sources list naming
+# bookworm-security only, so neither a point release (bookworm, bookworm-updates) nor a
+# vendor repository moves any other package: those keep the versions installed above.
+# Not reproducible from the commit alone: a later rebuild picks up newer security
+# packages, so the published, trivy-scanned digest is the record of what shipped.
+# pip is removed from the base interpreter: nothing in the image runs it (uv installs
+# every environment), and its vendored copies carry advisories of their own.
+RUN mkdir /tmp/apt-security \
+    && printf '%s\n' 'Types: deb' 'URIs: http://deb.debian.org/debian-security' \
+        'Suites: bookworm-security' 'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        > /tmp/apt-security/security.sources \
+    && apt-get update -o Dir::Etc::SourceList=/dev/null -o Dir::Etc::SourceParts=/tmp/apt-security \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+        -o Dir::Etc::SourceList=/dev/null -o Dir::Etc::SourceParts=/tmp/apt-security \
+        -o Dpkg::Options::=--force-confold \
+    && rm -rf /tmp/apt-security /var/lib/apt/lists/* \
+    && python3 -m pip uninstall -y --root-user-action=ignore pip
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.20@sha256:100047e74f30778ab704942321a09750d6158739573ff58bf3924085cc6cd2d8 /uv /usr/local/bin/uv
 
@@ -74,9 +103,12 @@ ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
 
 ENV EVALS_HOME=/opt/granite-evals
 WORKDIR ${EVALS_HOME}
+# UV_NO_CACHE: keep uv's download cache, a second unpacked copy of every package the
+# image installs, out of the layers.
 ENV UV_PROJECT_ENVIRONMENT=${EVALS_HOME}/.venv \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_NO_CACHE=1 \
     VIRTUAL_ENV=${EVALS_HOME}/.venv \
     PATH=${EVALS_HOME}/.venv/bin:$PATH
 

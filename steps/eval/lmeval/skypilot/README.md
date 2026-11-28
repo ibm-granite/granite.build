@@ -26,12 +26,12 @@ steps:
 
 | Field | Default | Purpose |
 |---|---|---|
-| `benchmark` | `""` (required) | The benchmark id passed to `granite-evals run`. Currently only `mmlu-prox-lite` exists in this family; see `granite-evals list`. |
+| `benchmark` | `""` (required) | The benchmark id passed to `granite-evals run`: `mmlu-prox-lite`, `include-44`, or `lm-eval` — the generic bridge to any task in the pinned harness, chosen by `options` (see USAGE.md). |
 | `image` | `""` (required) | granite-evals lmeval image, pinned by tag (`GRANITE_EVALS_IMAGE_LMEVAL`). |
 | `model_path` | `""` (required) | Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | basename of `model_path` | Name vLLM serves under. |
 | `output_dir` | `""` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `output_root` | `""` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark` (a run with options that can change its results is named after them: the `lm-eval` bridge's `…/lm-eval@tasks-hellaswag`, see steps/eval/README.md, Run dirs). |
 | `run_name` | basename of `model_path` | Run directory under `output_root`. |
 | `limit` | `""` (11 x 588) | **Smoke knob:** first N examples ordered by (question_id, language), so a small N covers every language. |
 | `repeats` | `""` (1) | Repeats of the whole run (each samples afresh at temperature 1.0). |
@@ -46,6 +46,7 @@ steps:
 | `seed` | `0` | Seed for the benchmark's own sampling. |
 | `sandbox_cache` | `""` | Unused: this benchmark runs no sandbox. |
 | `hf_home` | `""` | Overrides `HF_HOME`. |
+| `hf_offline` | `""` | `1`/`true`/`yes`/`on` (empty/`0`/`false`/`no`/`off`: off; anything else fails the run). Warm-cache mode: `HF_HUB_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`, which also prepares the `datasets.load_dataset` configs the benchmarks request; gated datasets need a token with access) and share it across runs; data the cache lacks fails fast. What runs offline (not terminal-bench; lm-eval bridge tasks only once prepared): steps/eval/README.md, "The warm HF cache". |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none. The data is public; no token is needed.

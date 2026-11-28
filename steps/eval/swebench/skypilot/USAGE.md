@@ -23,6 +23,7 @@ steps:
 | `swebench-verified` | 500 instances (`SWE-bench/SWE-bench_Verified`, pinned) | mini-swe-agent against the upstream task, graded with the `swebench` harness |
 | `swebench-pro` | 642 tasks, V2 public set | follows Scale's V2 locked protocol ([SWE-bench_Pro-os](https://github.com/scaleapi/SWE-bench_Pro-os) v2.0.0): mini-swe-agent with the protocol's tool-calling config works each task's `instruction.md` |
 | `swebench-multilingual` | 300 instances, 9 languages (C/C++, Go, Java, JavaScript/TypeScript, PHP, Ruby, Rust) | same pipeline as `swebench-verified`, mini-swe-agent's `swebench.yaml` config |
+  | `swebench` | pass@1 resolve rate | The generic bridge: `dataset=` (required) runs any swebench-format set that carries each instance's image, eval_script and log_parser; `instances=` subsets. |
 
 See `granite-evals list` for the current, authoritative set and sizes.
 
@@ -35,7 +36,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
 | `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a run with options that can change its results (a selection such as `tasks=`, `domains=` or `instances=`, a protocol option such as `thinking=` or `num_fewshot=`, a `dataset` / `dataset_revision`, or a `seed` other than 0) writes `…/<benchmark>@<key>-<value>…` instead, every value escaped into one Hydra-safe path segment, e.g. `…/lm-eval@tasks-hellaswag@thinking-on`; operational options (worker counts, retries and timeouts of a call whose failure is left out of the score, failure thresholds such as `max_failed_frac`, endpoint addresses) do not count (see steps/eval/README.md, Run dirs). |
 | `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N instances by `instance_id`. Empty = the full set. |
 | `repeats` | Independent agent runs per instance (avg-of-k). Empty = benchmark default (1). |
@@ -50,6 +51,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Shared squashfs cache for instance images. Every benchmark in this family sandboxes, so recipes always set this. |
 | `hf_home` | Overrides `HF_HOME`. |
+| `hf_offline` | `1`/`true`/`yes`/`on` (empty/`0`/`false`/`no`/`off`: off; anything else fails the run). Warm-cache mode: `HF_HUB_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`, which also prepares the `datasets.load_dataset` configs the benchmarks request; gated datasets need a token with access) and share it across runs; data the cache lacks fails fast. What runs offline (not terminal-bench; lm-eval bridge tasks only once prepared): steps/eval/README.md, "The warm HF cache". |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none. Every dataset in this family is public; no HF token is needed.

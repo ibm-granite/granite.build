@@ -25,6 +25,9 @@ version: 0.1.0
 #                               (ns's ruler_score: the mean over 13 tasks)
 #   scicode                    SciCode, pass@1 subtask accuracy
 #   wmt24pp                    WMT24++ en->xx, XCOMET-XXL
+#   nemoskills                 the generic bridge: any NeMo-Skills benchmark at the
+#                              pinned checkout, options "benchmark=<name>", ns's own
+#                              protocol and headline metric (see USAGE.md)
 #
 # ONE STEP PER GRANITE_EVALS IMAGE FAMILY. Every steps/eval/*/ template has the same
 # shape and differs only in `name`, the family's image env var, and its defaults.
@@ -97,6 +100,17 @@ config:
   # "temperature=0.6 max_tokens=32768" (unset sampling = the checkpoint's generation_config),
   # "answers=gold" (reference answers through the same grading; model_path may be "none"),
   # "ns.<key>=<value>" (any NeMo-Skills generation override).
+  # nemoskills (the generic bridge) instead takes: "benchmark=math-500" (required;
+  # any NeMo-Skills dataset name at the pinned checkout, run with ns's own prepare,
+  # prompts and metrics), "metric=<ns metric key>" (default symbolic_correct) and
+  # "split=<name>" (which prepared <split>.jsonl to read). Its `dataset` is
+  # required and pins the data: a local path in ns's row format, a hub id with
+  # dataset_revision a 40-hex commit (what ns's prepare.py reads), or an http(s)
+  # URL with dataset_revision "sha256:<hex>" (what prepare.py downloads). The
+  # prepare's HF reads, urlretrieve, urlopen, wget and local-builder data_files
+  # are checked against the pin; other fetches (requests, httpx, aiohttp, fsspec,
+  # git, curl, remote data_files on a pinned hub id) are not, so
+  # give such a benchmark a local dataset (USAGE.md).
   # The run script word-splits this on whitespace (no quoting), so neither key
   # nor value text can contain spaces.
   options: ""
@@ -129,6 +143,18 @@ config:
   sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
   hf_home: ""
+  # Warm-cache mode: run with HF_HUB_OFFLINE=1 (HF_DATASETS_OFFLINE=1), so every
+  # hub read -- datasets, and the model if model_path is a hub id -- resolves from
+  # hf_home's cache instead of the hub. Warm the cache first (HF_TOKEN=... make -C
+  # steps/eval prefetch HF_HOME=<same cache>; gated datasets need a token with
+  # access granted): it fetches each pinned snapshot and prepares the
+  # datasets.load_dataset configs the benchmarks request, which an offline
+  # load_dataset needs. Data the cache lacks fails fast; steps/eval/README.md
+  # ("The warm HF cache") lists what runs offline (not terminal-bench; lm-eval
+  # bridge tasks only once prepared). Bind the model (hf://) or warm it too;
+  # hf_offline without hf_home is refused. A word: 1/true/yes/on turn it on,
+  # empty/0/false/no/off leave it off, anything else fails the run.
+  hf_offline: ""
 outputs:
   optional:
     # phase all | score: the scored results.json.
@@ -159,6 +185,7 @@ environment_configs:
           run: |
             set -e
             set -o pipefail
+            {#- gb-include ../../shared/output_dir.j2 -#}
             BENCHMARK="{{ config.benchmark }}"
             echo "=== granite $BENCHMARK on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
@@ -177,25 +204,7 @@ environment_configs:
             command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is config.image set to a granite-evals image?"; exit 1; }
             test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
 
-            {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
-
-            OUTPUT_DIR="{{ config.output_dir }}"
-            OUTPUT_ROOT="{{ config.output_root }}"
-            RUN_NAME="{{ config.run_name }}"
-            # run_name defaults to the model_path basename (the same defaulting as
-            # served_model_name), so one output_root serves every model.
-            if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
-            # Either a full output_dir, or output_root composed per benchmark; with
-            # neither set, fail here rather than deep inside a harness.
-            if [ -z "$OUTPUT_DIR" ]; then
-                if [ -z "$OUTPUT_ROOT" ]; then
-                    echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCHMARK) or output_dir" >&2
-                    exit 1
-                fi
-                OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCHMARK"
-            fi
-            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
-            mkdir -p "$OUTPUT_DIR"
+            {{ granite_output_dir(config) }}
 
             {% if config.sandbox_cache %}
             # Sandboxes: enroot inside this job's container. Image squashfs files go to
@@ -220,7 +229,7 @@ environment_configs:
             {% endif %}
 
             OPTS=()
-            for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+            for kv in "${OPT_WORDS[@]}"; do OPTS+=(--option "$kv"); done
             VLLM_ARGS=()
             for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 

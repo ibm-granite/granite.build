@@ -78,12 +78,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (which answers an anonymous check of a missing repository with 401) works after a plain
   `podman login`.
 
-- **granite-evals** — benchmark evaluation suite: 41 benchmarks across 9 harness families
-  (bfcl, bird, ifbench, judged, lmeval, nemoskills, swebench, tau, tbench), one image and
-  one sourced step per family under `steps/eval/`, with dispatch recipes under
-  `recipes/evals/` that split GPU generate from CPU score. No benchmark data is committed:
-  dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or image-build
-  time (#460).
+- **granite-evals** — benchmark evaluation suite: 57 curated benchmarks across 11 harness
+  families (bfcl, bird, ifbench, judged, lmeval, mcpmark, nemoskills, officeqa, swebench, tau,
+  tbench), plus a generic bridge id in six of them (`lm-eval`, `nemoskills`, `tau3`, `mcpmark`,
+  `swebench`, `terminal-bench`) that runs any benchmark of its kind the family's pinned harness
+  knows, selected by the recipe's options. One image (GPU, plus CPU for the eight families that
+  split generate from score) and one sourced step per family under `steps/eval/`, with 70
+  dispatch recipes under `recipes/evals/` that split GPU generate from CPU score. No benchmark
+  data is committed: dataset pins live in `steps/eval/VENDORED.md` and are fetched at run or
+  image-build time (#460, #586).
 
 - **`single_node` step flag (#651)** — `environment_configs.Skypilot.single_node: true` makes
   gbserver resolve `num_nodes` from every layer the launch reads (`compute_config`, the step's
@@ -111,6 +114,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rest-server worker.
 
 ### Changed
+
+- **granite-evals run dirs are named after every option that can change the results
+  (#766).** With `output_dir` empty, a run used to write `$OUTPUT_ROOT/$RUN_NAME/<benchmark>`
+  whatever its options. It now writes `$OUTPUT_ROOT/$RUN_NAME/<benchmark>@<key>-<value>...`
+  whenever it has a selection option (`tasks=`, `domains=`, `categories=`, `instances=`, ...),
+  a protocol option (`thinking=`, `num_fewshot=`, `judge_model=`, sampling or step limits, ...),
+  a `dataset` / `dataset_revision`, or a `seed` other than 0, every value escaped into one path segment (see
+  `steps/eval/README.md`, Run dirs). Only operational options (worker counts, the retries and
+  timeouts of a call whose failure is left out of the score, failure thresholds such as
+  `max_failed_frac`, environment and endpoint addresses) leave the name alone; a limit the
+  score sees, such as `task_timeout` or tau's `max_errors`, names it. This applies to
+  the curated recipes too: one that passes options or swaps its data writes to a new dir (the
+  bfcl `categories=` recipes, a recipe run with `--param OPTIONS=...`, and a `DATASET` /
+  `DATASET_REVISION` swap on `bird/birdbench`, `ifbench/ifbench` or `judged/gdpval`), so a
+  rerun does **not** resume into a dir an older run wrote under `<benchmark>`; move that dir to
+  the new name to resume it. A curated recipe run with no options and its own data keeps
+  `<benchmark>`.
 
 - **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
   site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
@@ -561,3 +581,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Reflected XSS on the legacy SSO `/api/v1/auth/callback` page (#723).** The provider's
   `error_description` was put into the HTML unescaped; it is now escaped.
+- **Eval step images: security baseline and a publish gate (#764).** All 19 images
+  under `quay.io/granitebuild/steps/eval/<family>/images/{gpu,cpu}` were rebuilt, and the
+  recipes now pin `136b0f80` (bird, ifbench and nemoskills: `a3e62a3b`). The images:
+  - start from a base pinned by digest and take Debian security updates;
+  - ship no compiler in the CPU images, and no pip or uv cache in any;
+  - raise the shared lock's vulnerable packages to their fixes, and drop wandb, which
+    NeMo-Skills declares only for optional logging.
+
+  `make -C steps/eval scan-deps` and `scan-image-*` now gate every publish target (no
+  fixable HIGH or above), unless `SKIP_SCAN=true` is given, which each push then says.
+  `publish-images` scans every image and checks every tag before the first push. The
+  bare push targets it uses refuse on their own. The scanners are pinned:
+  - trivy, which rates by GHSA, on the lock and the image;
+  - osv-scanner with distill's `osv-gate.py`, which rates by CVSS, on the lock and on
+    the environments an image resolves at build time (its `granite-freeze.txt` files).
+
+  Accepted advisories in `steps/eval/scan-ignore` carry an expiry and a package scope
+  (`pkg:` purls). Both gates enforce the scope, so an accepted id still fails in any
+  other package or version. `osv-gate.py` reads the same optional `exp:` / `pkg:`
+  fields, and bare ids keep their old meaning. It also counts an OSV range that ends
+  in `last_affected` as fixable when a later release exists.

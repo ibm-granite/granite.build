@@ -1,7 +1,8 @@
 # Vulnerabilities `make scan-image-cpu` / `publish-image-cpu` accept on purpose.
 #
 # Same format and rules as images/gpu/scan-ignore: one advisory id per line, `#` starts a
-# comment, every entry names the issue that removes it and an expiry date.
+# comment, every entry names the issue that removes it and an expiry date. No `pkg:` scope
+# field: trivy reads this file in its plain format and would ignore it (see images/gpu).
 
 # wandb-core, the Go binary inside the wandb 0.31.0 wheel (Go stdlib 1.27.2, x/net 0.61.0);
 # trivy reports these, osv-scanner cannot see inside the binary. wandb is tracking-only and

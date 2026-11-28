@@ -33,7 +33,9 @@ version: 0.1.0
 # aws/claude-sonnet-5 on a LiteLLM gateway, keyed by $EVAL_USER_API_KEY /
 # $EVAL_JUDGE_API_KEY in the job env; every call is metered against
 # $GRANITE_EVALS_SPEND_LEDGER / $GRANITE_EVALS_SPEND_BUDGET_USD. `user_model=self judge_model=self`
-# uses the served model instead (smoke runs, no key).
+# uses the served model instead (smoke runs, no key). With judge_model=self the NL-assertion
+# domains (retail, banking_knowledge) are graded by the served model, so that shape needs
+# phase all: a CPU score phase refuses it (after the GPU generate has run).
 #
 # PHASES. So that no job holds an idle GPU, recipes run this step twice on one
 # output_dir: phase generate on a GPU (vLLM + the model's work only) and phase score
@@ -76,7 +78,8 @@ config:
   dataset: ""
   dataset_revision: ""
   # Space-separated key=value benchmark options passed as --option, e.g.
-  # "user_model=self judge_model=self" (no paid API), "user_model=<id> user_base_url=<url>",
+  # "user_model=self judge_model=self" (no paid API; with retail or banking_knowledge it needs
+  # phase "all"), "user_model=<id> user_base_url=<url>",
   # "temperature=0.6", "tasks=<regex>", or "agent=gold" (replay the reference actions:
   # checks data + environments + grading without a model; model_path may be "none").
   # The run script word-splits this on whitespace (no quoting), so neither key
@@ -109,6 +112,18 @@ config:
   sandbox_cache: ""
   # Empty leaves the image's HF cache default alone.
   hf_home: ""
+  # Warm-cache mode: run with HF_HUB_OFFLINE=1 (HF_DATASETS_OFFLINE=1), so every
+  # hub read -- datasets, and the model if model_path is a hub id -- resolves from
+  # hf_home's cache instead of the hub. Warm the cache first (HF_TOKEN=... make -C
+  # steps/eval prefetch HF_HOME=<same cache>; gated datasets need a token with
+  # access granted): it fetches each pinned snapshot and prepares the
+  # datasets.load_dataset configs the benchmarks request, which an offline
+  # load_dataset needs. Data the cache lacks fails fast; steps/eval/README.md
+  # ("The warm HF cache") lists what runs offline (not terminal-bench; lm-eval
+  # bridge tasks only once prepared). Bind the model (hf://) or warm it too;
+  # hf_offline without hf_home is refused. A word: 1/true/yes/on turn it on,
+  # empty/0/false/no/off leave it off, anything else fails the run.
+  hf_offline: ""
 outputs:
   optional:
     # phase all | score: the scored results.json.
@@ -139,6 +154,7 @@ environment_configs:
           run: |
             set -e
             set -o pipefail
+            {#- gb-include ../../shared/output_dir.j2 -#}
             BENCHMARK="{{ config.benchmark }}"
             echo "=== granite $BENCHMARK on $(hostname) ==="
             nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
@@ -157,25 +173,7 @@ environment_configs:
             command -v granite-evals >/dev/null || { echo "granite: granite-evals not on PATH; is config.image set to a granite-evals image?"; exit 1; }
             test -n "{{ config.model_path }}" || { echo "granite: config.model_path is required"; exit 1; }
 
-            {% if config.hf_home %}export HF_HOME="{{ config.hf_home }}"; mkdir -p "$HF_HOME"{% endif %}
-
-            OUTPUT_DIR="{{ config.output_dir }}"
-            OUTPUT_ROOT="{{ config.output_root }}"
-            RUN_NAME="{{ config.run_name }}"
-            # run_name defaults to the model_path basename (the same defaulting as
-            # served_model_name), so one output_root serves every model.
-            if [ -z "$RUN_NAME" ]; then RUN_NAME="$(basename "{{ config.model_path }}")"; fi
-            # Either a full output_dir, or output_root composed per benchmark; with
-            # neither set, fail here rather than deep inside a harness.
-            if [ -z "$OUTPUT_DIR" ]; then
-                if [ -z "$OUTPUT_ROOT" ]; then
-                    echo "granite: set output_root (the run writes \$OUTPUT_ROOT/\$RUN_NAME/\$BENCHMARK) or output_dir" >&2
-                    exit 1
-                fi
-                OUTPUT_DIR="$OUTPUT_ROOT/$RUN_NAME/$BENCHMARK"
-            fi
-            case "$OUTPUT_DIR" in /*) ;; *) OUTPUT_DIR="${GB_BUILD_WORKDIR:-$PWD}/$OUTPUT_DIR" ;; esac
-            mkdir -p "$OUTPUT_DIR"
+            {{ granite_output_dir(config) }}
 
             {% if config.sandbox_cache %}
             # Sandboxes: enroot inside this job's container. Image squashfs files go to
@@ -200,7 +198,7 @@ environment_configs:
             {% endif %}
 
             OPTS=()
-            for kv in {{ config.options }}; do OPTS+=(--option "$kv"); done
+            for kv in "${OPT_WORDS[@]}"; do OPTS+=(--option "$kv"); done
             VLLM_ARGS=()
             for a in {{ config.vllm_args }}; do VLLM_ARGS+=(--vllm-arg="$a"); done
 

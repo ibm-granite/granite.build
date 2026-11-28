@@ -29,6 +29,8 @@ granite.build:
             phase: "generate"
             tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
             hf_home: "$${HF_HOME}"
+            dataset: "$${DATASET}"
+            dataset_revision: "$${DATASET_REVISION}"
             launcher_config:
               resources:
                 accelerators: "H200:$${TENSOR_PARALLEL_SIZE}"
@@ -62,6 +64,8 @@ granite.build:
             phase: "score"
             tensor_parallel_size: "$${TENSOR_PARALLEL_SIZE}"
             hf_home: "$${HF_HOME}"
+            dataset: "$${DATASET}"
+            dataset_revision: "$${DATASET_REVISION}"
             launcher_config:
               resources:
                 cluster: "$${CLUSTER}"

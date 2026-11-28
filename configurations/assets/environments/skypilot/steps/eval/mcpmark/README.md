@@ -46,6 +46,7 @@ steps:
 | `mcpmark-filesystem` | pass@1 | 30 standard + 10 easy tasks |
 | `mcpmark-postgres` | pass@1 | 21 standard + 10 easy tasks |
 | `mcpmark-playwright` | pass@1 | 4 standard tasks (no easy suite) |
+  | `mcpmark` | pass@1 | The generic bridge: `service=` (required) runs a service the image sets up — today `filesystem`, `postgres` or `playwright` (the pinned checkout's github, notion, insforge, supabase and playwright_webarena need accounts or backends the image lacks, and are refused) — with `task_suite=standard\|easy`. |
 
 See `granite-evals list` for the current, authoritative set and sizes.
 
@@ -58,7 +59,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `model_path` | Required. Local HF checkpoint dir, usually `{{ bindings.model.binding.path }}`. |
 | `served_model_name` | Name vLLM serves under. Empty = basename of `model_path`. |
 | `output_dir` | Full output dir, relative to `$GB_BUILD_WORKDIR`. Empty: composed from `output_root`. |
-| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`. |
+| `output_root` | With `output_dir` empty, the run writes `$output_root/$run_name/$benchmark`; a run with options that can change its results (a selection such as `tasks=`, `domains=` or `instances=`, a protocol option such as `thinking=` or `num_fewshot=`, a `dataset` / `dataset_revision`, or a `seed` other than 0) writes `…/<benchmark>@<key>-<value>…` instead, every value escaped into one Hydra-safe path segment, e.g. `…/lm-eval@tasks-hellaswag@thinking-on`; operational options (worker counts, retries and timeouts of a call whose failure is left out of the score, failure thresholds such as `max_failed_frac`, endpoint addresses) do not count (see steps/eval/README.md, Run dirs). |
 | `run_name` | Run directory under `output_root`; empty = basename of `model_path`. |
 | `limit` | **Smoke knob:** score only the first N tasks by sorted id, so two smoke runs are comparable. Empty = the full set. |
 | `repeats` | Must stay empty (1): one agent run per task; the module refuses otherwise (upstream's own `--k` is what varies samples, and it is pinned to 1). |
@@ -73,6 +74,7 @@ See `granite-evals list` for the current, authoritative set and sizes.
 | `seed` | Seed for the benchmark's own sampling (default `0`). |
 | `sandbox_cache` | Unused by this family (no enroot sandboxes; the MCP services run in the job container itself); kept for the shared config contract. |
 | `hf_home` | Overrides `HF_HOME`. |
+| `hf_offline` | `1`/`true`/`yes`/`on` (empty/`0`/`false`/`no`/`off`: off; anything else fails the run). Warm-cache mode: `HF_HUB_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` — every hub read (datasets; the model if it is a hub id) resolves from `hf_home`'s cache, never the hub. Warm it first (`HF_TOKEN=... make -C steps/eval prefetch HF_HOME=<same cache>`, which also prepares the `datasets.load_dataset` configs the benchmarks request; gated datasets need a token with access) and share it across runs; data the cache lacks fails fast. What runs offline (not terminal-bench; lm-eval bridge tasks only once prepared): steps/eval/README.md, "The warm HF cache". |
 
 GPUs, queue and memory come from the target's `launcher_config.resources`. The step
 declares none. No HF token is needed.

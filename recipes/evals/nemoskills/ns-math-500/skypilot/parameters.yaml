@@ -1,0 +1,53 @@
+# nemoskills (the generic bridge) on ns's own math-500 protocol -- BlueVela (SkyPilot / SLURM), nemoskills family image.
+# Data: what ns's own math-500 prepare.py reads -- it wgets openai/prm800k's
+# math_splits/test.jsonl (the MATH-500 subset, https://github.com/openai/prm800k) at run
+# time. The bridge requires a pin: DATASET/DATASET_REVISION below name that download and
+# its sha256, and the bridge's wget shim (the image has no wget) fetches it and checks the
+# hash, so a changed upstream file fails the prepare instead of changing the score.
+#
+# LIMIT is empty: the full benchmark. For a quick functional check, score only the first N
+# examples (3-10 is enough to prove the plumbing):
+#   gb build start -f recipes/evals/nemoskills/ns-math-500/skypilot/build.yaml --space <space> --param LIMIT=5
+# Override any value with --param KEY=VALUE.
+
+# ─── Model ────────────────────────────────────────────────────────────
+# https://huggingface.co/ibm-granite/granite-4.2-3b (vLLM downloads a hub id into the HF cache).
+MODEL_PATH: "ibm-granite/granite-4.2-3b"
+SERVED_MODEL_NAME: ""
+# Unique per run: re-running the same model with the same RUN_NAME re-resolves the same
+# artifact URIs, so a reused SUCCESS target's downstream (score) never dispatches.
+RUN_NAME: "granite-4.2-3b"
+OUTPUT_ROOT: ""
+# HF cache the container reads and writes (model + datasets). Empty = the image's /opt/hf-cache.
+HF_HOME: ""
+
+# ─── Images (GPU generate + CPU score) ────────────────────────────────────
+IMAGE: "quay.io/granitebuild/steps/eval/nemoskills/images/gpu:1a3b8050"
+IMAGE_CPU: "quay.io/granitebuild/steps/eval/nemoskills/images/cpu:1a3b8050"
+
+# ─── Scale ────────────────────────────────────────────────────────────
+LIMIT: ""
+REPEATS: ""
+WORKERS: 32
+# Extra options; the ns benchmark itself (benchmark=math-500) is fixed in
+# build.yaml, which appends it to these.
+OPTIONS: ""
+TENSOR_PARALLEL_SIZE: 1
+
+# ─── Dataset (the bridge's required pin) ─────────────────────────────
+# The URL ns's math-500 prepare.py downloads, pinned by content (the same bytes the
+# curated math-500 id fetches from its commit-pinned URL).
+DATASET: "https://github.com/openai/prm800k/raw/main/prm800k/math_splits/test.jsonl"
+DATASET_REVISION: "sha256:35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132"
+
+# ─── Cluster ──────────────────────────────────────────────────────────
+ENVIRONMENT_URI: "space://environments/skypilot/slurm/bluevela"
+CLUSTER: "bluevela"
+QUEUE: "gpu-mid"
+GPU_MEMORY: 256
+CPU_QUEUE: "cpu"
+SCORE_CPUS: 8
+SCORE_MEMORY: 64
+MAX_RETRIES: 2
+POLL_INTERVAL_SECONDS: 300
+LOG_RETRIEVAL_INTERVAL_SECONDS: 300
