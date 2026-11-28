@@ -112,6 +112,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: student-sft's `tracking` block needs `tool` (#752).** A block that sets `clearml_project` or the
+  `wandb_*` keys without `tracking.tool` turned that tool on before; it is now refused when gbserver renders the step,
+  before anything is launched. Add `tool: clearml` or `tool: wandb`.
+- **distill: experiment tracking is one chosen tool per run (#752).** logit-distill and student-sft take a
+  `tracking` block whose `tool` is `wandb`, `clearml` or `none` (the default; logit-distill had no tracking
+  keys before), and the distill recipe takes `TRACKING_TOOL`. A config that sets a tool's keys without
+  choosing it, or both tools' keys, is refused; before, each tool was switched on by its own keys. W&B now
+  talks to `https://api.wandb.ai` unless `WANDB_BASE_URL` or wandb's settings file names another server
+  (wandb 0.31's own default is `https://api.forge.coreweave.com`); ClearML is left to resolve its own server,
+  which is `https://api.clear.ml` unless its environment or `clearml.conf` names another. The credential check,
+  when the trainer starts, looks up W&B's netrc entry the way wandb 0.31.2 does (the entry's own password,
+  `default` entries, quoted names, the server's host, `WANDB_IDENTITY_TOKEN_FILE`) and validates the server with
+  wandb's own validator; ClearML's is decided by clearml's own config loader. The chosen tool is the only remote
+  tracker in `report_to`. The recipe can pass the credentials from space secrets (`TRACKING_SECRETS`).
+- **distill images: wandb 0.31.2, filelock 4.2.11 (#752).** The GPU image moves from wandb 0.28.2 and
+  filelock 3.32.7, and its `scan-ignore` lists no advisory any more. filelock is held below 4.2.12 until a
+  two-account shared-cache test (#788). The CPU image no longer installs wandb or clearml, which nothing in
+  it imports.
+
 - **The granite-switch SLURM answerability-lora recipe runs on any SLURM cluster, from a
   site file (#737).** It shipped in v0.3.9 as `recipes/granite-switch/slurm/answerability-lora`,
   moved to `recipes/granite-switch/skypilot/slurm-bluevela/answerability-lora` in #639 (the
@@ -477,6 +496,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **logit-distill: `loss_arm: uld` trains on what it aligns, or fails loudly (#754, #760).**
+  It had never run end to end, and at the step's defaults it could not align a single
+  multi-turn row (or, on a ChatML template, any row).
+  - **New render refusal:** `loss_arm: uld` requires `last_message_only: true`. The ULD
+    teacher is the last assistant turn alone, so with `false` the student's span starts at
+    the first turn, and the loss is exactly zero. The step's renderer refuses `false` or
+    unset, and, for this arm alone, now emits `last_message_only` off-policy (before, it
+    was dropped whenever `vllm_num_servers` was 0). `CustomGOLDConfig` refuses it at
+    startup for a config that bypasses the renderer. The distill recipe refuses
+    `LOSS_ARM=uld` without `--param LAST_MESSAGE_ONLY=true` before submission, and the
+    sampled-OPD loss without it likewise. Every other arm renders byte-identically.
+  - **Changed numerics:** the non-hybrid ULD loss (trl 0.26.2's, vendored) read each
+    completion token's distribution at the token itself, one position late. It now reads
+    the logits one position earlier (start-1), as the hybrid ULD path and the JSD path do,
+    so ULD losses differ from earlier runs. A row whose alignment yields no groups now
+    contributes no loss; before, it raised a shape `RuntimeError` or scored unaligned
+    positions against each other.
+  - **New runtime `RuntimeError` and metrics:** the trainer now sums ULD rows over all ranks
+    at every optimizer step. It raises when every row of a step is unaligned, or when more
+    than half the rows of a logging window are (`uld_max_unaligned_fraction`, default 0.5;
+    the final partial window is judged at train end). The log line carries the new
+    `train/alignment_rows`, `train/alignment_unaligned_rows` and
+    `train/alignment_unaligned_rate`, all summed over ranks.
+  - A completion starting at position 0 now raises `ValueError` on both ULD paths.
+    `masking.py check-config` now requires `last_message_only: true` for `uld` and
+    `sampled_opd` instead of reporting it.
+  - Separately, the checkpoint watcher's `sleep` no longer holds rank 0's output open for
+    up to 60 s after the script exits.
+- **distill: ULD edge cases off the logit-distill step's path (#781).** The trainer's new
+  refusals cannot be reached through that step, whose renderer exposes no `uld_*` option
+  and builds no layout with a completion at position 0. They matter for `gold.py` run with
+  a hand-written config. The guard's bookkeeping does run on every `loss_arm: uld` run
+  through the step: its per-step all-reduce carries one more count, and train end adds one
+  more all-reduce. The two sampled-OPD refusals at the end are on the step's and the
+  recipe's path.
+  - A ULD completion at position 0 no longer raises `ValueError` in the loss, on the one
+    rank whose row it is, which left the other ranks waiting in backward's collective until
+    the NCCL timeout. The loss skips the row and counts it, and the alignment guard raises
+    `RuntimeError` on every rank together, whatever `uld_max_unaligned_fraction` is: at the
+    optimizer step, or at train end for a row evaluated after the last step.
+  - `uld_reuse_student_input` cropped the teacher at the batch's longest prompt, which cut
+    into any row whose completion starts earlier (at a batch above 1), and cut the earlier
+    turns of a multi-turn row under `last_message_only: false` (at any batch). It now crops
+    at the earliest completion, so every row's completion is kept whole.
+  - `CustomGOLDConfig` and `masking.py check-config` no longer refuse
+    `uld_rebuild_student_input_with_teacher_template` without `last_message_only: true`:
+    that mode rebuilds the student's labels from the teacher's last-turn texts.
+  - `masking.py check-config` takes the config's form: `--form trainer` (the default, a
+    gold config gold.py reads) or `--form step` (a logit-distill step's gold_config block).
+    For `last_message_only`, the two switches and the three ULD modes it passes exactly the
+    ULD configs that start as configured. A table covers {`use_uld_loss`, `loss_arm: uld`}
+    × {no mode, rebuild, reuse, per-turn regions} × `last_message_only` {unset, false,
+    true, `"true"`, `"false"`, 1, 0}, checked against the step, the renderer, gold.py's
+    `TrlParser` and `CustomGOLDConfig`. A second table covers every switch value in both
+    forms. It does not check lmbda or any other key.
+    - The ULD exemptions apply to `use_uld_loss` only. In a step block, `use_uld_loss`
+      and the ULD modes are reported, because the step's template passes none of them to
+      its renderer, so they are dropped.
+    - In an exempt mode, `last_message_only: true` is no longer reported as the
+      response_template scan bypass. `uld_per_turn_regions` with true is reported as
+      `CustomGOLDConfig`'s refusal, where before it was reported as the bypass.
+    - Each of those booleans is read with its form's parser (`TrlParser`, or the
+      renderer's `_bool`), so `"true"` and 1 now satisfy the uld and sampled_opd rule
+      (they were reported), `"true"` is reported as the scan bypass for every other arm
+      (it was not), and a value its parser refuses is reported for each key that parser
+      reads. A step block's value is read as the step's template renders it, so null and
+      an empty value, which the renderer refuses, are reported.
+    - A `loss_arm` key in a trainer config is reported: `TrlParser` refuses it.
+    - In a step block, `last_message_only: true` off-policy is no longer reported as the
+      scan bypass for an arm other than uld: the renderer drops it there. Every other
+      `uld_*` key in a step block is reported as having no effect.
+  - The distill recipe refuses, before submission, every arm configuration the step's
+    renderer refuses: an unknown or rejected arm, a switch set against the arm
+    (`USE_LIGER_FUSED_JSD`, `USE_SAMPLED_OPD_LOSS`), ce off its lmbda 0, the distillm2
+    arms without both policy classes, and the kl_interpolation arms with `BETA` at 0 or 1.
+    It passes the arm trimmed and lowercased, and `use_liger_fused_jsd: true` with a
+    liger arm (the two liger arms failed at launch at their defaults).
+  - `uld_reuse_student_input` without `uld_use_hybrid_loss` no longer fails at trainer
+    init with `AttributeError: ... 'jaccard'` (#785). Its tokenizer check now compares the
+    two vocabularies and requires them to be equal, since the teacher reads the student's
+    token ids. The old check, a Jaccard index of 1.0, also passed a teacher with other ids.
+  - The distill recipe refuses `USE_SAMPLED_OPD_LOSS=true` and `LOSS_ARM=sampled_opd` with
+    `LMBDA_MODE=off-policy` before submission, and the logit-distill step's renderer
+    refuses `use_sampled_opd_loss: true` off-policy. Off-policy the switch was dropped, and
+    the run trained plain JSD.
+  - The sampled-OPD loss with an `LMBDA` other than 1 under `LMBDA_MODE` on-policy or
+    ramp is refused by the recipe before submission, for both forms, and the step's
+    renderer refuses `use_sampled_opd_loss: true` with `lmbda` other than 1.0. Before, the
+    switch form failed at trainer start in `CustomGOLDConfig` and the arm form at the
+    step's launch, both once the allocation was up. Likewise the renderer now refuses the
+    switch without `last_message_only` or with `use_liger_fused_jsd`, and the recipe
+    refuses either form with `USE_LIGER_FUSED_JSD=true`, as `CustomGOLDConfig` does.
+  - `LOSS_ARM=sampled_opd` in the distill recipe failed at the step's launch whatever
+    `LMBDA` was: the recipe passed `use_sampled_opd_loss: false` beside the arm, which the
+    step's renderer refuses. It now passes true with either form. A new test renders the
+    recipe through the step's template and runs its renderer.
 - **Bash, Docker and SkyPilot: `hf://` inputs that differ only in type, host or bucket path no
   longer share a pull dir (#715).** `<cache>/<owner>/<repo>/<revision>` ignored all three, so a
   model and a same-named dataset overwrote each other's files, two paths of one bucket synced into

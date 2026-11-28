@@ -12,7 +12,7 @@ the in-repo steps/train/distill/src.
 Keep this a near-verbatim copy so re-syncing upstream stays a three-way merge.
 """
 
-"""Unit tests for distill-logit-precompute.
+"""Unit tests for teacher-logits.
 
 Nothing here needs a GPU, torch, or a teacher. That is by construction, not luck: the module
 imports torch/transformers/accelerate INSIDE run_precompute(), so the resume repair, the

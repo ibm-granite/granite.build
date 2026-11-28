@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the vllm-server step-template.yaml.
+"""Contract tests for the student-rollout-generator step-template.yaml.
 
 These tests pin the CONTRACT — the readiness gate, the two markers, the monitor
 overlay. Whether the trainer's NCCL weight-sync group can span two LSF allocations is
@@ -183,7 +183,7 @@ class TestMarkers:
 
     def test_the_advertised_address_is_resolved_not_a_bare_hostname(self, run_script):
         """The consumer is in a DIFFERENT allocation, so the address has to resolve
-        from there. Resolved the way distill-gold resolves MASTER_ADDR, because
+        from there. Resolved the way logit-distill resolves MASTER_ADDR, because
         that is the validated path on this cluster."""
         assert "/etc/hosts" in run_script
         assert "getent ahostsv4" in run_script

@@ -97,7 +97,7 @@ def load_config(model_dir: str) -> dict:
     Fails with an instruction rather than a traceback when the directory has none,
     because there is exactly one plausible way to get here wrong and it is worth
     naming: passing build_overlay's tokenizer OVERLAY as --teacher. That is a
-    natural mistake -- the overlay is what distill-gold-train's
+    natural mistake -- the overlay is what logit-distill's
     teacher_tokenizer_path wants, and the two paths sit next to each other in a
     recipe -- and it has happened for real.
 
@@ -242,7 +242,7 @@ def main() -> None:
         "--tokenizer-identity",
         default="",
         help="name recorded in tokenizer_identity.json and compared against "
-        "the corpus manifest by distill-gold-train. Defaults to the "
+        "the corpus manifest by logit-distill. Defaults to the "
         "teacher directory's basename, which is correct whenever that "
         "basename identifies the tokenizer.",
     )
@@ -488,7 +488,7 @@ def main() -> None:
         json.dump(manifest, fh, indent=2)
 
     # Name the tokenizer this student now carries. THIS FILE IS WHAT MAKES THE
-    # ONE-TOKENIZER-PER-RUN GUARD REAL. distill-gold-train already implemented the
+    # ONE-TOKENIZER-PER-RUN GUARD REAL. logit-distill already implemented the
     # comparison (render_gold_config.validate) and read it from exactly this path -- but
     # nothing in the repo wrote it, so the read returned None and the guard was skipped on
     # every run it was supposed to protect. An assertion that cannot fail is worse than

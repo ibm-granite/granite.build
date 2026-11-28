@@ -3,9 +3,9 @@
 """Contract tests for step-template.yaml.
 
 Scope note: the source-delivery half of this template is spliced VERBATIM from
-distill-tokenizer-align, and that step's test_source_contract.py asserts every ported
+tokenizer-align, and that step's test_source_contract.py asserts every ported
 step's copy is byte-identical to it. So this file asserts only what is specific to THIS
-step — including the four launcher facts the distill-sft port paid an allocation
+step — including the four launcher facts the student-sft port paid an allocation
 each to learn, since this script has the same shape.
 """
 
@@ -77,7 +77,7 @@ class TestRunScriptIsValidShell:
 
 
 class TestLauncherFactsLearnedElsewhere:
-    """The four things distill-sft cost an allocation each to discover.
+    """The four things student-sft cost an allocation each to discover.
 
     run-precompute.sh has the same shape as run-sft.sh — same discovery helper, same
     unguarded CHECKOUT_ROOT, same bare `accelerate`, same kernel preflight — so these are
@@ -123,7 +123,7 @@ class TestLauncherFactsLearnedElsewhere:
 
 
 class TestResponseTemplateNewline:
-    """Same transport as distill-sft: the trailing newline is data."""
+    """Same transport as student-sft: the trailing newline is data."""
 
     def test_the_default_carries_an_escape_not_a_real_newline(self, step):
         rt = step["config"]["precompute_config"]["response_template"]
@@ -169,7 +169,7 @@ class TestArtifactContract:
 
     def test_the_template_does_not_print_it_too(self, run_script):
         """Upstream's did, which would register two NEWARTIFACT events for one id — the same
-        duplication the distill-eval port dropped."""
+        duplication the teacher-divergence port dropped."""
         assert "GB_ARTIFACT_ID" not in run_script
 
     def test_no_legacy_marker_prefix(self, pc_sh):
@@ -188,8 +188,8 @@ class TestFlagSurface:
     # run-precompute.sh: the residency preflight runs BEFORE the teacher is loaded, in the
     # template, so a `--check-weight-residency` flag on run-precompute.sh would be one
     # nothing reads -- and test_script_parses_every_flag_the_template_passes below would
-    # then fail on it, correctly. Named after distill-gold's set of the same name. That both
-    # keys are actually wired, switchable and overridable is asserted in distill-gold's
+    # then fail on it, correctly. Named after logit-distill's set of the same name. That both
+    # keys are actually wired, switchable and overridable is asserted in logit-distill's
     # test_weight_residency_contract.py, which owns them across the three steps that carry
     # the preflight.
     STEP_ONLY = ("check_weight_residency", "allow_offline_weights")

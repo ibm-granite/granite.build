@@ -1,0 +1,631 @@
+# SPDX-License-Identifier: Apache-2.0
+
+"""masking.check_config's last_message_only rule agrees with render_gold_config.py's.
+
+check-config audits a gold config against the masking contract masking.json derives from the
+chat template: the response_template scan. last_message_only: true replaces that scan with a
+positional split, so it used to be reported as a problem on every config. That is right for
+the arms that scan, and wrong for the two arms whose LOSS_ARMS entry REQUIRES it: uld (ULD's
+teacher is the last assistant turn alone) and sampled_opd. For those, true is the contract and
+false or unset is the problem, which is the config the renderer refuses.
+"""
+
+import dataclasses
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import render_gold_config as rgc
+import yaml
+from gb_steps_post_training.distillation import masking
+
+_TEMPLATE = "<|im_start|>assistant\n"
+_DOC = {"response_template": _TEMPLATE}
+_RENDER = Path(__file__).resolve().parent.parent / "src" / "render_gold_config.py"
+
+_REQUIRING = sorted(
+    arm
+    for arm, spec in rgc.LOSS_ARMS.items()
+    if spec.get("requires", {}).get("last_message_only") is True
+)
+
+
+_STEP = masking.STEP_BLOCK
+_TRAINER = masking.TRAINER_CONFIG
+
+
+def _lmo_problems(cfg, form=_TRAINER):
+    problems = masking.check_config(_DOC, cfg, form=form)
+    return [p for p in problems if "last_message_only" in p]
+
+
+def _forms(arm):
+    """The arm as a step's gold_config block names it (loss_arm, read by the step) and as
+    the renderer emits it (its switches, read by gold.py): (cfg, form) pairs."""
+    return [({"loss_arm": arm}, _STEP), (dict(rgc.LOSS_ARMS[arm]["flags"]), _TRAINER)]
+
+
+def test_the_requiring_arms_are_uld_and_sampled_opd():
+    """If the renderer's table gains or loses an arm requiring it, check_config's
+    _arm_requiring_last_message_only must follow."""
+    assert _REQUIRING == ["sampled_opd", "uld"]
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
+@pytest.mark.parametrize("lmo", [None, False], ids=["unset", "false"])
+def test_a_requiring_arm_without_it_is_a_problem(arm, lmo):
+    for named, form in _forms(arm):
+        cfg = {"response_template": _TEMPLATE, **named}
+        if lmo is not None:
+            cfg["last_message_only"] = lmo
+        (problem,) = _lmo_problems(cfg, form)
+        assert f"loss_arm {arm} requires last_message_only: true" in problem
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
+@pytest.mark.parametrize("lmo", ["true", "True", 1], ids=["string", "capital", "int"])
+def test_what_the_parsers_read_as_true_satisfies_it(arm, lmo):
+    """render_gold_config.py's _bool (a step's gold_config block) and gold.py's TrlParser
+    (a gold config given to gold.py) both read these as true, so neither form is a
+    problem."""
+    for named, form in _forms(arm):
+        cfg = {"response_template": _TEMPLATE, "last_message_only": lmo, **named}
+        assert _lmo_problems(cfg, form) == []
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
+def test_a_value_the_parser_refuses_is_a_problem(arm):
+    (named, _), (switch, _) = _forms(arm)
+    (problem,) = _lmo_problems(
+        {"response_template": _TEMPLATE, "last_message_only": "maybe", **named}, _STEP
+    )
+    assert "render_gold_config.py does not read it as a boolean" in problem
+    (problem,) = _lmo_problems(
+        {"response_template": _TEMPLATE, "last_message_only": "maybe", **switch}
+    )
+    assert "gold.py's TrlParser does not read it as a boolean" in problem
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
+def test_each_form_is_read_by_its_own_parser(arm):
+    """The two parsers differ at the edges: TrlParser reads "t" as true and refuses "on";
+    render_gold_config.py's _bool reads "on" as true and refuses "t". A step's
+    gold_config block goes through the renderer, a gold config gold.py reads through
+    TrlParser."""
+    (named, _), (switch, _) = _forms(arm)
+    ok = {"response_template": _TEMPLATE}
+    assert _lmo_problems({**ok, **switch, "last_message_only": "t"}) == []
+    assert _lmo_problems({**ok, **named, "last_message_only": "on"}, _STEP) == []
+    assert _lmo_problems({**ok, **switch, "last_message_only": "on"})
+    assert _lmo_problems({**ok, **named, "last_message_only": "t"}, _STEP)
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
+def test_a_switch_given_as_a_string_is_the_switch(arm):
+    """TrlParser reads `use_uld_loss: "true"` (or `use_sampled_opd_loss: "true"`) as
+    the switch, so the arm's rule applies to it as to the boolean."""
+    (switch,) = rgc.LOSS_ARMS[arm]["flags"]
+    (problem,) = _lmo_problems({"response_template": _TEMPLATE, switch: "true"})
+    assert f"loss_arm {arm} requires last_message_only: true" in problem
+    cfg = {"response_template": _TEMPLATE, switch: "false", "last_message_only": True}
+    (problem,) = _lmo_problems(cfg)
+    assert "bypasses the response_template scan" in problem
+
+
+def test_a_step_block_is_one_whatever_its_loss_arm():
+    """Not identified by its keys: a step block without loss_arm (the template's default
+    is "") is read by the renderer's rules, so its "t" is refused and its "on" is true.
+    """
+    sopd = {"response_template": _TEMPLATE, "use_sampled_opd_loss": True}
+    assert _lmo_problems({**sopd, "last_message_only": "t"}, _STEP)
+    assert _lmo_problems({**sopd, "last_message_only": "on"}, _STEP) == []
+    assert (
+        _lmo_problems({**sopd, "loss_arm": "", "last_message_only": "on"}, _STEP) == []
+    )
+
+
+def test_loss_arm_is_not_a_trainer_key():
+    """gold.py's TrlParser refuses a key that is not a CustomGOLDConfig field, and
+    loss_arm is the step's."""
+    cfg = {"response_template": _TEMPLATE, "loss_arm": "uld", "last_message_only": True}
+    problems = masking.check_config(_DOC, cfg)
+    key = "loss_arm is a key of a logit-distill step's gold_config block"
+    assert any(key in p for p in problems)
+    assert masking.check_config(_DOC, cfg, form=_STEP) == []
+
+
+def test_use_uld_loss_in_a_step_block_is_dropped():
+    """The step's template passes no use_uld_loss to its renderer: the arm is named."""
+    cfg = {
+        "response_template": _TEMPLATE,
+        "use_uld_loss": True,
+        "last_message_only": True,
+    }
+    problems = masking.check_config(_DOC, cfg, form=_STEP)
+    assert any("passes no use_uld_loss to render_gold_config.py" in p for p in problems)
+    assert masking.check_config(_DOC, cfg) == []
+
+
+# Every switch value, in both forms, against the parser that reads it. A step block passes
+# use_sampled_opd_loss to the renderer and drops use_uld_loss; a gold config gold.py reads
+# goes through TrlParser. last_message_only is true, which both arms need, and lmbda 1.0,
+# which CustomGOLDConfig needs for the sampled-OPD loss.
+_SWITCH_VALUES = [True, False, "true", "1", 1, "t", "on", "yes", "off", "maybe"]
+_SWITCH_MATRIX = [
+    (form, switch, value)
+    for form in (_STEP, _TRAINER)
+    for switch in masking._SWITCHES
+    for value in _SWITCH_VALUES
+]
+
+
+@pytest.mark.parametrize("form, switch, value", _SWITCH_MATRIX, ids=repr)
+def test_check_config_reads_each_switch_as_its_parser_does(
+    tmp_path, form, switch, value
+):
+    if form == _STEP and switch == "use_uld_loss":
+        read = "dropped"
+    elif form == _STEP:
+        try:
+            read = rgc._bool(str(value))
+        except Exception:
+            read = None
+    else:
+        pytest.importorskip("trl")
+        fields = {switch: value, "last_message_only": True, "lmbda": 1.0}
+        parsed = _trl_parser_reads(tmp_path, fields)
+        read = None if parsed is None else bool(parsed[switch])
+    cfg = {"response_template": _TEMPLATE, switch: value, "last_message_only": True}
+    if form == _STEP:
+        cfg["vllm_num_servers"] = 1  # on-policy, where the step emits both keys
+    problems = masking.check_config(_DOC, cfg, form=form)
+    about_it = [p for p in problems if p.startswith(switch)]
+    if read is None:
+        (problem,) = about_it
+        assert "does not read it as a boolean" in problem
+    elif read == "dropped":
+        assert len(about_it) == (0 if masking._renderer_reads(value) is False else 1)
+    elif read is True:
+        assert problems == []
+    else:
+        (problem,) = problems
+        assert "bypasses the response_template scan" in problem
+
+
+_READER_VALUES = [True, False, "true", "True", "TRUE", "false", "False", "t", "y"]
+_READER_VALUES += ["yes", "no", "n", "f", "on", "off", "1", "0", 1, 0, 2, "", "maybe"]
+
+
+@pytest.mark.parametrize("value", [*_READER_VALUES, None, " "], ids=repr)
+def test_the_renderer_reader_is_what_the_step_renders(tmp_path, value):
+    """Through the step itself: its template renders a gold_config with this
+    last_message_only onto render_gold_config.py's command line, unquoted, and the
+    renderer runs (on-policy, where it emits the key). A null renders as "None", an
+    empty value as nothing; the renderer refuses both."""
+    rc, cfg = _step_renders(tmp_path, {"last_message_only": value})
+    want = None if rc != 0 else cfg["last_message_only"]
+    assert masking._renderer_reads(value) is want
+
+
+def _step_renders(tmp_path, gold):
+    """The logit-distill step's run script, rendered from its template's config with
+    `gold` merged into gold_config (on-policy, one external server, lmbda 0.5, the two
+    delivered-file checks off), and its render_gold_config.py command run under bash.
+    Returns (exit code, the gold config written, or None)."""
+    import os
+
+    from jinja2 import Template
+
+    step = yaml.safe_load((_RENDER.parent.parent / "step-template.yaml").read_text())
+    script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+        "run"
+    ]
+    config = dict(step["config"])
+    config["gold_config"] = {
+        **config["gold_config"],
+        "vllm_num_servers": 1,
+        "lmbda": 0.5,
+        "verify_trainer_accepts_keys": False,
+        "check_corpus_tokenizer": False,
+        **gold,
+    }
+    bindings = {
+        "student": {"binding": {"path": "/models/student"}},
+        "teacher": {"binding": {"path": "/models/teacher"}},
+        "corpus": {"binding": {"path": "/data/corpus/train.jsonl"}},
+        "vllm": {"binding": {"state": "http://rollout:8000"}},
+    }
+    rendered = Template(script).render(config=config, bindings=bindings)
+    start = rendered.index(
+        '"$PYBIN" "$DISTILL_HOME/steps/logit-distill/render_gold_config.py"'
+    )
+    lines = []
+    for line in rendered[start:].splitlines():
+        lines.append(line)
+        if not line.rstrip().endswith("\\"):
+            break
+    home = tmp_path / "distill-home"
+    (home / "steps").mkdir(parents=True, exist_ok=True)
+    link = home / "steps" / "logit-distill"
+    if not link.exists():
+        link.symlink_to(_RENDER.parent)
+    out = tmp_path / "rendered.yaml"
+    env = dict(os.environ, PYBIN=sys.executable, DISTILL_HOME=str(home), CFG=str(out))
+    env["NODES"] = "2"
+    result = subprocess.run(
+        ["bash", "-c", "\n".join(lines)], env=env, capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        return result.returncode, None
+    return 0, yaml.safe_load(out.read_text())
+
+
+@pytest.mark.parametrize("value", _READER_VALUES, ids=repr)
+def test_the_trainer_reader_is_trl_parser(tmp_path, value):
+    """Through gold.py's real parser, TrlParser over CustomGOLDConfig, from a YAML file."""
+    pytest.importorskip("trl")
+    want = _trl_parser_reads(tmp_path, {"last_message_only": value})
+    want = None if want is None else bool(want["last_message_only"])
+    assert masking._trainer_reads(value) is want
+
+
+def _trl_parser_reads(tmp_path, fields):
+    """`fields` written to a YAML config and parsed the way gold.py parses its config:
+    the CustomGOLDConfig fields as parsed (its __post_init__ included), or None when the
+    parser refuses a value (it exits) or __post_init__ raises."""
+    from gb_steps_post_training.distillation.custom_gold_config import (
+        CustomGOLDConfig,
+    )
+    from trl import TrlParser
+
+    cfg = tmp_path / "gold.yaml"
+    base = dict(output_dir=str(tmp_path / "out"), report_to=[], use_cpu=True)
+    cfg.write_text(yaml.safe_dump({**base, **fields}))
+    try:
+        (args,) = TrlParser((CustomGOLDConfig,)).parse_args_and_config(
+            ["--config", str(cfg)]
+        )
+    except (SystemExit, ValueError):
+        return None
+    return vars(args)
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
+def test_the_message_names_who_refuses_it(arm):
+    """Named as loss_arm, the renderer refuses it; inferred from the switch alone (a config
+    that never went through the renderer), only CustomGOLDConfig does."""
+    (named, _), (switch, _) = _forms(arm)
+    (problem,) = _lmo_problems({"response_template": _TEMPLATE, **named}, _STEP)
+    assert "render_gold_config.py refuses it at render and CustomGOLDConfig" in problem
+    (problem,) = _lmo_problems({"response_template": _TEMPLATE, **switch})
+    assert "render_gold_config.py" not in problem
+    assert "CustomGOLDConfig refuses it at startup" in problem
+
+
+_ULD_EXEMPT_MODES = [
+    "uld_per_turn_regions",
+    "uld_reuse_student_input",
+    "uld_rebuild_student_input_with_teacher_template",
+]
+
+
+@pytest.mark.parametrize("mode", _ULD_EXEMPT_MODES)
+def test_uld_modes_that_render_the_teacher_otherwise_are_exempt(mode):
+    """The exemptions CustomGOLDConfig makes: per-turn regions require false, a teacher
+    reusing the student's input needs no last-turn render, and a student rebuilt from the
+    teacher's texts is supervised on the last turn alone whatever the collator labelled.
+    For the switch form only, which is what reaches CustomGOLDConfig."""
+    _, (switch, _) = _forms("uld")
+    cfg = {"response_template": _TEMPLATE, mode: True, **switch}
+    assert masking.check_config(_DOC, cfg) == []
+    assert masking.check_config(_DOC, {**cfg, "last_message_only": False}) == []
+
+
+@pytest.mark.parametrize("mode", _ULD_EXEMPT_MODES)
+@pytest.mark.parametrize("lmo", [None, False, True], ids=["unset", "false", "true"])
+def test_a_named_uld_arm_with_a_mode_is_a_problem(mode, lmo):
+    """The step passes no uld_* key to its renderer, which has no uld_* option, so the
+    mode is dropped and the run would start without it (test_the_step_drops_uld_keys).
+    That is a problem whatever last_message_only is, and without true the renderer's own
+    refusal is reported as well."""
+    (named, _), _ = _forms("uld")
+    cfg = {"response_template": _TEMPLATE, mode: True, **named}
+    if lmo is not None:
+        cfg["last_message_only"] = lmo
+    problems = masking.check_config(_DOC, cfg, form=_STEP)
+    dropped = [p for p in problems if f"would start without {mode}" in p]
+    assert len(dropped) == 1
+    assert "passes no uld_* key to render_gold_config.py" in dropped[0]
+    lmo_problems = _lmo_problems(cfg, _STEP)
+    assert len(lmo_problems) == (0 if lmo is True else 1)
+    assert "CustomGOLDConfig refuses it at startup." not in " ".join(dropped)
+
+
+@pytest.mark.parametrize("mode", _ULD_EXEMPT_MODES)
+@pytest.mark.parametrize(
+    "value, dropped",
+    [("garbage", True), ("on", True), (1, True), ("off", False), (0, False)],
+    ids=repr,
+)
+def test_a_named_arms_mode_is_reported_for_any_value_but_false(mode, value, dropped):
+    """Any value the renderer would not read as false is a mode the step drops, an
+    unreadable one too: nothing reads it, and the run starts without it."""
+    (named, _), _ = _forms("uld")
+    cfg = {"response_template": _TEMPLATE, mode: value, "last_message_only": True}
+    problems = masking.check_config(_DOC, {**cfg, **named}, form=_STEP)
+    assert any(f"would start without {mode}" in p for p in problems) is dropped
+
+
+def test_the_step_drops_uld_keys():
+    """What a named arm's uld_* mode comes to: the step's run script, rendered from a
+    gold_config that sets every mode, passes none of them to render_gold_config.py, and
+    the renderer has no option for one."""
+    from jinja2 import Template
+
+    step = yaml.safe_load((_RENDER.parent.parent / "step-template.yaml").read_text())
+    script = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"][
+        "run"
+    ]
+    config = dict(step["config"])
+    gold = {**config["gold_config"], "loss_arm": "uld", "last_message_only": True}
+    config["gold_config"] = {**gold, **{m: True for m in _ULD_EXEMPT_MODES}}
+    bindings = {
+        "student": {"binding": {"path": "/models/student"}},
+        "teacher": {"binding": {"path": "/models/teacher"}},
+        "corpus": {"binding": {"path": "/data/corpus/train.jsonl"}},
+    }
+    rendered = Template(script).render(config=config, bindings=bindings)
+    assert "render_gold_config.py" in rendered
+    assert "uld_" not in rendered and "--uld" not in rendered
+    with pytest.raises(SystemExit):
+        rgc._parse_args(["--output", "/dev/null", "--uld-reuse-student-input", "true"])
+
+
+# check-config against the renderer and CustomGOLDConfig, for every ULD form, mode and
+# last_message_only value, booleans and the strings and integers the parsers also read. The
+# verdict is whether the run would start AS CONFIGURED: a named arm goes through the step,
+# which drops every uld_* mode, and through render_gold_config.py, which requires
+# last_message_only: true; a switch-form config goes to gold.py's TrlParser and
+# CustomGOLDConfig. Per-turn regions also need the hybrid loss (CustomGOLDConfig refuses them
+# without), which is set so that only last_message_only varies.
+_ULD_MODES = {
+    "none": {},
+    "rebuild": {"uld_rebuild_student_input_with_teacher_template": True},
+    "reuse": {"uld_reuse_student_input": True},
+    "per-turn": {"uld_per_turn_regions": True, "uld_use_hybrid_loss": True},
+}
+_LMO_VALUES = {
+    "unset": None,
+    "false": False,
+    "true": True,
+    "str-true": "true",
+    "str-false": "false",
+    "int-1": 1,
+    "int-0": 0,
+}
+_TRUE = {"true", "str-true", "int-1"}
+_ALL = set(_LMO_VALUES)
+# (form, mode) -> the last_message_only values with which the run starts as configured.
+_STARTS_WITH = {
+    ("switch", "none"): _TRUE,
+    ("switch", "rebuild"): _ALL,
+    ("switch", "reuse"): _ALL,
+    ("switch", "per-turn"): _ALL - _TRUE,
+    ("named", "none"): _TRUE,
+    ("named", "rebuild"): set(),  # the step drops the mode
+    ("named", "reuse"): set(),
+    ("named", "per-turn"): set(),
+}
+_ULD_MATRIX = [
+    (form, mode, lmo)
+    for form in ("switch", "named")
+    for mode in _ULD_MODES
+    for lmo in _LMO_VALUES
+]
+
+
+def _uld_cfg(form, mode, lmo):
+    cfg = {"response_template": _TEMPLATE, **_ULD_MODES[mode]}
+    cfg.update({"use_uld_loss": True} if form == "switch" else {"loss_arm": "uld"})
+    if _LMO_VALUES[lmo] is not None:
+        cfg["last_message_only"] = _LMO_VALUES[lmo]
+    return cfg
+
+
+@pytest.mark.parametrize("form, mode, lmo", _ULD_MATRIX)
+def test_check_config_passes_exactly_the_uld_configs_that_start(form, mode, lmo):
+    read_by = _STEP if form == "named" else _TRAINER
+    problems = masking.check_config(_DOC, _uld_cfg(form, mode, lmo), form=read_by)
+    if lmo in _STARTS_WITH[(form, mode)]:
+        assert problems == []
+    else:
+        assert problems
+
+
+@pytest.mark.parametrize("form, mode, lmo", _ULD_MATRIX)
+def test_the_table_is_what_the_renderer_and_custom_gold_config_decide(
+    tmp_path, form, mode, lmo
+):
+    """_STARTS_WITH, checked against the real gates. A named arm: the step drops the mode
+    (test_the_step_drops_uld_keys), so the run cannot start as configured with one; with
+    none, render_gold_config.py renders `--loss-arm uld --last-message-only <value as the
+    template renders it>`, and its config's CustomGOLDConfig fields go to TrlParser. A
+    switch-form config goes to TrlParser as it is."""
+    pytest.importorskip("trl")
+    from gb_steps_post_training.distillation.custom_gold_config import (
+        CustomGOLDConfig,
+    )
+    from jinja2 import Template
+
+    value = _LMO_VALUES[lmo]
+    if form == "switch":
+        fields = {"use_uld_loss": True, **_ULD_MODES[mode]}
+        if value is not None:
+            fields["last_message_only"] = value
+        starts = _trl_parser_reads(tmp_path, fields) is not None
+    elif mode != "none":
+        starts = False
+    else:
+        step = yaml.safe_load(
+            (_RENDER.parent.parent / "step-template.yaml").read_text()
+        )
+        default = step["config"]["gold_config"]["last_message_only"]
+        lmo_arg = Template("{{ v }}").render(v=default if value is None else value)
+        out = tmp_path / "rendered.yaml"
+        cmd = [sys.executable, str(_RENDER), "--output", str(out), "--total-nodes", "1"]
+        cmd += ["--model-name-or-path", "/s", "--teacher-model-name-or-path", "/t"]
+        cmd += ["--dataset-name", "/d.jsonl", "--response-template", _TEMPLATE]
+        cmd += ["--loss-arm", "uld", "--last-message-only", lmo_arg]
+        rendered = subprocess.run(cmd, capture_output=True, check=False)
+        starts = rendered.returncode == 0
+        if starts:
+            names = {f.name for f in dataclasses.fields(CustomGOLDConfig)}
+            cfg = yaml.safe_load(out.read_text())
+            trainer = {k: v for k, v in cfg.items() if k in names}
+            trainer.pop("output_dir", None)
+            assert trainer["use_uld_loss"] is True
+            starts = _trl_parser_reads(tmp_path, trainer) is not None
+    assert starts is (lmo in _STARTS_WITH[(form, mode)])
+
+
+@pytest.mark.parametrize("mode", _ULD_EXEMPT_MODES)
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, "maybe"], ids=repr)
+@pytest.mark.parametrize("lmo", [False, True], ids=["lmo-false", "lmo-true"])
+def test_a_trainer_configs_mode_is_read_as_trl_parser_reads_it(
+    tmp_path, mode, value, lmo
+):
+    """The ULD modes in a gold config gold.py reads, given as strings and integers:
+    check-config passes it exactly when TrlParser and CustomGOLDConfig accept it, and
+    names the mode when the parser refuses its value."""
+    pytest.importorskip("trl")
+    fields = {"use_uld_loss": True, mode: value, "last_message_only": lmo}
+    if mode == "uld_per_turn_regions":
+        fields["uld_use_hybrid_loss"] = True
+    starts = _trl_parser_reads(tmp_path, fields) is not None
+    problems = masking.check_config(_DOC, {"response_template": _TEMPLATE, **fields})
+    assert (problems == []) is starts
+    if value == "maybe":
+        assert any(p.startswith(f"{mode} is 'maybe'") for p in problems)
+
+
+def _write_check_config_inputs(tmp_path, cfg):
+    masking_json = tmp_path / "masking.json"
+    doc = {**_DOC, "source": {"tokenizer_dir": "/t"}}
+    masking_json.write_text(json.dumps(doc))
+    gold = tmp_path / "gold.yaml"
+    gold.write_text(yaml.safe_dump({"response_template": _TEMPLATE, **cfg}))
+    return ["check-config", "--masking", str(masking_json), "--gold-config", str(gold)]
+
+
+def test_the_cli_reads_a_trainer_config_by_default_and_a_step_block_with_form_step(
+    tmp_path,
+):
+    """main() end to end: a step block (loss_arm uld, last_message_only true) is a
+    problem as a trainer config (TrlParser refuses loss_arm), sound with --form step."""
+    argv = _write_check_config_inputs(
+        tmp_path, {"loss_arm": "uld", "last_message_only": True}
+    )
+    assert masking.main(argv) == 1
+    assert masking.main([*argv, "--form", "trainer"]) == 1
+    assert masking.main([*argv, "--form", "step"]) == 0
+
+
+def test_the_cli_refuses_an_unknown_form(tmp_path):
+    argv = _write_check_config_inputs(tmp_path, {"last_message_only": False})
+    with pytest.raises(SystemExit) as err:
+        masking.main([*argv, "--form", "rendered"])
+    assert err.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "key, value, reported",
+    [
+        ("uld_reuse_student_input", "f", False),
+        ("uld_reuse_student_input", "off", False),
+        ("uld_reuse_student_input", None, False),
+        ("uld_reuse_student_input", "t", True),
+        ("uld_max_unaligned_fraction", 0.5, True),
+        ("uld_use_hybrid_loss", True, True),
+    ],
+    ids=repr,
+)
+def test_a_step_blocks_uld_keys_are_reported_when_they_ask_for_something(
+    key, value, reported
+):
+    """The step drops every uld_* key, and nothing reads the value. A mode that either
+    parser reads as false, or null, asks for nothing; any other uld_* key is a setting
+    that has no effect."""
+    cfg = {"response_template": _TEMPLATE, "loss_arm": "uld", "last_message_only": True}
+    problems = masking.check_config(_DOC, {**cfg, key: value}, form=_STEP)
+    assert any(p.startswith(f"{key} in a step's gold_config") for p in problems) is (
+        reported
+    )
+
+
+@pytest.mark.parametrize("arm", _REQUIRING)
+def test_a_requiring_arm_with_it_is_sound(arm):
+    """The direction that changed: true is no longer reported for these arms."""
+    for named, form in _forms(arm):
+        cfg = {"response_template": _TEMPLATE, "last_message_only": True, **named}
+        assert masking.check_config(_DOC, cfg, form=form) == []
+
+
+@pytest.mark.parametrize(
+    "arm", sorted(a for a in rgc.LOSS_ARMS if a not in _REQUIRING) + [""]
+)
+def test_every_other_arm_keeps_todays_rule(arm):
+    """Unchanged for the scanning arms: true bypasses the scan masking.json describes, and
+    false or unset is sound."""
+    forms = _forms(arm) if arm else [({}, _TRAINER), ({"loss_arm": ""}, _STEP)]
+    for named, form in forms:
+        base = {"response_template": _TEMPLATE, **named}
+        if form == _STEP:
+            # The renderer emits a step block's last_message_only on-policy only (for
+            # these arms), so the bypass exists there; off-policy it is dropped.
+            off = {**base, "last_message_only": True}
+            assert masking.check_config(_DOC, off, form=form) == []
+            base["vllm_num_servers"] = 1
+        check = lambda cfg: masking.check_config(_DOC, cfg, form=form)  # noqa: E731
+        assert check(base) == []
+        assert check({**base, "last_message_only": False}) == []
+        (problem,) = _lmo_problems({**base, "last_message_only": True}, form)
+        assert "bypasses the response_template scan" in problem
+
+
+def _render(tmp_path, extra, nodes=1):
+    out = tmp_path / "gold_config.yaml"
+    cmd = [
+        sys.executable,
+        str(_RENDER),
+        "--output",
+        str(out),
+        "--total-nodes",
+        str(nodes),
+    ]
+    cmd += ["--model-name-or-path", "/s", "--teacher-model-name-or-path", "/t"]
+    cmd += ["--dataset-name", "/d.jsonl", "--response-template", _TEMPLATE, *extra]
+    subprocess.run(cmd, check=True, capture_output=True)
+    return yaml.safe_load(out.read_text())
+
+
+def test_what_the_renderer_emits_for_uld_passes(tmp_path):
+    """End to end: the config the renderer emits for uld (off-policy, where last_message_only
+    is emitted for that arm alone) is sound by check_config."""
+    cfg = _render(tmp_path, ["--loss-arm", "uld", "--last-message-only", "true"])
+    assert cfg["use_uld_loss"] is True and cfg["last_message_only"] is True
+    assert masking.check_config(_DOC, cfg) == []
+
+
+def test_what_the_renderer_emits_for_jsd_with_it_is_still_reported(tmp_path):
+    """On-policy the renderer emits last_message_only for every arm; for a scanning arm
+    true is still the bypass check_config reports."""
+    cfg = _render(
+        tmp_path,
+        ["--loss-arm", "jsd", "--last-message-only", "true", "--vllm-num-servers", "1"],
+        nodes=2,
+    )
+    assert cfg["last_message_only"] is True
+    (problem,) = _lmo_problems(cfg)
+    assert "bypasses" in problem

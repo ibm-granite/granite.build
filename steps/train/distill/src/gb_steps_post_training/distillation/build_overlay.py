@@ -143,7 +143,7 @@ from pathlib import Path
 
 from gb_steps_post_training.distillation import tokenizer_identity
 
-# Files an overlay MAY contain. Like distill-hf-export's, this is an explicit KEEP list:
+# Files an overlay MAY contain. Like hf-export's, this is an explicit KEEP list:
 # a DROP list would silently admit whatever a future transformers release starts writing,
 # and the whole point of an overlay is that its contents are known exactly.
 OVERLAY_KEEP = (
@@ -424,7 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="load the overlay and assert it round-trips (needs transformers)",
     )
     # BooleanOptionalAction so a step-template can pass this flag unconditionally -- see
-    # steps/distill-hf-export/src/export_hf_model.py for why that matters for jinja.
+    # steps/aux/hf-export/skypilot/src/export_hf_model.py for why that matters for jinja.
     p.add_argument(
         "--require-chatml",
         action=argparse.BooleanOptionalAction,

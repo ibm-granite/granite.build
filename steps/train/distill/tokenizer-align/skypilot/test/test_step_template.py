@@ -86,7 +86,7 @@ class TestRunScriptIsValidShell:
     def test_metadata_emission_cannot_abort_the_run(self, run_script):
         """``[ -n "$X" ] && echo`` as the last statement of an if-body returns 1
         when X is empty, and the launcher prefixes ``set -eu``, so that aborts the
-        run. distill-gold's template still carries this latent bug; this one must
+        run. logit-distill's template still carries this latent bug; this one must
         not, so every metadata echo is written as a full if/then/fi.
         """
         assert not re.search(

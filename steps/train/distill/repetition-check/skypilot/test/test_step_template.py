@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the gen-smoke step-template.yaml.
+"""Contract tests for the repetition-check step-template.yaml.
 
 The run script is rendered with gbserver's own template filler and executed against a
 stand-in interpreter that records its argv, so a rung list that does not reach the

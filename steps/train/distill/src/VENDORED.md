@@ -7,8 +7,10 @@ from that commit in these ways, and in no other:
 
 - **Formatting.** Every file is reformatted with `black` and `isort`, which CI enforces
   repo-wide. To compare against upstream, format both sides the same way first.
-- **Local patches** in `custom_gold_config.py` and `custom_gold_trainer.py`, described
-  below: the two on-policy study patches.
+- **Local patches** in `custom_gold_config.py`, `custom_gold_trainer.py` and `masking.py`,
+  described below: the two on-policy study patches, the ULD base-path fix, the crop for a
+  teacher that reuses the student's input, the ULD alignment guard, and check-config's
+  `last_message_only` rule.
 
 ## Licence
 
@@ -90,14 +92,146 @@ changed, and uses trl's machinery where it does the same job:
   the sampled token's at index 0 of the top-k structure (D-2/D-4); a NaN logprob (None from
   trl's client) masks the token out of importance sampling (D-3).
 - The non-hybrid ULD path (`CustomULDLoss._compute_base_distillation_loss`) and the
-  probability merge (`_merge_probabilities_with_alignment_groups`) are trl 0.26.2's,
-  vendored unchanged (D-7: bit-identical numerics). trl 1.x's base path needs byte offsets
-  this trainer does not pass, and its "observed" merge is unnormalised and needs
-  `token_ids`.
+  probability merge (`_merge_probabilities_with_alignment_groups`) are trl 0.26.2's: the
+  merge vendored unchanged (D-7: bit-identical numerics), the base path with the local fix
+  below. trl 1.x's base path needs byte offsets this trainer does not pass, and its
+  "observed" merge is unnormalised and needs `token_ids`.
 - `CustomULDLoss._compute_distillation_loss` accepts trl 1.x's byte-offset keywords and
   ignores them (it aligns from token IDs).
 
 `steps/train/distill/logit-distill/skypilot/test/test_trl1_port.py` pins each of these.
+
+## Local fix: the ULD base path
+
+`CustomULDLoss._compute_base_distillation_loss`, the path `loss_arm: uld` runs, is trl
+0.26.2's non-hybrid `ULDLoss._compute_distillation_loss` with two fixes, both described in
+its docstring and pinned in
+`steps/train/distill/logit-distill/skypilot/test/test_loss_numerics.py`:
+
+- TRL read the logits AT each completion position, one late: logits[t] predicts token
+  t + 1, and nothing upstream shifts them. It now reads start-1, as the hybrid path and
+  the JSD path do. trl 1.18.2 has the same default, `uld_token_merge_strategy="observed"`
+  (its opt-in `"bayesian"` strategy shifts).
+- A row whose alignment yields no groups reached the merge, which then returned the
+  probabilities unmerged, so the L1 compared positions that were never paired: a shape
+  `RuntimeError` when the completions differ in length, except when one side has a single
+  position, which `F.l1_loss` broadcasts against every position of the other with only a
+  `UserWarning`; and a distance between unaligned positions when they have the same
+  length. Such a row now contributes no loss, as on the hybrid path, and is counted.
+
+One branch is removed rather than fixed: TRL's loop also called the hybrid loss per row
+when `use_hybrid_loss` and a vocabulary mapping were set. `_compute_distillation_loss`
+dispatches exactly that case to the hybrid path, so the branch was unreachable here.
+
+Because it reads start-1, a completion that starts at position 0 would have no predictor
+and would slice from the end of the row. Both ULD paths now skip such a row and count it
+(`CustomULDLoss._unpredictable_start`; on the hybrid path before every start-1 read), and
+`ULDAlignmentGuard` refuses it at the optimizer step on every rank (below). A raise in the
+loss would be one rank's alone, and the other ranks would wait in backward's collective
+until the NCCL timeout.
+The layouts the logit-distill step builds never put a completion there: the collator's spans
+start after the response template or the prompt, and the single-region teacher crop keeps
+`teacher_prompt_length - 1`.
+
+## Local fix: the crop for a teacher that reuses the student's input
+
+With `uld_reuse_student_input` (a debugging mode the step cannot reach), the teacher's
+`input_ids` and labels are the student's, and `teacher_prompt_length` was
+`inputs["prompts"].shape[1]`, the batch's longest prompt. The collator left-pads, so the rows
+end together and, at a batch larger than 1, a row with a shorter prompt and a longer
+completion starts its completion before that column: the crop cut into it, the teacher lost
+its first tokens, and its labels started at position 0. With `last_message_only=false`, which
+the mode is exempt from, the collator labels every assistant turn while `prompts` is everything
+before the last one, so even a batch of 1 lost the earlier turns from the teacher. The mis-crop
+came with the import.
+`teacher_prompt_length` is now the first column any row labels, and at least 1
+(`earliest_completion_column`), so every row's completion is kept whole with the logit
+before it. The crop is exactly as wide as a contiguous per-row crop padded to one width: for
+rows that end together, both are the longest completion plus one.
+
+The mode's tokenizer check read `CustomULDLoss.jaccard`. That attribute is set only when the
+hybrid loss builds trl's vocabulary mapping, so without `uld_use_hybrid_loss` the trainer
+raised `AttributeError` at init (#785). The check now compares the two vocabularies itself.
+It requires them to be equal, the same id for every token, because the teacher reads the
+student's token ids as its own. A Jaccard index of 1.0 over the token strings, the old
+check, also passed a teacher whose ids differ. `vocab_jaccard` computes the index, for the
+message and for the hybrid loss's report, from the two vocabularies.
+
+## Local addition: refusing a ULD run that trains on nothing
+
+Skipping an unaligned row is right for the rare row and silent when the two renders
+disagree systematically: every row is skipped, the loss and the gradient are exactly zero,
+and the run checkpoints and reports success. So both ULD paths count, rank-locally, every
+row (region, on the hybrid path) that reaches alignment (`CustomULDLoss._alignment_rows`)
+and every one that yields no groups (`_alignment_unaligned`; the hybrid path's skip now
+increments it too), and `ULDAlignmentGuard` in `custom_gold_trainer.py`, run by
+`_ULDAlignmentGuardCallback` at `on_pre_optimizer_step` on every rank, drains them at each
+optimizer step and sums them over ranks. It raises `RuntimeError`:
+
+- when any row of a step, on any rank, was skipped for a completion at position 0
+  (`_alignment_unpredictable`, reduced in the same all-reduce as the other two counts);
+  always on, whatever the threshold. An evaluated row counts towards the next step, and
+  one evaluated after the last step is reduced and refused at train end (`on_train_end`);
+- when every row of a step, across all ranks, was unaligned; always on;
+- when more than `uld_max_unaligned_fraction` (default 0.5; 1.0 turns it off) of the rows
+  in a window of `uld_unaligned_window_steps` optimizer steps (default 0 = `logging_steps`)
+  were unaligned; the final, partial window is judged at train end (`on_train_end`). Both
+  are new `CustomGOLDConfig` fields.
+
+The guard is the runtime backstop. The known systematic cause, `last_message_only=false`
+under the single-region ULD teacher, is refused before training: the logit-distill step's
+renderer requires `last_message_only: true` for `loss_arm: uld` and, for that arm alone,
+emits it off-policy (`render_gold_config.py`, outside this package). `CustomGOLDConfig.__post_init__`
+refuses `use_uld_loss` without `last_message_only=true` too, for a config that bypasses the
+renderer, as it already did for `use_sampled_opd_loss`. It exempts the three modes that do not
+pair the collator's labels with the last-turn teacher: `uld_per_turn_regions` (which requires
+false), `uld_reuse_student_input`, and `uld_rebuild_student_input_with_teacher_template`, which
+rebuilds the student's input and labels from the teacher's (prompt, last-turn completion) texts.
+
+Every log line carries three new keys, the counts since the previous line summed over
+ranks: `train/alignment_rows`, `train/alignment_unaligned_rows` and
+`train/alignment_unaligned_rate`. They are identical on every rank.
+
+## Local fix: check-config's `last_message_only` rule
+
+`masking.check_config` (`masking.py check-config`) reported `last_message_only: true` as a
+problem on every gold config, because it bypasses the response_template scan that
+masking.json describes. For the two arms whose `render_gold_config.py` LOSS_ARMS entry
+requires it, `uld` and `sampled_opd`, that inverted the renderer's rule. It now follows that
+rule: for those arms, true is the contract and false or unset is the problem. The arms are
+recognised from `loss_arm` or from the switch they render (`use_uld_loss`,
+`use_sampled_opd_loss`). The `use_uld_loss` switch, which is what reaches `CustomGOLDConfig`,
+takes the same three ULD exemptions: in an exempt mode either value is sound, and `true` is
+not reported as the scan bypass, since `CustomGOLDConfig` accepts it; `uld_per_turn_regions`
+with `true` is a problem, since `CustomGOLDConfig` refuses it. A named `loss_arm: uld` takes
+none: the logit-distill step passes no `uld_*` key to its renderer, which has no `uld_*`
+option, so such a mode is dropped and reported as a problem, and the renderer refuses the arm
+without `true` in every case.
+
+check-config takes the config's form explicitly (`check_config(..., form=)`, `masking.py
+check-config --form trainer|step`, default `trainer`):
+- A gold config gold.py reads (the renderer's output, or one written by hand) is read as
+  gold.py's `TrlParser` reads a YAML config: a string through transformers'
+  `string_to_bool`, any other value by its truth. A `loss_arm` key in one is a problem,
+  since `TrlParser` refuses a key that is not a `CustomGOLDConfig` field.
+- A step's gold_config block is read as `render_gold_config.py`'s `_bool` reads its
+  rendered command line (`loss_arm` defaults to the template's `""`).
+- Each of `last_message_only`, the two switches and the three ULD modes is read with that
+  rule, so `"true"` and `1` satisfy a rule, and a value the parser refuses is a problem.
+- In a step block, `use_uld_loss` and every `uld_*` key are dropped by the template. A
+  mode or `use_uld_loss` is reported unless its value is null or false by either parser's
+  reading; any other `uld_*` key with a value is reported as having no effect.
+- A step block's present value is read as the template renders it, unquoted: null becomes
+  "None" and an empty value becomes nothing, and the renderer refuses both.
+- A step block's `last_message_only` is dropped off-policy except for `loss_arm: uld`
+  (the renderer's `_ONLINE_ONLY`), so `true` there is not reported as the scan bypass.
+
+Every other arm keeps the old report.
+`steps/train/distill/logit-distill/skypilot/test/test_masking_check_config.py` pins both
+directions against the renderer's table, both readers against the real parsers, every ULD
+form, mode and `last_message_only` value (booleans, `"true"`, `"false"`, 1, 0) against what
+the step, the renderer, `TrlParser` and `CustomGOLDConfig` do with it, and every switch
+value in both forms against its parser.
 
 ## A second copy elsewhere
 

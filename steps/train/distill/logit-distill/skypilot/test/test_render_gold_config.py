@@ -178,6 +178,66 @@ class TestOnPolicyBlockGating:
         )
         assert all(k in config for k in self.ONLINE_KEYS)
 
+    @pytest.mark.parametrize("lmo", ["false", "true"])
+    def test_off_policy_refuses_the_sampled_opd_switch(self, tmp_path, lmo):
+        """use_sampled_opd_loss is one of these keys, so off-policy it was dropped with
+        exit 0 and the run trained plain JSD. It selects the objective, so it is refused
+        rather than dropped, as the distill recipe refuses it off-policy."""
+        result = _render(
+            tmp_path,
+            total_nodes=1,
+            extra=[
+                "--lmbda",
+                "0.0",
+                "--use-sampled-opd-loss",
+                "true",
+                "--last-message-only",
+                lmo,
+            ],
+            expect_rc=2,
+        )
+        assert "use_sampled_opd_loss" in result.stderr
+        assert "vllm_num_servers" in result.stderr
+
+    def test_on_policy_refuses_the_sampled_opd_switch_below_lmbda_1(self, tmp_path):
+        """CustomGOLDConfig requires lmbda 1.0 for it; the arm already refused other
+        values, the switch alone rendered them for the trainer to refuse at startup."""
+        on_policy = ["--vllm-num-servers", "1", "--last-message-only", "true"]
+        sopd = ["--use-sampled-opd-loss", "true"]
+        result = _render(
+            tmp_path, extra=[*on_policy, *sopd, "--lmbda", "0.5"], expect_rc=2
+        )
+        assert "use_sampled_opd_loss" in result.stderr and "1.0" in result.stderr
+        config = _render(tmp_path, extra=[*on_policy, *sopd, "--lmbda", "1.0"])
+        assert config["use_sampled_opd_loss"] is True and config["lmbda"] == 1.0
+
+    @pytest.mark.parametrize(
+        "extra, needle",
+        [
+            (["--last-message-only", "false"], "last_message_only"),
+            (
+                ["--last-message-only", "true", "--use-liger-fused-jsd", "true"],
+                "use_liger_fused_jsd",
+            ),
+        ],
+        ids=["last-message-only-false", "liger"],
+    )
+    def test_on_policy_refuses_the_sampled_opd_switch_as_custom_gold_config_does(
+        self, tmp_path, extra, needle
+    ):
+        """CustomGOLDConfig refuses use_sampled_opd_loss without last_message_only and
+        with use_liger_fused_jsd; LOSS_ARMS refused both for the arm, the switch alone
+        rendered them for the trainer to refuse at startup."""
+        on_policy = ["--vllm-num-servers", "1", "--lmbda", "1.0"]
+        sopd = ["--use-sampled-opd-loss", "true"]
+        result = _render(tmp_path, extra=[*on_policy, *sopd, *extra], expect_rc=2)
+        assert "use_sampled_opd_loss" in result.stderr and needle in result.stderr
+
+    def test_off_policy_takes_the_sampled_opd_switch_off(self, tmp_path):
+        """False is the default, and off-policy it is still not emitted."""
+        config = _render(tmp_path, extra=["--use-sampled-opd-loss", "false"])
+        assert "use_sampled_opd_loss" not in config
+
     def test_off_policy_still_carries_lmbda_and_beta(self, tmp_path):
         """These are loss knobs, not online-only ones; lmbda=0 IS off-policy."""
         config = _render(tmp_path)
@@ -520,8 +580,40 @@ class TestLossArms:
         """The point of the table: these switches are CustomGOLDConfig fields that
         no CLI flag on this renderer could previously set at all."""
 
-        config = _render(tmp_path, extra=["--loss-arm", arm])
+        config = _render(
+            tmp_path, extra=["--loss-arm", arm, "--last-message-only", "true"]
+        )
         assert config[key] is True
+
+    @pytest.mark.parametrize("given", [None, "false"])
+    def test_uld_without_last_message_only_is_refused_at_render(self, tmp_path, given):
+        """Unset (the default, false) or false: the student's span and ULD's last-turn
+        teacher never align on a multi-turn row, and the run would train at zero gradient.
+        The message names both keys and the recipe parameter that sets the second."""
+        extra = ["--loss-arm", "uld"]
+        if given is not None:
+            extra += ["--last-message-only", given]
+        result = _render(tmp_path, extra=extra, expect_rc=2)
+        assert "loss_arm='uld' requires last_message_only=true; got false" in (
+            result.stderr
+        )
+        assert "--param LAST_MESSAGE_ONLY=true" in result.stderr
+
+    def test_uld_emits_last_message_only_off_policy(self, tmp_path):
+        """Off-policy, last_message_only is otherwise never emitted (_ONLINE_ONLY), so the
+        requirement above would be checked and then dropped, and the trainer would run
+        with its default, false. For uld alone it is emitted."""
+        config = _render(
+            tmp_path, extra=["--loss-arm", "uld", "--last-message-only", "true"]
+        )
+        assert config["last_message_only"] is True
+        assert "vllm_num_servers" not in config
+
+    def test_no_other_arm_emits_last_message_only_off_policy(self, tmp_path):
+        """The exception is the uld arm's alone; every other arm off-policy is pinned
+        byte for byte in test_render_gold_config_arms_golden.py."""
+        config = _render(tmp_path, extra=["--last-message-only", "true"])
+        assert "last_message_only" not in config
 
     def test_adaptive_kld_is_refused_with_the_reason(self, tmp_path):
         """The arm's trainer implementation does not compute the paper's objective
@@ -582,7 +674,14 @@ class TestLossArms:
         rendered config said ULD."""
         result = _render(
             tmp_path,
-            extra=["--loss-arm", "uld", "--use-liger-fused-jsd", "true"],
+            extra=[
+                "--loss-arm",
+                "uld",
+                "--last-message-only",
+                "true",
+                "--use-liger-fused-jsd",
+                "true",
+            ],
             expect_rc=2,
         )
         assert "implies use_liger_fused_jsd=False" in result.stderr
@@ -1084,6 +1183,15 @@ _GOLD_REQUIRED_ARGS = [
 _RENDERER_DEFAULTS_THE_TEMPLATE_DOES_NOT_PASS = {
     # Passed, but from the `vllm` input binding (empty when unbound), not from config.
     "--vllm-server-url",
+    # Passed only when some `tracking:` key is set, so a run that tracks nothing renders the
+    # run script it rendered before (golden_run_scripts.json). test_step_template.py's
+    # TestTracking renders the block both ways.
+    "--tracking-tool",
+    "--clearml-project",
+    "--clearml-run-name",
+    "--wandb-entity",
+    "--wandb-project",
+    "--wandb-run-name",
 }
 
 # Template defaults that deliberately differ from the renderer's, as (template, renderer).

@@ -1,4 +1,4 @@
-# distill-tokenizer-align step for the SkyPilot environment (LSF / BlueVela).
+# tokenizer-align step for the SkyPilot environment (LSF / BlueVela).
 #
 # Makes a raw Granite base student able to speak the teacher's ChatML, and emits
 # the three tokenizer artifacts every later distillation step reads. Runs in the

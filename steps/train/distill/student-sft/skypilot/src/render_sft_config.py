@@ -13,10 +13,10 @@
 # as a two-character escape. That is a property of granite.build's transport, so the
 # compensation lives on granite.build's side rather than in this ported file.
 #
-"""Validate distill-sft's step config and render it as an SFT YAML file.
+"""Validate student-sft's step config and render it as an SFT YAML file.
 
 WHY THIS IS A MODULE AND NOT INLINE IN run-sft.sh, and why it is a near-twin of
-distill-gold-train's render_gold_config.py rather than a copy of it: this step is the CONTROL
+logit-distill's render_gold_config.py rather than a copy of it: this step is the CONTROL
 the distillation arms are measured against, so every way it can silently differ from them is a
 way the comparison stops meaning anything. The rules that must be IDENTICAL on both sides
 (resume, the tokenizer agreement, the topology bounds) are imported from
@@ -214,7 +214,7 @@ def validate(args: argparse.Namespace, *, check_paths: bool = True) -> None:
                 f"{', '.join(changed)} was set, but precomputed_logits_dir is empty -- so this "
                 "is the plain-SFT control arm and every kd_* key is silently ignored (they are "
                 "read only on the precomputed-logits path). Point precomputed_logits_dir at a "
-                "distill-logit-precompute output to make them take effect, or return them to "
+                "teacher-logits output to make them take effect, or return them to "
                 "their defaults to keep this a control."
             )
 
@@ -245,7 +245,7 @@ def validate(args: argparse.Namespace, *, check_paths: bool = True) -> None:
     if missing:
         raise ConfigError("input validation failed:\n  - " + "\n  - ".join(missing))
 
-    # Shared with distill-gold-train: the student must carry a chat template, and must be the
+    # Shared with logit-distill: the student must carry a chat template, and must be the
     # tokenizer the corpus was built for. See render_common for why each is an assertion.
     render_common.validate_student_against_corpus(
         args.student_model_path, args.corpus_path
@@ -265,7 +265,7 @@ def validate(args: argparse.Namespace, *, check_paths: bool = True) -> None:
             "response_template is empty, so there is no way to locate the assistant spans: "
             "apply_chat_template's assistant mask will be all zeros and sft.py raises on it. "
             "Either install patches/granite-chat-template-generation-markers/ (which "
-            "distill-tokenizer-align does) or set response_template to the literal that "
+            "tokenizer-align does) or set response_template to the literal that "
             "precedes each assistant turn."
         )
 
@@ -354,6 +354,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     # hint unless precomputed_logits_dir is set, names the control `<student>_<corpus>_sft`
     # rather than as a distillation arm.
     for _key, _val in (
+        ("tracking_tool", args.tracking_tool),
         ("clearml_project", args.clearml_project),
         ("clearml_run_name", args.clearml_run_name),
         ("wandb_entity", args.wandb_entity),
@@ -373,6 +374,23 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         # Merged UNDER the contract keys: a collision is an error, not a silent winner. An
         # escape hatch that can override an explicit contract key is not an escape hatch, it is
         # a second config system with undefined precedence.
+        # report_to chooses the tracking integrations, and the tracking block owns that: one tool
+        # per run, or none. Through here, `report_to: all` would turn on every installed one. The
+        # one exception is TensorBoard, which only writes local files: `report_to: tensorboard`
+        # (or a list of just that) is passed through, and tracking.py keeps it beside the tool.
+        if "report_to" in extra:
+            value = extra["report_to"]
+            names = [value] if isinstance(value, str) else value
+            if not (
+                isinstance(names, list)
+                and names
+                and all(n == "tensorboard" for n in names)
+            ):
+                raise ConfigError(
+                    f"extra_config_yaml sets report_to: {value!r}. Only tensorboard may be set "
+                    "here; the tracking tool is the step's tracking block's to choose: set "
+                    "tracking.tool (wandb, clearml or none) instead."
+                )
         collisions = sorted(set(extra) & set(cfg))
         if collisions:
             raise ConfigError(
@@ -424,6 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--nodes", type=int, default=1)
     # Tracking. Default "" rather than None so an unset step config key round-trips as "unset"
     # instead of the literal string "None".
+    p.add_argument("--tracking-tool", default="")
     p.add_argument("--clearml-project", default="")
     p.add_argument("--clearml-run-name", default="")
     p.add_argument("--wandb-entity", default="")
@@ -444,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         validate(args, check_paths=not args.no_check_paths)
         cfg = render(args)
     except ConfigError as exc:
-        print(f"FATAL [distill-sft config]: {exc}", file=sys.stderr)
+        print(f"FATAL [student-sft config]: {exc}", file=sys.stderr)
         return 2
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

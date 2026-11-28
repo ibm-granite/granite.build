@@ -67,6 +67,10 @@ _ONLINE_ONLY = (
     "opd_importance_sampling",
 )
 
+# Per arm, the _ONLINE_ONLY keys that arm emits off-policy as well. Only `uld`: it
+# requires last_message_only=true, and the collator reads that key on every path.
+_OFF_POLICY_ARM_KEYS: Dict[str, Tuple[str, ...]] = {"uld": ("last_message_only",)}
+
 
 # ─── Loss arms ────────────────────────────────────────────────────────────────────────
 #
@@ -199,12 +203,28 @@ LOSS_ARMS: Dict[str, Dict[str, Any]] = {
         # and student need not share a vocabulary. The arm for a genuinely cross-tokenizer
         # pair; for Granite/Granite it buys nothing over an aligned comparison.
         "doc": "Universal Logit Distillation over sorted logits; the cross-tokenizer arm",
+        # The trainer renders the ULD teacher as msgs[:-1] against msgs, so the teacher's
+        # completion is the LAST assistant turn. The base ULD path takes one student region
+        # per row (first labelled position, total labelled count). Under
+        # last_message_only=false the collator labels every assistant turn, so that region
+        # starts at the first turn and runs across the user turns after it, and on a ChatML
+        # template it also opens with the generation prompt's '\n<think></think>'. No row
+        # of a multi-turn corpus aligns, and on ChatML none at all: measured on CPU through
+        # the real trainer, 0 of 48 build-test rows, against 48 of 48 with it true. Hence
+        # also the one off-policy emission of last_message_only (_OFF_POLICY_ARM_KEYS).
+        "requires": {"last_message_only": True},
+        "why": (
+            "ULD's teacher is rendered as the last assistant turn only, and with "
+            "last_message_only=false the student's span starts at the first assistant turn "
+            "(and, on a ChatML template, with the generation prompt's think scaffold), so no "
+            "row of a multi-turn corpus aligns and the loss is zero"
+        ),
     },
     "ce": {
         "flags": {"use_ce_loss": True},
         # An SFT control that runs INSIDE this trainer, on the same data path, collator and
         # masking as every distillation arm -- so a gap between them cannot be a data-pipeline
-        # artefact. Not a replacement for distill-sft, which trains with no teacher
+        # artefact. Not a replacement for student-sft, which trains with no teacher
         # resident at all.
         "doc": "cross entropy only -- in-trainer SFT control, teacher still loaded",
         "requires": {"lmbda_eq": 0.0},
@@ -320,7 +340,11 @@ def _validate_arm(args: argparse.Namespace, *, online: bool) -> Dict[str, Any]:
             )
         if kind == "last_message_only" and bool(args.last_message_only) != bool(bound):
             raise ValueError(
-                f"loss_arm={args.loss_arm!r} requires last_message_only={bound}.{tail}"
+                f"loss_arm={args.loss_arm!r} requires last_message_only="
+                f"{str(bound).lower()}; got {str(bool(args.last_message_only)).lower()} "
+                "(false is also the default). Set gold_config.last_message_only: "
+                f"{str(bound).lower()} (in the distill recipe: --param "
+                f"LAST_MESSAGE_ONLY={str(bound).lower()}).{tail}"
             )
         if kind not in _REQUIREMENT_KINDS:
             raise ValueError(
@@ -586,6 +610,45 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
             "the vLLM path's). Set vllm_num_servers > 0 for on-policy, or lmbda 0 for "
             "off-policy"
         )
+    # use_sampled_opd_loss is _ONLINE_ONLY, so off-policy it would be dropped like the other
+    # online keys. Unlike them it selects the objective: the run would train plain JSD while
+    # the config asks for the sampled-OPD loss. Refused, as the distill recipe refuses it.
+    # After _validate_arm, so loss_arm sampled_opd's own refusal is the one reported.
+    if args.use_sampled_opd_loss and not online:
+        raise ValueError(
+            "use_sampled_opd_loss is emitted only on the on-policy path (vllm_num_servers "
+            "> 0); off-policy it would be dropped and the run would train plain JSD instead "
+            "of the sampled-OPD loss. Set vllm_num_servers > 0 (the loss needs lmbda 1.0), "
+            "or leave use_sampled_opd_loss false"
+        )
+    # On-policy, the loss needs lmbda 1.0 too. LOSS_ARMS refuses other values for the arm
+    # (_validate_arm); the switch alone left them for CustomGOLDConfig to refuse at startup.
+    if args.use_sampled_opd_loss and args.lmbda != 1.0:
+        raise ValueError(
+            f"use_sampled_opd_loss requires lmbda 1.0 (fully on-policy), as "
+            f"CustomGOLDConfig.__post_init__ does; got {args.lmbda}"
+        )
+    # And its other two rules, for the same reason.
+    if args.use_sampled_opd_loss and not args.last_message_only:
+        raise ValueError(
+            "use_sampled_opd_loss requires last_message_only true, as "
+            "CustomGOLDConfig.__post_init__ does"
+        )
+    if args.use_sampled_opd_loss and args.use_liger_fused_jsd:
+        raise ValueError(
+            "use_sampled_opd_loss is incompatible with use_liger_fused_jsd, as "
+            "CustomGOLDConfig.__post_init__ says"
+        )
+
+    # The one exception to _ONLINE_ONLY: keys an arm needs off-policy too. The trainer reads
+    # last_message_only off-policy (the collator's labels), so dropping it there made the uld
+    # arm's requirement unreachable: checked above, then not emitted, and the trainer ran
+    # with its default, false. Scoped to the arm, so every other arm's off-policy config is
+    # byte-identical to before (test_render_gold_config_arms_golden.py); on-policy the
+    # block below emits it for every arm, as it always has.
+    if not online:
+        for key in _OFF_POLICY_ARM_KEYS.get(args.loss_arm, ()):
+            config[key] = getattr(args, key)
 
     if online:
         config.update(
@@ -599,7 +662,28 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
                 "opd_importance_sampling": args.opd_importance_sampling,
             }
         )
+
+    # Experiment tracking: emitted ONLY when non-empty, so a run that sets none renders the
+    # config it rendered before. Not validated here: gold.py hands these keys to tracking.py,
+    # which owns the rules (one tool, a complete config, credentials) and refuses a bad
+    # combination before the trainer is built.
+    for key in _TRACKING_KEYS:
+        value = (getattr(args, key) or "").strip()
+        if value:
+            config[key] = value
     return config
+
+
+# The tracking keys this renderer passes through, in tracking.py's ALL_CONFIG_FIELDS order.
+# They are CustomArguments fields in gold.py, so TrlParser accepts them.
+_TRACKING_KEYS = (
+    "tracking_tool",
+    "clearml_project",
+    "clearml_run_name",
+    "wandb_entity",
+    "wandb_project",
+    "wandb_run_name",
+)
 
 
 def _decode_escapes(value: str) -> str:
@@ -628,7 +712,7 @@ def check_corpus_tokenizer(args: argparse.Namespace) -> None:
     tokenizers' ids are interchangeable, but their pre_tokenizers still differ (a Split regex
     on 4.1 vs plain ByteLevel on 4.2), so the same text segments differently. A run on the
     wrong corpus does not error: it trains on mis-segmented text at full speed with a falling
-    loss. recipes/distill/distill chains corpus-prep straight into this step, which is exactly
+    loss. recipes/distill/distill chains data-prep straight into this step, which is exactly
     where a mismatch can be introduced by changing one parameter.
 
     LAZY AND LOUD, never silent. The check lives in the shared package, which the step's
@@ -879,6 +963,13 @@ def _parse_args(argv=None) -> argparse.Namespace:
     # the config file instead would bet on them being accepted config-file keys,
     # and TRL's parse_args_and_config rejects unknown top-level keys outright.
     p.add_argument("--vllm-server-url", default="")
+    # Experiment tracking (the step's `tracking:` block). Empty means unset.
+    p.add_argument("--tracking-tool", default="")
+    p.add_argument("--clearml-project", default="")
+    p.add_argument("--clearml-run-name", default="")
+    p.add_argument("--wandb-entity", default="")
+    p.add_argument("--wandb-project", default="")
+    p.add_argument("--wandb-run-name", default="")
     return p.parse_args(argv)
 
 

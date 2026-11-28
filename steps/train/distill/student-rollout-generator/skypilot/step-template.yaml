@@ -4,7 +4,7 @@ version: 1.0.0
 # training target can reach it.
 #
 # WHY THIS EXISTS. On-policy GOLD needs vLLM serving the student while trainers
-# train against it. distill-gold can already do that by carving the LAST N nodes
+# train against it. logit-distill can already do that by carving the LAST N nodes
 # out of its own allocation, which is what the reference launcher does — but that
 # shape has three problems the launcher solves in bash and a step cannot: the
 # server's address is only known at run time, the trainer must wait on the
@@ -23,7 +23,7 @@ version: 1.0.0
 # across the two allocations, and the teardown target ended the server. It has not
 # yet run on SLURM.
 #
-# Division of labour, as in distill-gold: SkyPilot's LSF provisioner owns bsub,
+# Division of labour, as in logit-distill: SkyPilot's LSF provisioner owns bsub,
 # enroot and the node topology; deps AND the server code (now
 # gb_steps_post_training.distillation.run_vllm_serve) come from the shared GPU
 # image, same baked-in source every GPU distillation step uses — see
@@ -32,7 +32,7 @@ type: SERVICE
 config:
   # No code_config: run_vllm_serve.py is baked into the shared GPU image
   # (steps/train/distill/images/gpu/Dockerfile COPYs steps/train/distill/src/, pinned
-  # a5d59bc45524a8d75706e20d44ae1a254f273f23), same as distill-gold, rather than
+  # a5d59bc45524a8d75706e20d44ae1a254f273f23), same as logit-distill, rather than
   # cloned at job-launch time. This step is single-node (a SERVICE, not a
   # multi-node training job), so there was never a clone-guard race to avoid here
   # either way — baking it in just drops the clone's network round-trip from
@@ -125,7 +125,7 @@ environment_configs:
         monitors:
           - skypilot_monitor
         config:
-          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:f8dc46e5"
+          image_id: "docker:quay.io/granitebuild/steps/train/distill/images/gpu:7c39c59a"
           resources: {}
           envs:
             # The SLURM executor runs the task under `env -u PYTHONPATH` and without
@@ -215,7 +215,7 @@ environment_configs:
 
             # The address to advertise. A hostname is not enough: the consumer is
             # in a DIFFERENT allocation, so this must resolve from there. Prefer
-            # the IP, resolved the way distill-gold resolves MASTER_ADDR (/etc/hosts,
+            # the IP, resolved the way logit-distill resolves MASTER_ADDR (/etc/hosts,
             # then getent), because that is the validated path on this cluster.
             HOST="$(hostname)"
             ADDR="$(grep -w "$HOST" /etc/hosts 2>/dev/null | awk '{print $1; exit}')"

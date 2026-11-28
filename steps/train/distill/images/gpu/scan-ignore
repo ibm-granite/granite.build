@@ -31,48 +31,8 @@
 # follow-up: bind each server to the node's address, or to loopback where the trainer
 # shares its node. Until 2027-05-31.
 
-# ---- accepted HIGH advisories (tracked in #752) ----
-# The vllm 0.33.0 lock (#676) has one HIGH advisory in osv, filelock's below: vllm, torch,
-# transformers, accelerate, fsspec and setuptools all moved to fixed releases, and ray is
-# no longer installed. The rest is what only trivy sees, inside a binary.
-
-# filelock 3.32.7: the fix is 4.2.1, a major-version move. filelock 4.x changes
-# UnixFileLock's behaviour on shared lock directories (4.2.12 refuses, with
-# PermissionError, a lock file another account owns under a sticky parent), and these
-# steps share one HF cache across accounts on group-shared filesystems. That move belongs
-# in its own change, tested on the cluster (#752); pyproject.toml holds it with a
-# filelock<4 constraint (vllm 0.34.0 would force it). Not reachable: the flaw is only in
-# ReadWriteLock / AsyncReadWriteLock (the SQLite-backed lock, added in 3.20.4), and no
-# module in the venv outside filelock itself names ReadWriteLock (checked in the vllm
-# 0.33.0 / torch 2.14.0 dev image), nor does the distill code. Until 2027-05-31.
-CVE-2026-112940
-GHSA-v4x8-3wr5-3wq8
-
-# wandb-core, the Go binary inside the wandb 0.28.2 wheel (Go stdlib 1.26.5, grpc 1.83.0,
-# x/net 0.57.0); trivy reports these, osv-scanner cannot see inside the binary. wandb is
-# tracking-only and defaults off in every step, so the binary does not run unless a recipe
-# turns tracking on. wandb is this image's own exact pin (no other package caps it); the
-# raise is #752.
-# Ids from trivy's report on the c1069dfd and 173af080 images, unchanged on the #676 dev
-# images. Until 2027-05-31.
-CVE-2026-111943
-CVE-2026-33818
-CVE-2026-39821
-CVE-2026-46600
-CVE-2026-56853
-CVE-2026-56858
-CVE-2026-56859
-CVE-2026-56860
-CVE-2026-56862
-CVE-2026-78661
-CVE-2026-78667
-CVE-2026-78669
-CVE-2026-84304
-CVE-2026-84445
-CVE-2026-97031
-# GO-2026-5932: golang.org/x/crypto/openpgp is unmaintained (Go vuln DB; no CVE alias,
-# no severity score, so trivy reports it as UNKNOWN; the "fix" is a deprecation
-# pseudo-version of x/crypto). Found once the trivy gate also checked UNKNOWN. Whether
-# wandb-core imports openpgp at all is not verified; accepted on the same grounds as the
-# ids above, and removed by the same raise (#752). Until 2027-05-31.
-GO-2026-5932
+# ---- accepted HIGH advisories ----
+# None. The vllm 0.33.0 lock (#676) moved vllm, torch, transformers, accelerate, fsspec
+# and setuptools to fixed releases, and ray is no longer installed; the wandb-core ids
+# trivy found inside the wandb 0.28.2 binary went with the raise to wandb 0.31.2, and
+# filelock's (CVE-2026-112940 / GHSA-v4x8-3wr5-3wq8) with the raise to 4.2.x (#752).

@@ -32,7 +32,7 @@ was ported from. Each difference is a defect found while porting, not a preferen
      used it for both the weights and the tokenizer, then wrote `tokenizer_name_or_path:
      args.teacher_model` into meta.json. That is the `tokenizer_class` trap of
      docs/tokenizer_mismatch.md in the most expensive possible place: a whole corpus mis-segmented,
-     discovered days later at training time. distill-tokenizer-align exists to produce the
+     discovered days later at training time. tokenizer-align exists to produce the
      tokenizer this pass should use (its `teacher_overlay`), and now it can be handed one.
      meta.json records the tokenizer that was really used.
 
@@ -159,7 +159,7 @@ def get_args(argv=None):
         "--teacher-tokenizer",
         default="",
         help="Directory of the teacher TOKENIZER; defaults to --teacher-model. Pass "
-        "distill-tokenizer-align's teacher_overlay. Recorded in meta.json as "
+        "tokenizer-align's teacher_overlay. Recorded in meta.json as "
         "tokenizer_name_or_path, which is what the training-time consumer compares against.",
     )
     p.add_argument("--top-k", type=int, default=256)

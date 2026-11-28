@@ -15,6 +15,7 @@ and the steps' schemas.
 
 import pathlib
 import re
+import sys
 
 import jinja2
 import pytest
@@ -75,6 +76,8 @@ _GENERIC_CONFIG = {
     "log_retrieval_mode",
     "compute_config",
     "launcher_config",
+    # Read by the SkyPilot environment itself: the declared space secrets.
+    "skypilot",
 }
 
 _BENCHMARK = re.compile(r"^(eval-.+-ck\d+|export-(sage|bfcl)-ck\d+|export-combined)$")
@@ -264,6 +267,400 @@ def test_zero_and_empty_drop_settings_render(tmp_path, mode):
     _render(tmp_path, LMBDA_MODE=mode, MIN_COMPLETION_LENGTH="")
 
 
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("lmo", [None, "false"], ids=["unset", "false"])
+def test_uld_without_last_message_only_fails_to_render(tmp_path, mode, lmo):
+    """ULD's teacher is the last assistant turn alone, so with LAST_MESSAGE_ONLY false no
+    multi-turn row aligns and the run trains at zero gradient. Refused before
+    submission, naming the parameter, rather than at launch on a held allocation."""
+    params = {"LMBDA_MODE": mode, "LOSS_ARM": "uld"}
+    if lmo is not None:
+        params["LAST_MESSAGE_ONLY"] = lmo
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld" in str(err.value)
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_uld_with_last_message_only_reaches_the_step(tmp_path, mode):
+    """Off-policy the recipe passes the key only for uld, since the step emits it
+    off-policy for that arm alone; on-policy its usual block carries it. Once either way.
+    """
+    text = _render_text(
+        tmp_path, LMBDA_MODE=mode, LOSS_ARM="uld", LAST_MESSAGE_ONLY="true"
+    )
+    gold = _gold(yaml.safe_load(text))
+    assert gold["loss_arm"] == "uld"
+    assert gold["last_message_only"] is True
+    assert text.count("last_message_only:") == 1
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+@pytest.mark.parametrize("lmo", [None, "false"], ids=["unset", "false"])
+def test_sampled_opd_without_last_message_only_fails_to_render(tmp_path, sopd, lmo):
+    """The same requirement, with the same render-time refusal, as uld: the step's
+    renderer and CustomGOLDConfig both refuse the sampled-OPD loss without it."""
+    params = {"LMBDA_MODE": "on-policy", **sopd}
+    if lmo is not None:
+        params["LAST_MESSAGE_ONLY"] = lmo
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss" in str(err.value)
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+def test_sampled_opd_with_last_message_only_renders(tmp_path, sopd):
+    gold = _gold(
+        _render(tmp_path, LMBDA_MODE="on-policy", LAST_MESSAGE_ONLY="true", **sopd)
+    )
+    assert gold["last_message_only"] is True
+
+
+def test_other_arms_pass_no_last_message_only_off_policy(tmp_path):
+    for arm in ("", "jsd", "ce"):
+        assert "last_message_only" not in _gold(
+            _render(tmp_path, LMBDA_MODE="off-policy", LOSS_ARM=arm)
+        )
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+def test_sampled_opd_off_policy_fails_to_render(tmp_path, sopd):
+    """Off-policy the recipe passes use_sampled_opd_loss nowhere (only its on-policy
+    block carries it), so the switch was dropped and the run trained plain JSD while
+    its parameters asked for the sampled-OPD loss. The arm reached the step, whose
+    renderer refuses it, but only once the allocation is up. Both are refused before
+    submission, with LAST_MESSAGE_ONLY set so that refusal is not the one that fires."""
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(
+            tmp_path, LMBDA_MODE="off-policy", LAST_MESSAGE_ONLY="true", **sopd
+        )
+    assert "LMBDA_MODE_must_be_ramp_or_on_policy_for_the_sampled_OPD_loss" in str(
+        err.value
+    )
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+@pytest.mark.parametrize("mode", ["ramp", "on-policy"])
+def test_sampled_opd_with_lmbda_other_than_1_fails_to_render(tmp_path, sopd, mode):
+    """CustomGOLDConfig requires lmbda 1.0 for the sampled-OPD loss. The switch form
+    passed the recipe and the step's renderer and failed at trainer start, the arm form
+    at the step's renderer, both once the allocation was up."""
+    params = dict(LMBDA_MODE=mode, LMBDA="0.5", LAST_MESSAGE_ONLY="true", **sopd)
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "LMBDA_must_be_1_for_the_sampled_OPD_loss" in str(err.value)
+    # An explicit 1 is the loss's own value: it renders, and the step's renderer takes it.
+    rendered = _render(tmp_path, **dict(params, LMBDA="1"))
+    assert _gold(rendered)["lmbda"] == 1.0
+    cfg = _logit_distill_renders(tmp_path, rendered)
+    assert cfg["use_sampled_opd_loss"] is True and cfg["lmbda"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "sopd",
+    [{"LOSS_ARM": "sampled_opd"}, {"USE_SAMPLED_OPD_LOSS": "true"}],
+    ids=["arm", "switch"],
+)
+def test_sampled_opd_with_the_fused_liger_jsd_fails_to_render(tmp_path, sopd):
+    """CustomGOLDConfig refuses use_sampled_opd_loss with use_liger_fused_jsd; the step's
+    renderer refuses both forms at launch."""
+    params = dict(
+        LMBDA_MODE="on-policy", LAST_MESSAGE_ONLY="true", USE_LIGER_FUSED_JSD="true"
+    )
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params, **sopd)
+    assert "USE_LIGER_FUSED_JSD_must_be_false_for_the_sampled_OPD_loss" in str(
+        err.value
+    )
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"LMBDA_MODE": "off-policy"},
+        {"LMBDA_MODE": "on-policy"},
+        {"LMBDA_MODE": "ramp"},
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "uld", "LAST_MESSAGE_ONLY": "true"},
+        {"LMBDA_MODE": "on-policy", "LOSS_ARM": "uld", "LAST_MESSAGE_ONLY": "true"},
+        {
+            "LMBDA_MODE": "on-policy",
+            "LOSS_ARM": "sampled_opd",
+            "LAST_MESSAGE_ONLY": "true",
+        },
+        {"LMBDA_MODE": "ramp", "LOSS_ARM": "sampled_opd", "LAST_MESSAGE_ONLY": "true"},
+        {
+            "LMBDA_MODE": "on-policy",
+            "USE_SAMPLED_OPD_LOSS": "true",
+            "LAST_MESSAGE_ONLY": "true",
+        },
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "jsd"},
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "kl_interpolation"},
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "liger_fused_jsd"},
+        {"LMBDA_MODE": "on-policy", "LOSS_ARM": "liger_fused_kl_interpolation"},
+        {"LMBDA_MODE": "ramp", "LOSS_ARM": "distillm2"},
+        {"LMBDA_MODE": "ramp", "LOSS_ARM": "distillm2_like"},
+        {
+            "LMBDA_MODE": "on-policy",
+            "LMBDA": "0.5",
+            "LOSS_ARM": "reversed_distillm2_like",
+        },
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": "ce"},
+        {"LMBDA_MODE": "off-policy", "LOSS_ARM": " ULD ", "LAST_MESSAGE_ONLY": "true"},
+    ],
+    ids=lambda p: ",".join(
+        f"{k}={v}" for k, v in p.items() if k != "LAST_MESSAGE_ONLY"
+    ),
+)
+def test_what_the_recipe_renders_the_step_renderer_accepts(tmp_path, params):
+    """End to end: the recipe's train target, through the logit-distill step's own
+    template and render_gold_config.py, renders a gold config. One config every arm
+    runs with, so the grid below cannot pass by the recipe refusing an arm outright.
+    LOSS_ARM=sampled_opd once died at launch: the recipe passed use_sampled_opd_loss
+    false beside it, which the renderer refuses."""
+    cfg = _logit_distill_renders(tmp_path, _render(tmp_path, **params))
+    if params.get("LOSS_ARM") == "sampled_opd" or "USE_SAMPLED_OPD_LOSS" in params:
+        assert cfg["use_sampled_opd_loss"] is True
+
+
+@pytest.mark.parametrize(
+    "params, refusal",
+    [
+        (
+            dict(LOSS_ARM="uld", USE_SAMPLED_OPD_LOSS="true", LMBDA_MODE="on-policy"),
+            "USE_SAMPLED_OPD_LOSS_must_be_false_beside_a_LOSS_ARM_other_than_sampled_opd",
+        ),
+        (
+            dict(LOSS_ARM="jsd", USE_SAMPLED_OPD_LOSS="true", LMBDA_MODE="on-policy"),
+            "USE_SAMPLED_OPD_LOSS_must_be_false_beside_a_LOSS_ARM_other_than_sampled_opd",
+        ),
+        (
+            dict(LOSS_ARM="uld", USE_LIGER_FUSED_JSD="true", LMBDA_MODE="off-policy"),
+            "USE_LIGER_FUSED_JSD_must_be_false_beside_a_LOSS_ARM_that_does_not_imply_it",
+        ),
+        (
+            dict(LOSS_ARM="adaptive_kld", LMBDA_MODE="off-policy"),
+            "LOSS_ARM_must_be_empty_or_one_of_the_logit_distill_steps_arms",
+        ),
+        (
+            dict(LOSS_ARM="ce", LMBDA_MODE="on-policy"),
+            "LMBDA_MODE_must_be_off_policy_for_LOSS_ARM_ce",
+        ),
+        (
+            dict(LOSS_ARM="distillm2", LMBDA_MODE="off-policy"),
+            "LOSS_ARM_distillm2_needs_LMBDA_MODE_ramp_or_an_LMBDA_strictly_between_0_and_1",
+        ),
+        (
+            dict(LOSS_ARM="kl_interpolation", BETA="1.0", LMBDA_MODE="off-policy"),
+            "BETA_must_be_strictly_between_0_and_1_for_the_kl_interpolation_arms",
+        ),
+    ],
+    ids=["uld+sopd", "jsd+sopd", "uld+liger", "rejected", "ce", "distillm2", "beta"],
+)
+def test_an_arm_the_step_would_refuse_fails_to_render(tmp_path, params, refusal):
+    params = {"LAST_MESSAGE_ONLY": "true", **params}
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert refusal in str(err.value)
+
+
+@pytest.mark.parametrize("arm", ["liger_fused_jsd", "liger_fused_kl_interpolation"])
+def test_a_liger_arm_passes_the_switch_it_implies(tmp_path, arm):
+    """USE_LIGER_FUSED_JSD defaults to false, which the step's renderer refuses beside a
+    liger arm; the recipe passes true."""
+    gold = _gold(_render(tmp_path, LMBDA_MODE="off-policy", LOSS_ARM=arm))
+    assert gold["use_liger_fused_jsd"] is True and gold["loss_arm"] == arm
+
+
+def test_the_arm_is_passed_on_as_the_recipe_reads_it(tmp_path):
+    """Trimmed and lowercased: the recipe reads it so, and the renderer would refuse
+    the raw value."""
+    gold = _gold(
+        _render(
+            tmp_path,
+            LMBDA_MODE="on-policy",
+            LOSS_ARM=" Sampled_OPD ",
+            LAST_MESSAGE_ONLY="true",
+        )
+    )
+    assert gold["loss_arm"] == "sampled_opd"
+
+
+def _renderer_arms():
+    sys.path.insert(0, str(_STEPS / "train/distill/logit-distill/skypilot/src"))
+    import render_gold_config as rgc
+
+    return rgc
+
+
+_RGC = _renderer_arms()
+# Every arm the step's renderer knows or rejects, none, and one in mixed case, which the
+# recipe normalises. Arms with a beta requirement also get the two ends of BETA. LMBDA
+# unset, fractional and 1.
+_GRID = [
+    dict(
+        LOSS_ARM=arm,
+        LMBDA_MODE=mode,
+        USE_LIGER_FUSED_JSD=liger,
+        USE_SAMPLED_OPD_LOSS=sopd,
+        LAST_MESSAGE_ONLY=lmo,
+        **({"LMBDA": lmbda} if lmbda is not None else {}),
+        **({"BETA": beta} if beta is not None else {}),
+    )
+    for arm in [
+        "",
+        *sorted(_RGC.LOSS_ARMS),
+        *sorted(_RGC.REJECTED_LOSS_ARMS),
+        "Sampled_OPD",
+    ]
+    for mode in _MODES
+    for liger in ("false", "true")
+    for sopd in ("false", "true")
+    for lmo in ("false", "true")
+    for lmbda in (None, "0.5", "1.0")
+    for beta in (
+        (None, "0.0", "1.0")
+        if "beta_strictly_between" in _RGC.LOSS_ARMS.get(arm, {}).get("requires", {})
+        else (None,)
+    )
+]
+# The recipe's refusals of a loss configuration. A grid config the recipe refuses must
+# be refused by one of these, not by some other undefined name (a typo in the recipe,
+# or a refusal of something the grid does not vary).
+_LOSS_REFUSALS = {
+    "BETA_must_be_strictly_between_0_and_1_for_the_kl_interpolation_arms",
+    "LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss",
+    "LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld",
+    "LMBDA_MODE_must_be_off_policy_for_LOSS_ARM_ce",
+    "LMBDA_MODE_must_be_ramp_or_on_policy_for_the_sampled_OPD_loss",
+    "LMBDA_MODE_must_be_ramp_or_on_policy_when_LMBDA_is_set",
+    "LMBDA_must_be_1_for_the_sampled_OPD_loss",
+    "LOSS_ARM_distillm2_needs_LMBDA_MODE_ramp_or_an_LMBDA_strictly_between_0_and_1",
+    "LOSS_ARM_must_be_empty_or_one_of_the_logit_distill_steps_arms",
+    "USE_LIGER_FUSED_JSD_must_be_false_beside_a_LOSS_ARM_that_does_not_imply_it",
+    "USE_LIGER_FUSED_JSD_must_be_false_for_the_sampled_OPD_loss",
+    "USE_SAMPLED_OPD_LOSS_must_be_false_beside_a_LOSS_ARM_other_than_sampled_opd",
+}
+
+
+def _recipe_refusal(tmp_path, params):
+    """The recipe's rendering of params, or None if the recipe refuses them; a refusal
+    must be one of _LOSS_REFUSALS."""
+    try:
+        return _render(tmp_path, **params)
+    except jinja2.exceptions.UndefinedError as err:
+        match = re.fullmatch(r"'(\w+)' is undefined", str(err))
+        assert match and match.group(1) in _LOSS_REFUSALS, str(err)
+        return None
+
+
+@pytest.mark.parametrize(
+    "params", _GRID, ids=lambda p: ",".join(f"{k}={v}" for k, v in p.items())
+)
+def test_every_config_the_recipe_accepts_the_step_renderer_accepts(tmp_path, params):
+    """Every LOSS_ARMS arm x LMBDA_MODE x USE_LIGER_FUSED_JSD x USE_SAMPLED_OPD_LOSS x
+    LAST_MESSAGE_ONLY x LMBDA (and BETA for the arms that need it in range): either the
+    recipe refuses it before submission, with one of its loss refusals, or the step's
+    renderer accepts what it renders. The arms come from the renderer's own tables, so
+    a new arm is in the grid without editing this test; one the recipe refuses outright
+    passes here and fails test_every_renderer_arm_has_a_config_the_recipe_accepts. A new
+    requirement is checked only as far as these dimensions reach it."""
+    rendered = _recipe_refusal(tmp_path, params)
+    if rendered is not None:
+        _logit_distill_renders(tmp_path, rendered)
+
+
+@pytest.mark.parametrize("arm", sorted(_RGC.LOSS_ARMS))
+def test_every_renderer_arm_has_a_config_the_recipe_accepts(tmp_path, arm):
+    """The grid passes for an arm the recipe refuses in every config, such as one added
+    to the renderer and not to the recipe's list. So each arm needs one grid config that
+    the recipe accepts and the step's renderer renders with that arm."""
+    for params in (p for p in _GRID if p["LOSS_ARM"] == arm):
+        rendered = _recipe_refusal(tmp_path, params)
+        if rendered is not None:
+            assert _gold(rendered)["loss_arm"] == arm
+            _logit_distill_renders(tmp_path, rendered)
+            return
+    pytest.fail(f"the recipe refuses LOSS_ARM={arm} in every grid config")
+
+
+def _logit_distill_renders(tmp_path, rendered):
+    """Run the logit-distill step's render_gold_config.py exactly as its run script
+    calls it for this recipe's train target, and return the gold config it writes.
+
+    The step's config is the template's defaults with the target's config merged over
+    them (gbserver's merge_dicts). The run script is rendered from the template, and
+    its renderer command is cut out and run under bash with the shell variables it
+    reads set. Two keys are turned off, both checks of the delivered files, which this
+    test has none of: verify_trainer_accepts_keys (it imports CustomGOLDConfig) and
+    check_corpus_tokenizer (it reads the corpus)."""
+    import os
+    import subprocess
+    import sys
+
+    from gbserver.utils.filesystem import merge_dicts
+
+    template = _STEP_SCHEMAS["space://steps/train/distill/logit-distill"]
+    step = yaml.safe_load(template.read_text(encoding="utf-8"))
+    config = merge_dicts(step["config"], _config(rendered, "train"))
+    config["gold_config"]["verify_trainer_accepts_keys"] = False
+    config["gold_config"]["check_corpus_tokenizer"] = False
+    launcher = step["environment_configs"]["Skypilot"]["launchers"]["gold"]["config"]
+    bindings = {
+        "student": {"binding": {"path": "/models/student"}},
+        "teacher": {"binding": {"path": "/models/teacher"}},
+        "corpus": {"binding": {"path": "/data/corpus/train.jsonl"}},
+    }
+    if config["gold_config"].get("vllm_num_servers", 0):
+        bindings["vllm"] = {"binding": {"state": "http://rollout:8000"}}
+    script = jinja2.Template(launcher["run"]).render(config=config, bindings=bindings)
+    start = script.index(
+        '"$PYBIN" "$DISTILL_HOME/steps/logit-distill/render_gold_config.py"'
+    )
+    lines = []
+    for line in script[start:].splitlines():
+        lines.append(line)
+        if not line.rstrip().endswith("\\"):
+            break
+    home = tmp_path / "distill-home"
+    (home / "steps").mkdir(parents=True, exist_ok=True)
+    link = home / "steps" / "logit-distill"
+    if not link.exists():
+        link.symlink_to(template.parent / "src")
+    out = tmp_path / "gold_config_rendered.yaml"
+    env = dict(
+        os.environ,
+        PYBIN=sys.executable,
+        DISTILL_HOME=str(home),
+        CFG=str(out),
+        NODES="2",
+    )
+    result = subprocess.run(
+        ["bash", "-c", "\n".join(lines)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return yaml.safe_load(out.read_text(encoding="utf-8"))
+
+
 @pytest.mark.parametrize("mode", ["ramp", "on-policy"])
 def test_generation_floor_defaults_to_16_online(tmp_path, mode):
     assert _gold(_render(tmp_path, LMBDA_MODE=mode))["min_completion_length"] == 16
@@ -362,6 +759,15 @@ def _all_renders(tmp_path):
         yield _render(tmp_path, _SMOKE, LMBDA_MODE=mode)
     yield _render(tmp_path, INCLUDE_SFT="true", CORPUS_DIR="/c")
     yield _render(tmp_path, SCREEN_EVALS="olmes-gsm8k,bfcl", FULL_EVAL_RUNGS="8000")
+    for tool, keys in _TRACKING_OK.items():
+        yield _render(tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **keys)
+    yield _render(
+        tmp_path,
+        INCLUDE_SFT="true",
+        TRACKING_TOOL="clearml",
+        TRACKING_SECRETS="CLEARML_API_HOST,CLEARML_API_ACCESS_KEY,CLEARML_API_SECRET_KEY",
+        **_TRACKING_OK["clearml"],
+    )
 
 
 def test_every_step_uri_is_expected(tmp_path):
@@ -790,3 +1196,144 @@ def test_gold_config_keys_are_logit_distill_keys(tmp_path):
     for mode in _MODES:
         gold = _gold(_render(tmp_path, LMBDA_MODE=mode))
         assert set(gold) <= set(schema), sorted(set(gold) - set(schema))
+
+
+# ─── Experiment tracking ──────────────────────────────────────────────────────
+
+_TRACKING_OK = {
+    "wandb": {"TRACKING_WANDB_ENTITY": "ibm", "TRACKING_WANDB_PROJECT": "kd"},
+    "clearml": {"TRACKING_CLEARML_PROJECT": "distill"},
+}
+_TRAINING_TARGETS = ("train", "train-sft")
+
+
+def test_tracking_is_off_by_default(tmp_path):
+    """No tracking block at all: the steps' own default is off, and a render that tracks
+    nothing is the render it was before tracking was a parameter."""
+    rendered = _render(tmp_path, INCLUDE_SFT="true")
+    for target in _TRAINING_TARGETS:
+        assert "tracking" not in _config(rendered, target), target
+
+
+@pytest.mark.parametrize("tool", sorted(_TRACKING_OK))
+def test_the_chosen_tool_reaches_both_training_targets(tmp_path, tool):
+    rendered = _render(
+        tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **_TRACKING_OK[tool]
+    )
+    suffix = {"train": "distill", "train-sft": "sft"}
+    for target in _TRAINING_TARGETS:
+        tracking = _config(rendered, target)["tracking"]
+        assert tracking["tool"] == tool
+        if tool == "wandb":
+            assert tracking == {
+                "tool": "wandb",
+                "wandb_entity": "ibm",
+                "wandb_project": "kd",
+                "wandb_run_name": f"test-run-{suffix[target]}",
+            }
+        else:
+            assert tracking == {
+                "tool": "clearml",
+                "clearml_project": "distill",
+                "clearml_run_name": f"test-run-{suffix[target]}",
+            }
+
+
+@pytest.mark.parametrize(
+    "params,needle",
+    [
+        ({"TRACKING_TOOL": "mlflow"}, "TRACKING_TOOL_must_be_none_wandb_or_clearml"),
+        (
+            {"TRACKING_TOOL": "wandb", "TRACKING_WANDB_PROJECT": "kd"},
+            "TRACKING_TOOL_wandb_needs_TRACKING_WANDB_ENTITY_and_TRACKING_WANDB_PROJECT",
+        ),
+        (
+            {"TRACKING_TOOL": "clearml"},
+            "TRACKING_TOOL_clearml_needs_TRACKING_CLEARML_PROJECT",
+        ),
+        (
+            {"TRACKING_TOOL": "none", "TRACKING_CLEARML_PROJECT": "d"},
+            "TRACKING_CLEARML_PROJECT_must_be_empty_unless_TRACKING_TOOL_is_clearml",
+        ),
+        (
+            {
+                "TRACKING_TOOL": "clearml",
+                "TRACKING_CLEARML_PROJECT": "d",
+                "TRACKING_WANDB_ENTITY": "e",
+            },
+            "TRACKING_WANDB_parameters_must_be_empty_unless_TRACKING_TOOL_is_wandb",
+        ),
+    ],
+)
+def test_bad_tracking_settings_fail_to_render(tmp_path, params, needle):
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert needle in str(err.value)
+
+
+def test_tracking_tool_is_case_and_space_insensitive(tmp_path):
+    rendered = _render(tmp_path, TRACKING_TOOL=" WandB ", **_TRACKING_OK["wandb"])
+    assert _config(rendered, "train")["tracking"]["tool"] == "wandb"
+
+
+def _secrets(rendered, target):
+    return (
+        _config(rendered, target)
+        .get("skypilot", {})
+        .get("secrets", {})
+        .get("secret_names_to_use_as_env_variable")
+    )
+
+
+def test_no_secret_is_declared_by_default(tmp_path):
+    """A declared secret the space does not hold fails the target, so none by default."""
+    for tool, keys in _TRACKING_OK.items():
+        rendered = _render(tmp_path, INCLUDE_SFT="true", TRACKING_TOOL=tool, **keys)
+        for target in _TRAINING_TARGETS:
+            assert "skypilot" not in _config(rendered, target), (tool, target)
+
+
+@pytest.mark.parametrize(
+    "tool,names",
+    [
+        ("wandb", "WANDB_API_KEY"),
+        ("wandb", " WANDB_API_KEY , WANDB_BASE_URL "),
+        ("clearml", "CLEARML_API_HOST,CLEARML_API_ACCESS_KEY,CLEARML_API_SECRET_KEY"),
+    ],
+)
+def test_tracking_secrets_reach_both_training_targets(tmp_path, tool, names):
+    """The granite-switch recipes' shape: each variable from the space secret of its name."""
+    rendered = _render(
+        tmp_path,
+        INCLUDE_SFT="true",
+        TRACKING_TOOL=tool,
+        TRACKING_SECRETS=names,
+        **_TRACKING_OK[tool],
+    )
+    want = [{"env_name": n.strip(), "secret_name": n.strip()} for n in names.split(",")]
+    for target in _TRAINING_TARGETS:
+        assert _secrets(rendered, target) == want, target
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"TRACKING_TOOL": "none", "TRACKING_SECRETS": "WANDB_API_KEY"},
+        {
+            "TRACKING_TOOL": "wandb",
+            "TRACKING_SECRETS": "CLEARML_API_ACCESS_KEY",
+            **_TRACKING_OK["wandb"],
+        },
+        {
+            "TRACKING_TOOL": "clearml",
+            "TRACKING_SECRETS": "HF_TOKEN",
+            **_TRACKING_OK["clearml"],
+        },
+    ],
+)
+def test_secrets_of_another_tool_fail_to_render(tmp_path, params):
+    with pytest.raises(jinja2.exceptions.UndefinedError) as err:
+        _render_text(tmp_path, **params)
+    assert "TRACKING_SECRETS_must_name_only_the_chosen_tools_variables" in str(
+        err.value
+    )

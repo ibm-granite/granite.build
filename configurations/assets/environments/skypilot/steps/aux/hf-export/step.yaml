@@ -61,7 +61,7 @@ config:
     # must classify this file" — a one-line change, not an incident.
     allow_unknown: false
 
-    # keep | default-off. Not a training-data policy (e.g. distill/corpus-prep's
+    # keep | default-off. Not a training-data policy (e.g. data-prep's
     # think_policy, which decides whether reasoning traces stay in the data). This key
     # touches no data: it decides
     # what generation prompt a consumer gets from
@@ -97,7 +97,7 @@ inputs:
   optional:
     # A tokenizer directory the export's tokenizer must agree with, token id for token
     # id — the tokenizer the run trained with (in a distillation recipe,
-    # distill/tokenizer-align's `retagged_student`). This is the check that
+    # tokenizer-align's `retagged_student`). This is the check that
     # catches a checkpoint trained against a different tokenizer than the recipe
     # believes, which no amount of "does it load" can detect. Unbound skips it.
     expected_tokenizer:

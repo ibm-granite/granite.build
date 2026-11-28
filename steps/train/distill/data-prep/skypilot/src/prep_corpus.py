@@ -51,7 +51,7 @@ Both answers move when the tokenizer moves. The two families here differ in pre_
 is easily enough to push examples across a length boundary. Nothing downstream re-checks
 lengths, so a corpus built with the wrong tokenizer is not a crash: it is a training set
 that quietly contains examples the trainer will truncate. That is what corpus_manifest.json's
-`tokenizer_identity` exists to prevent -- distill-gold-train refuses a mismatch against the
+`tokenizer_identity` exists to prevent -- logit-distill refuses a mismatch against the
 student it is about to train.
 
 WHY THE TOKENIZER IS LOADED WITHOUT AutoTokenizer. Same reason retag_student.py does not use
@@ -412,7 +412,7 @@ def load_tokenizer(tokenizer_dir: Path):
     if not tok_file.is_file():
         raise PrepError(
             f"{tok_file} is missing. --tokenizer must be a directory holding a "
-            "fast tokenizer (a model dir or distill-tokenizer-align's "
+            "fast tokenizer (a model dir or tokenizer-align's "
             "retagged_student / *_overlay)."
         )
     tok = PreTrainedTokenizerFast(tokenizer_file=str(tok_file))
@@ -434,7 +434,7 @@ def load_tokenizer(tokenizer_dir: Path):
         f"no chat template in {tokenizer_dir} (looked for chat_template.jinja and an inline "
         "chat_template in tokenizer_config.json). Lengths and the completion boundary are "
         "both measured on the RENDERED conversation, so this step cannot proceed without "
-        "one. distill-tokenizer-align installs it via --chat-template."
+        "one. tokenizer-align installs it via --chat-template."
     )
 
 
@@ -1232,7 +1232,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             by_kept[i]["split"] = name
 
     manifest = {
-        # THE KEY distill-gold-train COMPARES. Same name, same scheme, one function.
+        # THE KEY logit-distill COMPARES. Same name, same scheme, one function.
         "tokenizer_identity": identity,
         "tokenizer_path": str(tok_dir.resolve()),
         "chat_template_source": template_src,
@@ -1400,14 +1400,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--tokenizer",
         required=True,
         help="tokenizer directory whose lengths define this corpus -- normally "
-        "distill-tokenizer-align's retagged_student",
+        "tokenizer-align's retagged_student",
     )
     p.add_argument("--out-dir", required=True)
     p.add_argument(
         "--max-length",
         type=int,
         default=4096,
-        help="must match distill-gold-train's max_length; a corpus filtered at a "
+        help="must match logit-distill's max_length; a corpus filtered at a "
         "different length silently contains examples the trainer truncates",
     )
     # WHY A CORPUS-BUILD FLAG NAMED AFTER A TRAINER ARGUMENT. `max_length` is SPLIT between
@@ -1501,9 +1501,10 @@ def build_parser() -> argparse.ArgumentParser:
     # conclusive -- custom_gold_trainer.py:1771 already carries `tools` through as a string
     # column for exactly this Arrow-compatibility reason -- so this flips to default-on once a
     # real run has trained with it, not before.
-    # BooleanOptionalAction and not store_true, so steps/distill-corpus-prep/step-template.yaml
-    # can pass the flag UNCONDITIONALLY -- same reason as build_overlay.py's --verify. A
-    # store_true has no negative form, so the template's only option is a conditional that
+    # BooleanOptionalAction and not store_true, so
+    # steps/train/distill/data-prep/skypilot/step-template.yaml can pass the flag
+    # UNCONDITIONALLY -- same reason as build_overlay.py's --verify. A store_true has no
+    # negative form, so the template's only option is a conditional that
     # renders to nothing, which leaves the preceding line's `\` continuing into a blank line.
     # That parses today and is one edit away from swallowing the next argument. Nothing calls
     # this with a value, so `--emit-row-id` keeps meaning exactly what it meant.

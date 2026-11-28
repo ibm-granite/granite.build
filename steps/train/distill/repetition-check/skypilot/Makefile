@@ -1,4 +1,4 @@
-# gen-smoke step for the SkyPilot environment (LSF / BlueVela).
+# repetition-check step for the SkyPilot environment (LSF / BlueVela).
 #
 # Greedy-decodes a handful of prompts from each exported checkpoint and measures how
 # much of the output sits inside a run of repeated lines -- the failure df8512e0's
