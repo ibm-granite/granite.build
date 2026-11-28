@@ -510,7 +510,8 @@ def _renderer_arms():
 
 _RGC = _renderer_arms()
 # Every arm the step's renderer knows or rejects, none, and one in mixed case, which the
-# recipe normalises. Arms with a beta requirement also get the two ends of BETA.
+# recipe normalises. Arms with a beta requirement also get the two ends of BETA. LMBDA
+# unset, fractional and 1.
 _GRID = [
     dict(
         LOSS_ARM=arm,
@@ -518,6 +519,7 @@ _GRID = [
         USE_LIGER_FUSED_JSD=liger,
         USE_SAMPLED_OPD_LOSS=sopd,
         LAST_MESSAGE_ONLY=lmo,
+        **({"LMBDA": lmbda} if lmbda is not None else {}),
         **({"BETA": beta} if beta is not None else {}),
     )
     for arm in [
@@ -530,12 +532,41 @@ _GRID = [
     for liger in ("false", "true")
     for sopd in ("false", "true")
     for lmo in ("false", "true")
+    for lmbda in (None, "0.5", "1.0")
     for beta in (
         (None, "0.0", "1.0")
         if "beta_strictly_between" in _RGC.LOSS_ARMS.get(arm, {}).get("requires", {})
         else (None,)
     )
 ]
+# The recipe's refusals of a loss configuration. A grid config the recipe refuses must
+# be refused by one of these, not by some other undefined name (a typo in the recipe,
+# or a refusal of something the grid does not vary).
+_LOSS_REFUSALS = {
+    "BETA_must_be_strictly_between_0_and_1_for_the_kl_interpolation_arms",
+    "LAST_MESSAGE_ONLY_must_be_true_for_the_sampled_OPD_loss",
+    "LAST_MESSAGE_ONLY_must_be_true_when_LOSS_ARM_is_uld",
+    "LMBDA_MODE_must_be_off_policy_for_LOSS_ARM_ce",
+    "LMBDA_MODE_must_be_ramp_or_on_policy_for_the_sampled_OPD_loss",
+    "LMBDA_MODE_must_be_ramp_or_on_policy_when_LMBDA_is_set",
+    "LMBDA_must_be_1_for_the_sampled_OPD_loss",
+    "LOSS_ARM_distillm2_needs_LMBDA_MODE_ramp_or_an_LMBDA_strictly_between_0_and_1",
+    "LOSS_ARM_must_be_empty_or_one_of_the_logit_distill_steps_arms",
+    "USE_LIGER_FUSED_JSD_must_be_false_beside_a_LOSS_ARM_that_does_not_imply_it",
+    "USE_LIGER_FUSED_JSD_must_be_false_for_the_sampled_OPD_loss",
+    "USE_SAMPLED_OPD_LOSS_must_be_false_beside_a_LOSS_ARM_other_than_sampled_opd",
+}
+
+
+def _recipe_refusal(tmp_path, params):
+    """The recipe's rendering of params, or None if the recipe refuses them; a refusal
+    must be one of _LOSS_REFUSALS."""
+    try:
+        return _render(tmp_path, **params)
+    except jinja2.exceptions.UndefinedError as err:
+        match = re.fullmatch(r"'(\w+)' is undefined", str(err))
+        assert match and match.group(1) in _LOSS_REFUSALS, str(err)
+        return None
 
 
 @pytest.mark.parametrize(
@@ -543,15 +574,29 @@ _GRID = [
 )
 def test_every_config_the_recipe_accepts_the_step_renderer_accepts(tmp_path, params):
     """Every LOSS_ARMS arm x LMBDA_MODE x USE_LIGER_FUSED_JSD x USE_SAMPLED_OPD_LOSS x
-    LAST_MESSAGE_ONLY (and BETA for the arms that need it in range): either the recipe
-    refuses it before submission, or the step's renderer accepts what it renders. The
-    grid comes from the renderer's own arm table, so a new arm or requirement is
-    checked without editing this test."""
-    try:
-        rendered = _render(tmp_path, **params)
-    except jinja2.exceptions.UndefinedError:
-        return  # refused before submission
-    _logit_distill_renders(tmp_path, rendered)
+    LAST_MESSAGE_ONLY x LMBDA (and BETA for the arms that need it in range): either the
+    recipe refuses it before submission, with one of its loss refusals, or the step's
+    renderer accepts what it renders. The arms come from the renderer's own tables, so
+    a new arm is in the grid without editing this test; one the recipe refuses outright
+    passes here and fails test_every_renderer_arm_has_a_config_the_recipe_accepts. A new
+    requirement is checked only as far as these dimensions reach it."""
+    rendered = _recipe_refusal(tmp_path, params)
+    if rendered is not None:
+        _logit_distill_renders(tmp_path, rendered)
+
+
+@pytest.mark.parametrize("arm", sorted(_RGC.LOSS_ARMS))
+def test_every_renderer_arm_has_a_config_the_recipe_accepts(tmp_path, arm):
+    """The grid passes for an arm the recipe refuses in every config, such as one added
+    to the renderer and not to the recipe's list. So each arm needs one grid config that
+    the recipe accepts and the step's renderer renders with that arm."""
+    for params in (p for p in _GRID if p["LOSS_ARM"] == arm):
+        rendered = _recipe_refusal(tmp_path, params)
+        if rendered is not None:
+            assert _gold(rendered)["loss_arm"] == arm
+            _logit_distill_renders(tmp_path, rendered)
+            return
+    pytest.fail(f"the recipe refuses LOSS_ARM={arm} in every grid config")
 
 
 def _logit_distill_renders(tmp_path, rendered):
