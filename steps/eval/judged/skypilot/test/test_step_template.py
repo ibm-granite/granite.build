@@ -389,6 +389,46 @@ def test_a_selection_names_the_dir(step, tmp_path, options, name):
     assert _dir(proc) == str(tmp_path / "out" / "model-x" / name)
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        "judge_workers=8",
+        "judge_parallel=2",
+        "concurrency=3",
+        "llm_timeout=60",
+        "judge_timeout=30",
+        "judge_retries=5",
+        "env_start_timeout=90",
+        "env_poll=1",
+        "env_url=http://e:1",
+        "env_port=2000",
+        "max_judge_invalid_frac=0.2",
+    ],
+)
+def test_an_operational_option_leaves_the_dir_alone(step, tmp_path, option):
+    # Worker counts, the timeout and retries of a call whose failure is left
+    # out of the score and retried on resume, the environment's address and a
+    # failure threshold: none changes a reported score.
+    proc = _run_until_output_dir(
+        step, tmp_path, benchmark="lm-eval", options=f"tasks=x {option}"
+    )
+    assert _dir(proc) == str(tmp_path / "out" / "model-x" / "lm-eval@tasks-x")
+
+
+@pytest.mark.parametrize(
+    "option, word",
+    [("task_timeout=600", "task_timeout-600"), ("max_errors=3", "max_errors-3")],
+)
+def test_a_limit_that_is_scored_names_the_dir(step, tmp_path, option, word):
+    # mcpatlas scores a task that runs out of time as its timeout error, and
+    # tau2-bench ends a simulation after max_errors tool errors: both change
+    # scores, so they are not operational.
+    proc = _run_until_output_dir(
+        step, tmp_path, benchmark="lm-eval", options=f"tasks=x {option}"
+    )
+    assert _dir(proc) == str(tmp_path / "out" / "model-x" / f"lm-eval@tasks-x@{word}")
+
+
 def test_distinct_selections_never_share_a_dir(step, tmp_path):
     # Values that a lossy mapping would merge (a / or a glob character into
     # _, a comma into -), and a bridge selection that names a curated id's

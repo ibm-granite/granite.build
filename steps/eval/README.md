@@ -116,11 +116,19 @@ First the selection options in this fixed order: `benchmark=`, `service=`,
 either is set (a dataset-pinned bridge's required pin, or a swap on a curated
 id); then every other option, sorted by key: the protocol options (lm-eval's
 `mode=`, `num_fewshot=`, `gen_kwargs=`, `thinking=`, `metric=`; sampling, agent,
-judge and step-limit settings). Only operational options leave the name alone:
-`max_failed_frac`, `max_retries`, `retry_delay`, `request_timeout`,
-`grade_workers`, `comet_batch_size` and the endpoint addresses (any
-`*_base_url`, `*_api_url`, `*_mcp_url` or `*_api_key_env`: `judge_base_url`,
-`user_base_url`, `search_mcp_url`, `critpt_api_url`, ...).
+judge and step-limit settings). Only operational options leave the name alone,
+each checked against the sources that read it: worker counts and pool sizes
+(`grade_workers`, `judge_workers`, `judge_parallel`, `concurrency`,
+`comet_batch_size`); the retries and timeouts of a call whose failure is left out of
+the score and retried on resume (`max_retries`, `retry_delay`, `request_timeout`,
+`llm_timeout`, `judge_timeout`, `judge_retries`, `env_start_timeout`); the failure
+thresholds, which decide only whether the run reports or fails (`max_failed_frac`,
+`max_judge_invalid_frac`); an environment's address and poll interval (`env_url`,
+`env_port`, `env_poll`); and the endpoint addresses (any `*_base_url`, `*_api_url`,
+`*_mcp_url` or `*_api_key_env`: `judge_base_url`, `user_base_url`, `search_mcp_url`,
+`critpt_api_url`, ...). A limit the score sees does name the dir: mcpatlas's
+`task_timeout` (an expired task is judged on its timeout error), tau's `max_errors`
+(tau2-bench ends the simulation), `tool_timeout` and the like.
 Last, the run's `seed` when it is not the default 0 (`@seed-<n>`: another seed
 samples, and orders shuffled docs, differently); `limit` and `repeats` do not count,
 since a resume extends a smaller run into a larger one. A repeated option counts once,
