@@ -53,7 +53,8 @@ bfcl-v4 or other checkpoints; the v4 recipe's default, granite-4.2-3b, sets no o
 in its generation_config (only `temperature` 1.0 and `top_p` 0.95). The step's run script
 applies it (`granite_evals.benchmarks.bfcl_serving`), not the benchmark, so `granite-evals run`
 outside the step needs it as a `--vllm-arg`. The step keeps its decision in the output dir's
-`fc_budget.json`, which `results.json` reports under `max_tokens` in either phase.
+`fc_budget.json`, which `results.json` reports under `max_tokens` in either phase (a
+`legacy-granite` run leaves it alone, so fc's record survives an output dir both share).
 `bfcl-v3` also has `--option
 handler=legacy-granite`: BFCL prompt mode with the Granite 4.0 chat template's prompt
 format rendered by the handler, sent as text to the completions endpoint, the format

@@ -4,9 +4,10 @@ Run by the step template in the generate and all phases (``python -m
 granite_evals.benchmarks.bfcl_serving BUDGET_FILE BENCHMARK MODEL_PATH BASE_URL OPTIONS [VLLM_ARG ...]``,
 the step's vllm_args as the words vLLM gets them). It writes
 its decision, ``{"fc_budget": "<cap>:<source>"}``, to BUDGET_FILE (the output dir's
-fc_budget.json, which results.json's max_tokens reports in either phase), and prints the
-extra ``vllm serve`` arguments, one per line (none, or the budget). Not an ``--option``:
-the score phase, which serves nothing, would warn that its options differ.
+fc_budget.json, which results.json's max_tokens reports in either phase; a bfcl-v3
+legacy-granite run leaves it alone, so fc's record survives a shared output dir), and
+prints the extra ``vllm serve`` arguments, one per line (none, or the budget). Not an
+``--option``: the score phase, which serves nothing, would warn that its options differ.
 
 The budget: FC sends no max_tokens, so a checkpoint that loops runs to the end of its
 context, into the client's 600 s timeout, an infrastructure error instead of its (wrong)
@@ -139,7 +140,11 @@ def describe(record: str | None) -> dict:
 def main(argv: list[str]) -> int:
     budget_file, benchmark, model_path, base_url, options = (argv + [""] * 5)[:5]
     record, args = plan(benchmark, model_path, base_url, options, argv[5:])
-    Path(budget_file).write_text(json.dumps({"fc_budget": record}))
+    # The file is FC's record. legacy-granite (v3) serves nothing and sends its own cap
+    # (BFCLv3.max_tokens_record), and both handlers may share one output dir: leave
+    # fc's record for fc's score phase.
+    if record != "none:legacy-granite":
+        Path(budget_file).write_text(json.dumps({"fc_budget": record}))
     for a in args:
         print(a)
     return 0

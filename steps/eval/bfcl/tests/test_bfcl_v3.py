@@ -748,14 +748,23 @@ def test_vllm_tokens_probe_fails_loudly_without_vllms_endpoints(fake_vllm, quick
 def test_real_child_both_handlers_share_a_run_dir(tmp_path, fake_vllm):
     """fc, then legacy-granite, then fc again into one run dir (the default
     RUN_NAME): BFCL scores every model under its score dir, so each handler
-    scores in its own, with one model row in its data_overall.csv."""
+    scores in its own, with one model row in its data_overall.csv. The step's
+    bfcl_serving runs before each serving phase, as the run script does, and fc's
+    score phase still reports fc's own budget record."""
+    from granite_evals.benchmarks import bfcl_serving
+
     root = tmp_path / "bfcl"
     root.mkdir()
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "generation_config.json").write_text(json.dumps({"temperature": 1.0}))
     env = {**os.environ, "BFCL_PROJECT_ROOT": str(root), "OPENAI_API_KEY": "EMPTY", "OPENAI_BASE_URL": fake_vllm.base_url}
     for handler, phase in (("fc", "all"), ("legacy-granite", "all"), ("fc", "score")):
         cfg = {"served_model_name": "m", "categories": ["irrelevance"], "limit": 2, "num_threads": 1,
                "sampling": {}, "include_input_log": False, "phase": phase, "handler": handler}
         (root / bfcl_v3.CHILD_CONFIG).write_text(json.dumps(cfg))
+        if phase != "score":
+            bfcl_serving.main([str(tmp_path / bfcl.FC_BUDGET_FILE), "bfcl-v3", str(ckpt), "", f"handler={handler}"])
         proc = subprocess.run([V3_PYTHON, "-I", str(bfcl_v3.CHILD), str(root / bfcl_v3.CHILD_CONFIG)], env=env,
                               capture_output=True, text=True, check=False)
         assert proc.returncode == 0, (handler, phase, proc.stderr[-2000:])
@@ -763,6 +772,8 @@ def test_real_child_both_handlers_share_a_run_dir(tmp_path, fake_vllm):
         assert bfcl_v3.read_overall(scores)["groups"]["irrelevance"] is None  # one row, its own model
         assert [p.name for p in scores.iterdir() if p.is_dir()] == [bfcl_v3_child.REGISTRY_NAMES[handler]]
     assert set(bfcl_v3_child.missing_results(root, "fc") + bfcl_v3_child.missing_results(root, "legacy-granite")) == set()
+    run = RunConfig(model=str(ckpt), output_dir=tmp_path, phase="score", options={"handler": "fc"})
+    assert bfcl_v3.BFCLv3(run).max_tokens_record("fc")["cap"] == 16384  # fc's, not legacy-granite's "none"
 
 
 @needs_v3_venv

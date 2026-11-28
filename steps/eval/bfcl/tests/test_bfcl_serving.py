@@ -180,9 +180,11 @@ def test_main_records_the_decision_and_prints_the_arguments(ckpt, tmp_path, caps
     assert bfcl_serving.main([str(out), "bfcl-v3", ckpt({}), "", "handler=fc"]) == 0
     assert capsys.readouterr().out.splitlines() == [BUDGET]
     assert json.loads(out.read_text()) == {"fc_budget": "16384:step-default"}
-    bfcl_serving.main([str(out), "bfcl-v3", ckpt({}), "", "handler=legacy-granite"])  # a rerun replaces it
+    # legacy-granite (v3) serves nothing and sends its own cap: it leaves fc's record alone,
+    # since both handlers may share the output dir (fc's score phase reads it).
+    bfcl_serving.main([str(out), "bfcl-v3", ckpt({}), "", "handler=legacy-granite"])
     assert capsys.readouterr().out == ""
-    assert json.loads(out.read_text()) == {"fc_budget": "none:legacy-granite"}
+    assert json.loads(out.read_text()) == {"fc_budget": "16384:step-default"}
     bfcl_serving.main([str(out), "bfcl-v3", ckpt({}), "", "", "--max-num-seqs=4", "--generation-config", "vllm"])
     assert capsys.readouterr().out == ""
     assert json.loads(out.read_text()) == {"fc_budget": "unknown:vllm_args-override"}
