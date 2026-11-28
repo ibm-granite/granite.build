@@ -97,12 +97,32 @@ def test_the_budget_reaches_the_run(tmp_path, phase):
     ]
 
 
-def test_the_helper_sees_vllm_args_as_vllm_gets_them(tmp_path):
-    # Quoted JSON is one word to vLLM after bash's quote removal; so it is to the helper.
-    vllm_args = "--max-num-seqs=4 --override-generation-config '{\"temperature\": 0.5}'"
+@pytest.mark.parametrize(
+    "vllm_args, words",
+    [
+        # Quoted JSON, spaces included, is one word after bash's quote removal (USAGE.md).
+        (
+            "--max-num-seqs=4 --override-generation-config '{\"temperature\": 0.5}'",
+            [
+                "--max-num-seqs=4",
+                "--override-generation-config",
+                '{"temperature": 0.5}',
+            ],
+        ),
+        (
+            '--override-generation-config=\'{"a":1,"b":2}\'',
+            ['--override-generation-config={"a":1,"b":2}'],
+        ),
+        # Unquoted, the same JSON is brace-expanded into two words (USAGE.md).
+        (
+            '--override-generation-config={"a":1,"b":2}',
+            ["--override-generation-config=a:1", "--override-generation-config=b:2"],
+        ),
+    ],
+)
+def test_the_helper_sees_vllm_args_as_vllm_gets_them(tmp_path, vllm_args, words):
     proc = _run(tmp_path, vllm_args=vllm_args, helper_out="")
     assert proc.returncode == 0, proc.stderr
-    words = ["--max-num-seqs=4", "--override-generation-config", '{"temperature": 0.5}']
     assert proc.helper_argv[5:] == words
     assert _lines(proc, "VLLM") == [f"--vllm-arg={w}" for w in words]
 

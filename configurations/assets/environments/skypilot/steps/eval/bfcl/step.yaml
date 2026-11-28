@@ -86,9 +86,11 @@ config:
   # checkpoint (its chat template / shipped *_parser.py), "" disables one.
   tool_call_parser: "auto"
   reasoning_parser: "auto"
-  # Space-separated extra `vllm serve` arguments, each passed as --vllm-arg
-  # (e.g. "--enable-prefix-caching --max-num-seqs=64"). Values containing
-  # spaces are not supported, as in `options`.
+  # Extra `vllm serve` arguments, each passed as --vllm-arg (e.g.
+  # "--enable-prefix-caching --max-num-seqs=64"). The run script reads them as
+  # shell words: quote a value to keep it one word, spaces included
+  # (--override-generation-config '{"temperature": 0.5}'); unquoted JSON is
+  # split on spaces and brace-expanded ({"a":1,"b":2} becomes two arguments).
   vllm_args: ""
   # An existing OpenAI-compatible endpoint (e.g. http://host:8000/v1): skips
   # starting vLLM in the job; served_model_name must name the model there.
